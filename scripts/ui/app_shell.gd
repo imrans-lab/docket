@@ -961,21 +961,51 @@ func _reencrypt_vault_secrets(old_password: String, new_password: String) -> voi
 		if not pdb.verify_vault(old_key):
 			push_warning("Vault password mismatch for project '%s', skipping re-encryption" % proj_name)
 			continue
-		# ...and re-wrap at the current one. Everything is being re-encrypted
-		# anyway, so a password change doubles as the KDF upgrade for vaults
-		# created before the iteration count was raised.
-		var new_salt := VaultCrypto.generate_salt()
-		var new_key := VaultCrypto.derive_key(new_password, new_salt, VaultCrypto.PBKDF2_ITERATIONS)
-		var all_secrets := pdb.get_all_secrets_raw()
-		for secret in all_secrets:
-			var plaintext := VaultCrypto.decrypt(secret.ciphertext, secret.iv, secret.mac, old_key)
-			if plaintext.is_empty():
+		# A dual-password secret is encrypted twice: an inner layer under a key
+		# derived from the SECONDARY password, and an outer layer under the vault
+		# key. Only the outer layer can be re-wrapped here — the secondary
+		# password is not known, and is deliberately never stored.
+		#
+		# That constrains what a password change may alter. The secondary key is
+		# derived from (secondary password, vault salt, iteration count), so
+		# changing the salt or the cost silently re-defines a key nobody can
+		# reproduce, leaving the inner layer permanently undecryptable. The old
+		# code regenerated the salt, raised the cost, and dropped requires_2fa —
+		# any of which alone destroys a 2FA secret.
+		var has_2fa := false
+		for probe in pdb.get_all_secrets_raw():
+			if bool(probe.get("requires_2fa", false)):
+				has_2fa = true
+				break
+
+		# Reusing the salt is safe: a salt must be unique per vault, not per
+		# password change, and the new password already yields a different key.
+		var new_salt := old_salt
+		var new_iters := pdb.get_vault_iterations()
+		if not has_2fa:
+			# No inner layer to strand, so take the opportunity to re-salt and
+			# upgrade the KDF cost.
+			new_salt = VaultCrypto.generate_salt()
+			new_iters = VaultCrypto.PBKDF2_ITERATIONS
+		elif pdb.get_vault_iterations() < VaultCrypto.PBKDF2_ITERATIONS:
+			push_warning(
+				"Project '%s' holds dual-password secrets, so its KDF cost cannot be " % proj_name
+				+ "raised by a password change without their secondary passwords.")
+
+		var new_key := VaultCrypto.derive_key(new_password, new_salt, new_iters)
+		for secret in pdb.get_all_secrets_raw():
+			# Single-layer decrypt is correct for both kinds: for a 2FA secret it
+			# yields the still-encrypted inner blob, which is re-wrapped as-is.
+			var payload := VaultCrypto.decrypt(secret.ciphertext, secret.iv, secret.mac, old_key)
+			if payload.is_empty():
 				push_warning("Failed to decrypt secret '%s' in '%s', skipping" % [secret.handle, proj_name])
 				continue
-			var encrypted := VaultCrypto.encrypt(plaintext, new_key)
-			pdb.set_secret(secret.handle, encrypted.ciphertext, encrypted.iv, encrypted.mac)
-		# Record the new salt, verify hash, and KDF cost together
-		pdb.init_vault(new_key, new_salt, VaultCrypto.PBKDF2_ITERATIONS)
+			var encrypted := VaultCrypto.encrypt(payload, new_key)
+			# requires_2fa must survive, or the reader will not know to peel the
+			# inner layer and will hand back ciphertext as though it were plaintext.
+			pdb.set_secret(secret.handle, encrypted.ciphertext, encrypted.iv, encrypted.mac,
+				bool(secret.get("requires_2fa", false)))
+		pdb.init_vault(new_key, new_salt, new_iters)
 
 
 func _on_viewport_resized() -> void:

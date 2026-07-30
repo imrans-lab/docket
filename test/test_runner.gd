@@ -39,6 +39,7 @@ func _ready() -> void:
 		preload("res://test/test_secret_unified_set.gd"),
 		preload("res://test/test_secret_ownership.gd"),
 		preload("res://test/test_secret_lifecycle_e2e.gd"),
+		preload("res://test/test_vault_password_change.gd"),
 		preload("res://test/test_knowledge_types.gd"),
 		preload("res://test/test_quality_scoring.gd"),
 		preload("res://test/test_project_meta.gd"),
