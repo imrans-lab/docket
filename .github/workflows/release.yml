@@ -129,12 +129,36 @@ jobs:
       # macOS: Godot ad-hoc signs during export (codesign/codesign=1), which is
       # what lets the binary run on Apple Silicon at all. It is NOT notarized —
       # see docs/SIGNING.md for what users must do on first launch.
-      - name: Verify macOS ad-hoc signature
+      # Two separate questions, deliberately checked separately:
+      #   1. Does Godot's exported bundle verify at all?
+      #   2. Does our packaging break it?
+      # The previous version only ran `codesign -dv`, which DISPLAYS signature
+      # metadata and never checks integrity — so it passed while the bundle was
+      # already invalid, and the failure surfaced later in Package, pointing at
+      # the wrong culprit.
+      - name: Verify macOS signature (as exported)
         if: matrix.platform == 'macos'
         run: |
-          set -euo pipefail
-          codesign -dv --verbose=2 build/macos/Docket.app 2>&1 | tee sig.txt
-          grep -q "adhoc\|Signature=adhoc" sig.txt || echo "WARNING: bundle may be unsigned"
+          set -uo pipefail
+          echo "--- signature metadata ---"
+          codesign -dv --verbose=2 build/macos/Docket.app 2>&1 || true
+          echo "--- embedded Mach-O objects ---"
+          find build/macos/Docket.app -type f -perm +111 -exec file {} \; 2>/dev/null | grep -i mach-o || true
+          echo "--- nested frameworks ---"
+          ls -la build/macos/Docket.app/Contents/Frameworks/ 2>/dev/null || echo "(none)"
+          for fw in build/macos/Docket.app/Contents/Frameworks/*.framework; do
+            [ -d "$fw" ] || continue
+            echo "  $fw"
+            ls -R "$fw" | sed 's/^/    /'
+            codesign --verify --strict --verbose=4 "$fw" 2>&1 | sed 's/^/    /' || true
+          done
+          echo "--- deep verification of the exported bundle ---"
+          if codesign --verify --deep --strict --verbose=4 build/macos/Docket.app 2>&1; then
+            echo "RESULT: exported bundle passes deep verification"
+          else
+            echo "RESULT: exported bundle FAILS deep verification (before any packaging)"
+            exit 1
+          fi
 
       # godot-sqlite and godot-cpp are MIT: their copyright notice must ship with
       # any binary that includes them, and we compile both into the app. Built

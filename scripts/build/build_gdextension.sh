@@ -82,5 +82,56 @@ for t in "${TARGETS[@]}"; do
 		-j"$JOBS"
 done
 
+# -- macOS framework completion ----------------------------------------------
+#
+# godot-sqlite's SConstruct emits the .framework directory containing only the
+# Mach-O binary. Upstream's *prebuilt release* additionally ships
+# Resources/Info.plist, so building from source produces a subtly different —
+# and malformed — artifact: a macOS framework without an Info.plist.
+#
+# Nothing complains until the app is signed. `codesign --verify --deep` on a
+# bundle embedding it then fails with "a sealed resource is missing or invalid",
+# which is what broke macOS packaging in the release pipeline.
+if [[ "$PLATFORM" == "macos" ]]; then
+	for fw in "$OUT_DIR"/*.framework; do
+		[[ -d "$fw" ]] || continue
+		name="$(basename "$fw" .framework)"
+		[[ -f "$fw/$name" ]] || continue          # no binary — not our framework
+		if [[ -f "$fw/Resources/Info.plist" ]]; then
+			continue
+		fi
+		mkdir -p "$fw/Resources"
+		cat > "$fw/Resources/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>$name</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.godotengine.libgdsqlite</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$name</string>
+	<key>CFBundlePackageType</key>
+	<string>FMWK</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>10.12</string>
+</dict>
+</plist>
+PLIST
+		echo "==> Added missing Info.plist to $(basename "$fw")"
+	done
+fi
+
 echo "==> Built artifacts:"
 ls -la "$OUT_DIR"
