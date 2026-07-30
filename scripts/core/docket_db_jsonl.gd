@@ -409,6 +409,13 @@ func set_secret_owner(handle: String, owner_item_id: String) -> void:
 	_flush_jsonl()
 
 
+func rekey_secret(old_handle: String, new_handle: String) -> String:
+	var err := super.rekey_secret(old_handle, new_handle)
+	if err.is_empty():
+		_flush_jsonl()
+	return err
+
+
 func delete_secret(handle: String) -> bool:
 	var result := super.delete_secret(handle)
 	if result:

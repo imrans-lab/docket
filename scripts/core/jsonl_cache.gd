@@ -302,10 +302,24 @@ static func _insert_secrets(db: DocketDB, secrets: Array) -> void:
 		var requires_2fa: bool = bool(s.get("requires_2fa", false))
 		var flag: int = 1 if requires_2fa else 0
 		db._db.query_with_bindings(
-			"INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+			"INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
 			[handle, ciphertext, iv, mac, created_at, updated_at, flag,
-				_derive_owner(db, handle, str(s.get("owner_item_id", "")))]
+				_derive_owner(db, handle, str(s.get("owner_item_id", ""))),
+				_extra_json(s)]
 		)
+
+
+static func _extra_json(s: Dictionary) -> String:
+	## Fields the parser kept but this build has no column for. Stored verbatim
+	## so the serializer can put them back exactly as they arrived.
+	const MODELLED := ["_type", "handle", "ciphertext", "iv", "mac", "created_at",
+		"updated_at", "requires_2fa", "owner_item_id",
+		"ciphertext_b64", "iv_b64", "mac_b64"]
+	var extra := {}
+	for key in s:
+		if key not in MODELLED:
+			extra[key] = s[key]
+	return JSON.stringify(extra) if not extra.is_empty() else ""
 
 
 static func _derive_owner(db: DocketDB, handle: String, recorded: String) -> String:

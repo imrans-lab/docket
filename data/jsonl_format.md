@@ -358,13 +358,14 @@ One line per encrypted secret. All binary cryptographic material is base64-encod
 | Field          | Type    | Required | Notes |
 |----------------|---------|----------|-------|
 | `_type`        | string  | yes      | Always `"secret"` |
-| `handle`       | string  | yes      | Secret handle (item ID, or `"<id>:notes"` for encrypted notes) |
+| `handle`       | string  | yes      | Secret handle. For an owned entry this is the item ID, or `"<id>:notes"` for encrypted notes. A standalone entry may use any handle |
 | `ciphertext`   | string  | yes      | Base64-encoded ciphertext |
 | `iv`           | string  | yes      | Base64-encoded initialization vector |
 | `mac`          | string  | yes      | Base64-encoded message authentication code |
 | `created_at`   | string  | yes      | ISO 8601 UTC timestamp |
 | `updated_at`   | string  | yes      | ISO 8601 UTC timestamp |
 | `requires_2fa` | boolean | no       | Omit if `false`. Legacy field name: when `true`, a secondary password is required for double decryption; this is not a separate authentication factor |
+| `owner_item_id`| string  | no       | Work item this secret belongs to. Omit for a standalone entry (typically created over MCP). Owned entries are keyed by item ID, so a reader that predates this field can re-derive it from `handle` |
 
 ### 5.8 `secret_version`
 
@@ -494,7 +495,23 @@ The `meta.version` field uses semver:
 - **Minor** (1.x.0): new `_type` values added. Old readers skip unknown `_type` lines.
 - **Major** (x.0.0): breaking changes to existing field semantics or required fields.
 
-Readers MUST ignore unknown `_type` values and unknown fields within known types. This provides forward compatibility for patch and minor versions.
+**Unknown fields within known types MUST be preserved, not merely ignored.** A
+reader that also writes must round-trip them; dropping a field it does not model
+deletes data on the next flush.
+
+**Unknown `_type` values MUST be refused, not skipped.** This is a deliberate
+departure from "skip and continue", and the reason is that Docket is not a
+read-only reader: every mutation rewrites the entire file from cache. A line the
+writer cannot reproduce is a line the next flush removes, so "skipping" an
+unknown record silently destroys it — the opposite of forward compatibility.
+
+The practical consequence is that a **minor** version bump is not transparent to
+older readers: they will refuse the file with a clear error rather than quietly
+truncating it. That is the intended trade. Refusing is recoverable; silent
+deletion of a record nobody knew was there is not.
+
+Writers introducing a new `_type` MUST bump `meta.version` accordingly so the
+refusal message can name the cause.
 
 ---
 

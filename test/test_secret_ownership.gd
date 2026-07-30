@@ -185,10 +185,11 @@ func test_derivation_backfills_legacy_files() -> Variant:
 
 # -- Unknown-field preservation ------------------------------------------------
 
-func test_unknown_secret_fields_survive_a_round_trip() -> Variant:
-	## A newer Docket may add fields this version does not know. Dropping them
-	## would truncate the file on the next flush — the same silent loss as
-	## dropping a whole line, one level finer.
+func test_unknown_secret_fields_survive_a_real_round_trip() -> Variant:
+	## The earlier version of this test only called the parser and inspected its
+	## return value. That passed while the field still died: the cache and the
+	## serializer wrote fixed columns, so the flush dropped it. A round-trip test
+	## has to actually open, flush and re-read the file.
 	_db.close()
 	_db = null
 	var future := (META + "\n"
@@ -199,9 +200,16 @@ func test_unknown_secret_fields_survive_a_round_trip() -> Variant:
 	f.store_string(future)
 	f.close()
 
-	var parsed := JSONLParser.parse_file(_path)
-	var r = A.eq(parsed["secrets"].size(), 1, "secret parsed")
+	# open -> build cache -> flush back to disk
+	_db = DocketDBJsonl.open_jsonl(_path)
+	var r = A.not_null(_db, "file with an unmodelled field still opens")
 	if r != true:
 		return r
-	return A.eq(str(parsed["secrets"][0].get("future_field", "")), "keep me",
-		"unrecognised field is preserved by the parser")
+	_db.close()
+	_db = null
+
+	var text := FileAccess.get_file_as_string(_path)
+	r = A.contains(text, "future_field", "field is written back to the file")
+	if r != true:
+		return r
+	return A.contains(text, "keep me", "its value is preserved verbatim")

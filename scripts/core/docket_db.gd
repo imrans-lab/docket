@@ -563,7 +563,13 @@ func delete_item(id: String) -> void:
 	_exec("DELETE FROM item_links WHERE from_id=? OR to_id=?;", [id, id])
 	_exec("DELETE FROM comments WHERE item_id=?;", [id])
 	_exec("DELETE FROM attachments WHERE item_id=?;", [id])
-	# Clean up vault entries (secret value + encrypted notes + versions)
+	# Clean up vault entries (secret value + encrypted notes + versions).
+	# Delete by recorded ownership as well as by convention: an entry attached to
+	# this item under some other handle would otherwise be left orphaned, with no
+	# item to reach it through and no listing that shows it.
+	for owned_handle in list_secrets_owned_by(id):
+		delete_secret(owned_handle)
+		_exec("DELETE FROM docket_secret_versions WHERE handle=?;", [owned_handle])
 	delete_secret(id)
 	delete_secret(id + ":notes")
 	_exec("DELETE FROM docket_secret_versions WHERE handle=?;", [id])
@@ -1155,6 +1161,54 @@ func set_secret_owner(handle: String, owner_item_id: String) -> void:
 	_exec("UPDATE docket_secrets SET owner_item_id=? WHERE handle=?;", [owner_item_id, handle])
 
 
+func rekey_secret(old_handle: String, new_handle: String) -> String:
+	## Move a vault entry to a different handle. Returns "" on success.
+	##
+	## A pure rename: the handle is never part of the encryption (see
+	## VaultCrypto), so no vault password, decryption or re-encryption is needed.
+	## Version history moves with it, or rotating a promoted secret would strand
+	## its archived values under the old key.
+	##
+	## This exists so a promoted secret ends up under the handle every consumer
+	## already looks for — item payloads live under handle == item_id. Recording
+	## ownership while leaving the ciphertext elsewhere makes the metadata and
+	## the behaviour disagree, which is exactly how a promoted item became
+	## unreadable in the GUI.
+	if old_handle == new_handle:
+		return ""
+	if get_secret_raw(old_handle).is_empty():
+		return "No secret found with handle '%s'" % old_handle
+	if not get_secret_raw(new_handle).is_empty():
+		return "A secret already exists under handle '%s'" % new_handle
+	_exec("UPDATE docket_secrets SET handle=? WHERE handle=?;", [new_handle, old_handle])
+	_exec("UPDATE docket_secret_versions SET handle=? WHERE handle=?;", [new_handle, old_handle])
+	return ""
+
+
+func get_secret_handle_for_item(item_id: String, suffix: String = "") -> String:
+	## Handle holding this item's payload, or "" if it has none.
+	##
+	## Resolves by recorded ownership first, falling back to the historical
+	## convention so files written before owner_item_id existed still work.
+	var want := item_id + suffix
+	var rows := _exec_select(
+		"SELECT handle FROM docket_secrets WHERE owner_item_id=? AND handle=? LIMIT 1;",
+		[item_id, want])
+	if rows.size() > 0:
+		return str(rows[0].get("handle", ""))
+	return want if not get_secret_raw(want).is_empty() else ""
+
+
+func list_secrets_owned_by(item_id: String) -> Array:
+	## Every handle belonging to this item, however it is keyed. Used on delete
+	## and move so an owned payload cannot be left orphaned.
+	var out: Array = []
+	for row in _exec_select(
+		"SELECT handle FROM docket_secrets WHERE owner_item_id=? ORDER BY handle;", [item_id]):
+		out.append(str(row.get("handle", "")))
+	return out
+
+
 func list_standalone_secrets() -> Array:
 	## Vault entries with no owning work item. These have no row in `items`, so
 	## they cannot appear in the query grid and are otherwise invisible in the GUI.
@@ -1236,15 +1290,18 @@ func rotate_secret(handle: String, new_ct: PackedByteArray, new_iv: PackedByteAr
 		# Determine next version number
 		var ver_rows := _exec_select("SELECT COALESCE(MAX(version), 0) AS max_ver FROM docket_secret_versions WHERE handle=?;", [handle])
 		var next_ver: int = int(ver_rows[0].get("max_ver", 0)) + 1 if ver_rows.size() > 0 else 1
-		_exec("INSERT INTO docket_secret_versions (handle, version, ciphertext, iv, mac, created_at, rotated_by) VALUES (?, ?, ?, ?, ?, ?, ?);",
-			[handle, next_ver, current.ciphertext, current.iv, current.mac, now, rotated_by])
+		# requires_2fa describes the value being archived, so it is read from the
+		# row being replaced rather than from the incoming one.
+		var was_2fa := 1 if bool(current.get("requires_2fa", false)) else 0
+		_exec("INSERT INTO docket_secret_versions (handle, version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+			[handle, next_ver, current.ciphertext, current.iv, current.mac, now, rotated_by, was_2fa])
 	# Store new value
 	set_secret(handle, new_ct, new_iv, new_mac, requires_2fa)
 
 
 func get_secret_versions(handle: String) -> Array:
 	## Returns [{version, ciphertext, iv, mac, created_at, rotated_by}] ordered by version desc.
-	var rows := _exec_select("SELECT version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions WHERE handle=? ORDER BY version DESC;", [handle])
+	var rows := _exec_select("SELECT version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa FROM docket_secret_versions WHERE handle=? ORDER BY version DESC;", [handle])
 	var result: Array = []
 	for row in rows:
 		result.append({
@@ -1254,6 +1311,7 @@ func get_secret_versions(handle: String) -> Array:
 			"mac": row.mac as PackedByteArray,
 			"created_at": str(row.created_at),
 			"rotated_by": str(row.get("rotated_by", "")),
+			"requires_2fa": int(row.get("requires_2fa", 0)) == 1,
 		})
 	return result
 

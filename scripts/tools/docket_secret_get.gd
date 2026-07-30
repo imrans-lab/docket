@@ -52,7 +52,21 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 		var versions := db.get_secret_versions(handle)
 		for ver in versions:
 			if ver.version == version:
-				var ver_plaintext := VaultCrypto.decrypt(ver.ciphertext, ver.iv, ver.mac, key)
+				# An archived 2FA value is double-encrypted. Single-layer
+				# decryption "succeeds" and returns the inner encrypted blob,
+				# which looks like a secret but is not one.
+				var ver_plaintext: String
+				if bool(ver.get("requires_2fa", false)):
+					var ver_secondary: String = str(args.get("secondary_password", ""))
+					if ver_secondary.is_empty():
+						return {
+							"error": "Version %d of '%s' requires a secondary password" % [version, handle],
+							"requires_2fa": true,
+						}
+					var ver_key := VaultCrypto.derive_key(ver_secondary, salt, db.get_vault_iterations())
+					ver_plaintext = VaultCrypto.decrypt_2fa(ver.ciphertext, ver.iv, ver.mac, key, ver_key)
+				else:
+					ver_plaintext = VaultCrypto.decrypt(ver.ciphertext, ver.iv, ver.mac, key)
 				if ver_plaintext.is_empty():
 					return {"error": "Decryption failed for '%s' version %d." % [handle, version]}
 				return {"handle": handle, "version": version, "value": ver_plaintext}

@@ -83,45 +83,59 @@ static func parse_file(path: String) -> Dictionary:
 
 		var line_type: String = str(type_val)
 		if line_type not in KNOWN_TYPES:
-			push_warning("JSONLParser: line %d unknown _type '%s', skipping" % [line_number, line_type])
-			result["issues"].append("line %d: unknown _type '%s'" % [line_number, line_type])
-			continue
+			# Fatal, despite looking like forward compatibility. The serializer
+			# emits only known types, so a line this build cannot reproduce is a
+			# line the next flush deletes. Tolerating it was destructive, not
+			# lenient. A genuinely newer format must announce itself with a
+			# higher meta.version, which is refused separately and clearly.
+			file.close()
+			return _corrupt(path, line_number,
+				"unknown record type '%s' — written by a newer Docket?" % line_type, line)
 
+		# A per-type parser returns {} when a required field is missing. That is
+		# still a line this build cannot reproduce, so it is fatal for the same
+		# reason as malformed JSON: skipping it drops the record, and the next
+		# flush writes the file back without it.
+		var bucket := ""
+		var record := {}
 		match line_type:
 			"meta":
-				result["meta"] = _parse_meta(parsed)
+				record = _parse_meta(parsed)
+				if record.is_empty():
+					file.close()
+					return _corrupt(path, line_number, "meta line is missing required fields", line)
+				result["meta"] = record
 			"item":
-				var item := _parse_item(parsed)
-				if not item.is_empty():
-					result["items"].append(item)
+				bucket = "items"
+				record = _parse_item(parsed)
 			"event":
-				var ev := _parse_event(parsed)
-				if not ev.is_empty():
-					result["events"].append(ev)
+				bucket = "events"
+				record = _parse_event(parsed)
 			"comment":
-				var c := _parse_comment(parsed)
-				if not c.is_empty():
-					result["comments"].append(c)
+				bucket = "comments"
+				record = _parse_comment(parsed)
 			"link":
-				var lnk := _parse_link(parsed)
-				if not lnk.is_empty():
-					result["links"].append(lnk)
+				bucket = "links"
+				record = _parse_link(parsed)
 			"attachment":
-				var att := _parse_attachment(parsed)
-				if not att.is_empty():
-					result["attachments"].append(att)
+				bucket = "attachments"
+				record = _parse_attachment(parsed)
 			"secret":
-				var s := _parse_secret(parsed)
-				if not s.is_empty():
-					result["secrets"].append(s)
+				bucket = "secrets"
+				record = _parse_secret(parsed)
 			"secret_version":
-				var sv := _parse_secret_version(parsed)
-				if not sv.is_empty():
-					result["secret_versions"].append(sv)
+				bucket = "secret_versions"
+				record = _parse_secret_version(parsed)
 			"saved_query":
-				var sq := _parse_saved_query(parsed)
-				if not sq.is_empty():
-					result["saved_queries"].append(sq)
+				bucket = "saved_queries"
+				record = _parse_saved_query(parsed)
+
+		if not bucket.is_empty():
+			if record.is_empty():
+				file.close()
+				return _corrupt(path, line_number,
+					"%s record is missing required fields" % line_type, line)
+			result[bucket].append(record)
 
 	file.close()
 	return result

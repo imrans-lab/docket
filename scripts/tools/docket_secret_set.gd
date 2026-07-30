@@ -40,10 +40,18 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	# encrypted value — and, because this path never rotated, destroyed the
 	# previous value rather than archiving it. Using an item id as a key is a
 	# natural thing for an agent to do, so this is refused explicitly.
+	# Refuse any handle that belongs to a work item, whether the ownership is
+	# recorded or merely implied by the convention. The earlier version allowed
+	# the write when the recorded owner already matched, which meant an agent
+	# could still replace a tracked item's value — the opposite of what the
+	# refusal claimed. Owned values are edited through the item, not this tool.
 	var owned_by := handle
 	if handle.ends_with(":notes"):
 		owned_by = handle.substr(0, handle.length() - 6)
-	if db.has_item(owned_by) and db.get_secret_owner(handle) != owned_by:
+	var recorded_owner := db.get_secret_owner(handle)
+	if db.has_item(owned_by) or not recorded_owner.is_empty():
+		if not recorded_owner.is_empty():
+			owned_by = recorded_owner
 		return {"error": (
 			"Handle '%s' collides with work item %s, whose encrypted value is stored under that key. "
 			% [handle, owned_by]

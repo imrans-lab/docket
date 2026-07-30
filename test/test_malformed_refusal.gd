@@ -130,16 +130,44 @@ func test_blank_lines_are_still_tolerated() -> Variant:
 	return A.eq(parsed["items"].size(), 2, "both items parsed")
 
 
-func test_unknown_type_is_still_tolerated() -> Variant:
-	## Forward compatibility, not damage: a newer Docket wrote a line type this
-	## version does not know. Aborting here would make every future format
-	## addition break older clients outright.
+func test_unknown_type_is_refused_not_dropped() -> Variant:
+	## Tolerating an unknown _type looked like forward compatibility but was
+	## destructive: the serializer cannot reproduce the line, so the next flush
+	## removed it. Refusing keeps the file intact. A genuinely newer format is
+	## expected to announce itself with a higher meta.version.
 	_write(META + "\n" + '{"_type":"future_thing","data":"x"}' + "\n" + _item("aaa", "one") + "\n")
 	var parsed := JSONLParser.parse_file(_path)
-	var r = A.eq(str(parsed.get("error", "")), "", "unknown _type does not abort the read")
-	if r != true:
-		return r
-	return A.eq(parsed["items"].size(), 1, "known lines still parse")
+	return A.is_true(not str(parsed.get("error", "")).is_empty(), "unknown _type is fatal")
+
+
+func test_unknown_type_line_survives_open_and_close() -> Variant:
+	var original := META + "\n" + '{"_type":"future_thing","data":"x"}' + "\n" + _item("aaa", "one") + "\n"
+	_write(original)
+	var db := DocketDBJsonl.open_jsonl(_path)
+	if db != null:
+		db.close()
+	return A.eq(_read(), original, "file is unchanged after a refused open")
+
+
+func test_record_missing_required_fields_is_refused() -> Variant:
+	## Syntactically valid, semantically incomplete — dropped by the per-type
+	## parser and therefore erased on the next flush, exactly like malformed JSON.
+	_write(META + "\n"
+		+ '{"_type":"item","id":"x","type":"chore","status":"open","created_at":"2026-01-01T00:00:00","updated_at":"2026-01-01T00:00:00"}'
+		+ "\n")
+	var parsed := JSONLParser.parse_file(_path)
+	return A.is_true(not str(parsed.get("error", "")).is_empty(), "item without title is fatal")
+
+
+func test_incomplete_record_survives_open_and_close() -> Variant:
+	var original := (META + "\n" + _item("aaa", "one") + "\n"
+		+ '{"_type":"item","id":"x","type":"chore","status":"open","created_at":"2026-01-01T00:00:00","updated_at":"2026-01-01T00:00:00"}'
+		+ "\n")
+	_write(original)
+	var db := DocketDBJsonl.open_jsonl(_path)
+	if db != null:
+		db.close()
+	return A.eq(_read(), original, "incomplete record is not erased")
 
 
 # -- The validation gate -------------------------------------------------------

@@ -97,7 +97,8 @@ static func init_schema(db: DocketDB) -> void:
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		requires_2fa INTEGER DEFAULT 0,
-		owner_item_id TEXT DEFAULT ''
+		owner_item_id TEXT DEFAULT '',
+		extra_json TEXT DEFAULT ''
 	);""")
 
 	db._exec("""CREATE TABLE IF NOT EXISTS docket_secret_versions (
@@ -108,7 +109,8 @@ static func init_schema(db: DocketDB) -> void:
 		iv BLOB NOT NULL,
 		mac BLOB NOT NULL,
 		created_at TEXT NOT NULL,
-		rotated_by TEXT DEFAULT ''
+		rotated_by TEXT DEFAULT '',
+		requires_2fa INTEGER DEFAULT 0
 	);""")
 	db._exec("CREATE INDEX IF NOT EXISTS idx_secret_versions_handle ON docket_secret_versions(handle);")
 
@@ -263,6 +265,20 @@ static func migrate_schema(db: DocketDB) -> void:
 		if not DocketDB._has_column(scols, "owner_item_id"):
 			db._exec("ALTER TABLE docket_secrets ADD COLUMN owner_item_id TEXT DEFAULT '';")
 			_backfill_secret_ownership(db)
+		# Round-trips fields this build does not model. The parser preserved them
+		# already, but the cache and serializer wrote fixed columns, so they were
+		# still dropped on flush — preservation that stopped short of the write.
+		if not DocketDB._has_column(scols, "extra_json"):
+			db._exec("ALTER TABLE docket_secrets ADD COLUMN extra_json TEXT DEFAULT '';")
+
+	# An archived version must record whether it was double-encrypted. Without
+	# it, history readers single-layer-decrypt a 2FA value and hand back the
+	# inner encrypted blob as if it were the secret.
+	var vrows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='docket_secret_versions';")
+	if not vrows.is_empty():
+		var vcols := db._exec_select("PRAGMA table_info(docket_secret_versions);")
+		if not DocketDB._has_column(vcols, "requires_2fa"):
+			db._exec("ALTER TABLE docket_secret_versions ADD COLUMN requires_2fa INTEGER DEFAULT 0;")
 
 	# Add docket_secret_versions table if missing
 	var vers_rows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='docket_secret_versions';")

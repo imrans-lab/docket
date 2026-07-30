@@ -61,15 +61,27 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 	if not err.is_empty():
 		return {"error": "Failed to create item: %s" % err}
 
-	# Attach by ownership rather than by renaming the handle. Re-keying would
-	# mean moving ciphertext, and a mistake there is unrecoverable — the mapping
-	# between a value and its handle cannot be re-derived.
-	db.set_secret_owner(handle, item_id)
-	db.add_event(item_id, "created", "mcp", "Promoted vault entry '%s' to a tracked item" % handle)
+	# Move the ciphertext to the handle every consumer already looks for. An item
+	# payload lives under handle == item_id: the GUI loads it that way, and
+	# delete/move clean up that way. Setting ownership while leaving the value
+	# under its original handle produced an item that pointed at a secret nothing
+	# could read, and that a later GUI save would duplicate.
+	#
+	# Safe without the vault password: the handle is never part of the
+	# encryption, so this is a rename, not a re-encrypt.
+	var rekey_err := db.rekey_secret(handle, item_id)
+	if not rekey_err.is_empty():
+		db.delete_item(item_id)   # roll back the item we just created
+		return {"error": "Could not attach secret to the new item: %s" % rekey_err}
+
+	db.set_secret_owner(item_id, item_id)
+	db.add_event(item_id, "created", "mcp",
+		"Promoted vault entry '%s' to a tracked item" % handle)
 
 	return {
 		"id": item_id,
-		"handle": handle,
+		"handle": item_id,
+		"previous_handle": handle,
 		"type": "secret",
 		"status": str(item.get("status", "")),
 		"title": str(item.get("title", "")),
