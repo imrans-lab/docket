@@ -173,7 +173,10 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME:-$INPUT_TAG}"
+          # Explicit input wins. On workflow_dispatch GITHUB_REF_NAME is the
+          # *branch* ("development"), not a tag, so preferring it would name
+          # every dispatched artifact after the branch.
+          VERSION="${INPUT_TAG:-$GITHUB_REF_NAME}"
           mkdir -p dist
 
           case "${{ matrix.platform }}" in
@@ -267,7 +270,12 @@ jobs:
         # controls that repo, which would hand them both.
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
-          tag_name: ${{ github.ref_name || github.event.inputs.tag }}
+          # Same precedence as VERSION above: on dispatch, github.ref_name is the
+          # branch, and using it would create a release tagged "development".
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          # Hyphenated tags are semver prereleases (v0.0.1-test, v1.0.0-rc1).
+          # Marking them keeps test and candidate builds out of "Latest release".
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
           files: artifacts/*
           generate_release_notes: true
           body: |
