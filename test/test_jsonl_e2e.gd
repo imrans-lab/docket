@@ -654,13 +654,28 @@ func test_determinism_identical_data_produces_identical_output() -> Variant:
 	db_b.save_query("open-bugs", {"filter": {"type": "bug"}})
 	_close_and_silence(db_b)
 
-	var text_a := _read_file(path_a)
-	var text_b := _read_file(path_b)
+	# Normalise wall-clock timestamps before comparing.
+	#
+	# add_event() stamps updated_at and the event timestamp with the current
+	# time, so A and B only match byte-for-byte if both were built within the
+	# same second. That held on fast machines and failed on a loaded CI runner —
+	# the test was time-dependent, not deterministic, which is precisely what it
+	# claims to be testing.
+	#
+	# What the test is actually for is serialization determinism: key order, tag
+	# sorting, line order, field omission. Masking the timestamps keeps all of
+	# that and drops only the false dependency on when the test ran.
+	var text_a := _normalize_timestamps(_read_file(path_a))
+	var text_b := _normalize_timestamps(_read_file(path_b))
 
-	# Remove the jsonl_hash meta value difference — it's an internal cache key
-	# and is NOT serialized to JSONL (it's only in SQLite docket_meta). So both
-	# JSONL outputs should be identical.
 	return A.eq(text_a, text_b, "identical data → identical JSONL output")
+
+
+func _normalize_timestamps(text: String) -> String:
+	## Replace ISO-8601 datetimes with a fixed marker.
+	var re := RegEx.new()
+	re.compile("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?")
+	return re.sub(text, "<TIMESTAMP>", true)
 
 
 func test_determinism_line_order_meta_first() -> Variant:

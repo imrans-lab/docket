@@ -143,8 +143,11 @@ static func _is_stale(lock_path: String) -> bool:
 
 static func _is_pid_running(pid: int) -> bool:
 	## Returns true if the process with `pid` appears to be running.
-	## Uses /proc/<pid>/ on Linux; falls back to OS.execute("kill", ["-0", pid]) on macOS.
-	## On Windows, always returns false (conservative: don't break stale locks).
+	##
+	## Errs toward "running" on any uncertainty: wrongly declaring a live process
+	## dead breaks a lock someone is actively holding, which corrupts a write.
+	## Wrongly declaring a dead process alive only delays acquisition until the
+	## age timeout, which is recoverable.
 	var os_name := OS.get_name()
 
 	if os_name == "Linux":
@@ -155,7 +158,22 @@ static func _is_pid_running(pid: int) -> bool:
 		var exit_code := OS.execute("kill", ["-0", str(pid)], output, true)
 		return exit_code == 0
 
-	# Windows or unknown: fall back to age-based staleness only
+	if os_name == "Windows":
+		# tasklist ships with every Windows install. /NH drops the header, so a
+		# live process yields a row containing the PID and a dead one yields
+		# "INFO: No tasks are running which match the specified criteria."
+		var output: Array = []
+		var exit_code := OS.execute(
+			"tasklist", ["/FI", "PID eq %d" % pid, "/NH"], output, true
+		)
+		if exit_code != 0 or output.is_empty():
+			return true  # Could not determine — assume alive.
+		var text := str(output[0])
+		if text.contains("No tasks"):
+			return false
+		return text.contains(str(pid))
+
+	# Unknown platform: age-based staleness only.
 	return true
 
 

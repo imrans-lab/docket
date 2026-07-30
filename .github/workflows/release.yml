@@ -189,9 +189,14 @@ jobs:
               # a signed bundle invalidates the seal ("a sealed resource is missing
               # or invalid"), and on Apple Silicon a broken signature means the app
               # will not launch at all.
+              #
+              # ditto, not cp -R: cp does not preserve macOS extended attributes,
+              # so the copied bundle failed `codesign --verify` with "a sealed
+              # resource is missing or invalid" — the signature the app needs to
+              # launch on Apple Silicon at all.
               STAGE="build/macos/stage"
               mkdir -p "$STAGE"
-              cp -R build/macos/Docket.app "$STAGE/"
+              ditto build/macos/Docket.app "$STAGE/Docket.app"
               cp README.md LICENSE THIRD-PARTY-LICENSES.txt docs/sbom.cdx.json "$STAGE/"
               ditto -c -k --sequesterRsrc "$STAGE" "dist/docket-${VERSION}-macos-universal.zip"
               # The copy must still verify — catches any accidental mutation.

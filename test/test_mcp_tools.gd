@@ -19,17 +19,29 @@ func setup() -> void:
 
 
 func _reset_data() -> void:
-	# Remove old db file if exists
-	if FileAccess.file_exists(_test_file):
-		DirAccess.remove_absolute(_test_file)
-	# Also remove WAL/SHM files
-	for suffix: String in ["-wal", "-shm"]:
+	# Close before deleting. POSIX lets you unlink an open file — the old inode
+	# lingers unnamed and create_new gets a fresh one — so leaving the handle
+	# open passed on Linux and macOS. Windows refuses to delete an open file, so
+	# the populated database survived and every test inherited the previous
+	# test's rows ("got 25, expected 1"). Nine tests failed this way.
+	_close_dbs()
+	for suffix: String in ["", "-wal", "-shm"]:
 		var p: String = _test_file + suffix
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
 	_db = DocketDB.create_new(_test_file)
 	_registry = ToolRegistry.new()
 	_registry.init(_schema, _db)
+
+
+func _close_dbs() -> void:
+	## Release every open handle so the files can be deleted on any platform.
+	if _db:
+		_db.close()
+		_db = null
+	if _db2:
+		_db2.close()
+		_db2 = null
 
 
 func before_each() -> void:
@@ -39,11 +51,12 @@ func before_each() -> void:
 func _setup_multi_project() -> void:
 	# Set primary DB project name to "alpha"
 	_db.set_project_name("alpha")
-	# Create second DB as "beta"
+	# Create second DB as "beta". Same close-before-delete rule as _reset_data.
 	_test_file2 = _test_dir + "/test_tools2.dct"
-	if FileAccess.file_exists(_test_file2):
-		DirAccess.remove_absolute(_test_file2)
-	for suffix: String in ["-wal", "-shm"]:
+	if _db2:
+		_db2.close()
+		_db2 = null
+	for suffix: String in ["", "-wal", "-shm"]:
 		var p: String = _test_file2 + suffix
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
@@ -55,10 +68,7 @@ func _setup_multi_project() -> void:
 
 
 func teardown() -> void:
-	if _db:
-		_db.close()
-	if _db2:
-		_db2.close()
+	_close_dbs()
 	var dir := DirAccess.open(_test_dir)
 	if dir:
 		dir.list_dir_begin()
