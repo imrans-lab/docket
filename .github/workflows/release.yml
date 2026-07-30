@@ -298,7 +298,7 @@ jobs:
         # Third-party action running in a job with contents:write and access to
         # the signing key. Pinned to a commit SHA: a tag can be moved by whoever
         # controls that repo, which would hand them both.
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           # Same precedence as VERSION above: on dispatch, github.ref_name is the
           # branch, and using it would create a release tagged "development".
