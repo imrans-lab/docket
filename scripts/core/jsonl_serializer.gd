@@ -286,7 +286,7 @@ static func serialize_attachments(db: DocketDB) -> String:
 static func serialize_secrets(db: DocketDB) -> String:
 	## secret lines sorted by handle ASC, then secret_version lines sorted by (handle, version).
 	var secret_rows := db._exec_select(
-		"SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa FROM docket_secrets ORDER BY handle ASC;"
+		"SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id FROM docket_secrets ORDER BY handle ASC;"
 	)
 	var version_rows := db._exec_select(
 		"SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;"
@@ -314,6 +314,14 @@ static func serialize_secrets(db: DocketDB) -> String:
 		var requires_2fa := int(row.get("requires_2fa", 0)) == 1
 		if requires_2fa:
 			d["requires_2fa"] = true
+
+		# owner_item_id: omit when standalone. Must be serialized — a field that
+		# lives only in the cache is lost on the next rebuild, which is how the
+		# project lifecycle fields disappeared and how the KDF iteration count
+		# nearly stranded every vault.
+		var owner := str(row.get("owner_item_id", ""))
+		if not owner.is_empty():
+			d["owner_item_id"] = owner
 
 		lines.append(_to_ordered_json(d))
 

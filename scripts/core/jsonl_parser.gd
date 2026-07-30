@@ -343,6 +343,17 @@ static func _parse_secret(d: Dictionary) -> Dictionary:
 		out["requires_2fa"] = bool(d["requires_2fa"])
 	else:
 		out["requires_2fa"] = false
+	out["owner_item_id"] = _str_field(d, "owner_item_id", "")
+
+	# Preserve anything this version does not recognise, as _parse_meta already
+	# does. Without it, a file written by a newer Docket loses its unknown fields
+	# the moment an older one opens and flushes — the same silent truncation as
+	# dropping a whole line, one level finer.
+	const KNOWN := ["_type", "handle", "ciphertext", "iv", "mac",
+		"created_at", "updated_at", "requires_2fa", "owner_item_id"]
+	for key in d:
+		if key not in KNOWN and not out.has(key):
+			out[key] = d[key]
 	return out
 
 

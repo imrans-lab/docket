@@ -2006,7 +2006,7 @@ func _save_encrypted_secret(db: DocketDB, item_id: String) -> void:
 		var author := _state.prefs.get_display_name()
 		db.rotate_secret(item_id, ciphertext, iv_bytes, mac_bytes, author, requires_2fa)
 	else:
-		db.set_secret(item_id, ciphertext, iv_bytes, mac_bytes, requires_2fa)
+		db.set_secret(item_id, ciphertext, iv_bytes, mac_bytes, requires_2fa, item_id)
 
 	# Write-time validation: read back and verify ciphertext != plaintext
 	var readback := db.get_secret_raw(item_id)
@@ -2032,7 +2032,7 @@ func _save_encrypted_notes(db: DocketDB, item_id: String, handle_suffix: String)
 		return
 
 	var encrypted := VaultCrypto.encrypt(new_text, key)
-	db.set_secret(handle, encrypted.ciphertext, encrypted.iv, encrypted.mac)
+	db.set_secret(handle, encrypted.ciphertext, encrypted.iv, encrypted.mac, false, item_id)
 
 
 func _prompt_secondary_password() -> String:

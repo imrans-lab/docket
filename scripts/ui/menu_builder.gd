@@ -82,6 +82,12 @@ func _build_file_menu() -> void:
 
 	popup.add_separator()
 
+	# Standalone vault entries have no row in `items`, so the query grid can
+	# never show them. Without this they are only reachable over MCP.
+	popup.add_item("Vault...", 9)
+
+	popup.add_separator()
+
 	popup.add_item("Open Query...", 6)
 	popup.add_item("Save Query As...", 7)
 
@@ -146,6 +152,7 @@ func _on_file_id_pressed(id: int) -> void:
 		6: action_triggered.emit("open_query")
 		7: action_triggered.emit("save_query_as")
 		8: action_triggered.emit("reload")
+		9: action_triggered.emit("vault")
 
 
 func _on_new_sub_pressed(id: int) -> void:

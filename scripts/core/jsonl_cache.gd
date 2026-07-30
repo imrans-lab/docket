@@ -302,9 +302,34 @@ static func _insert_secrets(db: DocketDB, secrets: Array) -> void:
 		var requires_2fa: bool = bool(s.get("requires_2fa", false))
 		var flag: int = 1 if requires_2fa else 0
 		db._db.query_with_bindings(
-			"INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa) VALUES (?, ?, ?, ?, ?, ?, ?);",
-			[handle, ciphertext, iv, mac, created_at, updated_at, flag]
+			"INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+			[handle, ciphertext, iv, mac, created_at, updated_at, flag,
+				_derive_owner(db, handle, str(s.get("owner_item_id", "")))]
 		)
+
+
+static func _derive_owner(db: DocketDB, handle: String, recorded: String) -> String:
+	## Ownership for files written before owner_item_id existed.
+	##
+	## The schema migration only backfills when the *column* is added, which never
+	## happens for a JSONL file: its cache is built fresh and already has the
+	## column. So derivation has to happen here, on every rebuild, for any secret
+	## that does not carry it.
+	##
+	## This reads what the handle already encoded — a Secret item's payload was
+	## stored under handle == item_id, its notes under "<item_id>:notes". Nothing
+	## is renamed and no ciphertext moves, so an older Docket can still open the
+	## file and will simply recompute the same mapping.
+	if not recorded.is_empty():
+		return recorded
+	var candidate := handle
+	if handle.ends_with(":notes"):
+		candidate = handle.substr(0, handle.length() - 6)
+	if candidate.is_empty():
+		return ""
+	# Items are inserted before secrets during a rebuild, so this can see them.
+	var hits := db._exec_select("SELECT 1 FROM items WHERE id=? LIMIT 1;", [candidate])
+	return candidate if hits.size() > 0 else ""
 
 
 # -- Secret versions ----------------------------------------------------------

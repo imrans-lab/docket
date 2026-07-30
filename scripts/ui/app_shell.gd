@@ -561,6 +561,8 @@ func _on_menu_action(action: String) -> void:
 			_state.save()
 		"reload":
 			_on_reload_from_disk()
+		"vault":
+			_show_vault()
 		"save_as":
 			_save_dialog.popup_centered(Vector2i(600, 400))
 		"add_project":
@@ -855,6 +857,45 @@ func _mcp_tool_count() -> int:
 	var reg := ToolRegistry.new()
 	reg.init(_state.schema, _state.db, _state.get_project_dbs())
 	return reg.list_tools().size()
+
+
+func _show_vault() -> void:
+	## List vault entries that belong to no work item.
+	##
+	## These are created over MCP (docket_secret_set) and have no row in `items`,
+	## so they cannot appear in the query grid — before this they were invisible
+	## to anyone not driving the MCP surface. Values are never shown here; this
+	## is an inventory, not a viewer.
+	var lines: PackedStringArray = []
+	var total := 0
+	for proj_name in _state.get_project_dbs():
+		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
+		var entries: Array = pdb.list_standalone_secrets()
+		if entries.is_empty():
+			continue
+		lines.append("%s:" % proj_name)
+		for e in entries:
+			total += 1
+			var flag: String = "  [2FA]" if bool(e.get("requires_2fa", false)) else ""
+			lines.append("   %s%s" % [str(e.get("handle", "")), flag])
+			lines.append("      updated %s" % str(e.get("updated_at", "")))
+		lines.append("")
+
+	_info_dialog.title = "Vault — standalone secrets"
+	if total == 0:
+		_info_dialog.dialog_text = (
+			"No standalone vault entries.\n\n"
+			+ "Secrets attached to a Secret work item appear in the item list "
+			+ "instead. Entries shown here are ones created directly in the vault, "
+			+ "typically by an agent over MCP."
+		)
+	else:
+		_info_dialog.dialog_text = (
+			"%d entr%s belonging to no work item.\n" % [total, "y" if total == 1 else "ies"]
+			+ "Promote one with docket_secret_promote to give it a title, status and history.\n\n"
+			+ "\n".join(lines)
+		)
+	_info_dialog.popup_centered(Vector2i(560, 420))
 
 
 func _show_about() -> void:

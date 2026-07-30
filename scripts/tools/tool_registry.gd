@@ -36,6 +36,7 @@ func _build_tools() -> Dictionary:
 		"docket_secret_set": DocketSecretSet.new(),
 		"docket_secret_list": DocketSecretList.new(),
 		"docket_secret_delete": DocketSecretDelete.new(),
+		"docket_secret_promote": DocketSecretPromote.new(),
 		"docket_project_list": DocketProjectList.new(),
 		"docket_project_add": DocketProjectAdd.new(),
 		"docket_project_remove": DocketProjectRemove.new(),

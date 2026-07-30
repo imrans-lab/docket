@@ -1120,17 +1120,57 @@ func verify_vault(key: PackedByteArray) -> bool:
 	return stored == computed
 
 
-func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false) -> void:
+func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
 	## Insert or update an encrypted secret.
+	##
+	## owner_item_id names the work item this secret belongs to, or "" for a
+	## standalone entry (typically created by an agent over MCP). On update it is
+	## only written when supplied, so callers that do not care about ownership
+	## cannot accidentally orphan an item's payload.
 	var now := Time.get_datetime_string_from_system(true)
 	var flag := 1 if requires_2fa else 0
 	var existing := _exec_select("SELECT handle FROM docket_secrets WHERE handle=?;", [handle])
 	if existing.size() > 0:
-		_exec("UPDATE docket_secrets SET ciphertext=?, iv=?, mac=?, updated_at=?, requires_2fa=? WHERE handle=?;",
-			[ciphertext, iv, mac, now, flag, handle])
+		if owner_item_id.is_empty():
+			_exec("UPDATE docket_secrets SET ciphertext=?, iv=?, mac=?, updated_at=?, requires_2fa=? WHERE handle=?;",
+				[ciphertext, iv, mac, now, flag, handle])
+		else:
+			_exec("UPDATE docket_secrets SET ciphertext=?, iv=?, mac=?, updated_at=?, requires_2fa=?, owner_item_id=? WHERE handle=?;",
+				[ciphertext, iv, mac, now, flag, owner_item_id, handle])
 	else:
-		_exec("INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa) VALUES (?, ?, ?, ?, ?, ?, ?);",
-			[handle, ciphertext, iv, mac, now, now, flag])
+		_exec("INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+			[handle, ciphertext, iv, mac, now, now, flag, owner_item_id])
+
+
+func get_secret_owner(handle: String) -> String:
+	## Item this secret belongs to, or "" if it is standalone.
+	var rows := _exec_select("SELECT owner_item_id FROM docket_secrets WHERE handle=?;", [handle])
+	return str(rows[0].get("owner_item_id", "")) if rows.size() > 0 else ""
+
+
+func set_secret_owner(handle: String, owner_item_id: String) -> void:
+	## Attach an existing vault entry to a work item without touching ciphertext.
+	## This is what "promote to Secret item" does — no decrypt, no re-encrypt, so
+	## it needs no vault password.
+	_exec("UPDATE docket_secrets SET owner_item_id=? WHERE handle=?;", [owner_item_id, handle])
+
+
+func list_standalone_secrets() -> Array:
+	## Vault entries with no owning work item. These have no row in `items`, so
+	## they cannot appear in the query grid and are otherwise invisible in the GUI.
+	var rows := _exec_select(
+		"SELECT handle, created_at, updated_at, requires_2fa FROM docket_secrets "
+		+ "WHERE owner_item_id IS NULL OR owner_item_id='' ORDER BY handle ASC;"
+	)
+	var out: Array = []
+	for row in rows:
+		out.append({
+			"handle": str(row.get("handle", "")),
+			"created_at": str(row.get("created_at", "")),
+			"updated_at": str(row.get("updated_at", "")),
+			"requires_2fa": int(row.get("requires_2fa", 0)) == 1,
+		})
+	return out
 
 
 func get_secret_raw(handle: String) -> Dictionary:
@@ -1148,14 +1188,18 @@ func get_secret_raw(handle: String) -> Dictionary:
 
 
 func list_secrets() -> Array:
-	## Returns [{handle, created_at, updated_at}] — no decryption.
-	var rows := _exec_select("SELECT handle, created_at, updated_at FROM docket_secrets ORDER BY handle;")
+	## Returns [{handle, created_at, updated_at, owner_item_id}] — no decryption.
+	## owner_item_id is "" for standalone entries, which is what distinguishes an
+	## agent-created secret from a Secret work item's payload.
+	var rows := _exec_select(
+		"SELECT handle, created_at, updated_at, owner_item_id FROM docket_secrets ORDER BY handle;")
 	var result: Array = []
 	for row in rows:
 		result.append({
 			"handle": str(row.handle),
 			"created_at": str(row.created_at),
 			"updated_at": str(row.updated_at),
+			"owner_item_id": str(row.get("owner_item_id", "")),
 		})
 	return result
 

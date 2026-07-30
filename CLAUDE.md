@@ -62,8 +62,16 @@ godot --headless --path . -- validate --file docket.dct
 - **Vault encryption:** handle-based vault entries use AES-256-CBC with
   HMAC-SHA256. Optional secondary-password double encryption is not a separate
   authentication factor.
-- **Secret rotation:** replacing a vault value archives the old version. Full
-  version history is available for decrypt-on-demand.
+- **Secret rotation:** replacing a vault value archives the old version, over
+  MCP as well as in the GUI. Full version history is available for
+  decrypt-on-demand.
+- **Vault ownership:** an entry either belongs to a work item (`owner_item_id`
+  set — the payload behind a Secret or Encrypted Note) or is standalone
+  (created by `docket_secret_set`). Ownership is stored explicitly, not inferred
+  from the handle. Standalone entries have no item row, so they appear under
+  **File > Vault** rather than in the query grid; `docket_secret_promote` wraps
+  one in a tracked item without decrypting it. A handle colliding with an
+  existing item id is refused.
 
 ## Key Files
 

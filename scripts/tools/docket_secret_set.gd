@@ -34,6 +34,22 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if requires_2fa and secondary_pw.is_empty():
 		return {"error": "'secondary_password' is required when requires_2fa is true"}
 
+	# A Secret work item stores its payload under handle == item_id, and its
+	# encrypted notes under "<item_id>:notes". Nothing used to stop an agent from
+	# passing an item id as a handle, which silently overwrote that item's
+	# encrypted value — and, because this path never rotated, destroyed the
+	# previous value rather than archiving it. Using an item id as a key is a
+	# natural thing for an agent to do, so this is refused explicitly.
+	var owned_by := handle
+	if handle.ends_with(":notes"):
+		owned_by = handle.substr(0, handle.length() - 6)
+	if db.has_item(owned_by) and db.get_secret_owner(handle) != owned_by:
+		return {"error": (
+			"Handle '%s' collides with work item %s, whose encrypted value is stored under that key. "
+			% [handle, owned_by]
+			+ "Choose a different handle, or edit the item directly to change its secret."
+		)}
+
 	# Load vault password
 	var password := UserPrefs.load_vault_password()
 	if password.is_empty():
@@ -60,13 +76,29 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 
 	var is_update := not db.get_secret_raw(handle).is_empty()
 
+	# Replacing a value archives the old one. The GUI has always done this
+	# (record_form.gd calls rotate_secret when a value exists); this path
+	# computed is_update and then called set_secret regardless, so the same
+	# operation kept history from the GUI and destroyed it over MCP.
+	var ct: PackedByteArray
+	var iv: PackedByteArray
+	var mac: PackedByteArray
 	if requires_2fa:
 		var secondary_key := VaultCrypto.derive_key(secondary_pw, salt, db.get_vault_iterations())
 		var outer := VaultCrypto.encrypt_2fa(value, key, secondary_key)
-		db.set_secret(handle, outer.ciphertext, outer.iv, outer.mac, true)
+		ct = outer.ciphertext
+		iv = outer.iv
+		mac = outer.mac
 	else:
 		var encrypted := VaultCrypto.encrypt(value, key)
-		db.set_secret(handle, encrypted.ciphertext, encrypted.iv, encrypted.mac, false)
+		ct = encrypted.ciphertext
+		iv = encrypted.iv
+		mac = encrypted.mac
+
+	if is_update:
+		db.rotate_secret(handle, ct, iv, mac, "mcp", requires_2fa)
+	else:
+		db.set_secret(handle, ct, iv, mac, requires_2fa)
 
 	AuditLog.record(db.get_path(), AuditLog.WRITE, handle, true, "mcp",
 		"updated" if is_update else "created")

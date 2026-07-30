@@ -96,7 +96,8 @@ static func init_schema(db: DocketDB) -> void:
 		mac BLOB NOT NULL,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
-		requires_2fa INTEGER DEFAULT 0
+		requires_2fa INTEGER DEFAULT 0,
+		owner_item_id TEXT DEFAULT ''
 	);""")
 
 	db._exec("""CREATE TABLE IF NOT EXISTS docket_secret_versions (
@@ -147,6 +148,25 @@ static func init_schema(db: DocketDB) -> void:
 	db._exec("INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('id_prefix', 'DKT');")
 
 	migrate_schema(db)
+
+
+static func _backfill_secret_ownership(db: DocketDB) -> void:
+	## Derive ownership for secrets written before the column existed.
+	##
+	## Safe by construction: ownership was always encoded in the handle, so this
+	## reads what was already there. No ciphertext is touched and no handle is
+	## renamed, which is why an older Docket can still open the file afterwards —
+	## it simply ignores the column and recomputes the same mapping on next open.
+	for row in db._exec_select("SELECT handle FROM docket_secrets;"):
+		var handle := str(row.get("handle", ""))
+		if handle.is_empty():
+			continue
+		var candidate := handle
+		if handle.ends_with(":notes"):
+			candidate = handle.substr(0, handle.length() - 6)
+		var hits := db._exec_select("SELECT 1 FROM items WHERE id=? LIMIT 1;", [candidate])
+		if hits.size() > 0:
+			db._exec("UPDATE docket_secrets SET owner_item_id=? WHERE handle=?;", [candidate, handle])
 
 
 static func migrate_schema(db: DocketDB) -> void:
@@ -234,6 +254,15 @@ static func migrate_schema(db: DocketDB) -> void:
 		var scols := db._exec_select("PRAGMA table_info(docket_secrets);")
 		if not DocketDB._has_column(scols, "requires_2fa"):
 			db._exec("ALTER TABLE docket_secrets ADD COLUMN requires_2fa INTEGER DEFAULT 0;")
+		# Ownership used to be inferred from the handle text: a Secret item's
+		# payload was stored under handle == item_id, and its encrypted notes
+		# under "<item_id>:notes". Recording it explicitly lets standalone
+		# agent-created secrets be told apart from item payloads — which is what
+		# makes them listable in the GUI, and what lets a handle collision be
+		# rejected rather than silently overwriting an item.
+		if not DocketDB._has_column(scols, "owner_item_id"):
+			db._exec("ALTER TABLE docket_secrets ADD COLUMN owner_item_id TEXT DEFAULT '';")
+			_backfill_secret_ownership(db)
 
 	# Add docket_secret_versions table if missing
 	var vers_rows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='docket_secret_versions';")

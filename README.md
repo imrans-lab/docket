@@ -327,6 +327,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_secret_list` | List vault handles without decrypting values |
 | `docket_secret_delete` | Delete a vault entry |
 | `docket_audit_log` | Read the local metadata-only vault access audit log |
+| `docket_secret_promote` | Wrap a standalone vault entry in a tracked Secret item, without re-entering the value |
 | `docket_project_list` | List loaded projects |
 | `docket_project_add` | Load or create another project |
 | `docket_project_remove` | Close a loaded project |
@@ -408,6 +409,25 @@ Older projects may contain **Secret** (`active`, `rotated`, `revoked`) or
 **Encrypted Note** (`draft`, `sealed`) work items. Those schema definitions and
 GUI fields remain for compatibility. Vault values use AES-256-CBC with
 HMAC-SHA256 and optional secondary-password double encryption.
+
+### Owned versus standalone entries
+
+A vault entry either belongs to a work item or stands alone, and the two behave
+differently:
+
+- **Owned** — the encrypted value behind a Secret or Encrypted Note work item.
+  It has a title, status, comments and history, and appears in the item list.
+- **Standalone** — created over MCP with `docket_secret_set`, typically by an
+  agent. A handle and a value, with no work item behind it.
+
+Standalone entries have no row in the item table, so they cannot appear in the
+query grid. **File > Vault** lists them, and `docket_secret_promote` converts one
+into a tracked Secret item without decrypting or re-entering the value.
+
+Ownership is recorded explicitly rather than inferred from the handle text, so an
+agent cannot overwrite an item's encrypted value by choosing a colliding handle —
+that is refused. Replacing a value over MCP now archives the previous one, as the
+GUI has always done.
 
 ## Concurrent Access and Multi-Machine Use
 

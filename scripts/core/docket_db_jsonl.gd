@@ -399,8 +399,13 @@ func init_vault(key: PackedByteArray, salt: PackedByteArray, iterations: int = V
 	_flush_jsonl()
 
 
-func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false) -> void:
-	super.set_secret(handle, ciphertext, iv, mac, requires_2fa)
+func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
+	super.set_secret(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
+	_flush_jsonl()
+
+
+func set_secret_owner(handle: String, owner_item_id: String) -> void:
+	super.set_secret_owner(handle, owner_item_id)
 	_flush_jsonl()
 
 
