@@ -15,7 +15,7 @@ than what a package manifest claims. See [BUILDING.md](BUILDING.md).
 | [godot-sqlite](https://github.com/2shady4u/godot-sqlite) | v4.7 | `162ffbae0b0c8a933ba63bbb50da6cc0402950f8` | MIT | yes |
 | [godot-cpp](https://github.com/godotengine/godot-cpp) | pinned by godot-sqlite | `e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77` | MIT | yes |
 | [SQLite](https://sqlite.org) | **3.51.0** | vendored amalgamation | Public domain | yes |
-| [Godot Engine](https://godotengine.org) export templates | 4.6.2-stable | official release | MIT | yes |
+| [Godot Engine](https://godotengine.org) export templates | 4.6.3-stable | official release | MIT | yes |
 
 ## SQLite
 

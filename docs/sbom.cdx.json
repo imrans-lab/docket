@@ -71,9 +71,9 @@
     },
     {
       "type": "framework",
-      "bom-ref": "pkg:generic/godot@4.6.2",
+      "bom-ref": "pkg:generic/godot@4.6.3",
       "name": "godot-engine-export-templates",
-      "version": "4.6.2-stable",
+      "version": "4.6.3-stable",
       "description": "Godot Engine export templates, linked into the shipped executable",
       "licenses": [{ "license": { "id": "MIT" } }],
       "externalReferences": [{ "type": "website", "url": "https://godotengine.org" }],
@@ -85,7 +85,7 @@
       "ref": "pkg:github/imrans-lab/docket",
       "dependsOn": [
         "pkg:github/2shady4u/godot-sqlite@v4.7",
-        "pkg:generic/godot@4.6.2"
+        "pkg:generic/godot@4.6.3"
       ]
     },
     {

@@ -89,9 +89,10 @@ done
 # Resources/Info.plist, so building from source produces a subtly different —
 # and malformed — artifact: a macOS framework without an Info.plist.
 #
-# Nothing complains until the app is signed. `codesign --verify --deep` on a
-# bundle embedding it then fails with "a sealed resource is missing or invalid",
-# which is what broke macOS packaging in the release pipeline.
+# Godot can synthesize this file while exporting, but completing the framework
+# here keeps the source-built artifact well-formed and independently verifiable.
+# The app itself is signed with Apple's native codesign tool; Godot's built-in
+# signer generates an invalid outer resource seal for this nested framework.
 if [[ "$PLATFORM" == "macos" ]]; then
 	for fw in "$OUT_DIR"/*.framework; do
 		[[ -d "$fw" ]] || continue

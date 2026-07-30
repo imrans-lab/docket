@@ -10,7 +10,7 @@ on:
         required: true
 
 env:
-  GODOT_VERSION: "4.6.2"
+  GODOT_VERSION: "4.6.3"
 
 permissions:
   contents: write
@@ -126,9 +126,10 @@ jobs:
           # it non-interactive. The preset name must match export_presets.cfg.
           "$GODOT_BIN" --headless --path . --export-release "${{ matrix.preset }}" 2>&1 | tail -30
 
-      # macOS: Godot ad-hoc signs during export (codesign/codesign=1), which is
-      # what lets the binary run on Apple Silicon at all. It is NOT notarized —
-      # see docs/SIGNING.md for what users must do on first launch.
+      # macOS: Godot invokes Apple's native codesign tool with an empty identity,
+      # which selects ad-hoc signing (codesign/codesign=3). Godot's built-in
+      # signer produces an invalid outer resource seal for the nested SQLite
+      # framework. The app is NOT notarized — see docs/SIGNING.md.
       # Two separate questions, deliberately checked separately:
       #   1. Does Godot's exported bundle verify at all?
       #   2. Does our packaging break it?

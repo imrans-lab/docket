@@ -29,7 +29,11 @@ fi
 
 if [[ -z "${GODOT:-}" || ! -x "$GODOT" ]]; then
 	echo "error: could not find a Godot binary." >&2
-	echo "       Install Godot 4.6.2+ or set GODOT=/path/to/godot" >&2
+	# Deliberately the minor version, matching project.godot's config/features.
+	# Any 4.6.x runs the suite; CI pins an exact patch release, but naming it
+	# here would just go stale on every bump — which is how this line read 4.6.2
+	# after CI had already moved to 4.6.3.
+	echo "       Install Godot 4.6+ or set GODOT=/path/to/godot" >&2
 	exit 1
 fi
 

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  GODOT_VERSION: "4.6.2"
+  GODOT_VERSION: "4.6.3"
 
 concurrency:
   group: ci-${{ github.ref }}
