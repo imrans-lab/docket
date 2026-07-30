@@ -56,9 +56,8 @@ scripts/build/preflight.sh --full     # adds a full test-suite run
 
 Then check by hand:
 
-- [ ] Placeholders are filled — in particular the **GPG key fingerprint** in the
-      README. `preflight.sh` warns rather than fails, because they are fine
-      during development and only wrong in a tagged build.
+- [ ] The public signing key in `docs/docket-release-signing-key.asc` still
+      matches the full fingerprint published in the README.
 - [ ] `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` exist as repository secrets.
       Without them the release still publishes, but `SHA256SUMS` is unsigned and
       the workflow emits a `::warning::` you have to go looking for.
@@ -115,7 +114,8 @@ copying.
 with `Can't open dynamic library: .` and roughly 50 tests failing in ways that
 look like unrelated SQLite bugs.
 
-**Release executables are unsigned.** See [SIGNING.md](SIGNING.md). Once the
-public key and fingerprint are published, the GPG signature over `SHA256SUMS`
-will be the integrity guarantee. Until then, development artifacts cannot be
-independently authenticated.
+**Release executables are not platform-signed.** See
+[SIGNING.md](SIGNING.md). For releases containing both `SHA256SUMS` and
+`SHA256SUMS.asc`, the GPG signature over the checksum manifest is the integrity
+guarantee. A checksum file without its signature does not prove who produced the
+artifacts.

@@ -35,10 +35,10 @@ MCP.
 
 Download a release from the [Releases page](https://github.com/imrans-lab/docket/releases).
 
-**Release binaries are unsigned.** Docket's release workflow can instead sign
-the checksum manifest with GPG. The public signing-key fingerprint has not been
-published yet, so current development builds cannot be independently
-authenticated.
+**Release binaries are not platform-signed.** Docket's release workflow can
+sign the checksum manifest with GPG. A release is independently verifiable only
+when it contains both `SHA256SUMS` and `SHA256SUMS.asc`; compare the signing
+key's fingerprint with the value published below.
 
 ```bash
 gpg --verify SHA256SUMS.asc SHA256SUMS
@@ -50,7 +50,14 @@ sha256sum -c SHA256SUMS --ignore-missing
 - **Windows** — SmartScreen will warn; choose *More info* → *Run anyway*.
 - **Linux** — extract and run `./docket.x86_64`.
 
-Release signing key fingerprint: **not yet published**
+Release signing key fingerprint:
+
+```
+178DFC3E 42D55743 B0186526 5BC259EB 7ED2C464
+```
+
+The public key ships with the repository at
+[`docs/docket-release-signing-key.asc`](docs/docket-release-signing-key.asc).
 
 See [docs/SIGNING.md](docs/SIGNING.md) for why, and how to verify.
 

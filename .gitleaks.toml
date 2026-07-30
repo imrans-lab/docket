@@ -32,6 +32,13 @@ regexes = [
   # RFC 6070 PBKDF2 test vectors — published constants, in test/test_vault_crypto.gd.
   '''password''',
   '''salt''',
+
+  # Release signing key fingerprints. These are public by design — users verify
+  # against them — but a 40-char hex string reads as a generic API key to the
+  # default heuristic. Allowlisted by exact value rather than by file, so a real
+  # secret appearing in the same document is still caught. Update on key rotation.
+  '''178DFC3E42D55743B01865265BC259EB7ED2C464''',   # primary
+  '''A52DE21E0A5A1CA48F429CE7623C6CAEBA657B8F''',   # signing subkey
 ]
 
 [[rules]]
