@@ -1,0 +1,99 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:github/imrans-lab/docket",
+      "name": "docket",
+      "description": "RAID-inspired work-item tracker with an MCP server",
+      "licenses": [{ "license": { "id": "MPL-2.0" } }],
+      "externalReferences": [
+        { "type": "vcs", "url": "https://github.com/imrans-lab/docket" }
+      ]
+    },
+    "properties": [
+      {
+        "name": "docket:build-policy",
+        "value": "No binaries are committed; all native components are compiled from source pinned in third_party/."
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/2shady4u/godot-sqlite@v4.7",
+      "name": "godot-sqlite",
+      "version": "v4.7",
+      "description": "SQLite GDExtension for Godot",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "externalReferences": [
+        { "type": "vcs", "url": "https://github.com/2shady4u/godot-sqlite" }
+      ],
+      "properties": [
+        { "name": "docket:pinned-commit", "value": "162ffbae0b0c8a933ba63bbb50da6cc0402950f8" },
+        { "name": "docket:linked", "value": "true" }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/godotengine/godot-cpp@e83fd09",
+      "name": "godot-cpp",
+      "version": "e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77",
+      "description": "C++ bindings for the Godot GDExtension API",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "externalReferences": [
+        { "type": "vcs", "url": "https://github.com/godotengine/godot-cpp" }
+      ],
+      "properties": [
+        { "name": "docket:pinned-by", "value": "godot-sqlite submodule gitlink" },
+        { "name": "docket:linked", "value": "true" }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/sqlite@3.51.0",
+      "name": "sqlite",
+      "version": "3.51.0",
+      "description": "Embedded SQL database engine, vendored as an amalgamation inside godot-sqlite",
+      "licenses": [{ "license": { "name": "Public Domain" } }],
+      "externalReferences": [{ "type": "website", "url": "https://sqlite.org" }],
+      "properties": [
+        {
+          "name": "docket:source-id",
+          "value": "2025-11-04 19:38:17 fb2c931ae597f8d00a37574ff67aeed3eced4e5547f9120744ae4bfa8e74527b"
+        },
+        { "name": "docket:path", "value": "third_party/godot-sqlite/src/sqlite/sqlite3.c" },
+        { "name": "docket:upgrade-path", "value": "Bump the godot-sqlite pin; the SQLite version is whatever it vendors." },
+        { "name": "docket:linked", "value": "true" }
+      ]
+    },
+    {
+      "type": "framework",
+      "bom-ref": "pkg:generic/godot@4.6.2",
+      "name": "godot-engine-export-templates",
+      "version": "4.6.2-stable",
+      "description": "Godot Engine export templates, linked into the shipped executable",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "externalReferences": [{ "type": "website", "url": "https://godotengine.org" }],
+      "properties": [{ "name": "docket:linked", "value": "true" }]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:github/imrans-lab/docket",
+      "dependsOn": [
+        "pkg:github/2shady4u/godot-sqlite@v4.7",
+        "pkg:generic/godot@4.6.2"
+      ]
+    },
+    {
+      "ref": "pkg:github/2shady4u/godot-sqlite@v4.7",
+      "dependsOn": [
+        "pkg:github/godotengine/godot-cpp@e83fd09",
+        "pkg:generic/sqlite@3.51.0"
+      ]
+    }
+  ]
+}

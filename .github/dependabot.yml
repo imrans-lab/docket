@@ -1,0 +1,57 @@
+version: 2
+
+updates:
+  # GitHub Actions ------------------------------------------------------------
+  # Third-party actions are pinned to commit SHAs (see preflight). Dependabot
+  # understands SHA pins and bumps them while keeping the `# vX` comment, so
+  # pinning does not mean going stale.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"
+    groups:
+      # One PR for routine first-party bumps; third-party actions stay separate
+      # so a supply-chain-relevant change gets its own review.
+      actions-first-party:
+        patterns:
+          - "actions/*"
+
+  # Vendored native source ----------------------------------------------------
+  # third_party/godot-sqlite is where the C++ that gets compiled into the shipped
+  # binary comes from — including the SQLite amalgamation, which no other tool
+  # would surface as a dependency (see docs/SBOM.md).
+  #
+  # Caveat worth knowing: Dependabot tracks the submodule's default branch, but
+  # we deliberately pin to a *tag* (v4.7). Treat its PRs as a notification that
+  # upstream moved, then pin the tag you actually want:
+  #     cd third_party/godot-sqlite && git checkout --detach v4.8
+  # and update docs/SBOM.md + sbom.cdx.json to match.
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "vendored"
+      - "needs-manual-pin"
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 3
+
+  # Python fallback server ----------------------------------------------------
+  # Not shipped in any release artifact, so these are low-risk — monthly is
+  # enough to avoid noise.
+  - package-ecosystem: "pip"
+    directory: "/mcp"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"

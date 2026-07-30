@@ -1,0 +1,54 @@
+# Gitleaks configuration for Docket.
+#
+# Runs in CI over the full git history, not just the working tree — a secret
+# that was committed and later removed is still a leaked secret.
+
+[extend]
+# Start from the maintained upstream ruleset; only carve out what is provably
+# not ours. Never disable rules wholesale.
+useDefault = true
+
+[allowlist]
+description = "Vendored upstream source and local audit artefacts"
+
+paths = [
+  # third_party/ is pinned upstream source we do not author. The SQLite
+  # amalgamation and godot-sqlite's demo trip the generic-api-key heuristic on
+  # long hex constants and sample connection strings. Auditing upstream's
+  # secrets hygiene is not this repo's job, and the noise would train everyone
+  # to ignore the check.
+  '''^third_party/''',
+
+  # Local, gitignored sidecars. Listed defensively so a stray copy in a working
+  # tree cannot fail a run — they record that a secret was accessed, never its
+  # value, but they contain the word "secret" throughout.
+  '''\.dct\.audit\.jsonl$''',
+
+  # This file necessarily contains the patterns it describes.
+  '''^\.gitleaks\.toml$''',
+]
+
+regexes = [
+  # RFC 6070 PBKDF2 test vectors — published constants, in test/test_vault_crypto.gd.
+  '''password''',
+  '''salt''',
+]
+
+[[rules]]
+# Docket's own vault material has a distinctive shape: base64 blobs on
+# vault_salt / vault_verify in a .dct. Those files are gitignored, so a hit here
+# means one was force-added — worth its own loud rule rather than relying on a
+# generic heuristic to notice.
+id = "docket-vault-material"
+description = "Docket vault salt or verification hash committed"
+regex = '''"vault_(salt|verify)"\s*:\s*"[A-Za-z0-9+/]{16,}={0,2}"'''
+tags = ["docket", "vault"]
+
+# A rule matching `"_type":"secret"` was tried and removed. It fired on the
+# format spec, the parser's own string literals, and every test fixture — it
+# flagged the *schema*, not a secret. Tightening it by ciphertext length is
+# fragile (fixtures use short placeholders; a real short secret is ~24 base64
+# chars), and it duplicates a stronger check: preflight fails on ANY tracked
+# .dct, which is where serialized secrets could only appear. A ciphertext line
+# without the salt is also useless on its own — docket-vault-material above is
+# the finding that actually matters.
