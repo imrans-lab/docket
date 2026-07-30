@@ -154,12 +154,19 @@ if [[ -n "$remote_slug" ]]; then
 fi
 
 # Submodules must sit on a tagged commit, not wherever the default branch drifted.
+# CI checkouts fetch submodules without tags, so a failed describe there means
+# "no tags available", not "not pinned" — distinguish the two or the check cries
+# wolf on every run and gets ignored.
 while read -r _ sha path _; do
 	[[ -z "${path:-}" ]] && continue
 	if tag="$(git -C "$path" describe --tags --exact-match 2>/dev/null)"; then
 		pass "submodule $path pinned at $tag"
+	elif [[ -z "$(git -C "$path" tag -l 2>/dev/null | head -1)" ]]; then
+		# The SBOM drift check above already verifies this exact SHA, so pinning
+		# is still enforced here — just not by tag name.
+		pass "submodule $path at ${sha:0:12} (no tags fetched; SHA verified via SBOM)"
 	else
-		warn "submodule $path is not on a tagged commit"
+		warn "submodule $path is not on a tagged commit (at ${sha:0:12})"
 	fi
 done < <(git submodule status | sed 's/^[+-]//' | awk '{print "x", $1, $2, $3}')
 
