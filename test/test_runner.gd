@@ -34,6 +34,7 @@ func _ready() -> void:
 		preload("res://test/test_docket_db_jsonl.gd"),
 		preload("res://test/test_file_lock.gd"),
 		preload("res://test/test_jsonl_freshness.gd"),
+		preload("res://test/test_malformed_refusal.gd"),
 		preload("res://test/test_jsonl_e2e.gd"),
 		preload("res://test/test_secret_unified_set.gd"),
 		preload("res://test/test_knowledge_types.gd"),

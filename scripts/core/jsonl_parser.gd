@@ -59,21 +59,27 @@ static func parse_file(path: String) -> Dictionary:
 			conflicted["issues"].append("line %d: conflict marker '%s'" % [line_number, line.substr(0, 20)])
 			return conflicted
 
+		# Corruption is fatal. A machine-generated file has no benign reason to
+		# contain an unparseable line: it means a truncated write, a botched
+		# merge, or disk damage. Skipping it looked harmless but was destructive
+		# — the record never reached the cache, and close() rewrites the file
+		# from the cache, so merely opening and closing the project erased it.
+		#
+		# Contrast an *unknown* _type below, which is forward compatibility
+		# rather than damage and must not abort the read.
 		var parsed = _parse_json_line(line, line_number)
 		if parsed == null:
-			result["issues"].append("line %d: not valid JSON" % line_number)
-			continue  # warning already emitted in _parse_json_line
+			file.close()
+			return _corrupt(path, line_number, "not valid JSON", line)
 
 		if not parsed is Dictionary:
-			push_warning("JSONLParser: line %d is not a JSON object, skipping" % line_number)
-			result["issues"].append("line %d: not a JSON object" % line_number)
-			continue
+			file.close()
+			return _corrupt(path, line_number, "not a JSON object", line)
 
 		var type_val = parsed.get("_type")
 		if type_val == null:
-			push_warning("JSONLParser: line %d missing _type field, skipping" % line_number)
-			result["issues"].append("line %d: missing _type field" % line_number)
-			continue
+			file.close()
+			return _corrupt(path, line_number, "missing the _type field", line)
 
 		var line_type: String = str(type_val)
 		if line_type not in KNOWN_TYPES:
@@ -392,6 +398,22 @@ static func _empty_result() -> Dictionary:
 		# Non-fatal per-line problems, for `validate` reporting.
 		"issues": [],
 	}
+
+
+static func _corrupt(path: String, line_number: int, why: String, line: String) -> Dictionary:
+	## Abort the parse: the file is damaged and must not be opened.
+	##
+	## Refusing is the whole point. Docket rewrites the entire file from cache on
+	## the next flush, so any line the parser drops is destroyed on close — even
+	## with no edit. Failing here keeps the damaged file intact for repair.
+	var out := _empty_result()
+	out["error"] = (
+		"malformed JSONL at line %d: %s. " % [line_number, why]
+		+ "Refusing to open %s — opening it would discard that line permanently. " % path
+		+ "Repair the line or restore the file from git."
+	)
+	out["issues"].append("line %d: %s — %s" % [line_number, why, line.substr(0, 60)])
+	return out
 
 
 static func _is_conflict_marker(line: String) -> bool:

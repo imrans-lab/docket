@@ -304,7 +304,7 @@ func test_parse_file_skips_empty_lines() -> Variant:
 	return A.eq(result["items"].size(), 2, "two items despite empty lines")
 
 
-func test_parse_file_skips_malformed_json() -> Variant:
+func test_parse_file_refuses_malformed_json() -> Variant:
 	var jsonl := (
 		'{"_type":"meta","version":"1.0.0","counter":2,"id_prefix":"T"}\n'
 		+ 'not valid json {\n'
@@ -312,8 +312,16 @@ func test_parse_file_skips_malformed_json() -> Variant:
 	)
 	var path := _write_temp_file(jsonl, "malformed.dct.jsonl")
 	var result := JSONLParser.parse_file(path)
-	# Bad line is skipped, good item still parsed
-	return A.eq(result["items"].size(), 1, "one item despite malformed line")
+	# Refused, not skipped. Skipping was destructive: the line never reached the
+	# cache, and close() rewrites the file from cache, so opening and closing the
+	# project deleted it — no edit required.
+	var r = A.is_true(not str(result.get("error", "")).is_empty(), "malformed line is fatal")
+	if r != true:
+		return r
+	r = A.contains(str(result["error"]), "line 2", "error names the line")
+	if r != true:
+		return r
+	return A.eq(result["items"].size(), 0, "nothing is parsed from a corrupt file")
 
 
 func test_parse_file_skips_unknown_type() -> Variant:
@@ -324,10 +332,16 @@ func test_parse_file_skips_unknown_type() -> Variant:
 	)
 	var path := _write_temp_file(jsonl, "unknowntype.dct.jsonl")
 	var result := JSONLParser.parse_file(path)
+	# Deliberately NOT fatal: an unrecognised _type means a newer Docket wrote a
+	# line this version does not know, which is forward compatibility rather than
+	# corruption. (It is still dropped on write — tracked separately.)
+	var r = A.eq(str(result.get("error", "")), "", "unknown _type does not abort the read")
+	if r != true:
+		return r
 	return A.eq(result["items"].size(), 1, "item parsed despite unknown _type line")
 
 
-func test_parse_file_skips_missing_type_field() -> Variant:
+func test_parse_file_refuses_missing_type_field() -> Variant:
 	var jsonl := (
 		'{"_type":"meta","version":"1.0.0","counter":1,"id_prefix":"T"}\n'
 		+ '{"id":"T-0001","title":"No type field"}\n'
@@ -335,7 +349,9 @@ func test_parse_file_skips_missing_type_field() -> Variant:
 	)
 	var path := _write_temp_file(jsonl, "notype.dct.jsonl")
 	var result := JSONLParser.parse_file(path)
-	return A.eq(result["items"].size(), 1, "item parsed; line-without-_type skipped")
+	# A line that parses as JSON but carries no _type is not a Docket record.
+	# Same reasoning as malformed JSON: dropping it would erase it on close.
+	return A.is_true(not str(result.get("error", "")).is_empty(), "missing _type is fatal")
 
 
 func test_parse_file_ignores_unknown_fields() -> Variant:
