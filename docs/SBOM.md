@@ -12,8 +12,8 @@ than what a package manifest claims. See [BUILDING.md](BUILDING.md).
 | Component | Version | Pinned at | Licence | Linked into binary |
 |-----------|---------|-----------|---------|--------------------|
 | Docket | — | this repository | MPL-2.0 | yes (GDScript) |
-| [godot-sqlite](https://github.com/2shady4u/godot-sqlite) | v4.7 | `162ffbae0b0c8a933ba63bbb50da6cc0402950f8` | MIT | yes |
-| [godot-cpp](https://github.com/godotengine/godot-cpp) | pinned by godot-sqlite | `e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77` | MIT | yes |
+| [godot-sqlite](https://github.com/2shady4u/godot-sqlite) | v4.8 | `6550699fa70e4f2a4721f13acb0ca0cf90cd5038` | MIT | yes |
+| [godot-cpp](https://github.com/godotengine/godot-cpp) | pinned by godot-sqlite | `58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74` | MIT | yes |
 | [SQLite](https://sqlite.org) | **3.51.0** | vendored amalgamation | Public domain | yes |
 | [Godot Engine](https://godotengine.org) export templates | 4.6.3-stable | official release | MIT | yes |
 
