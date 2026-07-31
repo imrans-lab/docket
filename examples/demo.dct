@@ -1,0 +1,21 @@
+{"_type":"meta","version":"1.0.0","counter":0,"id_prefix":"DMD","project":"demo.dct"}
+{"_type":"item","id":"019fb93aad6d7ad3a7da11f18beec8e6","type":"bug","status":"triaged","title":"Query grid loses selection after refresh","description":"Selecting a row, then refreshing, drops the selection.","created_at":"2026-07-31T17:30:58","updated_at":"2026-07-31T17:31:16","priority":1,"severity":2,"tags":["gui","query"]}
+{"_type":"item","id":"019fb93ab1527ea088dc8ff6a3381330","type":"bug","status":"new","title":"MCP server ignores --port when GUI is running","created_at":"2026-07-31T17:30:59","updated_at":"2026-07-31T17:30:59","priority":2,"severity":3,"tags":["mcp"]}
+{"_type":"item","id":"019fb93ab53c7061bc44c70b538144ad","type":"work_item","status":"backlog","title":"Add dark-mode splash screen","created_at":"2026-07-31T17:31:00","updated_at":"2026-07-31T17:31:00","priority":2,"tags":["gui","polish"]}
+{"_type":"item","id":"019fb93ab926780ba2f09b9ed2210319","type":"work_item","status":"in_progress","title":"Ship v0.9 release builds","created_at":"2026-07-31T17:31:01","updated_at":"2026-07-31T17:31:18","priority":1,"tags":["release"]}
+{"_type":"item","id":"019fb93abd09715e8c9d2f0d4c89ee23","type":"chore","status":"done","title":"Bump vendored godot-sqlite to latest tag","created_at":"2026-07-31T17:31:02","updated_at":"2026-07-31T17:31:19","tags":["deps"]}
+{"_type":"item","id":"019fb93ac0f579dbab0c20e7ac08d893","type":"question","status":"asked","title":"Should off-flow transitions require a note?","created_at":"2026-07-31T17:31:03","updated_at":"2026-07-31T17:31:03","tags":["design"]}
+{"_type":"item","id":"019fb93ac4dc71e6b0fdc41c1118ab1f","type":"discussion","status":"active","title":"JSONL vs SQLite as canonical format","created_at":"2026-07-31T17:31:04","updated_at":"2026-07-31T17:31:04","tags":["architecture"]}
+{"_type":"item","id":"019fb93ac8c57f31903718359efa357d","type":"dcr","status":"proposed","title":"Advisory state flows with note guard","created_at":"2026-07-31T17:31:05","updated_at":"2026-07-31T17:31:05","tags":["state-machine"]}
+{"_type":"event","item_id":"019fb93aad6d7ad3a7da11f18beec8e6","seq":1,"event_type":"created","timestamp":"2026-07-31T17:30:58","note":"Item created"}
+{"_type":"event","item_id":"019fb93aad6d7ad3a7da11f18beec8e6","seq":2,"event_type":"transition","actor":"agent","timestamp":"2026-07-31T17:31:16","note":"new → triaged"}
+{"_type":"event","item_id":"019fb93ab1527ea088dc8ff6a3381330","seq":1,"event_type":"created","timestamp":"2026-07-31T17:30:59","note":"Item created"}
+{"_type":"event","item_id":"019fb93ab53c7061bc44c70b538144ad","seq":1,"event_type":"created","timestamp":"2026-07-31T17:31:00","note":"Item created"}
+{"_type":"event","item_id":"019fb93ab926780ba2f09b9ed2210319","seq":1,"event_type":"created","timestamp":"2026-07-31T17:31:01","note":"Item created"}
+{"_type":"event","item_id":"019fb93ab926780ba2f09b9ed2210319","seq":2,"event_type":"transition","actor":"agent","timestamp":"2026-07-31T17:31:17","note":"backlog → open"}
+{"_type":"event","item_id":"019fb93ab926780ba2f09b9ed2210319","seq":3,"event_type":"transition","actor":"agent","timestamp":"2026-07-31T17:31:18","note":"open → in_progress"}
+{"_type":"event","item_id":"019fb93abd09715e8c9d2f0d4c89ee23","seq":1,"event_type":"created","timestamp":"2026-07-31T17:31:02","note":"Item created"}
+{"_type":"event","item_id":"019fb93abd09715e8c9d2f0d4c89ee23","seq":2,"event_type":"transition","actor":"agent","timestamp":"2026-07-31T17:31:19","note":"open → done. already bumped as part of the 4.6.3 upgrade"}
+{"_type":"event","item_id":"019fb93ac0f579dbab0c20e7ac08d893","seq":1,"event_type":"created","timestamp":"2026-07-31T17:31:03","note":"Item created"}
+{"_type":"event","item_id":"019fb93ac4dc71e6b0fdc41c1118ab1f","seq":1,"event_type":"created","timestamp":"2026-07-31T17:31:04","note":"Item created"}
+{"_type":"event","item_id":"019fb93ac8c57f31903718359efa357d","seq":1,"event_type":"created","timestamp":"2026-07-31T17:31:05","note":"Item created"}

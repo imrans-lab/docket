@@ -29,13 +29,15 @@ tracked() { git ls-files | grep -v '^third_party/'; }
 # ---------------------------------------------------------------------------
 head2 "Secrets and private data"
 
-# Docket databases carry vault_salt, vault_verify and encrypted secrets. They are
-# user data and must never be published.
-if tracked | grep -qE '\.dct$|\.dct\.'; then
-	fail "a .dct database is tracked — it may contain vault material"
-	tracked | grep -E '\.dct$|\.dct\.' | sed 's/^/          /'
+# Docket databases carry vault_salt, vault_verify and encrypted secrets. They
+# are user data and must never be published — with one exception: curated
+# sample .dct files directly in examples/. Sidecars (.dct.cache, .lock, audit)
+# are never allowed, and the vault-material scan below still covers examples.
+if tracked | grep -E '\.dct$|\.dct\.' | grep -qv '^examples/[^/]*\.dct$'; then
+	fail "a .dct database is tracked outside examples/ — it may contain vault material"
+	tracked | grep -E '\.dct$|\.dct\.' | grep -v '^examples/[^/]*\.dct$' | sed 's/^/          /'
 else
-	pass "no .dct databases tracked"
+	pass "no .dct databases tracked outside examples/"
 fi
 
 # Field-name references in source are fine; actual base64 payloads are not.
