@@ -40,7 +40,7 @@ jobs:
             preset: Windows
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -48,7 +48,7 @@ jobs:
         run: pipx install scons
 
       - name: Cache godot-cpp objects
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             third_party/godot-sqlite/godot-cpp/bin
@@ -239,7 +239,7 @@ jobs:
           ls -la dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docket-${{ matrix.platform }}
           path: dist/*
@@ -256,10 +256,10 @@ jobs:
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -298,7 +298,7 @@ jobs:
         # Third-party action running in a job with contents:write and access to
         # the signing key. Pinned to a commit SHA: a tag can be moved by whoever
         # controls that repo, which would hand them both.
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           # Same precedence as VERSION above: on dispatch, github.ref_name is the
           # branch, and using it would create a release tagged "development".

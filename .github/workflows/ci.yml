@@ -18,7 +18,7 @@ jobs:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: a secret that was committed and later removed is still
           # leaked. A shallow clone would scan only the tip and miss it.
@@ -63,7 +63,7 @@ jobs:
             arch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -73,7 +73,7 @@ jobs:
       # godot-cpp dominates build time and only changes when the pinned
       # submodule commit changes, so key the cache on that SHA.
       - name: Cache godot-cpp objects
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             third_party/godot-sqlite/godot-cpp/bin
@@ -94,7 +94,7 @@ jobs:
 
       - name: Cache Godot binary
         id: godot-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/godot-bin
           key: godot-${{ env.GODOT_VERSION }}-${{ matrix.os }}
@@ -137,7 +137,7 @@ jobs:
 
       - name: Upload test output on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-output-${{ matrix.platform }}
           path: test-output.txt
