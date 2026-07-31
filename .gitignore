@@ -47,6 +47,10 @@ export_presets_local.cfg
 *.dct.tmp.*
 # Vault access audit sidecar — local forensic record, never shared
 *.dct.audit.jsonl
+# Exception: curated sample data may be committed. Only the .dct itself —
+# caches, locks, and audit sidecars stay ignored everywhere. Preflight still
+# scans tracked files for vault material.
+!examples/*.dct
 
 # -- Signing / release secrets -------------------------------------------------
 *.p12

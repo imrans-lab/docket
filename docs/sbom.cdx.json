@@ -23,24 +23,24 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:github/2shady4u/godot-sqlite@v4.7",
+      "bom-ref": "pkg:github/2shady4u/godot-sqlite@v4.8",
       "name": "godot-sqlite",
-      "version": "v4.7",
+      "version": "v4.8",
       "description": "SQLite GDExtension for Godot",
       "licenses": [{ "license": { "id": "MIT" } }],
       "externalReferences": [
         { "type": "vcs", "url": "https://github.com/2shady4u/godot-sqlite" }
       ],
       "properties": [
-        { "name": "docket:pinned-commit", "value": "162ffbae0b0c8a933ba63bbb50da6cc0402950f8" },
+        { "name": "docket:pinned-commit", "value": "6550699fa70e4f2a4721f13acb0ca0cf90cd5038" },
         { "name": "docket:linked", "value": "true" }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:github/godotengine/godot-cpp@e83fd09",
+      "bom-ref": "pkg:github/godotengine/godot-cpp@58d1de7",
       "name": "godot-cpp",
-      "version": "e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77",
+      "version": "58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74",
       "description": "C++ bindings for the Godot GDExtension API",
       "licenses": [{ "license": { "id": "MIT" } }],
       "externalReferences": [
@@ -84,14 +84,14 @@
     {
       "ref": "pkg:github/imrans-lab/docket",
       "dependsOn": [
-        "pkg:github/2shady4u/godot-sqlite@v4.7",
+        "pkg:github/2shady4u/godot-sqlite@v4.8",
         "pkg:generic/godot@4.6.3"
       ]
     },
     {
-      "ref": "pkg:github/2shady4u/godot-sqlite@v4.7",
+      "ref": "pkg:github/2shady4u/godot-sqlite@v4.8",
       "dependsOn": [
-        "pkg:github/godotengine/godot-cpp@e83fd09",
+        "pkg:github/godotengine/godot-cpp@58d1de7",
         "pkg:generic/sqlite@3.51.0"
       ]
     }

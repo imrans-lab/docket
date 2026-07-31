@@ -5,7 +5,7 @@ class_name DocketGetStateMachine
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_get_state_machine",
-		"description": "Return the full state machine definition for a given item type, including all states, the initial state, and valid transitions from each state. If 'type' is omitted, returns state machines for all types.",
+		"description": "Return the full state machine definition for a given item type, including all states, the initial state, and the normal promotion flow from each state. The flow is advisory: any state can transition to any other state of the type, but off-flow transitions require a note. If 'type' is omitted, returns state machines for all types.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {

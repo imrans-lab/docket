@@ -23,6 +23,11 @@ var _events_list: ItemList
 var _id_label: Label
 var _back_btn: Button
 
+# Off-flow transition note prompt
+var _transition_note_dialog: ConfirmationDialog
+var _transition_note_edit: LineEdit
+var _pending_status: String = ""
+
 # Type-adaptive field widgets + their labels
 var _resolution_edit: LineEdit
 var _resolution_label: Label
@@ -1317,12 +1322,6 @@ func _save_changes() -> void:
 		item_db.set_item_field(_current_id, "type", new_type)
 		item_db.add_event(_current_id, "type_changed", "user", "%s -> %s" % [old_type, new_type])
 
-	# Handle status change: set directly + log event (bypasses state machine rules)
-	if new_status != old_status:
-		item["status"] = new_status
-		item_db.set_item_field(_current_id, "status", new_status)
-		item_db.add_event(_current_id, "status_changed", "user", "%s -> %s" % [old_status, new_status])
-
 	# Auto-qualify parent if bare ID
 	var parent_text := _parent_edit.text.strip_edges()
 	if not parent_text.is_empty() and not parent_text.contains(":"):
@@ -1377,6 +1376,14 @@ func _save_changes() -> void:
 		_save_encrypted_notes(item_db, _current_id, ":notes")
 	elif new_type == "encrypted_note":
 		_save_encrypted_notes(item_db, _current_id, "")
+
+	# Status changes go through the state machine. On-flow moves apply directly;
+	# off-flow moves pop a prompt for the required note and apply on confirm.
+	if new_status != old_status:
+		if StateMachine.can_transition(_state.schema, new_type, old_status, new_status):
+			_do_status_transition(new_status, "")
+		else:
+			_prompt_transition_note(new_status)
 
 	_state.save()
 	item_changed.emit()
@@ -1750,13 +1757,22 @@ func _populate_comments() -> void:
 func _on_transition(target: String) -> void:
 	if _current_id.is_empty():
 		return
+	if _do_status_transition(target, ""):
+		_state.save()
+		item_changed.emit()
+		load_item(_current_id)
+
+
+func _do_status_transition(target: String, note: String) -> bool:
+	## Route a status change through the state machine. Returns true on success.
 	var trans_db: DocketDB = _state.find_item_db(_current_id)
 	if trans_db == null:
-		return
+		return false
 	var item := trans_db.get_item(_current_id)
-	var result = StateMachine.perform_transition(_state.schema, item, target, "user")
+	var result = StateMachine.perform_transition(_state.schema, item, target, "user", note)
 	if result.has("error"):
-		return
+		_show_transition_error(str(result.error))
+		return false
 	# Write back status change + event
 	var write_back := {"status": item.status, "updated_at": item.updated_at}
 	trans_db.update_item_fields(_current_id, write_back)
@@ -1764,9 +1780,50 @@ func _on_transition(target: String) -> void:
 	if events.size() > 0:
 		var ev: Dictionary = events[events.size() - 1]
 		trans_db.add_event(_current_id, str(ev.get("event_type", "")), str(ev.get("actor", "")), str(ev.get("note", "")))
-	_state.save()
-	item_changed.emit()
-	load_item(_current_id)
+	return true
+
+
+func _prompt_transition_note(target: String) -> void:
+	_pending_status = target
+	if _transition_note_dialog == null:
+		_transition_note_dialog = ConfirmationDialog.new()
+		_transition_note_dialog.title = "Reason required"
+		var vbox := VBoxContainer.new()
+		var label := Label.new()
+		label.text = "This change is outside the normal promotion flow.\nBriefly note why:"
+		vbox.add_child(label)
+		_transition_note_edit = LineEdit.new()
+		_transition_note_edit.custom_minimum_size.x = 380
+		vbox.add_child(_transition_note_edit)
+		_transition_note_dialog.add_child(vbox)
+		_transition_note_dialog.confirmed.connect(_on_transition_note_confirmed)
+		_transition_note_dialog.register_text_enter(_transition_note_edit)
+		add_child(_transition_note_dialog)
+	_transition_note_edit.text = ""
+	_transition_note_dialog.popup_centered()
+	_transition_note_edit.grab_focus()
+
+
+func _on_transition_note_confirmed() -> void:
+	var note := _transition_note_edit.text.strip_edges()
+	var target := _pending_status
+	_pending_status = ""
+	if note.is_empty() or target.is_empty() or _current_id.is_empty():
+		return
+	if _do_status_transition(target, note):
+		_state.save()
+		item_changed.emit()
+		load_item(_current_id)
+
+
+func _show_transition_error(msg: String) -> void:
+	var dlg := AcceptDialog.new()
+	dlg.title = "Transition failed"
+	dlg.dialog_text = msg
+	dlg.confirmed.connect(dlg.queue_free)
+	dlg.close_requested.connect(dlg.queue_free)
+	add_child(dlg)
+	dlg.popup_centered()
 
 
 # -- Secret / Encrypted Note helpers ----------------------------------------

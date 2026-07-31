@@ -188,95 +188,51 @@ func test_work_item_invalid_transition() -> Variant:
 		"can't skip from backlog to done")
 
 
-# -- find_path BFS ------------------------------------------------------------
+# -- off-flow transitions (allowed with a note) --------------------------------
 
-func test_find_path_direct_neighbor() -> Variant:
-	var path = StateMachine.find_path(schema, "work_item", "backlog", "open")
-	var r = A.eq(path.size(), 1, "single step")
+func test_off_flow_without_note_errors() -> Variant:
+	var item = DataModel.create_item(schema, "work_item", {"title": "Skip"})
+	var result = StateMachine.perform_transition(schema, item, "done", "agent")
+	var r = A.has_key(result, "error", "backlog->done without note errors")
 	if r is String: return r
-	return A.eq(path[0], "open")
+	return A.is_true(result.error.contains("note"), "error asks for a note")
 
 
-func test_find_path_multi_hop() -> Variant:
-	var path = StateMachine.find_path(schema, "work_item", "backlog", "done")
-	# backlog -> open -> in_progress -> done
-	var r = A.eq(path.size(), 3, "3 hops")
+func test_off_flow_with_note_succeeds() -> Variant:
+	var item = DataModel.create_item(schema, "work_item", {"title": "Skip"})
+	var result = StateMachine.perform_transition(schema, item, "done", "agent", "already shipped in a hotfix")
+	var r = A.eq(result.get("error", ""), "", "backlog->done with note ok")
 	if r is String: return r
-	r = A.eq(path[0], "open")
-	if r is String: return r
-	r = A.eq(path[1], "in_progress")
-	if r is String: return r
-	return A.eq(path[2], "done")
+	return A.eq(item.status, "done", "reached done directly")
 
 
-func test_find_path_no_route() -> Variant:
-	# Terminal state "done" has no outgoing transitions
-	var path = StateMachine.find_path(schema, "work_item", "done", "backlog")
-	return A.eq(path.size(), 0, "no path from terminal")
-
-
-func test_find_path_same_state() -> Variant:
-	var path = StateMachine.find_path(schema, "work_item", "open", "open")
-	return A.eq(path.size(), 0, "same state returns empty")
-
-
-func test_find_path_bug_new_to_closed() -> Variant:
-	# new -> triaged -> closed (shortest, since triaged can go directly to closed)
-	var path = StateMachine.find_path(schema, "bug", "new", "closed")
-	var r = A.eq(path.size(), 2, "2 hops for bug new->closed")
-	if r is String: return r
-	r = A.eq(path[0], "triaged")
-	if r is String: return r
-	return A.eq(path[1], "closed")
-
-
-# -- perform_transition_auto ---------------------------------------------------
-
-func test_auto_transition_direct_unchanged() -> Variant:
-	# Direct transition should work exactly as before
-	var item = DataModel.create_item(schema, "chore", {"title": "Test"})
-	var result = StateMachine.perform_transition_auto(schema, item, "in_progress", "agent")
-	var r = A.eq(result.get("error", ""), "", "no error")
-	if r is String: return r
-	return A.eq(item.status, "in_progress", "direct transition works")
-
-
-func test_auto_transition_shortcut_work_item_backlog_to_done() -> Variant:
-	var item = DataModel.create_item(schema, "work_item", {"title": "Auto"})
-	var r = A.eq(item.status, "backlog")
-	if r is String: return r
-	var result = StateMachine.perform_transition_auto(schema, item, "done", "agent", "finished it")
-	r = A.eq(result.get("error", ""), "", "auto-walk succeeds")
-	if r is String: return r
-	r = A.eq(item.status, "done", "reached done")
-	if r is String: return r
-	# Should have 3 transition events (backlog->open, open->in_progress, in_progress->done)
-	# plus the creation event = 4 total
-	return A.eq(item.events.size(), 4, "1 creation + 3 transition events")
-
-
-func test_auto_transition_note_only_on_final() -> Variant:
-	var item = DataModel.create_item(schema, "work_item", {"title": "Note test"})
-	StateMachine.perform_transition_auto(schema, item, "done", "agent", "final note")
-	# Check that intermediate events do NOT have the note
-	var transition_events: Array = []
-	for ev in item.events:
-		if ev.event_type == "transition":
-			transition_events.append(ev)
-	# First two intermediate transitions should not contain "final note"
-	var r = A.is_false(transition_events[0].note.contains("final note"), "intermediate 1 no note")
-	if r is String: return r
-	r = A.is_false(transition_events[1].note.contains("final note"), "intermediate 2 no note")
-	if r is String: return r
-	# Final transition should contain the note
-	return A.is_true(transition_events[2].note.contains("final note"), "final has note")
-
-
-func test_auto_transition_no_path_returns_error() -> Variant:
-	var item = DataModel.create_item(schema, "work_item", {"title": "Stuck"})
+func test_reactivate_terminal_with_note() -> Variant:
+	var item = DataModel.create_item(schema, "work_item", {"title": "Zombie"})
 	item.status = "done"
-	var result = StateMachine.perform_transition_auto(schema, item, "backlog", "agent")
-	return A.has_key(result, "error", "no path from terminal returns error")
+	var result = StateMachine.perform_transition(schema, item, "in_progress", "agent", "regression found, reopening")
+	var r = A.eq(result.get("error", ""), "", "done->in_progress with note ok")
+	if r is String: return r
+	return A.eq(item.status, "in_progress", "terminal state reactivated")
+
+
+func test_off_flow_note_recorded_in_event() -> Variant:
+	var item = DataModel.create_item(schema, "work_item", {"title": "Audit"})
+	item.status = "done"
+	StateMachine.perform_transition(schema, item, "open", "agent", "scope grew")
+	var ev: Dictionary = item.events[item.events.size() - 1]
+	return A.is_true(str(ev.note).contains("scope grew"), "note lands in event log")
+
+
+func test_off_flow_still_enforces_required_fields() -> Variant:
+	# A note bypasses the flow, not the field rules: bug->resolved still needs resolution.
+	var item = DataModel.create_item(schema, "bug", {"title": "Test"})
+	var result = StateMachine.perform_transition(schema, item, "resolved", "agent", "verified externally")
+	var r = A.has_key(result, "error", "still requires resolution")
+	if r is String: return r
+	result = StateMachine.perform_transition(schema, item, "resolved", "agent", "verified externally", {"resolution": "fixed"})
+	r = A.eq(result.get("error", ""), "", "note + resolution ok")
+	if r is String: return r
+	return A.eq(item.status, "resolved")
 
 
 # -- improved error messages --------------------------------------------------
@@ -289,13 +245,15 @@ func test_error_nonexistent_state() -> Variant:
 	return A.is_true(result.error.contains("does not exist"), "error mentions 'does not exist'")
 
 
-func test_error_no_path_mentions_valid_next() -> Variant:
-	# bug "new" cannot reach "resolved" directly (new->triaged->...->resolved)
+func test_error_off_flow_mentions_normal_next() -> Variant:
+	# bug "new" -> "resolved" is off-flow; without a note the error names the normal flow
 	var item = DataModel.create_item(schema, "bug", {"title": "Test"})
 	var result = StateMachine.perform_transition(schema, item, "resolved", "agent")
 	var r = A.has_key(result, "error", "should error")
 	if r is String: return r
-	return A.is_true(result.error.contains("No valid path exists"), "error mentions no valid path")
+	r = A.is_true(result.error.contains("outside the normal promotion flow"), "error mentions off-flow")
+	if r is String: return r
+	return A.is_true(result.error.contains("triaged"), "error lists normal next state")
 
 
 func test_error_nonexistent_state_lists_all_states() -> Variant:
@@ -309,21 +267,10 @@ func test_error_nonexistent_state_lists_all_states() -> Variant:
 	return A.is_true(result.error.contains("done"), "lists 'done' state")
 
 
-func test_error_no_path_from_terminal_lists_empty() -> Variant:
+func test_error_from_terminal_without_note() -> Variant:
 	var item = DataModel.create_item(schema, "work_item", {"title": "Test"})
 	item.status = "done"
 	var result = StateMachine.perform_transition(schema, item, "open", "agent")
 	var r = A.has_key(result, "error", "should error")
 	if r is String: return r
-	return A.is_true(result.error.contains("No valid path exists"), "no path from terminal")
-
-
-func test_auto_transition_extra_only_on_final() -> Variant:
-	# Bug: new -> triaged -> active -> resolved (requires resolution extra)
-	var item = DataModel.create_item(schema, "bug", {"title": "Bug auto"})
-	var result = StateMachine.perform_transition_auto(schema, item, "resolved", "agent", "", {"resolution": "fixed"})
-	var r = A.eq(result.get("error", ""), "", "auto-walk with extra succeeds")
-	if r is String: return r
-	r = A.eq(item.status, "resolved")
-	if r is String: return r
-	return A.eq(item.get("resolution", ""), "fixed", "resolution applied")
+	return A.is_true(result.error.contains("outside the normal promotion flow"), "terminal reactivation needs note")

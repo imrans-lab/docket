@@ -20,7 +20,7 @@ func get_definition() -> Dictionary:
 				"id": {"type": "string", "description": "Full ID or short prefix (min 4 chars)"},
 				"to": {"type": "string"},
 				"resolution": {"type": "string"},
-				"note": {"type": "string"},
+				"note": {"type": "string", "description": "Reason for the change. Required when the transition is outside the normal promotion flow."},
 				"blocked_by": {"type": "string"},
 				"project": {"type": "string", "description": "Project name (optional, defaults to primary)"},
 			},
@@ -33,7 +33,7 @@ func _build_description() -> String:
 	if not _cached_description.is_empty():
 		return _cached_description
 
-	var desc := "Transition an item to a new state. Enforces type-specific state machine. When transitioning to 'blocked', supply 'blocked_by' (an item ID, optionally cross-project qualified like 'project:DKT-0042')."
+	var desc := "Transition an item to a new state. Any state of the type is reachable: moves along the normal promotion flow need nothing extra, while any other move (reopening, skipping ahead) requires a 'note' explaining why. When transitioning to 'blocked', supply 'blocked_by' (an item ID, optionally cross-project qualified like 'project:DKT-0042')."
 
 	if _schema.is_empty():
 		_cached_description = desc
@@ -62,7 +62,7 @@ func _build_state_chains(schema: Dictionary) -> String:
 			if transitions.has(state):
 				var valid_next: Array = transitions[state]
 				if valid_next.is_empty():
-					chain_parts.append("%s (terminal)" % state)
+					chain_parts.append("%s (flow end)" % state)
 				else:
 					chain_parts.append(state)
 			else:
