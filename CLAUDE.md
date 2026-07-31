@@ -83,7 +83,10 @@ godot --headless --path . -- validate --file docket.dct
 - `scripts/core/jsonl_migration.gd` — SQLite → canonical JSONL converter
 - `scripts/core/jsonl_validator.gd` — Structural validation without opening a DB
 - `scripts/core/data_model.gd` — Item creation & validation
-- `scripts/core/state_machine.gd` — Type-specific state transitions
+- `scripts/core/state_machine.gd` — Type-specific state flows (advisory: any
+  state can transition to any other state of its type, but moves outside the
+  normal promotion flow require a note; `transition_rules` required fields
+  still apply)
 - `scripts/core/app_state.gd` — Centralized GUI state container
 - `scripts/tools/tool_registry.gd` — Tool dispatcher
 - `data/jsonl_format.md` — JSONL spec (line types, sort order, encoding rules)
