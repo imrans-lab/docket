@@ -40,7 +40,7 @@ jobs:
             preset: Windows
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -48,7 +48,7 @@ jobs:
         run: pipx install scons
 
       - name: Cache godot-cpp objects
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             third_party/godot-sqlite/godot-cpp/bin
@@ -239,7 +239,7 @@ jobs:
           ls -la dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docket-${{ matrix.platform }}
           path: dist/*
@@ -256,10 +256,10 @@ jobs:
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
