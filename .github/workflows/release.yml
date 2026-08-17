@@ -10,7 +10,7 @@ on:
         required: true
 
 env:
-  GODOT_VERSION: "4.6.3"
+  GODOT_VERSION: "4.7.1"
 
 permissions:
   contents: write

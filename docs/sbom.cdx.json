@@ -23,24 +23,24 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:github/2shady4u/godot-sqlite@v4.8",
+      "bom-ref": "pkg:github/2shady4u/godot-sqlite@v4.9",
       "name": "godot-sqlite",
-      "version": "v4.8",
+      "version": "v4.9",
       "description": "SQLite GDExtension for Godot",
       "licenses": [{ "license": { "id": "MIT" } }],
       "externalReferences": [
         { "type": "vcs", "url": "https://github.com/2shady4u/godot-sqlite" }
       ],
       "properties": [
-        { "name": "docket:pinned-commit", "value": "6550699fa70e4f2a4721f13acb0ca0cf90cd5038" },
+        { "name": "docket:pinned-commit", "value": "9cbdb225823ee111342ce32fe451e066eb92cc6e" },
         { "name": "docket:linked", "value": "true" }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:github/godotengine/godot-cpp@58d1de7",
+      "bom-ref": "pkg:github/godotengine/godot-cpp@5ffd70e",
       "name": "godot-cpp",
-      "version": "58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74",
+      "version": "5ffd70e34d0ab87009a9f0ffa3361bc8f4b09731",
       "description": "C++ bindings for the Godot GDExtension API",
       "licenses": [{ "license": { "id": "MIT" } }],
       "externalReferences": [
@@ -71,9 +71,9 @@
     },
     {
       "type": "framework",
-      "bom-ref": "pkg:generic/godot@4.6.3",
+      "bom-ref": "pkg:generic/godot@4.7.1",
       "name": "godot-engine-export-templates",
-      "version": "4.6.3-stable",
+      "version": "4.7.1-stable",
       "description": "Godot Engine export templates, linked into the shipped executable",
       "licenses": [{ "license": { "id": "MIT" } }],
       "externalReferences": [{ "type": "website", "url": "https://godotengine.org" }],
@@ -84,14 +84,14 @@
     {
       "ref": "pkg:github/imrans-lab/docket",
       "dependsOn": [
-        "pkg:github/2shady4u/godot-sqlite@v4.8",
-        "pkg:generic/godot@4.6.3"
+        "pkg:github/2shady4u/godot-sqlite@v4.9",
+        "pkg:generic/godot@4.7.1"
       ]
     },
     {
-      "ref": "pkg:github/2shady4u/godot-sqlite@v4.8",
+      "ref": "pkg:github/2shady4u/godot-sqlite@v4.9",
       "dependsOn": [
-        "pkg:github/godotengine/godot-cpp@58d1de7",
+        "pkg:github/godotengine/godot-cpp@5ffd70e",
         "pkg:generic/sqlite@3.51.0"
       ]
     }

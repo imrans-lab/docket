@@ -20,7 +20,7 @@ signing, code you never built and cannot audit.
 
 ## Prerequisites
 
-- **Godot 4.6+** — standard or headless build (CI pins an exact patch release; see the workflows)
+- **Godot 4.7+** — standard or headless build (CI pins an exact patch release; see the workflows)
 - **SCons** — `pipx install scons` (or `pip install scons`)
 - **A C++ toolchain** — Xcode CLT on macOS, gcc/clang on Linux, MSVC on Windows
 - **Python 3** — required by SCons
