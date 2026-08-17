@@ -26,7 +26,28 @@ func get_definition() -> Dictionary:
 	}
 
 
+## Every argument query_hints() actually filters on, plus the response-shaping
+## ones. Anything outside this set is a caller mistake, and silence is the
+## dangerous answer: query_hints() ignores what it does not recognise, so a
+## single unrecognised key (e.g. a free-text `query`) turns an intended narrow
+## lookup into "every hint in the project" — which is how the 2026-08-16
+## full-store rewrite started.
+const ACCEPTED_ARGS := [
+	"component", "key", "tags", "include_insights", "promoted_only",
+	"min_retrievals", "min_research_cost", "limit", "detail", "project",
+]
+
+
 func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+	var unknown: Array = []
+	for k in args.keys():
+		if not ACCEPTED_ARGS.has(str(k)):
+			unknown.append(str(k))
+	if not unknown.is_empty():
+		unknown.sort()
+		return {"error": "Unknown argument(s): %s. docket_hint_query filters on: %s. (There is no free-text search here — narrow with component/key/tags.)" % [
+			", ".join(unknown), ", ".join(ACCEPTED_ARGS)]}
+
 	var query_args := args.duplicate()
 
 	# If not including insights, restrict to hints only at SQL level
@@ -42,10 +63,14 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 
 	var results := db.query_hints(query_args, detail)
 
-	# Auto-bump retrieval count on each returned item
+	# Auto-bump retrieval count on the returned set — as ONE batch. A loop of
+	# per-item bumps costs one full-database rewrite per item on the JSONL
+	# backend (see DocketDBJsonl.bump_retrieval_many).
+	var ids: Array = []
 	for item in results:
 		var id: String = str(item.get("id", ""))
 		if not id.is_empty():
-			db.bump_retrieval(id)
+			ids.append(id)
+	db.bump_retrieval_many(ids)
 
 	return {"items": results, "count": results.size()}

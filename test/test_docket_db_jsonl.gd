@@ -424,3 +424,97 @@ func test_bump_retrieval_updates_jsonl() -> Variant:
 	var parsed := _parse_jsonl()
 	var item: Dictionary = parsed["items"][0]
 	return A.eq(int(item.get("retrieval_count", 0)), 1, "retrieval_count bumped in JSONL")
+
+
+# -- Retrieval bump: one flush per batch, not one per item --------------------
+
+## Counts actual whole-database REWRITES — the expensive thing — not calls to
+## _flush_jsonl(). Those differ: a call made while _flush_depth > 0 returns
+## early and writes nothing, which is exactly what coalescing does. Counting
+## calls would score a correctly-coalesced batch as 9 (8 suppressed + 1 real).
+##
+## _atomic_write() is static, so it cannot be overridden to observe the write
+## directly; checking the same guard _flush_jsonl() checks is the closest an
+## outside observer can get.
+class CountingJsonlDB extends DocketDBJsonl:
+	var write_count: int = 0
+
+	func _flush_jsonl() -> void:
+		if _flush_depth == 0:
+			write_count += 1  # this call is the one that reaches the disk
+		super._flush_jsonl()
+
+	## Mirrors create_new_jsonl(), which hardcodes DocketDBJsonl.new() and so
+	## cannot produce a subclass.
+	static func make(path: String) -> CountingJsonlDB:
+		var w := CountingJsonlDB.new()
+		w._jsonl_path = path
+		var cache := DocketDB.create_new(path + ".cache")
+		if cache == null:
+			return null
+		w._adopt(cache)
+		w._flush_jsonl()
+		return w
+
+
+func _seed_hints(db: DocketDB, n: int) -> Array:
+	var ids: Array = []
+	for i in n:
+		var id := db.next_id()
+		db.insert_item(id, {
+			"type": "hint", "status": "draft", "title": "Hint %d" % i,
+			"created_at": "2026-03-27T10:00:00Z", "updated_at": "2026-03-27T10:00:00Z",
+			"component": "batch", "key": "k%d" % i, "value": "v",
+			"retrieval_count": 0,
+		})
+		ids.append(id)
+	return ids
+
+
+func test_bump_retrieval_many_flushes_once() -> Variant:
+	var path := _test_dir + "/counting.dct.jsonl"
+	var db := CountingJsonlDB.make(path)
+	if db == null:
+		return "could not create counting db"
+	var ids := _seed_hints(db, 8)
+
+	var before: int = db.write_count
+	db.bump_retrieval_many(ids)
+	var writes: int = db.write_count - before
+
+	var r = A.eq(writes, 1, "8 bumps cost exactly 1 whole-database rewrite")
+	db._jsonl_path = ""
+	db.close()
+	if r is String: return r
+	return true
+
+
+func test_bump_retrieval_many_persists_every_count() -> Variant:
+	## Coalescing must not lose writes: the single flush has to carry all of them.
+	var ids := _seed_hints(_db, 5)
+	_db.bump_retrieval_many(ids)
+
+	var parsed := _parse_jsonl()
+	var seen := 0
+	for item: Dictionary in parsed["items"]:
+		if ids.has(str(item.get("id", ""))):
+			seen += 1
+			var r = A.eq(int(item.get("retrieval_count", 0)), 1,
+				"count persisted for %s" % item.get("id"))
+			if r is String: return r
+	return A.eq(seen, 5, "every batched hint reached the JSONL")
+
+
+func test_bump_retrieval_many_empty_does_not_flush() -> Variant:
+	var path := _test_dir + "/counting_empty.dct.jsonl"
+	var db := CountingJsonlDB.make(path)
+	if db == null:
+		return "could not create counting db"
+	var before: int = db.write_count
+	db.bump_retrieval_many([])
+	var writes: int = db.write_count - before
+	var r = A.eq(writes, 0, "an empty batch rewrites nothing")
+	db._jsonl_path = ""
+	db.close()
+	if r is String: return r
+	return true

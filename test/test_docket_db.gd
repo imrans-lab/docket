@@ -594,3 +594,41 @@ func test_is_uuid7() -> Variant:
 	r = A.is_false(DocketDB._is_uuid7("DKT-0001"), "rejects legacy")
 	if r is String: return r
 	return A.is_false(DocketDB._is_uuid7("abc"), "rejects short strings")
+
+
+# -- Retrieval bump: a read must not masquerade as an edit ---------------------
+
+func test_bump_retrieval_leaves_updated_at_alone() -> Variant:
+	## updated_at answers "when did this record's CONTENT last change". Bumping
+	## it on retrieval flattens that history: one unfiltered hint query in Aug
+	## 2026 restamped all 276 hints in a live store to the same date.
+	_db.insert_item("DKT-0100", {"type": "hint", "status": "draft", "title": "read/no-touch",
+		"created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00",
+		"component": "docket", "key": "read", "value": "cmd",
+		"retrieval_count": 0,
+		"tags": [], "events": [], "links": []})
+
+	_db.bump_retrieval("DKT-0100")
+	_db.bump_retrieval("DKT-0100")
+
+	var item := _db.get_item("DKT-0100")
+	var r = A.eq(item.retrieval_count, 2, "retrieval_count still counts reads")
+	if r is String: return r
+	return A.eq(item.updated_at, "2026-01-01T00:00:00", "updated_at survives a read untouched")
+
+
+func test_bump_retrieval_many_counts_every_id() -> Variant:
+	for i in 3:
+		_db.insert_item("DKT-020%d" % i, {"type": "hint", "status": "draft", "title": "batch %d" % i,
+			"created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00",
+			"component": "docket", "key": "batch%d" % i, "value": "cmd",
+			"retrieval_count": 0,
+			"tags": [], "events": [], "links": []})
+
+	_db.bump_retrieval_many(["DKT-0200", "DKT-0201", "DKT-0202", ""])
+
+	for i in 3:
+		var item := _db.get_item("DKT-020%d" % i)
+		var r = A.eq(item.retrieval_count, 1, "batch bumped DKT-020%d" % i)
+		if r is String: return r
+	return true

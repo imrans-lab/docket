@@ -990,3 +990,33 @@ func test_get_state_machine_bug_transitions() -> Variant:
 	var transitions: Dictionary = result.get("transitions", {})
 	var closed_transitions: Array = transitions.get("closed", [])
 	return A.eq(closed_transitions.size(), 0, "closed is terminal (no outgoing transitions)")
+
+
+# -- docket_hint_query argument strictness ------------------------------------
+
+func _seed_two_hints() -> void:
+	_registry.call_tool("docket_hint_set", {"component": "build", "key": "run", "value": "scons"})
+	_registry.call_tool("docket_hint_set", {"component": "test", "key": "run", "value": "pytest"})
+
+
+func test_hint_query_rejects_unknown_argument() -> Variant:
+	## query_hints() ignores arguments it does not recognise, so an unknown key
+	## silently widens the query to EVERY hint. That is how a targeted lookup
+	## became a full-store scan (and 276 whole-file rewrites) on 2026-08-16.
+	_seed_two_hints()
+	var result = _registry.call_tool("docket_hint_query", {"query": "how do I build"})
+	var r = A.is_true(result is Dictionary and result.has("error"),
+		"unknown argument is refused, not silently ignored")
+	if r is String: return r
+	r = A.is_true(str(result.error).contains("query"), "the refusal names the offending argument")
+	if r is String: return r
+	return A.is_true(str(result.error).contains("component"), "and lists what it does accept")
+
+
+func test_hint_query_accepts_its_documented_arguments() -> Variant:
+	_seed_two_hints()
+	var result = _registry.call_tool("docket_hint_query", {"component": "build", "detail": "lean"})
+	var r = A.is_true(result is Dictionary and not result.has("error"),
+		"a documented filter still works: %s" % str(result))
+	if r is String: return r
+	return A.eq(int(result.get("count", -1)), 1, "component filter narrows to one hint")

@@ -443,6 +443,25 @@ func bump_retrieval(id: String) -> void:
 	_flush_jsonl()
 
 
+func bump_retrieval_many(ids: Array) -> void:
+	## ONE flush for the whole batch, not one per id.
+	##
+	## _flush_jsonl() re-serializes the ENTIRE database and atomically rewrites
+	## the file, so a loop of N bumps costs N full rewrites of the whole store.
+	## That is quadratic-feeling work on a read path, and it is not theoretical:
+	## on 2026-08-16 a single unfiltered docket_hint_query matched all 276 hints
+	## in a 9.3 MB / 11,385-record store and pinned the main thread at 100% CPU
+	## for ~15 minutes doing 276 serializations. Because the MCP HTTP server is
+	## polled from that same main loop, the server accepted no connections for
+	## the duration — every other tool call in flight timed out.
+	if ids.is_empty():
+		return
+	_flush_depth += 1
+	super.bump_retrieval_many(ids)
+	_flush_depth -= 1
+	_flush_jsonl()
+
+
 # -- Transition/error logs (NOT serialized to JSONL per spec) -----------------
 # log_transition() and log_mcp_error() are intentionally NOT overridden.
 # Per the JSONL format spec section 7, transition_log and mcp_error_log are

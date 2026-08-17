@@ -878,8 +878,25 @@ func query_hints(args: Dictionary, detail: String = "full") -> Array:
 
 
 func bump_retrieval(id: String) -> void:
-	var ts := Time.get_datetime_string_from_system(true)
-	_exec("UPDATE items SET retrieval_count=retrieval_count+1, updated_at=? WHERE id=?;", [ts, id])
+	## Retrieval is a READ. It records usage in retrieval_count and deliberately
+	## does NOT touch updated_at: that field means "when this record last
+	## changed", and stamping it on every lookup destroys the only signal that
+	## says when a hint's CONTENT was last revised. (Observed 2026-08-16: one
+	## unfiltered hint query rewrote updated_at on all 276 hints in a store,
+	## flattening months of history to a single date.)
+	_exec("UPDATE items SET retrieval_count=retrieval_count+1 WHERE id=?;", [id])
+
+
+func bump_retrieval_many(ids: Array) -> void:
+	## Batch form of bump_retrieval. Exists so a backend that persists on every
+	## mutation can persist ONCE for the whole batch — see
+	## DocketDBJsonl.bump_retrieval_many. Callers that bump more than one item
+	## (any query returning a result set) must use this, not a loop over
+	## bump_retrieval.
+	for id in ids:
+		var s := str(id)
+		if not s.is_empty():
+			bump_retrieval(s)
 
 
 # -- Context ------------------------------------------------------------------
