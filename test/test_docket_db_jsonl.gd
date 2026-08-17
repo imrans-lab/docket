@@ -518,3 +518,42 @@ func test_bump_retrieval_many_empty_does_not_flush() -> Variant:
 	db.close()
 	if r is String: return r
 	return true
+
+
+## THE SEAM. The tests above prove bump_retrieval_many coalesces and that the
+## tool refuses an unknown argument — separately. Neither notices if
+## docket_hint_query goes back to looping bump_retrieval() per result, which is
+## the exact shape that walled the server: a READ of N hints costing N whole-
+## database rewrites. Assert the composed property through the real tool.
+func test_hint_query_through_the_tool_costs_one_rewrite() -> Variant:
+	var path := _test_dir + "/tool_seam.dct.jsonl"
+	var db := CountingJsonlDB.make(path)
+	if db == null:
+		return "could not create counting db"
+
+	var sf := FileAccess.open("res://data/schema.json", FileAccess.READ)
+	if sf == null:
+		return "could not read schema.json"
+	var schema: Dictionary = JSON.parse_string(sf.get_as_text())
+	sf.close()
+
+	var reg := ToolRegistry.new()
+	reg.init(schema, db)
+	for i in 6:
+		reg.call_tool("docket_hint_set", {"component": "seam", "key": "k%d" % i, "value": "v"})
+
+	var before: int = db.write_count
+	var result: Dictionary = reg.call_tool("docket_hint_query", {"component": "seam"})
+	var writes: int = db.write_count - before
+
+	var r = A.eq(int(result.get("count", -1)), 6, "the query really returned 6 hints")
+	if r is String:
+		db._jsonl_path = ""
+		db.close()
+		return r
+	r = A.eq(writes, 1, "a 6-hint query costs 1 whole-database rewrite, not 6")
+	db._jsonl_path = ""
+	db.close()
+	if r is String:
+		return r
+	return true
