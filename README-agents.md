@@ -63,7 +63,7 @@ See [docs/SIGNING.md](docs/SIGNING.md) for why, and how to verify.
 
 ## Requirements
 
-- [Godot 4.6+](https://godotengine.org/download) (standard or headless build; CI pins an exact patch release)
+- [Godot 4.7+](https://godotengine.org/download) (standard or headless build; CI pins an exact patch release)
 - macOS (universal), Linux x86_64, or Windows x86_64
 
 Building from source additionally needs SCons and a C++ toolchain — see
