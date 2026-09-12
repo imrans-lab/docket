@@ -254,6 +254,13 @@ static func _condition_to_sql(cond: Dictionary) -> Dictionary:
 
 	# Standard operators
 	match op:
+		"in":
+			if not value is Array or value.is_empty():
+				return {"sql": "0", "bindings": []}
+			var placeholders := PackedStringArray()
+			for entry in value:
+				placeholders.append("?")
+			return {"sql": "%s IN (%s)" % [field, ",".join(placeholders)], "bindings": value.duplicate()}
 		"eq":
 			return {"sql": "%s=?" % field, "bindings": [value]}
 		"neq":

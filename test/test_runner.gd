@@ -27,6 +27,7 @@ func _ready() -> void:
 		preload("res://test/test_query_field_validation.gd"),
 		preload("res://test/test_meta_roundtrip.gd"),
 		preload("res://test/test_user_prefs.gd"),
+		preload("res://test/test_type_catalog.gd"),
 		preload("res://test/test_jsonl_serializer.gd"),
 		preload("res://test/test_jsonl_parser.gd"),
 		preload("res://test/test_jsonl_migration.gd"),
@@ -47,6 +48,25 @@ func _ready() -> void:
 		preload("res://test/test_functional_lifecycle.gd"),
 		preload("res://test/test_functional_roundtrip.gd"),
 	]
+	var requested := _requested_test_class(OS.get_cmdline_user_args())
+	if not requested.is_empty():
+		var selected: Array = []
+		for test_script in _test_classes:
+			if test_script.resource_path.get_file().get_basename() == requested:
+				selected.append(test_script)
+		_test_classes = selected
+		if _test_classes.is_empty():
+			_fail_count = 1
+			push_error("Unknown --test-class: %s" % requested)
+
+
+func _requested_test_class(args: PackedStringArray) -> String:
+	for i in args.size():
+		if args[i].begins_with("--test-class="):
+			return args[i].trim_prefix("--test-class=").get_file().get_basename()
+		if args[i] == "--test-class" and i + 1 < args.size():
+			return args[i + 1].get_file().get_basename()
+	return ""
 
 
 func run_all() -> int:

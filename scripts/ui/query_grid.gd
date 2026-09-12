@@ -52,6 +52,8 @@ const _OP_LABELS := {
 ## prompt, kb, policy) and was missing every state those types introduced, so
 ## the GUI silently could not build queries the MCP surface could.
 var _dropdown_values_cache: Dictionary = {}
+var _type_catalog: Array = []
+var _refreshing_scope := false
 
 
 func _dropdown_values() -> Dictionary:
@@ -104,11 +106,33 @@ const _DRAG_ZONE: int = 5  # pixels from column edge to trigger resize
 func init(state: AppState) -> void:
 	_state = state
 	_state.file_changed.connect(_on_file_changed)
+	_rebuild_type_catalog()
 	_build_ui()
 
 
 func _on_file_changed() -> void:
+	_rebuild_type_catalog()
+	_refresh_scoped_controls()
 	refresh()
+
+
+func _rebuild_type_catalog() -> void:
+	_type_catalog.clear()
+	var projects: Array = _state.get_project_dbs().keys()
+	projects.sort()
+	if projects.is_empty():
+		_type_catalog = TypeCatalog.from_schema(_state.schema)
+		return
+	for project_value in projects:
+		var project := str(project_value)
+		var counts := {}
+		var project_db = _state.get_db_for_project(project)
+		if project_db != null:
+			for item in project_db.execute_query({"filter": {}}):
+				var slug := str(item.get("type", ""))
+				counts[slug] = int(counts.get(slug, 0)) + 1
+		_type_catalog.append_array(TypeCatalog.from_schema(_state.schema, project, counts))
+	_type_catalog = TypeCatalog.sorted(_type_catalog)
 
 
 func _build_ui() -> void:
@@ -444,9 +468,31 @@ func _add_condition_row(is_first: bool) -> void:
 	var value_dropdown := OptionButton.new()
 	value_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	value_dropdown.visible = false
-	value_dropdown.item_selected.connect(func(_idx): _user_has_modified = true)
+	value_dropdown.item_selected.connect(func(_idx):
+		_user_has_modified = true
+		_refresh_scoped_controls()
+	)
 	hbox.add_child(value_dropdown)
 	row_data["value_dropdown"] = value_dropdown
+
+	var type_chooser := TypeChooser.new()
+	type_chooser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	type_chooser.visible = false
+	var shortcut_projects: Array = _state.get_project_dbs().keys()
+	shortcut_projects.sort()
+	type_chooser.configure(_type_catalog, ",".join(shortcut_projects))
+	type_chooser.selection_changed.connect(func(_values):
+		_user_has_modified = true
+		_refresh_scoped_controls()
+	)
+	hbox.add_child(type_chooser)
+	row_data["type_chooser"] = type_chooser
+
+	var validation_label := Label.new()
+	validation_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.35))
+	validation_label.visible = false
+	validation_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row_data["validation"] = validation_label
 
 	# Remove button
 	var remove_btn := Button.new()
@@ -456,6 +502,12 @@ func _add_condition_row(is_first: bool) -> void:
 	row_data["remove_btn"] = remove_btn
 
 	outer.add_child(hbox)
+	var row_stack := VBoxContainer.new()
+	row_stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.remove_child(hbox)
+	row_stack.add_child(hbox)
+	row_stack.add_child(validation_label)
+	outer.add_child(row_stack)
 	row_data["hbox"] = outer  # outer is what gets added/removed from tree
 
 	var row_idx := _condition_rows.size()
@@ -465,12 +517,14 @@ func _add_condition_row(is_first: bool) -> void:
 	field_option.item_selected.connect(func(_idx):
 		_user_has_modified = true
 		_update_ops_for_row(row_idx)
+		_refresh_scoped_controls()
 	)
 
 	# Wire conjunction change to update group visuals
 	conj_option.item_selected.connect(func(_idx):
 		_user_has_modified = true
 		_update_group_visuals()
+		_refresh_scoped_controls()
 	)
 
 	_condition_rows.append(row_data)
@@ -552,6 +606,7 @@ func _update_ops_for_row(row_idx: int) -> void:
 	var op_option: OptionButton = row["op"]
 	var value_edit: LineEdit = row["value"]
 	var value_dropdown: OptionButton = row["value_dropdown"]
+	var type_chooser: TypeChooser = row["type_chooser"]
 
 	var field_name: String = field_option.get_item_text(field_option.selected)
 	var ops := _get_ops_for_field(field_name)
@@ -561,7 +616,8 @@ func _update_ops_for_row(row_idx: int) -> void:
 		op_option.add_item(_OP_LABELS.get(o, o))
 
 	# Determine if this field uses a dropdown
-	var use_dropdown: bool = _dropdown_values().has(field_name)
+	var use_dropdown: bool = _dropdown_values().has(field_name) and field_name != "type"
+	type_chooser.visible = field_name == "type"
 
 	if use_dropdown:
 		# Populate dropdown with fixed values for this field
@@ -574,16 +630,26 @@ func _update_ops_for_row(row_idx: int) -> void:
 		value_edit.visible = false
 	else:
 		value_dropdown.visible = false
-		value_edit.visible = true
+		value_edit.visible = field_name != "type"
 		value_edit.placeholder_text = "value"
 
 	# Show/hide value widgets for is_empty/is_not_empty
+	for connection in op_option.item_selected.get_connections():
+		op_option.item_selected.disconnect(connection.callable)
 	op_option.item_selected.connect(func(_idx):
 		_user_has_modified = true
 		var op_text: String = op_option.get_item_text(op_option.selected)
 		var is_no_value: bool = (op_text == "is empty" or op_text == "is not empty")
 		if is_no_value:
 			value_edit.visible = false
+			value_dropdown.visible = false
+		elif field_name == "type" and _op_label_to_key(op_text) == "eq":
+			type_chooser.visible = true
+			value_edit.visible = false
+			value_dropdown.visible = false
+		elif field_name == "type":
+			type_chooser.visible = false
+			value_edit.visible = true
 			value_dropdown.visible = false
 		elif use_dropdown:
 			value_dropdown.visible = true
@@ -592,6 +658,90 @@ func _update_ops_for_row(row_idx: int) -> void:
 			value_edit.visible = true
 			value_dropdown.visible = false
 	)
+
+
+func _condition_snapshots() -> Array:
+	var conditions: Array = []
+	for i in _condition_rows.size():
+		var row: Dictionary = _condition_rows[i]
+		var field := row.field.get_item_text(row.field.selected)
+		var value: Variant = ""
+		if field == "type" and row.type_chooser.visible:
+			value = row.type_chooser.selected_values()
+		elif row.value_dropdown.visible and row.value_dropdown.item_count > 0:
+			value = _dropdown_stored_value(row.value_dropdown)
+		else:
+			value = row.value.text
+		var op := _op_label_to_key(row.op.get_item_text(row.op.selected))
+		if field == "type" and value is Array and value.size() > 1:
+			op = "in"
+		var condition := {"field": field, "op": op, "value": value}
+		if i > 0:
+			condition.conj = "or" if row.conj.selected == 1 else "and"
+		conditions.append(condition)
+	return conditions
+
+
+func _refresh_scoped_controls() -> void:
+	if _refreshing_scope or _condition_rows.is_empty():
+		return
+	_refreshing_scope = true
+	var conditions := _condition_snapshots()
+	for i in _condition_rows.size():
+		var row: Dictionary = _condition_rows[i]
+		var scope := QueryTypeScope.branch_scope(conditions, i)
+		var selected: Array = scope.types
+		var field_name := row.field.get_item_text(row.field.selected)
+		var offered_fields := QueryTypeScope.fields(_type_catalog, selected, scope.known)
+		row.field.clear()
+		for offered in offered_fields:
+			row.field.add_item(str(offered))
+		if not offered_fields.has(field_name):
+			row.field.add_item(field_name)
+		for field_idx in row.field.item_count:
+			if row.field.get_item_text(field_idx) == field_name:
+				row.field.selected = field_idx
+				break
+		var raw_value := ""
+		if row.value_dropdown.visible and row.value_dropdown.item_count > 0:
+			raw_value = str(_dropdown_stored_value(row.value_dropdown))
+		if field_name == "status":
+			row.value_dropdown.clear()
+			row.value_dropdown.add_item("(any)")
+			row.value_dropdown.set_item_metadata(0, "(any)")
+			for group in QueryTypeScope.statuses(_type_catalog, selected, scope.known):
+				for status in group.values:
+					var label := "%s — %s" % [group.label, status] if selected.size() != 1 else str(status)
+					row.value_dropdown.add_item(label)
+					row.value_dropdown.set_item_metadata(row.value_dropdown.item_count - 1, {"value": str(status), "type": group.type, "project": group.project})
+			var found := _select_dropdown_metadata(row.value_dropdown, raw_value)
+			if not raw_value.is_empty() and raw_value != "(any)" and not found:
+				row.value_dropdown.add_item("Unavailable — %s" % raw_value)
+				row.value_dropdown.set_item_metadata(row.value_dropdown.item_count - 1, raw_value)
+				row.value_dropdown.selected = row.value_dropdown.item_count - 1
+		var check := QueryTypeScope.validate_value(field_name, raw_value, _type_catalog, selected, scope.known)
+		row.validation.text = check.message
+		row.validation.visible = not check.valid
+	_refreshing_scope = false
+
+
+func _select_dropdown_metadata(dropdown: OptionButton, value: String) -> bool:
+	for i in dropdown.item_count:
+		var metadata = dropdown.get_item_metadata(i)
+		var stored = metadata.get("value", "") if metadata is Dictionary else metadata
+		if (stored != null and str(stored) == value) or dropdown.get_item_text(i) == value:
+			dropdown.selected = i
+			return true
+	return false
+
+
+func _dropdown_stored_value(dropdown: OptionButton) -> Variant:
+	if dropdown.item_count == 0:
+		return ""
+	var metadata = dropdown.get_item_metadata(dropdown.selected)
+	if metadata is Dictionary:
+		return metadata.get("value", "")
+	return metadata if metadata != null else dropdown.get_item_text(dropdown.selected)
 
 
 func _op_label_to_key(label: String) -> String:
@@ -636,8 +786,11 @@ func _build_conditions_filter() -> Dictionary:
 
 		# Read value from dropdown or text input depending on field
 		var raw_value: String
-		if _dropdown_values().has(field_name) and value_dropdown.visible:
-			raw_value = value_dropdown.get_item_text(value_dropdown.selected) if value_dropdown.item_count > 0 else ""
+		if field_name == "type" and row["type_chooser"].visible:
+			var selected_types: Array = row["type_chooser"].selected_values()
+			raw_value = str(selected_types[0]) if selected_types.size() == 1 else ""
+		elif _dropdown_values().has(field_name) and value_dropdown.visible:
+			raw_value = str(_dropdown_stored_value(value_dropdown))
 		else:
 			raw_value = value_edit.text.strip_edges()
 
@@ -652,6 +805,9 @@ func _build_conditions_filter() -> Dictionary:
 		# Parse value
 		if op_key in ["is_empty", "is_not_empty"]:
 			pass  # no value needed
+		elif field_name == "type" and row["type_chooser"].visible and row["type_chooser"].selected_values().size() > 1:
+			cond["op"] = "in"
+			cond["value"] = row["type_chooser"].selected_values()
 		elif field_name == "has_attachment":
 			cond["value"] = raw_value.to_lower() == "true"
 		elif field_name in ["priority", "severity", "retrieval_count", "research_cost"]:
@@ -659,7 +815,7 @@ func _build_conditions_filter() -> Dictionary:
 		else:
 			cond["value"] = raw_value
 
-		conditions.append(cond)
+		_append_scoped_condition(conditions, cond, row, i)
 
 	if conditions.size() == 0:
 		return {}
@@ -690,8 +846,11 @@ func _serialize_all_conditions() -> Dictionary:
 		var op_key: String = _op_label_to_key(op_label)
 
 		var raw_value: String
-		if _dropdown_values().has(field_name) and value_dropdown.visible:
-			raw_value = value_dropdown.get_item_text(value_dropdown.selected) if value_dropdown.item_count > 0 else ""
+		if field_name == "type" and row["type_chooser"].visible:
+			var chosen: Array = row["type_chooser"].selected_values()
+			raw_value = str(chosen[0]) if chosen.size() == 1 else ""
+		elif _dropdown_values().has(field_name) and value_dropdown.visible:
+			raw_value = str(_dropdown_stored_value(value_dropdown))
 		else:
 			raw_value = value_edit.text.strip_edges()
 
@@ -701,6 +860,9 @@ func _serialize_all_conditions() -> Dictionary:
 
 		if op_key in ["is_empty", "is_not_empty"]:
 			pass
+		elif field_name == "type" and row["type_chooser"].visible and row["type_chooser"].selected_values().size() > 1:
+			cond["op"] = "in"
+			cond["value"] = row["type_chooser"].selected_values()
 		elif field_name == "has_attachment":
 			cond["value"] = raw_value.to_lower() == "true"
 		elif field_name in ["priority", "severity", "retrieval_count", "research_cost"]:
@@ -708,11 +870,25 @@ func _serialize_all_conditions() -> Dictionary:
 		else:
 			cond["value"] = raw_value
 
-		conditions.append(cond)
+		_append_scoped_condition(conditions, cond, row, i)
 
 	if conditions.size() == 0:
 		return {}
 	return {"conditions": conditions}
+
+
+func _append_scoped_condition(conditions: Array, condition: Dictionary, row: Dictionary, row_index: int) -> void:
+	if condition.field == "status" and row.value_dropdown.visible and row.value_dropdown.item_count > 0:
+		var choice = row.value_dropdown.get_item_metadata(row.value_dropdown.selected)
+		var snapshots := _condition_snapshots()
+		var scope := QueryTypeScope.branch_scope(snapshots, row_index)
+		if choice is Dictionary and not scope.known and str(choice.get("type", "")) != "":
+			var expanded := QueryTypeScope.expand_grouped_status(condition, choice, _state.get_project_dbs().size() > 1)
+			if conditions.is_empty() and row_index == 0:
+				expanded[0].erase("conj")
+			conditions.append_array(expanded)
+			return
+	conditions.append(condition)
 
 
 ## Status → display color mapping.
@@ -851,15 +1027,27 @@ func set_filter(text: String) -> void:
 				if op_opt.get_item_text(oi) == op_label:
 					op_opt.selected = oi
 					break
+			if field_name == "type" and op_key not in ["eq", "in"]:
+				row["type_chooser"].visible = false
+				row["value"].visible = op_key not in ["is_empty", "is_not_empty"]
+				row["value_dropdown"].visible = false
 			# Set value
 			if cond.has("value"):
 				var val_str: String = str(cond["value"])
-				if _dropdown_values().has(field_name):
+				if field_name == "type" and op_key in ["eq", "in"]:
+					var values: Array = cond["value"] if cond["value"] is Array else [cond["value"]]
+					row["type_chooser"].set_selected_values(values)
+					row["type_chooser"].visible = true
+					row["value_dropdown"].visible = false
+					row["value"].visible = false
+				elif _dropdown_values().has(field_name):
 					var dd: OptionButton = row["value_dropdown"]
-					for vi in dd.item_count:
-						if dd.get_item_text(vi) == val_str:
-							dd.selected = vi
-							break
+					if not _select_dropdown_metadata(dd, val_str):
+						# Keeping the literal makes legacy saved queries reviewable even
+						# when the current registry cannot offer their old value.
+						dd.add_item("Unavailable — %s" % val_str)
+						dd.set_item_metadata(dd.item_count - 1, val_str)
+						dd.selected = dd.item_count - 1
 					dd.visible = op_key not in ["is_empty", "is_not_empty"]
 					row["value"].visible = false
 				else:
@@ -898,6 +1086,7 @@ func set_filter(text: String) -> void:
 				idx += 1
 		if idx == 0:
 			_add_condition_row(true)
+	_refresh_scoped_controls()
 
 	_run_query()
 
@@ -916,8 +1105,10 @@ func get_filter_summary() -> String:
 		var field_name: String = field_opt.get_item_text(field_opt.selected)
 		var op_label: String = op_opt.get_item_text(op_opt.selected)
 		var val: String
-		if _dropdown_values().has(field_name) and value_dropdown.visible:
-			val = value_dropdown.get_item_text(value_dropdown.selected) if value_dropdown.item_count > 0 else ""
+		if field_name == "type" and row["type_chooser"].visible:
+			val = ", ".join(row["type_chooser"].selected_values())
+		elif _dropdown_values().has(field_name) and value_dropdown.visible:
+			val = str(_dropdown_stored_value(value_dropdown))
 		else:
 			val = value_edit.text.strip_edges()
 

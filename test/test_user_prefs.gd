@@ -166,3 +166,15 @@ func test_vault_hint_does_not_clobber() -> Variant:
 	if r != true: return r
 	UserPrefs.clear_vault_password()
 	return true
+
+
+func test_type_shortcuts_are_separate_and_project_scoped() -> Variant:
+	UserPrefs.save_type_shortcuts("alpha", ["bug", "bug", "dcr"], ["discussion"])
+	UserPrefs.save_type_shortcuts("beta", ["chore"], ["rca", "bug"])
+	var alpha := UserPrefs.load_type_shortcuts("alpha")
+	var beta := UserPrefs.load_type_shortcuts("beta")
+	var r = A.eq(alpha.pinned, ["bug", "dcr"], "pins de-duplicated without mixing recents")
+	if r != true: return r
+	r = A.eq(alpha.recent, ["discussion"], "recents remain separate")
+	if r != true: return r
+	return A.eq(beta.pinned, ["chore"], "second project remains isolated")

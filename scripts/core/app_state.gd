@@ -369,16 +369,13 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 	db_query.erase("sort")
 	db_query.erase("limit")
 
-	# Extract project filter from conditions — "project" is a pseudo-field
-	var project_filter := _extract_project_filter(db_query)
-
 	var all_results: Array = []
 	for proj_name in _project_dbs:
-		# Apply project filter: skip DBs that don't match
-		if not project_filter.is_empty() and not _project_matches(proj_name, project_filter):
-			continue
 		var pdb: DocketDB = _project_dbs[proj_name]
-		var results := pdb.execute_query(db_query, detail)
+		var project_query := _bind_project_conditions(db_query, proj_name)
+		if bool(project_query.get("excluded", false)):
+			continue
+		var results := pdb.execute_query(project_query.query, detail)
 		for item in results:
 			item["project"] = proj_name
 		all_results.append_array(results)
@@ -403,6 +400,36 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 		all_results.resize(limit)
 
 	return all_results
+
+
+func _bind_project_conditions(query: Dictionary, project_name: String) -> Dictionary:
+	## Project is evaluated outside each project's SQLite database. Replacing a
+	## project predicate with a per-database Boolean preserves AND/OR grouping;
+	## removing it would change sibling branches and could widen the query.
+	var bound := query.duplicate(true)
+	var filter = bound.get("filter")
+	if not filter is Dictionary:
+		return {"query": bound, "excluded": false}
+	if filter.has("conditions") and filter.conditions is Array:
+		for i in filter.conditions.size():
+			var condition = filter.conditions[i]
+			if not condition is Dictionary or str(condition.get("field", "")) != "project":
+				continue
+			var replacement := {
+				"field": "id", "op": "is_not_empty" if _project_matches(project_name, condition) else "eq",
+				"value": "__project_scope_never_matches__",
+			}
+			if condition.has("conj"):
+				replacement["conj"] = condition.conj
+			filter.conditions[i] = replacement
+		return {"query": bound, "excluded": false}
+	var flat_filter := filter.duplicate(true)
+	var flat_query := {"filter": flat_filter}
+	var project_filter := _extract_project_filter(flat_query)
+	if not project_filter.is_empty() and not _project_matches(project_name, project_filter):
+		return {"query": bound, "excluded": true}
+	bound["filter"] = flat_query.get("filter", {})
+	return {"query": bound, "excluded": false}
 
 
 func reload_stale() -> Array:

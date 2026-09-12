@@ -116,3 +116,48 @@ static func load_last_query() -> Dictionary:
 	if str(filter_val).is_empty() and str(label_val).is_empty():
 		return {}
 	return {"filter": str(filter_val), "label": str(label_val)}
+
+
+# -- Query type shortcuts -------------------------------------------------
+
+static func load_type_shortcuts(project: String) -> Dictionary:
+	var all_shortcuts = _load_data().get("query_type_shortcuts", {})
+	if not all_shortcuts is Dictionary:
+		return {"pinned": [], "recent": []}
+	var project_data = all_shortcuts.get(project, {})
+	if not project_data is Dictionary:
+		return {"pinned": [], "recent": []}
+	return {
+		"pinned": _string_array(project_data.get("pinned", [])),
+		"recent": _string_array(project_data.get("recent", [])),
+	}
+
+
+static func save_type_shortcuts(project: String, pinned: Array, recent: Array) -> void:
+	var data := _load_data()
+	var all_shortcuts = data.get("query_type_shortcuts", {})
+	if not all_shortcuts is Dictionary:
+		all_shortcuts = {}
+	all_shortcuts[project] = {
+		"pinned": _unique_strings(pinned),
+		"recent": _unique_strings(recent),
+	}
+	data["query_type_shortcuts"] = all_shortcuts
+	_save_data(data)
+
+
+static func _string_array(value: Variant) -> Array:
+	var result: Array = []
+	if value is Array:
+		for entry in value:
+			result.append(str(entry))
+	return result
+
+
+static func _unique_strings(values: Array) -> Array:
+	var result: Array = []
+	for value in values:
+		var text := str(value)
+		if not text.is_empty() and not result.has(text):
+			result.append(text)
+	return result
