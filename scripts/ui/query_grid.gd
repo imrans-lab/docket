@@ -519,17 +519,25 @@ func _add_condition_row(is_first: bool) -> void:
 	row_data["hbox"] = outer  # outer is what gets added/removed from tree
 
 	var row_idx := _condition_rows.size()
-	remove_btn.pressed.connect(_remove_condition_row.bind(row_idx))
+	# Rows can be removed from the middle. Resolve the current index when an
+	# event arrives so a surviving control never acts on its former position.
+	remove_btn.pressed.connect(func():
+		var current_idx := _find_condition_row(row_data)
+		if current_idx >= 0: _remove_condition_row(current_idx)
+	)
 
 	# Wire field change to update operators
 	field_option.item_selected.connect(func(_idx):
+		var current_idx := _find_condition_row(row_data)
+		if current_idx < 0: return
 		_user_has_modified = true
-		_update_ops_for_row(row_idx)
+		_update_ops_for_row(current_idx)
 		_refresh_scoped_controls()
 	)
 
 	# Wire conjunction change to update group visuals
 	conj_option.item_selected.connect(func(_idx):
+		if _find_condition_row(row_data) < 0: return
 		_user_has_modified = true
 		_update_group_visuals()
 		_refresh_scoped_controls()
@@ -542,6 +550,14 @@ func _add_condition_row(is_first: bool) -> void:
 	_update_ops_for_row(row_idx)
 	_update_remove_buttons()
 	_update_group_visuals()
+	_refresh_scoped_controls()
+
+
+func _find_condition_row(target: Dictionary) -> int:
+	for i in _condition_rows.size():
+		if _condition_rows[i].hbox == target.hbox:
+			return i
+	return -1
 
 
 func _remove_condition_row(idx: int) -> void:
@@ -551,20 +567,13 @@ func _remove_condition_row(idx: int) -> void:
 	row["hbox"].queue_free()
 	_condition_rows.remove_at(idx)
 
-	# Re-bind remove buttons with correct indices
-	for i in _condition_rows.size():
-		var btn: Button = _condition_rows[i]["remove_btn"]
-		# Disconnect all pressed signals and reconnect
-		for conn in btn.pressed.get_connections():
-			btn.pressed.disconnect(conn.callable)
-		btn.pressed.connect(_remove_condition_row.bind(i))
-
 	# First row should hide conjunction
 	if _condition_rows.size() > 0:
 		_condition_rows[0]["conj"].visible = false
 
 	_update_remove_buttons()
 	_update_group_visuals()
+	_refresh_scoped_controls()
 
 
 func _update_remove_buttons() -> void:

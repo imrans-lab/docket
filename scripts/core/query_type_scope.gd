@@ -22,6 +22,10 @@ static func branch_scope(conditions: Array, row_index: int, catalog: Array = [])
 		if cond.get("field", "") != "type": continue
 		var raw = cond.get("value", [])
 		var values: Array = raw if raw is Array else [raw]
+		# A newly inserted chooser has no predicate yet. Treating its empty value
+		# as a set made it erase the type scope established by preceding AND rows.
+		values = values.filter(func(value): return not str(value).is_empty())
+		if values.is_empty(): continue
 		if cond.get("op", "") == "catalog_in": identity_sets.append(values)
 		elif str(cond.get("op", "eq")) in ["eq", "in"]: slug_sets.append(values)
 	var identities := _intersection(identity_sets)

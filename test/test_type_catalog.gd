@@ -496,3 +496,37 @@ func test_incompatible_status_remains_visible_in_query_grid() -> Variant:
 	if r != true: grid.queue_free(); return r
 	r = A.eq(grid._dropdown_stored_value(row.value_dropdown), "active", "literal selection retained")
 	grid.queue_free(); return r
+
+func test_added_and_reindexed_rows_refresh_branch_scope_immediately() -> Variant:
+	var state := AppState.new()
+	state.schema = _schema()
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var discussion_key := ""
+	for record in grid._type_catalog:
+		if record.slug == "discussion": discussion_key = record.key
+	grid._condition_rows[0].type_chooser.set_selected_values([discussion_key])
+	grid._refresh_scoped_controls()
+	grid._add_condition_row(false)
+	var added: Dictionary = grid._condition_rows[1]
+	var added_fields: Array = []
+	for i in added.field.item_count: added_fields.append(added.field.get_item_text(i))
+	var r = A.is_false(added_fields.has("revision"), "new AND row immediately excludes fields from another type")
+	if r != true: grid.queue_free(); return r
+	grid._add_condition_row(false)
+	grid._remove_condition_row(1)
+	var shifted: Dictionary = grid._condition_rows[1]
+	var priority_index := -1
+	for i in shifted.field.item_count:
+		if shifted.field.get_item_text(i) == "priority": priority_index = i
+	shifted.field.select(priority_index)
+	shifted.field.item_selected.emit(priority_index)
+	var op_labels: Array = []
+	for i in shifted.op.item_count: op_labels.append(shifted.op.get_item_text(i))
+	r = A.is_true(op_labels.has(">"), "shifted row callback resolves its current index")
+	if r != true: grid.queue_free(); return r
+	shifted.conj.select(1)
+	shifted.conj.item_selected.emit(1)
+	var or_fields: Array = []
+	for i in shifted.field.item_count: or_fields.append(shifted.field.get_item_text(i))
+	r = A.is_true(or_fields.has("revision"), "remaining OR row refreshes to independent type scope")
+	grid.queue_free(); return r
