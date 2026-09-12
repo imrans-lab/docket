@@ -59,7 +59,14 @@ func _init() -> void:
 	_search.gui_input.connect(_on_search_gui_input)
 	content.add_child(_search)
 	_selected_label = Label.new()
-	_selected_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# Keep the complete selection in the tooltip while reserving one stable row
+	# in the popup. An autowrapped Label computes a large minimum height before
+	# its container has established a width, allowing long selections to push
+	# the scrollable catalog outside the requested window bounds.
+	_selected_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_selected_label.clip_text = true
+	_selected_label.custom_minimum_size.y = 24
+	_selected_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	content.add_child(_selected_label)
 	_shortcut_scroll = ScrollContainer.new()
 	_shortcut_scroll.custom_minimum_size.y = 48
@@ -222,7 +229,9 @@ func _rebuild() -> void:
 func _update_summary() -> void:
 	var labels: Array = []
 	for key in _selected: labels.append(_label_for_key(str(key)))
-	_selected_label.text = "Selected: %s" % ", ".join(labels) if not labels.is_empty() else "Selected: none"
+	var summary := "Selected: %s" % ", ".join(labels) if not labels.is_empty() else "Selected: none"
+	_selected_label.text = summary
+	_selected_label.tooltip_text = summary
 	_button.text = "Any type" if labels.is_empty() else ", ".join(labels)
 	_rebuild_shortcuts()
 

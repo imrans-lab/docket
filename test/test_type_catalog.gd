@@ -225,18 +225,31 @@ func test_search_down_then_space_moves_focus_and_selects_catalog_value() -> Vari
 	chooser.queue_free(); return r
 
 func test_popup_opens_below_anchor_with_opaque_bounded_content() -> Variant:
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha"), "popup-test")
+	var large_schema: Dictionary = {"types": {}}
+	for i in 350:
+		var slug := "popup_type_%03d" % i
+		large_schema.types[slug] = {"label": "Popup Type %03d" % i, "description": "Purpose for popup catalog type %03d" % i, "states": []}
+	var catalog: Array = TypeCatalog.from_schema(large_schema, "Alpha")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "popup-test")
+	var selected: Array = []
+	for i in 100: selected.append(catalog[i].key)
+	chooser.set_selected_values(selected)
 	var release := InputEventMouseButton.new(); release.button_index = MOUSE_BUTTON_LEFT; release.pressed = false
 	chooser._on_button_gui_input(release)
 	await get_tree().process_frame
 	var minimum_y := roundi(chooser._button.get_screen_position().y + chooser._button.size.y)
+	var geometry := "popup=%s selected_min=%s list=%s items=%d" % [chooser._popup.size, chooser._selected_label.get_combined_minimum_size(), chooser._list.size, chooser._list.item_count]
 	var r = A.is_true(chooser._popup.visible, "button activation opens popup")
 	if r != true: chooser.queue_free(); return r
 	r = A.is_true(chooser._popup.position.y >= minimum_y, "popup starts below invoking button")
 	if r != true: chooser.queue_free(); return r
 	r = A.is_false(chooser._popup.transparent_bg, "popup owns an opaque background")
 	if r != true: chooser.queue_free(); return r
-	r = A.is_true(chooser._popup.size.y <= 400, "popup height remains bounded; actual=%d" % chooser._popup.size.y)
+	r = A.is_true(chooser._popup.size.y <= 400, "large catalog and selection keep popup bounded; %s" % geometry)
+	if r != true: chooser._popup.hide(); chooser.queue_free(); return r
+	r = A.is_true(chooser._list.size.y >= 120, "bounded popup leaves a usable scrollable catalog; %s" % geometry)
+	if r != true: chooser._popup.hide(); chooser.queue_free(); return r
+	r = A.is_true(chooser._selected_label.tooltip_text.contains("Popup Type 099"), "clipped selection summary preserves full accessible detail")
 	chooser._popup.hide(); chooser.queue_free(); return r
 
 func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
