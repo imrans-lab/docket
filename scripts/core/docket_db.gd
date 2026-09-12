@@ -1470,6 +1470,7 @@ func _exec_select(sql: String, bindings: Array = []) -> Array:
 		ok = _db.query_with_bindings(sql, bindings)
 	if not ok:
 		var msg: String = _db.error_message if _db.error_message else "SQL query failed"
+		if _last_sql_error.is_empty(): _last_sql_error = msg
 		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
 		return []
 	return _db.query_result if _db.query_result else []

@@ -12,7 +12,6 @@ class_name DocketDBJsonl
 ##   3. If neither exists → create new (fresh JSONL + SQLite cache)
 
 var _jsonl_path: String
-var _flush_depth: int = 0  # Reentrance guard to avoid redundant JSONL writes
 var last_write_error: String = ""
 var _write_blocked: bool = false
 var _allow_initial_write: bool = false
@@ -115,6 +114,7 @@ func get_path() -> String:
 
 
 func close() -> void:
+	if _mutation_depth > 0: return
 	# Flush JSONL one last time before closing
 	if _is_open and not _jsonl_path.is_empty() and not _write_blocked and FileAccess.file_exists(_jsonl_path):
 		_flush_jsonl()
@@ -142,7 +142,7 @@ func is_stale() -> bool:
 func ensure_fresh() -> bool:
 	## Reload from JSONL if it changed underneath us. Returns true if reloaded.
 	## No-op mid-mutation: a compound write is not a safe point to swap the DB.
-	if _flush_depth > 0 or _mutation_depth > 0:
+	if _mutation_depth > 0:
 		return false
 	if not is_stale():
 		return false
@@ -152,7 +152,7 @@ func ensure_fresh() -> bool:
 func reload() -> bool:
 	## Force a rebuild of the SQLite cache from the canonical JSONL file,
 	## discarding cached state. Returns true on success.
-	if _jsonl_path.is_empty():
+	if _mutation_depth > 0 or _jsonl_path.is_empty():
 		return false
 
 	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
@@ -185,7 +185,10 @@ func reload() -> bool:
 
 func flush() -> void:
 	## Force a JSONL write. Public counterpart to the internal _flush_jsonl().
-	_flush_jsonl()
+	flush_checked()
+
+func flush_checked() -> String:
+	return _flush_jsonl()
 
 
 func _adopt(source: DocketDB) -> void:
@@ -291,12 +294,12 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 
 func _flush_jsonl() -> String:
 	## Serialize current DB state to JSONL and write atomically.
-	## Uses _flush_depth to coalesce nested mutations (e.g. add_comment → add_event).
+	## Nested mutations defer serialization until their outer transaction commits.
 	## Acquires the supported advisory sidecar before writing and validates the
 	## canonical content again after acquisition.
 	if _jsonl_path.is_empty():
 		return "canonical path is empty"
-	if _flush_depth > 0:
+	if _mutation_depth > 0:
 		return ""  # We're inside a compound mutation — will flush when outermost returns
 	if _write_blocked:
 		return last_write_error
@@ -304,11 +307,14 @@ func _flush_jsonl() -> String:
 		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
 	if FileAccess.file_exists(_jsonl_path) and is_stale():
 		return _fail_flush("canonical source changed; reload before writing")
+	_last_sql_error = ""
 	var expected_source_hash := super.get_meta_value("jsonl_hash", "")
 	var cache_error := _validate_cache_for_flush()
 	if not cache_error.is_empty(): return _fail_flush(cache_error)
 
 	var jsonl_text := JSONLSerializer.serialize_all(self)
+	if not _last_sql_error.is_empty():
+		return _fail_flush("cache read failed during serialization: %s" % _last_sql_error)
 	if jsonl_text.is_empty():
 		return _fail_flush("serializer produced empty output")
 
@@ -424,9 +430,13 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 
 
 func set_item_field(id: String, field: String, val) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	set_item_field_checked(id, field, val)
+
+func set_item_field_checked(id: String, field: String, val) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_item_field(id, field, val)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func delete_item(id: String) -> void:
@@ -481,25 +491,37 @@ func next_id() -> String:
 # -- Meta mutations -----------------------------------------------------------
 
 func set_meta_value(meta_key: String, val: String) -> void:
+	set_meta_value_checked(meta_key, val)
+
+func set_meta_value_checked(meta_key: String, val: String) -> String:
 	# Avoid infinite recursion: _flush_jsonl calls set_meta_value("jsonl_hash", ...)
 	if meta_key == "jsonl_hash":
 		super.set_meta_value(meta_key, val)
-		return
-	if not _begin_canonical_mutation().is_empty(): return
+		return _last_sql_error
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_meta_value(meta_key, val)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func set_id_prefix(prefix: String) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	set_id_prefix_checked(prefix)
+
+func set_id_prefix_checked(prefix: String) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_id_prefix(prefix)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func set_project_name(name: String) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	set_project_name_checked(name)
+
+func set_project_name_checked(name: String) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_project_name(name)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func set_project_meta(meta: Dictionary) -> void:
@@ -514,9 +536,13 @@ func set_project_meta_checked(meta: Dictionary) -> String:
 
 
 func set_counter(val: int) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	set_counter_checked(val)
+
+func set_counter_checked(val: int) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_counter(val)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 # -- Events -------------------------------------------------------------------
@@ -593,9 +619,13 @@ func resolve_comment(comment_id: int, resolution: String, resolved_by: String) -
 # -- Saved queries ------------------------------------------------------------
 
 func save_query(name: String, query_dict: Dictionary) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	save_query_checked(name, query_dict)
+
+func save_query_checked(name: String, query_dict: Dictionary) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.save_query(name, query_dict)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 # -- Secrets ------------------------------------------------------------------
@@ -612,15 +642,23 @@ func init_vault_checked(key: PackedByteArray, salt: PackedByteArray, iterations:
 
 
 func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	set_secret_checked(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
+
+func set_secret_checked(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_secret(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func set_secret_owner(handle: String, owner_item_id: String) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	set_secret_owner_checked(handle, owner_item_id)
+
+func set_secret_owner_checked(handle: String, owner_item_id: String) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_secret_owner(handle, owner_item_id)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func rekey_secret(old_handle: String, new_handle: String) -> String:
@@ -631,48 +669,60 @@ func rekey_secret(old_handle: String, new_handle: String) -> String:
 
 
 func delete_secret(handle: String) -> bool:
-	if not _begin_canonical_mutation().is_empty(): return false
+	var result := delete_secret_checked(handle)
+	return bool(result.deleted) and str(result.error).is_empty()
+
+func delete_secret_checked(handle: String) -> Dictionary:
+	var begin_error := _begin_canonical_mutation()
+	if not begin_error.is_empty(): return {"deleted": false, "error": begin_error}
 	var result := super.delete_secret(handle)
 	var error := _complete_canonical_mutation()
-	return result and error.is_empty()
+	return {"deleted": result and error.is_empty(), "error": error}
 
 
 func rotate_secret(handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String = "", requires_2fa: bool = false) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	rotate_secret_checked(handle, new_ct, new_iv, new_mac, rotated_by, requires_2fa)
+
+func rotate_secret_checked(handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String = "", requires_2fa: bool = false) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.rotate_secret(handle, new_ct, new_iv, new_mac, rotated_by, requires_2fa)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func set_secret_2fa(handle: String, requires: bool) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	set_secret_2fa_checked(handle, requires)
+
+func set_secret_2fa_checked(handle: String, requires: bool) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.set_secret_2fa(handle, requires)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 # -- Retrieval bump -----------------------------------------------------------
 
 func bump_retrieval(id: String) -> void:
-	if not _begin_canonical_mutation().is_empty(): return
+	bump_retrieval_checked(id)
+
+func bump_retrieval_checked(id: String) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.bump_retrieval(id)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 func bump_retrieval_many(ids: Array) -> void:
-	## ONE flush for the whole batch, not one per id.
-	##
-	## _flush_jsonl() re-serializes the ENTIRE database and atomically rewrites
-	## the file, so a loop of N bumps costs N full rewrites of the whole store.
-	## That is quadratic-feeling work on a read path, and it is not theoretical:
-	## on 2026-08-16 a single unfiltered docket_hint_query matched all 276 hints
-	## in a 9.3 MB / 11,385-record store and pinned the main thread at 100% CPU
-	## for ~15 minutes doing 276 serializations. Because the MCP HTTP server is
-	## polled from that same main loop, the server accepted no connections for
-	## the duration — every other tool call in flight timed out.
+	bump_retrieval_many_checked(ids)
+
+func bump_retrieval_many_checked(ids: Array) -> String:
+	## The batch shares one cache transaction and one canonical serialization.
 	if ids.is_empty():
-		return
-	if not _begin_canonical_mutation().is_empty(): return
+		return ""
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	super.bump_retrieval_many(ids)
-	_complete_canonical_mutation()
+	return _complete_canonical_mutation()
 
 
 # -- Transition/error logs (NOT serialized to JSONL per spec) -----------------

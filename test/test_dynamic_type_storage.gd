@@ -609,3 +609,60 @@ func test_nested_project_metadata_completion_writes_canonical_once() -> Variant:
 	r = A.eq(calls.count, 1, "nested virtual setters complete through one durable flush")
 	db.close()
 	return r
+
+func test_midmutation_flush_close_and_reload_cannot_publish_uncommitted_cache() -> Variant:
+	var path := DIR + "/midmutation-guards.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var original := _read_file(path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var r = A.eq(db._begin_canonical_mutation(), "", "outer mutation starts")
+	if r != true: db.close(); return r
+	r = A.eq(db._begin_canonical_mutation(), "", "nested mutation joins transaction")
+	if r != true: return r
+	db._exec_checked("UPDATE items SET title='uncommitted' WHERE id='ORD-0001';")
+	db.flush()
+	db.close()
+	r = A.is_false(db.reload(), "reload and close are deferred while mutation is active")
+	if r != true: return r
+	db._complete_canonical_mutation("forced outer failure")
+	db._complete_canonical_mutation()
+	r = A.eq(_read_file(path), original, "public flush never publishes uncommitted SQL")
+	if r != true: db.close(); return r
+	r = A.eq(db.get_item("ORD-0001").title, "Before definition", "failed outer mutation reconstructs cache")
+	db.close()
+	return r
+
+func test_serializer_read_failure_preserves_canonical_and_rebuilds_complete_cache() -> Variant:
+	var path := DIR + "/serializer-read-failure.dct"
+	_copy_fixture("dynamic_types_legacy_v1.jsonl", path)
+	var original := _read_file(path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	db._exec_checked("DROP TABLE attachments;")
+	var error := db._flush_jsonl()
+	var r = A.contains(error, "cache read failed", "failed serializer SELECT reaches persistence caller")
+	if r != true: db.close(); return r
+	r = A.eq(_read_file(path), original, "serializer read failure performs no atomic replacement")
+	if r != true: db.close(); return r
+	db.close()
+	db = DocketDBJsonl.open_jsonl(path)
+	r = A.eq(db.list_attachments("LEG-0001").size(), 1, "reopen rebuild retains canonical attachment")
+	db.close()
+	return r
+
+func test_checked_setters_return_sql_and_canonical_write_failures() -> Variant:
+	var path := DIR + "/checked-setter-failures.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var original := _read_file(path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	db._exec("CREATE TRIGGER reject_counter BEFORE UPDATE ON docket_meta WHEN NEW.key='counter' BEGIN SELECT RAISE(ABORT, 'counter rejected'); END;")
+	var error := db.set_counter_checked(99)
+	var r = A.is_true(not error.is_empty(), "checked metadata setter returns SQL failure")
+	if r != true: db.close(); return r
+	db._atomic_write_hook = func(_path, _text): return "injected setter write failure"
+	error = db.set_item_field_checked("ORD-0001", "title", "must roll back")
+	db._atomic_write_hook = Callable()
+	r = A.contains(error, "injected setter write failure", "checked item setter returns canonical failure")
+	if r != true: db.close(); return r
+	r = A.eq(_read_file(path), original, "checked setter failures preserve canonical bytes")
+	db.close()
+	return r

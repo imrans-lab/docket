@@ -260,8 +260,7 @@ static func serialize_links(db: DocketDB) -> String:
 static func serialize_attachments(db: DocketDB) -> String:
 	## All attachment lines sorted by (item_id ASC, id ASC).
 	## Uses raw query_with_bindings to retrieve BLOB data.
-	db._db.query("SELECT * FROM attachments ORDER BY item_id ASC, id ASC;")
-	var rows: Array = db._db.query_result if db._db.query_result else []
+	var rows: Array = db._exec_select("SELECT * FROM attachments ORDER BY item_id ASC, id ASC;")
 	if rows.is_empty():
 		return ""
 
