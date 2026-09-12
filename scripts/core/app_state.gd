@@ -21,6 +21,7 @@ var prefs: UserPrefs
 
 # Multi-project support: project_name → DocketDB
 var _project_dbs: Dictionary = {}
+var last_cross_project_query_error: String = ""
 
 
 func load_dct(path: String) -> void:
@@ -349,16 +350,42 @@ func _extract_project_filter(query: Dictionary) -> Dictionary:
 	return {}
 
 
-func _project_matches(proj_name: String, pf: Dictionary) -> bool:
+func _project_match(proj_name: String, pf: Dictionary) -> Dictionary:
 	var op: String = pf.get("op", "eq")
-	var val: String = str(pf.get("value", ""))
+	var raw_value = pf.get("value", "")
+	var val: String = str(raw_value)
 	match op:
-		"eq": return proj_name == val
-		"neq": return proj_name != val
-		"contains": return proj_name.contains(val)
-		"not_contains": return not proj_name.contains(val)
-		"like": return proj_name.matchn(val)
-	return true
+		"eq": return {"matches": proj_name == val}
+		"neq": return {"matches": proj_name != val}
+		"contains": return {"matches": proj_name.contains(val)}
+		"not_contains": return {"matches": not proj_name.contains(val)}
+		"like": return {"matches": _project_like(proj_name, val)}
+		"is_empty": return {"matches": proj_name.is_empty()}
+		"is_not_empty": return {"matches": not proj_name.is_empty()}
+		"in":
+			if not raw_value is Array: return {"error": "project 'in' requires an array value"}
+			return {"matches": raw_value.has(proj_name)}
+	return {"error": "unsupported project query operator '%s'" % op}
+
+
+func _project_like(value: String, pattern: String) -> bool:
+	# Query wildcards use '*' for any run and '.' for one character. The small
+	# dynamic-programming matcher mirrors SQL LIKE without interpolating text.
+	var text := value.to_lower()
+	var wildcard := pattern.to_lower()
+	var previous: Array[bool] = []
+	previous.resize(text.length() + 1)
+	previous[0] = true
+	for pi in wildcard.length():
+		var current: Array[bool] = []
+		current.resize(text.length() + 1)
+		var token := wildcard[pi]
+		if token == "*": current[0] = previous[0]
+		for ti in range(1, text.length() + 1):
+			if token == "*": current[ti] = previous[ti] or current[ti - 1]
+			elif token == "." or token == text[ti - 1]: current[ti] = previous[ti - 1]
+		previous = current
+	return previous[text.length()]
 
 
 func execute_cross_project_query(query: Dictionary, detail: String = "full") -> Array:
@@ -366,6 +393,7 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 	# Strip sort/limit from per-DB queries — "project" is a pseudo-field that
 	# doesn't exist in SQL, and sort/limit must apply to the merged union.
 	var db_query := query.duplicate(true)
+	last_cross_project_query_error = ""
 	db_query.erase("sort")
 	db_query.erase("limit")
 
@@ -373,6 +401,10 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
 		var project_query := _bind_project_conditions(db_query, proj_name)
+		if project_query.has("error"):
+			last_cross_project_query_error = str(project_query.error)
+			push_error(last_cross_project_query_error)
+			return []
 		if bool(project_query.get("excluded", false)):
 			continue
 		var results := pdb.execute_query(project_query.query, detail)
@@ -410,26 +442,44 @@ func _bind_project_conditions(query: Dictionary, project_name: String) -> Dictio
 	var filter = bound.get("filter")
 	if not filter is Dictionary:
 		return {"query": bound, "excluded": false}
-	if filter.has("conditions") and filter.conditions is Array:
-		for i in filter.conditions.size():
-			var condition = filter.conditions[i]
-			if not condition is Dictionary or str(condition.get("field", "")) != "project":
-				continue
-			var replacement := {
-				"field": "id", "op": "is_not_empty" if _project_matches(project_name, condition) else "eq",
-				"value": "__project_scope_never_matches__",
-			}
-			if condition.has("conj"):
-				replacement["conj"] = condition.conj
-			filter.conditions[i] = replacement
+	if filter.has("conditions") or filter.has("$and") or filter.has("$or"):
+		var replaced := _replace_project_predicates(filter, project_name)
+		if replaced.has("error"): return replaced
+		bound["filter"] = replaced.value
 		return {"query": bound, "excluded": false}
 	var flat_filter := filter.duplicate(true)
 	var flat_query := {"filter": flat_filter}
 	var project_filter := _extract_project_filter(flat_query)
-	if not project_filter.is_empty() and not _project_matches(project_name, project_filter):
-		return {"query": bound, "excluded": true}
+	if not project_filter.is_empty():
+		var project_match := _project_match(project_name, project_filter)
+		if project_match.has("error"): return project_match
+		if not project_match.matches: return {"query": bound, "excluded": true}
 	bound["filter"] = flat_query.get("filter", {})
 	return {"query": bound, "excluded": false}
+
+
+func _replace_project_predicates(node: Variant, project_name: String) -> Dictionary:
+	if node is Array:
+		var replaced_array: Array = []
+		for child in node:
+			var replaced_child := _replace_project_predicates(child, project_name)
+			if replaced_child.has("error"): return replaced_child
+			replaced_array.append(replaced_child.value)
+		return {"value": replaced_array}
+	if not node is Dictionary: return {"value": node}
+	if str(node.get("field", "")) == "project":
+		var match_result := _project_match(project_name, node)
+		if match_result.has("error"): return match_result
+		var replacement := {"field": "id", "op": "is_not_empty", "value": ""} if match_result.matches else {"field": "id", "op": "in", "value": []}
+		if node.has("conj"): replacement["conj"] = node.conj
+		return {"value": replacement}
+	var replaced_dict := node.duplicate(true)
+	for key in ["conditions", "$and", "$or"]:
+		if replaced_dict.has(key):
+			var children := _replace_project_predicates(replaced_dict[key], project_name)
+			if children.has("error"): return children
+			replaced_dict[key] = children.value
+	return {"value": replaced_dict}
 
 
 func reload_stale() -> Array:

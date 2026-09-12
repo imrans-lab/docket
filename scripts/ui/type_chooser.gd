@@ -17,6 +17,7 @@ var _popup: PopupPanel
 var _search: LineEdit
 var _list: ItemList
 var _selected_label: Label
+var _shortcut_box: HFlowContainer
 var _empty_label: Label
 var _historical: CheckButton
 
@@ -39,12 +40,20 @@ func _init() -> void:
 	_selected_label = Label.new()
 	_selected_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_selected_label)
+	var shortcut_scroll := ScrollContainer.new()
+	shortcut_scroll.custom_minimum_size.y = 64
+	shortcut_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	content.add_child(shortcut_scroll)
+	_shortcut_box = HFlowContainer.new()
+	_shortcut_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	shortcut_scroll.add_child(_shortcut_box)
 	_historical = CheckButton.new()
 	_historical.text = "Include deprecated types"
 	_historical.toggled.connect(func(_value): _rebuild())
 	content.add_child(_historical)
 	_list = ItemList.new()
 	_list.select_mode = ItemList.SELECT_MULTI
+	_list.focus_mode = Control.FOCUS_ALL
 	_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_list.tooltip_text = "Use arrow keys and Space to select. Right-click a type to pin it."
 	_list.item_selected.connect(_on_selection_changed)
@@ -69,9 +78,8 @@ func configure(catalog: Array, project_key: String) -> void:
 func set_selected_values(values: Array) -> void:
 	_selected.clear()
 	for value in values:
-		var slug := str(value)
-		if not slug.is_empty() and not _selected.has(slug):
-			_selected.append(slug)
+		var key := str(value)
+		if not key.is_empty() and not _selected.has(key): _selected.append(key)
 	_rebuild()
 
 
@@ -89,23 +97,54 @@ func _rebuild() -> void:
 		var project := str(record.get("project", ""))
 		var suffix := " — %s" % project if not project.is_empty() else ""
 		var purpose := str(record.get("description", ""))
-		var marker := "★ " if _pinned.has(record.slug) else ""
+		var marker := "★ " if _pinned.has(record.key) else ""
 		var text := "%s%s%s  (%d)" % [marker, record.label, suffix, int(record.item_count)]
 		if not purpose.is_empty():
 			text += "\n%s" % purpose
 		_list.add_item(text)
 		var idx := _list.item_count - 1
-		_list.set_item_metadata(idx, record.slug)
-		if _selected.has(record.slug):
+		_list.set_item_metadata(idx, record.key)
+		if _selected.has(record.key):
 			_list.select(idx, false)
 	_empty_label.visible = matches.is_empty()
-	var shortcuts := []
-	if not _pinned.is_empty():
-		shortcuts.append("Pinned: %s" % ", ".join(_pinned))
-	if not _recent.is_empty():
-		shortcuts.append("Recent: %s" % ", ".join(_recent))
-	_selected_label.text = ("Selected: %s" % ", ".join(_selected) if not _selected.is_empty() else "Selected: none") + ("\n" + "  |  ".join(shortcuts) if not shortcuts.is_empty() else "")
-	_button.text = "Any type" if _selected.is_empty() else ", ".join(_selected)
+	_update_summary()
+
+
+func _update_summary() -> void:
+	var labels: Array = []
+	for key in _selected: labels.append(_label_for_key(str(key)))
+	_selected_label.text = "Selected: %s" % ", ".join(labels) if not labels.is_empty() else "Selected: none"
+	_button.text = "Any type" if labels.is_empty() else ", ".join(labels)
+	_rebuild_shortcuts()
+
+
+func _label_for_key(key: String) -> String:
+	var record := TypeCatalog.find_by_key(_catalog, key)
+	if record.is_empty(): return "Unknown historical type (%s)" % key
+	var projects := {}
+	for value in _catalog:
+		projects[str(value.project)] = true
+	return "%s — %s" % [record.label, record.project] if projects.size() > 1 and not str(record.project).is_empty() else str(record.label)
+
+
+func _rebuild_shortcuts() -> void:
+	for child in _shortcut_box.get_children():
+		_shortcut_box.remove_child(child)
+		child.queue_free()
+	for heading_and_values in [["Pinned", _pinned], ["Recent", _recent]]:
+		if heading_and_values[1].is_empty(): continue
+		var heading := Label.new(); heading.text = "%s:" % heading_and_values[0]; _shortcut_box.add_child(heading)
+		for key in heading_and_values[1]:
+			var shortcut := Button.new(); shortcut.text = _label_for_key(str(key)); shortcut.focus_mode = Control.FOCUS_ALL
+			shortcut.pressed.connect(_activate_shortcut.bind(str(key)))
+			_shortcut_box.add_child(shortcut)
+
+
+func _activate_shortcut(key: String) -> void:
+	if not _selected.has(key): _selected.append(key)
+	_recent.erase(key); _recent.push_front(key)
+	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
+	_rebuild(); selection_changed.emit(selected_values())
 
 
 func _on_selection_changed(_index: int) -> void:
@@ -113,28 +152,27 @@ func _on_selection_changed(_index: int) -> void:
 	var visible := []
 	for i in _list.item_count:
 		visible.append(str(_list.get_item_metadata(i)))
-	for slug in visible:
-		_selected.erase(slug)
+	for key in visible: _selected.erase(key)
 	for idx in _list.get_selected_items():
-		var slug := str(_list.get_item_metadata(idx))
-		_selected.append(slug)
-		_recent.erase(slug)
-		_recent.push_front(slug)
+		var key := str(_list.get_item_metadata(idx))
+		_selected.append(key)
+		_recent.erase(key)
+		_recent.push_front(key)
 	if _recent.size() > 12:
 		_recent.resize(12)
 	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
-	_rebuild()
+	_update_summary()
 	selection_changed.emit(selected_values())
 
 
 func _on_item_clicked(index: int, _position: Vector2, mouse_button: int) -> void:
 	if mouse_button != MOUSE_BUTTON_RIGHT:
 		return
-	var slug := str(_list.get_item_metadata(index))
-	if _pinned.has(slug):
-		_pinned.erase(slug)
+	var key := str(_list.get_item_metadata(index))
+	if _pinned.has(key):
+		_pinned.erase(key)
 	else:
-		_pinned.append(slug)
+		_pinned.append(key)
 	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild()
 	shortcuts_changed.emit(_pinned.duplicate(), _recent.duplicate())

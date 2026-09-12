@@ -4,6 +4,55 @@ extends Node
 ## built-in schema adapter.
 
 var A := AssertHelpers
+var _db_dir := "user://test_type_catalog"
+var _dbs: Array = []
+var _prefs_backup := ""
+const _PREFS_PATH := "user://docket_prefs.json"
+
+func setup() -> void:
+	DirAccess.make_dir_recursive_absolute(_db_dir)
+	if FileAccess.file_exists(_PREFS_PATH):
+		var prefs := FileAccess.open(_PREFS_PATH, FileAccess.READ)
+		_prefs_backup = prefs.get_as_text()
+
+func before_each() -> void:
+	_cleanup_databases()
+
+func _cleanup_databases() -> void:
+	for db in _dbs: db.close()
+	_dbs.clear()
+	var dir := DirAccess.open(_db_dir)
+	if dir:
+		for name in dir.get_files(): dir.remove(name)
+
+func teardown() -> void:
+	_cleanup_databases()
+	var dir := DirAccess.open(_db_dir)
+	if dir:
+		DirAccess.remove_absolute(_db_dir)
+	if _prefs_backup.is_empty():
+		if FileAccess.file_exists(_PREFS_PATH): DirAccess.remove_absolute(_PREFS_PATH)
+	else:
+		var prefs := FileAccess.open(_PREFS_PATH, FileAccess.WRITE)
+		prefs.store_string(_prefs_backup)
+
+func _make_db(project: String, items: Array) -> DocketDB:
+	var db := DocketDB.create_new("%s/%s.dct" % [_db_dir, project])
+	db.set_project_name(project)
+	for i in items.size():
+		var item: Dictionary = items[i]
+		db.insert_item("%s-%04d" % [project.to_upper(), i + 1], {"type": item.type, "status": item.status, "title": item.title, "created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00", "tags": [], "events": [], "links": []})
+	_dbs.append(db)
+	return db
+
+func _two_project_state() -> AppState:
+	var state := AppState.new()
+	state.schema = _schema()
+	var alpha := _make_db("Alpha", [{"type": "discussion", "status": "active", "title": "Alpha thread"}, {"type": "code_review", "status": "requested", "title": "Alpha review"}])
+	var beta := _make_db("Beta", [{"type": "discussion", "status": "resolved", "title": "Beta thread"}, {"type": "code_review", "status": "approved", "title": "Beta review"}])
+	state._project_dbs = {"Alpha": alpha, "Beta": beta}
+	state.db = alpha
+	return state
 
 
 func _schema() -> Dictionary:
@@ -37,6 +86,18 @@ func test_search_matches_metadata_without_reordering() -> Variant:
 	if r != true: return r
 	return A.eq(alias_matches[0].item_count, 0, "active zero-count type remains discoverable")
 
+func test_large_catalog_keeps_alphabetical_order_after_metadata_search() -> Variant:
+	var schema := {"types": {}}
+	for i in 350:
+		var slug := "type_%03d" % i
+		schema.types[slug] = {"label": "Label %03d" % (349 - i), "description": "batch-even" if i % 2 == 0 else "batch-odd", "states": []}
+	var matches := TypeCatalog.filter(TypeCatalog.from_schema(schema), "batch-even")
+	var r = A.eq(matches.size(), 175, "all metadata matches retained")
+	if r != true: return r
+	for i in range(1, matches.size()):
+		if str(matches[i - 1].label).nocasecmp_to(str(matches[i].label)) > 0: return "large filtered catalog is not alphabetical"
+	return true
+
 
 func test_deprecated_types_require_explicit_option() -> Variant:
 	var records := TypeCatalog.from_schema(_schema())
@@ -49,14 +110,14 @@ func test_deprecated_types_require_explicit_option() -> Variant:
 
 func test_discussion_scope_only_offers_discussion_states() -> Variant:
 	var catalog := TypeCatalog.from_schema(_schema())
-	var groups := QueryTypeScope.statuses(catalog, ["discussion"])
+	var groups := QueryTypeScope.statuses(catalog, {"known": true, "identities": [], "types": ["discussion"]})
 	var r = A.eq(groups.size(), 1, "one selected type group")
 	if r != true: return r
 	return A.eq(groups[0].values, ["active", "resolved"], "discussion states")
 
 
 func test_multiple_types_keep_separate_status_groups() -> Variant:
-	var groups := QueryTypeScope.statuses(TypeCatalog.from_schema(_schema()), ["discussion", "code_review"])
+	var groups := QueryTypeScope.statuses(TypeCatalog.from_schema(_schema()), {"known": true, "identities": [], "types": ["discussion", "code_review"]})
 	var values_by_type := {}
 	for group in groups:
 		values_by_type[group.type] = group.values
@@ -72,9 +133,9 @@ func test_or_branches_do_not_share_type_scope() -> Variant:
 		{"field": "type", "op": "eq", "value": "code_review", "conj": "or"},
 		{"field": "status", "op": "eq", "value": "requested", "conj": "and"},
 	]
-	var r = A.eq(QueryTypeScope.selected_types(conditions, 1), ["discussion"], "first branch scope")
+	var r = A.eq(QueryTypeScope.branch_scope(conditions, 1).types, ["discussion"], "first branch scope")
 	if r != true: return r
-	return A.eq(QueryTypeScope.selected_types(conditions, 3), ["code_review"], "second branch scope")
+	return A.eq(QueryTypeScope.branch_scope(conditions, 3).types, ["code_review"], "second branch scope")
 
 
 func test_and_type_predicates_intersect() -> Variant:
@@ -90,8 +151,8 @@ func test_and_type_predicates_intersect() -> Variant:
 
 func test_scope_retains_valid_and_reports_incompatible_values() -> Variant:
 	var catalog := TypeCatalog.from_schema(_schema())
-	var retained := QueryTypeScope.validate_value("status", "active", catalog, ["discussion"])
-	var invalidated := QueryTypeScope.validate_value("status", "active", catalog, ["code_review"])
+	var retained := QueryTypeScope.validate_value("status", "active", catalog, {"known": true, "identities": [], "types": ["discussion"]})
+	var invalidated := QueryTypeScope.validate_value("status", "active", catalog, {"known": true, "identities": [], "types": ["code_review"]})
 	var r = A.is_true(retained.valid, "valid state retained")
 	if r != true: return r
 	r = A.is_false(invalidated.valid, "incompatible state invalidated")
@@ -100,7 +161,7 @@ func test_scope_retains_valid_and_reports_incompatible_values() -> Variant:
 
 
 func test_type_scoped_fields_are_a_union() -> Variant:
-	var fields := QueryTypeScope.fields(TypeCatalog.from_schema(_schema()), ["discussion", "code_review"])
+	var fields := QueryTypeScope.fields(TypeCatalog.from_schema(_schema()), {"known": true, "identities": [], "types": ["discussion", "code_review"]})
 	var r = A.is_true(fields.has("priority"), "discussion field")
 	if r != true: return r
 	r = A.is_true(fields.has("revision"), "review field")
@@ -108,26 +169,70 @@ func test_type_scoped_fields_are_a_union() -> Variant:
 	return A.is_true(fields.has("title"), "shared field")
 
 
-func test_grouped_status_materializes_project_and_type_identity() -> Variant:
-	var condition := {"field": "status", "op": "eq", "value": "requested", "conj": "or"}
-	var expanded := QueryTypeScope.expand_grouped_status(condition, {"value": "requested", "type": "code_review", "project": "alpha"}, true)
-	var r = A.eq(expanded[0], {"field": "project", "op": "eq", "value": "alpha", "conj": "or"}, "project starts original branch")
-	if r != true: return r
-	r = A.eq(expanded[1], {"field": "type", "op": "eq", "value": "code_review", "conj": "and"}, "type is bound inside group")
-	if r != true: return r
-	return A.eq(expanded[2].value, "requested", "status literal retained")
-
-
 func test_type_chooser_keeps_selection_when_search_hides_it() -> Variant:
 	var chooser := TypeChooser.new()
 	add_child(chooser)
-	chooser.configure(TypeCatalog.from_schema(_schema()), "chooser-test")
-	chooser.set_selected_values(["discussion", "code_review"])
+	var catalog := TypeCatalog.from_schema(_schema(), "alpha")
+	chooser.configure(catalog, "chooser-test")
+	var keys := [catalog[0].key, catalog[1].key]
+	chooser.set_selected_values(keys)
 	chooser._search.text = "approval"
 	chooser._rebuild()
-	var r = A.eq(chooser.selected_values(), ["discussion", "code_review"], "search does not discard hidden selections")
+	var r = A.eq(chooser.selected_values(), keys, "search does not discard hidden selections")
 	chooser.queue_free()
 	return r
+
+func test_type_chooser_supports_focusable_keyboard_multiselect() -> Variant:
+	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "keyboard-test")
+	var original_count := chooser._list.item_count
+	chooser._list.select(0, false); chooser._on_selection_changed(0)
+	chooser._list.select(1, false); chooser._on_selection_changed(1)
+	var r = A.eq(chooser._list.select_mode, ItemList.SELECT_MULTI, "list exposes persistent multi-selection")
+	if r != true: chooser.queue_free(); return r
+	r = A.eq(chooser._list.focus_mode, Control.FOCUS_ALL, "catalog accepts keyboard focus")
+	if r != true: chooser.queue_free(); return r
+	r = A.eq(chooser.selected_values().size(), 2, "two keyboard-addressable rows remain selected")
+	if r != true: chooser.queue_free(); return r
+	r = A.eq(chooser._list.item_count, original_count, "successive selection does not rebuild or reposition catalog")
+	if r != true: chooser.queue_free(); return r
+	chooser._pinned = [catalog[0].key]; chooser._rebuild()
+	r = A.eq(chooser._shortcut_box.get_child(1).focus_mode, Control.FOCUS_ALL, "shortcut action participates in keyboard focus")
+	chooser.queue_free(); return r
+
+func test_duplicate_slug_selection_uses_catalog_identity_and_human_label() -> Variant:
+	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
+	catalog.append_array(TypeCatalog.from_schema(_schema(), "Beta"))
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "duplicate-test")
+	var alpha_key := ""
+	for record in catalog:
+		if record.project == "Alpha" and record.slug == "discussion": alpha_key = record.key
+	chooser.set_selected_values([alpha_key])
+	var r = A.eq(chooser._button.text, "discussion — Alpha", "duplicate label disambiguates project")
+	if r != true: chooser.queue_free(); return r
+	r = A.eq(chooser._list.get_selected_items().size(), 1, "same slug in other project stays unselected")
+	chooser.queue_free(); return r
+
+func test_shortcut_button_selects_type_without_reordering_catalog() -> Variant:
+	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "shortcut-test")
+	var key := catalog[0].key
+	chooser._pinned = [key]; chooser._rebuild()
+	var before := []
+	for i in chooser._list.item_count: before.append(chooser._list.get_item_metadata(i))
+	chooser._activate_shortcut(key)
+	var after := []
+	for i in chooser._list.item_count: after.append(chooser._list.get_item_metadata(i))
+	var r = A.eq(chooser.selected_values(), [key], "shortcut is actionable")
+	if r != true: chooser.queue_free(); return r
+	r = A.eq(after, before, "shortcut does not reorder main list")
+	chooser.queue_free(); return r
+
+func test_unknown_historical_selection_remains_visible() -> Variant:
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure([], "unknown-test")
+	chooser.set_selected_values(["retired-type-id"])
+	var r = A.is_true(chooser._button.text.contains("Unknown historical type"), "unknown selection is visible")
+	chooser.queue_free(); return r
 
 
 func test_membership_operator_translates_to_bound_in_predicate() -> Variant:
@@ -149,6 +254,81 @@ func test_cross_project_binding_preserves_or_branches() -> Variant:
 	var beta := state._bind_project_conditions(query, "beta").query.filter.conditions
 	var r = A.eq(alpha[0].op, "is_not_empty", "matching project keeps first branch true")
 	if r != true: return r
-	r = A.eq(beta[0].value, "__project_scope_never_matches__", "other project disables only scoped branch")
+	r = A.eq(beta[0].value, [], "other project disables only scoped branch")
 	if r != true: return r
 	return A.eq(beta[2].conj, "or", "independent sibling branch is retained")
+
+func test_cross_project_or_query_returns_database_rows_from_independent_branches() -> Variant:
+	var state := _two_project_state()
+	var query := {"filter": {"$or": [{"$and": [{"field": "project", "op": "eq", "value": "Alpha"}, {"field": "type", "op": "eq", "value": "discussion"}]}, {"$and": [{"field": "project", "op": "eq", "value": "Beta"}, {"field": "status", "op": "eq", "value": "approved"}]}]}}
+	var rows := state.execute_cross_project_query(query)
+	var titles := []
+	for row in rows: titles.append(row.title)
+	titles.sort()
+	return A.eq(titles, ["Alpha thread", "Beta review"], "OR branches keep their own project predicates")
+
+func test_project_in_and_empty_operators_do_not_widen_results() -> Variant:
+	var state := _two_project_state()
+	var in_rows := state.execute_cross_project_query({"filter": {"conditions": [{"field": "project", "op": "in", "value": ["Beta"]}]}})
+	var r = A.eq(in_rows.size(), 2, "project in selects only requested database")
+	if r != true: return r
+	var empty_rows := state.execute_cross_project_query({"filter": {"conditions": [{"field": "project", "op": "is_empty"}]}})
+	return A.eq(empty_rows.size(), 0, "named projects do not satisfy is_empty")
+
+func test_unsupported_project_operator_reports_actionable_error() -> Variant:
+	var state := _two_project_state()
+	var rows := state.execute_cross_project_query({"filter": {"conditions": [{"field": "project", "op": "gt", "value": "Alpha"}]}})
+	var r = A.eq(rows.size(), 0, "unsupported query refused")
+	if r != true: return r
+	return A.is_true(state.last_cross_project_query_error.contains("gt"), "error identifies operator")
+
+func test_query_grid_serializes_project_identity_and_executes_only_that_project() -> Variant:
+	var state := _two_project_state()
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var alpha_key := ""
+	for record in grid._type_catalog:
+		if record.project == "Alpha" and record.slug == "discussion": alpha_key = record.key
+	grid._condition_rows[0].type_chooser.set_selected_values([alpha_key]); grid._user_has_modified = true
+	var saved = JSON.parse_string(grid.get_filter())
+	var r = A.eq(saved.conditions[0].op, "catalog_in", "saved UI filter retains stable identity")
+	if r != true: grid.queue_free(); return r
+	grid._run_query()
+	r = A.eq(grid._current_results.size(), 1, "compiled selection returns one project row")
+	if r != true: grid.queue_free(); return r
+	r = A.eq(grid._current_results[0].title, "Alpha thread", "duplicate Beta slug excluded")
+	grid.queue_free(); return r
+
+func test_query_grid_multiselect_keeps_each_project_type_pair_coupled() -> Variant:
+	var state := _two_project_state()
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var keys: Array = []
+	for record in grid._type_catalog:
+		if (record.project == "Alpha" and record.slug == "discussion") or (record.project == "Beta" and record.slug == "code_review"): keys.append(record.key)
+	grid._condition_rows[0].type_chooser.set_selected_values(keys); grid._user_has_modified = true; grid._run_query()
+	var titles: Array = []
+	for item in grid._current_results: titles.append(item.title)
+	titles.sort()
+	var r = A.eq(titles, ["Alpha thread", "Beta review"], "multiselect retains project/type pair identity")
+	grid.queue_free(); return r
+
+func test_legacy_unqualified_filter_round_trips_without_rebinding() -> Variant:
+	var state := _two_project_state()
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var original := {"conditions": [{"field": "type", "op": "eq", "value": "discussion"}]}
+	grid.set_filter(JSON.stringify(original))
+	var path := _db_dir + "/legacy.dcq"
+	grid.save_dcq(path)
+	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(state); reopened.load_dcq(path)
+	var saved = JSON.parse_string(reopened.get_filter())
+	var r = A.eq(saved, original, "legacy literal survives dcq save and load")
+	grid.queue_free(); reopened.queue_free(); return r
+
+func test_incompatible_status_remains_visible_in_query_grid() -> Variant:
+	var state := _two_project_state()
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	grid.set_filter(JSON.stringify({"conditions": [{"field": "type", "op": "eq", "value": "code_review"}, {"field": "status", "op": "eq", "value": "active", "conj": "and"}]}))
+	var row: Dictionary = grid._condition_rows[1]
+	var r = A.is_true(row.validation.visible, "incompatible condition is visibly invalid")
+	if r != true: grid.queue_free(); return r
+	r = A.eq(grid._dropdown_stored_value(row.value_dropdown), "active", "literal selection retained")
+	grid.queue_free(); return r

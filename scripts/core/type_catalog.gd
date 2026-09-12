@@ -14,6 +14,7 @@ static func from_schema(schema: Dictionary, project: String = "", counts: Dictio
 		var lifecycle := str(definition.get("lifecycle", "active"))
 		result.append({
 			"id": str(definition.get("id", slug)),
+			"key": identity(project, str(definition.get("id", slug))),
 			"slug": slug,
 			"label": str(definition.get("label", slug.capitalize())),
 			"description": str(definition.get("description", "")),
@@ -26,6 +27,19 @@ static func from_schema(schema: Dictionary, project: String = "", counts: Dictio
 			"fields": _fields_for_definition(definition),
 		})
 	return sorted(result)
+
+
+static func identity(project: String, type_id: String) -> String:
+	# JSON encoding avoids delimiter ambiguity while remaining stable in prefs.
+	return JSON.stringify([project, type_id])
+
+
+static func find_by_key(records: Array, key: String) -> Dictionary:
+	for record_value in records:
+		var record: Dictionary = record_value
+		if str(record.get("key", "")) == key:
+			return record
+	return {}
 
 
 static func sorted(records: Array) -> Array:
