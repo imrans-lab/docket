@@ -204,6 +204,29 @@ func test_unknown_stored_payload_survives_typed_edit_but_unknown_edit_is_rejecte
 	r = A.is_true(error.contains("unsupported") and FileAccess.get_file_as_string(path) == before_text, "unsupported future fields cannot be erased through unset")
 	db.close(); return r
 
+func test_present_opaque_field_cannot_be_unset_by_typed_operations() -> Variant:
+	var path := DIR + "/opaque-unset.dct"; var db := DocketDBJsonl.create_new_jsonl(path); var registry := TypeRegistry.new(db); _define(registry)
+	var made := registry.create_item({"type":"widget","title":"Opaque","mode":"a"}, "tester")
+	var seed_error := db.update_item_fields_checked(made.id, {"fields":{"future_field":{"nested":[0,false,null,""]}}})
+	if seed_error.is_empty(): seed_error = db._exec_checked("UPDATE items SET extras_json=? WHERE id=?;", [JSON.stringify({"future_envelope":{"unicode":"雪"}}, "", true, true), made.id])
+	if seed_error.is_empty(): seed_error = db.flush_checked()
+	var r = A.eq(seed_error, "", "opaque forward data is durably seeded before typed refusal checks")
+	if r is String: db.close(); return r
+	var before_item: Dictionary = db.get_item(made.id); var before_events := db.get_events(made.id); var before_text := FileAccess.get_file_as_string(path)
+	var error := registry.update_item(made.id, {"unset_fields":["future_field"]}, "tester")
+	r = _assert_opaque_refusal(db, path, made.id, error, before_item, before_events, before_text, "typed update")
+	if r is String: db.close(); return r
+	error = registry.transition_item(made.id, "done", "tester", "", {"mode":"a","unset_fields":["future_field"]})
+	r = _assert_opaque_refusal(db, path, made.id, error, before_item, before_events, before_text, "valid transition")
+	if r is String: db.close(); return r
+	error = registry.repair_item_status(made.id, "queued", "reviewer", "validated repair", {"unset_fields":["future_field"]})
+	r = _assert_opaque_refusal(db, path, made.id, error, before_item, before_events, before_text, "explicit repair")
+	db.close(); return r
+
+func _assert_opaque_refusal(db: DocketDBJsonl, path: String, id: String, error: String, before_item: Dictionary, before_events: Array, before_text: String, operation: String) -> Variant:
+	var item: Dictionary = db.get_item(id)
+	return A.is_true(error.contains("unsupported") and item.fields.future_field == before_item.fields.future_field and item.extras.future_envelope == before_item.extras.future_envelope and item.status == before_item.status and item.type_revision == before_item.type_revision and db.get_events(id) == before_events and FileAccess.get_file_as_string(path) == before_text, "%s refuses present opaque unset without changing payload, extras, lifecycle, pin, audit, or canonical bytes" % operation)
+
 func test_numeric_constraints_survive_json_roundtrip_and_nonfinite_values_refuse() -> Variant:
 	var path := DIR + "/numeric.dct"; var db := DocketDBJsonl.create_new_jsonl(path); var registry := TypeRegistry.new(db); var definition := _definition(); definition.fields[0].max_length = 20
 	var defined := registry.define_type("widget", definition, "tester", "numeric constraints")
