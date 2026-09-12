@@ -207,7 +207,17 @@ func test_search_down_then_space_moves_focus_and_selects_catalog_value() -> Vari
 	chooser._on_search_gui_input(down)
 	var r = A.is_true(chooser._list.has_focus(), "Down transfers focus from search to results")
 	if r != true: chooser.queue_free(); return r
+	r = A.eq(chooser._cursor_index, 0, "Down establishes a visible chooser cursor")
+	if r != true: chooser.queue_free(); return r
 	r = A.eq(chooser._list.get_selected_items().size(), 0, "navigation alone does not change query selection")
+	if r != true: chooser.queue_free(); return r
+	var next := InputEventKey.new(); next.pressed = true; next.keycode = KEY_DOWN
+	chooser._on_list_gui_input(next)
+	r = A.eq(chooser._cursor_index, 1, "Down arrow advances the explicit cursor")
+	if r != true: chooser.queue_free(); return r
+	var previous := InputEventKey.new(); previous.pressed = true; previous.keycode = KEY_UP
+	chooser._on_list_gui_input(previous)
+	r = A.eq(chooser._cursor_index, 0, "Up arrow moves the cursor back")
 	if r != true: chooser.queue_free(); return r
 	var space := InputEventKey.new(); space.pressed = true; space.keycode = KEY_SPACE
 	chooser._on_list_gui_input(space)

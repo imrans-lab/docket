@@ -22,6 +22,8 @@ var _shortcut_scroll: ScrollContainer
 var _empty_label: Label
 var _historical: CheckButton
 var _shortcut_error: Label
+var _cursor_index := -1
+const _CURSOR_COLOR := Color(0.24, 0.38, 0.58, 0.75)
 
 
 func _init() -> void:
@@ -79,8 +81,7 @@ func _init() -> void:
 	_list.focus_mode = Control.FOCUS_ALL
 	_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_list.tooltip_text = "Use arrow keys and Space to select. Right-click a type to pin it."
-	_list.item_selected.connect(_on_selection_changed)
-	_list.multi_selected.connect(func(_idx, _selected_state): _on_selection_changed(-1))
+	_list.multi_selected.connect(func(idx, _selected_state): _on_selection_changed(idx))
 	_list.item_clicked.connect(_on_item_clicked)
 	_list.gui_input.connect(_on_list_gui_input)
 	content.add_child(_list)
@@ -138,23 +139,45 @@ func _open_popup() -> void:
 func _on_search_gui_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_DOWN and _list.item_count > 0:
 		_list.grab_focus()
-		_list.set_current(0)
-		_list.ensure_current_is_visible()
+		_set_cursor(0)
 		accept_event()
 
 
 func _on_list_gui_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed:
 		return
-	if event.keycode == KEY_UP and _list.get_current() == 0:
+	if event.keycode == KEY_UP and _cursor_index == 0:
 		_search.grab_focus()
 		accept_event()
-	elif event.keycode == KEY_SPACE and _list.get_current() >= 0:
-		var current := _list.get_current()
-		if _list.is_selected(current): _list.deselect(current)
-		else: _list.select(current, false)
-		_on_selection_changed(current)
+	elif event.keycode in [KEY_UP, KEY_DOWN] and _list.item_count > 0:
+		var direction := -1 if event.keycode == KEY_UP else 1
+		_set_cursor(clampi(_cursor_index + direction, 0, _list.item_count - 1))
 		accept_event()
+	elif event.keycode == KEY_SPACE and _cursor_index >= 0:
+		if _list.is_selected(_cursor_index): _list.deselect(_cursor_index)
+		else: _list.select(_cursor_index, false)
+		_on_selection_changed(_cursor_index)
+		accept_event()
+
+
+func _set_cursor(index: int) -> void:
+	if _cursor_index >= 0 and _cursor_index < _list.item_count:
+		_list.set_item_custom_bg_color(_cursor_index, Color.TRANSPARENT)
+	_cursor_index = index
+	if _cursor_index >= 0 and _cursor_index < _list.item_count:
+		_list.set_item_custom_bg_color(_cursor_index, _CURSOR_COLOR)
+		call_deferred("_scroll_cursor_visible")
+
+
+func _scroll_cursor_visible() -> void:
+	if _cursor_index < 0 or _cursor_index >= _list.item_count:
+		return
+	var rect: Rect2 = _list.get_item_rect(_cursor_index)
+	var scroll: VScrollBar = _list.get_v_scroll_bar()
+	if rect.position.y < 0:
+		scroll.value += rect.position.y
+	elif rect.end.y > _list.size.y:
+		scroll.value += rect.end.y - _list.size.y
 
 
 func set_selected_values(values: Array) -> void:
@@ -192,6 +215,7 @@ func _rebuild() -> void:
 		if _selected.has(record.key):
 			_list.select(idx, false)
 	_empty_label.visible = matches.is_empty()
+	_set_cursor(mini(_cursor_index, _list.item_count - 1))
 	_update_summary()
 
 
@@ -233,8 +257,10 @@ func _activate_shortcut(key: String) -> void:
 	_rebuild(); selection_changed.emit(selected_values())
 
 
-func _on_selection_changed(_index: int) -> void:
+func _on_selection_changed(index: int) -> void:
 	# Only visible entries are reconciled. Hidden selections survive filtering.
+	if index >= 0:
+		_set_cursor(index)
 	var visible := []
 	for i in _list.item_count:
 		visible.append(str(_list.get_item_metadata(i)))

@@ -28,6 +28,7 @@ func _ready() -> void:
 		preload("res://test/test_meta_roundtrip.gd"),
 		preload("res://test/test_user_prefs.gd"),
 		preload("res://test/test_type_catalog.gd"),
+		preload("res://test/test_test_runner_async.gd"),
 		preload("res://test/test_jsonl_serializer.gd"),
 		preload("res://test/test_jsonl_parser.gd"),
 		preload("res://test/test_jsonl_migration.gd"),
@@ -79,9 +80,7 @@ func run_all() -> int:
 		print("=== %s ===" % script_name)
 
 		if test_instance.has_method("setup"):
-			var setup_result = test_instance.setup()
-			if setup_result is Signal:
-				await setup_result
+			await test_instance.setup()
 
 		var methods: Array[Dictionary] = test_instance.get_method_list()
 		for method in methods:
@@ -90,9 +89,7 @@ func run_all() -> int:
 				await _run_test(test_instance, name)
 
 		if test_instance.has_method("teardown"):
-			var td_result = test_instance.teardown()
-			if td_result is Signal:
-				await td_result
+			await test_instance.teardown()
 
 		test_instance.queue_free()
 		print("")
@@ -104,16 +101,9 @@ func run_all() -> int:
 func _run_test(instance: Node, method_name: String) -> void:
 	# Per-test setup
 	if instance.has_method("before_each"):
-		var be = instance.before_each()
-		if be is Signal:
-			await be
+		await instance.before_each()
 
-	var result: Variant = instance.call(method_name)
-
-	if result is Object and result.has_method("is_valid"):
-		result = await result
-	elif result is Signal:
-		result = await result
+	var result: Variant = await instance.call(method_name)
 
 	# Every test method is declared `-> Variant` and returns true (pass) or an
 	# error String (fail). null is therefore NEVER a legitimate result: GDScript
@@ -135,9 +125,7 @@ func _run_test(instance: Node, method_name: String) -> void:
 
 	# Per-test teardown
 	if instance.has_method("after_each"):
-		var ae = instance.after_each()
-		if ae is Signal:
-			await ae
+		await instance.after_each()
 
 
 func _print_summary() -> void:
