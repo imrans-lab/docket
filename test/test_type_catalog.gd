@@ -216,7 +216,7 @@ func test_duplicate_slug_selection_uses_catalog_identity_and_human_label() -> Va
 func test_shortcut_button_selects_type_without_reordering_catalog() -> Variant:
 	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
 	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "shortcut-test")
-	var key := catalog[0].key
+	var key: String = str(catalog[0].key)
 	chooser._pinned = [key]; chooser._rebuild()
 	var before := []
 	for i in chooser._list.item_count: before.append(chooser._list.get_item_metadata(i))
@@ -250,8 +250,8 @@ func test_cross_project_binding_preserves_or_branches() -> Variant:
 		{"field": "type", "op": "eq", "value": "discussion", "conj": "and"},
 		{"field": "type", "op": "eq", "value": "code_review", "conj": "or"},
 	]}}
-	var alpha := state._bind_project_conditions(query, "alpha").query.filter.conditions
-	var beta := state._bind_project_conditions(query, "beta").query.filter.conditions
+	var alpha: Array = state._bind_project_conditions(query, "alpha").query.filter.conditions
+	var beta: Array = state._bind_project_conditions(query, "beta").query.filter.conditions
 	var r = A.eq(alpha[0].op, "is_not_empty", "matching project keeps first branch true")
 	if r != true: return r
 	r = A.eq(beta[0].value, [], "other project disables only scoped branch")
