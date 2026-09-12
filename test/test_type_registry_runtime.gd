@@ -255,7 +255,9 @@ func test_numeric_constraints_survive_json_roundtrip_and_nonfinite_values_refuse
 	var preview := registry.preview_evolution("widget", with_object, registry.get_type("widget").current_revision, [made.id])
 	error = registry.apply_evolution(preview, "tester", "object payload")
 	if error.is_empty(): error = registry.update_item(made.id, {"fields":{"payload":{"nested":[0,false,null,""]}}}, "tester")
-	r = A.is_true(error.is_empty() and db.get_item(made.id).fields.payload.nested == [0,false,null,""], "nested JSON payload preserves zero, false, null, and empty strings")
+	r = A.eq(error, "", "valid nested JSON payload update succeeds")
+	if r is String: db.close(); return r
+	r = A.eq(db.get_item(made.id).fields.payload.nested, [0.0,false,null,""], "nested JSON payload preserves zero, false, null, and empty strings")
 	if r is String: db.close(); return r
 	error = registry.update_item(made.id, {"fields":{"payload":{"nested":[INF]}}}, "tester")
 	r = A.contains(error, "finite JSON", "nested JSON containers reject nonfinite payloads")
@@ -386,12 +388,17 @@ func test_protected_work_item_blocking_effect_and_skill_outcome_field() -> Varia
 	db.close(); return r
 
 func test_legacy_sqlite_registry_keeps_builtin_create_update_transition() -> Variant:
-	var path := DIR + "/legacy.sqlite"; var db := DocketDB.new(); db.open(path); var registry := TypeRegistry.new(db, "Legacy SQLite")
+	var path := DIR + "/legacy.sqlite"; var created := DocketDB.create_new(path)
+	var r = A.is_true(created != null and created.is_open(), "legacy SQLite fixture is created with its schema")
+	if r is String: return r
+	created.close(); var db := DocketDB.new(); db.open(path); var registry := TypeRegistry.new(db, "Legacy SQLite")
 	var made := registry.create_item({"type":"discussion","title":"Legacy"}, "tester")
+	r = A.is_true(db.is_open() and not made.has("error") and made.has("id"), "existing legacy SQLite reopens before typed operations")
+	if r is String: db.close(); return r
 	var error := registry.update_item(made.id, {"description":"flat update"}, "tester")
 	if error.is_empty(): error = registry.transition_item(made.id, "resolved", "tester")
 	var item := db.get_item(made.id)
-	var r = A.is_true(error.is_empty() and item.description == "flat update" and item.status == "resolved" and db.get_events(made.id).size() == 2, "legacy SQLite built-ins retain typed flat operations and audit events")
+	r = A.is_true(error.is_empty() and item.description == "flat update" and item.status == "resolved" and db.get_events(made.id).size() == 2, "legacy SQLite built-ins retain typed flat operations and audit events")
 	db.close(); return r
 
 func test_additive_evolution_keeps_old_pins_until_explicit_selected_apply() -> Variant:
