@@ -57,7 +57,7 @@ func test_type_tools_discover_validate_define_activate_and_stale_item_context() 
 	r = A.is_true(stale.error.contains("stale expected item token") and db.get_item(made.id).fields.get("memo") == null, "stale form token refuses mutation")
 	if r is String: db.close(); return r
 	var updated: Dictionary = tools.call_tool("docket_update", {"project":"Tools","id":made.id,"fields":{"memo":"ready"},"expected_revision":made.type_revision,"expected_item_token":fetched.item_token})
-	r = A.is_true(not updated.has("error") and updated.item_token != fetched.item_token, "checked typed update returns new content token")
+	r = A.is_true(not updated.has("error") and updated.get("item_token", "") != fetched.item_token, "checked typed update returns new content token: %s" % updated.get("error", "token unchanged"))
 	if r is String: db.close(); return r
 	var transitioned: Dictionary = tools.call_tool("docket_transition", {"project":"Tools","id":made.id,"to":"dead","expected_revision":made.type_revision,"expected_item_token":updated.item_token})
 	r = A.is_true(not transitioned.has("error") and transitioned.status == "dead", "dynamic state key is routed as a state and transition commits")
@@ -114,9 +114,9 @@ func test_same_slug_projects_and_branch_local_bindings_do_not_share_meaning() ->
 func test_unbound_derived_query_uses_each_pinned_revision_and_preserves_skill_outcome() -> Variant:
 	var db: DocketDBJsonl = _db("Derived"); var registry: TypeRegistry = _registry_with_widget(db)
 	var made: Dictionary = registry.create_item({"type":"widget","title":"Done","memo":"ok"}, "tester")
-	registry.transition_item(made.id, "done", "tester")
+	var transition_error: String = registry.transition_item(made.id, "done", "tester")
 	var rows: Array = db.execute_registry_query({"filter":{"field":"is_terminal","op":"eq","value":true}}, registry)
-	var r = A.is_true(rows.size() == 1 and rows[0].is_terminal == true and rows[0].state_outcome == "unspecified", "unbound derived filter evaluates pinned semantics across types")
+	var r = A.is_true(transition_error.is_empty() and db.last_query_error.is_empty() and rows.size() == 1 and rows[0].is_terminal == true and rows[0].state_outcome == "unspecified", "unbound derived filter evaluates pinned semantics across types: transition=%s query=%s" % [transition_error,db.last_query_error])
 	if r is String: db.close(); return r
 	var skill_type: Dictionary = registry.get_type("skill")
 	var skill_id: String = db.next_uuid7_id()
@@ -165,7 +165,8 @@ func test_saved_query_roundtrip_keeps_identity_field_state_and_sort_bindings() -
 	var query: Dictionary = {"filter":{"$and":[{"field":"type","type_id":type_id,"op":"eq","value":"widget"},{"field_key":"score","type_id":type_id,"op":"gte","value":0},{"field":"status","type_id":type_id,"op":"eq","value":"queued"}]},"sort":[{"field_key":"score","type_id":type_id,"dir":"desc","nulls":"last"}]}
 	var error: String = db.save_query_checked("typed", query)
 	var loaded: Dictionary = db.load_query("typed")
-	var r = A.is_true(error.is_empty() and loaded == query, "saved query preserves stable bindings and all sort metadata")
+	var loaded_conditions: Array = loaded.get("filter", {}).get("$and", [])
+	var r = A.is_true(error.is_empty() and loaded_conditions.size() == 3 and loaded_conditions[0].type_id == type_id and loaded_conditions[1].field_key == "score" and float(loaded_conditions[1].value) == 0.0 and loaded_conditions[2].value == "queued" and loaded.get("sort", []).size() == 1 and loaded.sort[0].field_key == "score" and loaded.sort[0].type_id == type_id and loaded.sort[0].dir == "desc" and loaded.sort[0].nulls == "last", "saved query preserves stable bindings and all sort metadata across JSON numeric representation")
 	if r is String: db.close(); return r
 	var preview: Dictionary = registry.preview_evolution("widget", registry.get_type("widget").definition, registry.get_type("widget").current_revision)
 	r = A.is_true(preview.saved_query_impact.size() == 1 and preview.saved_query_impact[0].references.has("field:score") and preview.saved_query_impact[0].references.has("status:queued"), "evolution impact reads actual typed field and state bindings")
@@ -234,7 +235,7 @@ func test_move_failure_order_preserves_source_and_reports_durable_partial_copy()
 	var held_target_registry: TypeRegistry = TypeRegistry.for_db(target, "FailTarget")
 	target._exec("CREATE TRIGGER reject_import BEFORE INSERT ON items BEGIN SELECT RAISE(FAIL, 'target rejected'); END;")
 	var failed: Dictionary = mover.execute({"id":item.id,"source_project":"FailSource","target_project":"FailTarget","import_definition":true,"author":"tester","reason":"failure order"}, {}, source, projects)
-	var r = A.is_true(failed.error.contains("Target write failed") and source.has_item(item.id) and not target.has_item(item.id) and held_target_registry.get_type("widget").has("error"), "target failure rolls back imported definition, refreshes an already-held registry, and never deletes source")
+	var r = A.is_true(str(failed.get("error", "")).contains("Target write failed") and source.has_item(item.id) and not target.has_item(item.id) and held_target_registry.get_type("widget").has("error"), "target failure rolls back imported definition, refreshes an already-held registry, and never deletes source: %s" % failed.get("error", "missing error"))
 	if r is String: source.close(); target.close(); return r
 	target._exec("DROP TRIGGER IF EXISTS reject_import;")
 	source._exec("CREATE TRIGGER reject_source_delete BEFORE DELETE ON items BEGIN SELECT RAISE(FAIL, 'source rejected'); END;")
@@ -250,7 +251,7 @@ func test_mirror_validates_target_pin_and_commits_patch_transition_and_audit_tog
 	var mirror: DocketMirror = DocketMirror.new(); var projects: Dictionary = {"MirrorSource":source,"MirrorTarget":target}
 	var result: Dictionary = mirror.execute({"source_id":source_item.id,"source_project":"MirrorSource","target_id":target_item.id,"target_project":"MirrorTarget","fields":["score","memo"],"transition_to":"done","expected_revision":target_item.item.type_revision}, {}, source, projects)
 	var after: Dictionary = target.get_item(target_item.id)
-	var r = A.is_true(not result.has("error") and after.status == "done" and after.fields.score == 7 and after.fields.memo == "ready" and target.list_comments(target_item.id).size() == 1, "mirror commits typed patch, guarded transition and audit")
+	var r = A.is_true(not result.has("error") and after.status == "done" and after.fields.score == 7 and after.fields.memo == "ready" and target.list_comments(target_item.id).size() == 1, "mirror commits typed patch, guarded transition and audit: %s" % result.get("error", "unexpected persisted result"))
 	if r is String: source.close(); target.close(); return r
 	var canonical_before: String = FileAccess.get_file_as_string(target.get_path()); var token_before: String = target_registry.item_token(after)
 	target._exec("CREATE TRIGGER reject_second_mirror BEFORE INSERT ON comments BEGIN SELECT RAISE(FAIL, 'audit rejected'); END;")
@@ -399,7 +400,7 @@ func test_move_reference_rewrite_failure_keeps_source_and_reports_durable_copy()
 	var dependent: Dictionary = registry.create_item({"type":"widget","title":"Dependent","parent":moved_item.id}, "tester")
 	source._exec("CREATE TRIGGER reject_ref_update BEFORE UPDATE ON items WHEN OLD.id='%s' BEGIN SELECT RAISE(FAIL, 'rewrite rejected'); END;" % dependent.id)
 	var moved: Dictionary = DocketMove.new().execute({"id":moved_item.id,"source_project":"RewriteSource","target_project":"RewriteTarget","import_definition":true,"author":"tester","reason":"rewrite failure"}, {}, source, {"RewriteSource":source,"RewriteTarget":target})
-	var r = A.is_true(moved.get("partial_copy") == true and source.has_item(moved_item.id) and target.has_item(moved_item.id) and source.get_item(dependent.id).parent == moved_item.id, "reference rewrite failure leaves source authoritative and reports the durable target copy")
+	var r = A.is_true(moved.get("partial_copy") == true and source.has_item(moved_item.id) and target.has_item(moved_item.id) and source.get_item(dependent.id).parent == moved_item.id, "reference rewrite failure leaves source authoritative and reports the durable target copy: %s" % moved.get("error", "missing partial-copy error"))
 	source.close(); target.close(); return r
 
 func test_import_remaps_forward_ordered_comment_thread_and_refuses_missing_parent() -> Variant:
@@ -407,14 +408,18 @@ func test_import_remaps_forward_ordered_comment_thread_and_refuses_missing_paren
 	var discussion: Dictionary = TypeRegistry.for_db(db, "Threads").get_type("discussion")
 	if discussion.has("error"): db.close(); return "discussion registry unavailable: %s" % discussion.error
 	var now: String = Time.get_datetime_string_from_system(true)
-	var exported: Dictionary = {"item":{"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Thread","created_at":now,"updated_at":now,"fields":{},"extras":{}},"comments":[{"id":2,"parent_id":1,"author":"b","text":"child","status":"open"},{"id":1,"parent_id":0,"author":"a","text":"parent","status":"open"}],"tags":[],"events":[],"links":[],"attachments":[]}
+	var exported: Dictionary = {"item":{"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Thread","created_at":now,"updated_at":now,"fields":{},"extras":{}},"comments":[{"id":2,"parent_id":1,"author":"b","text":"child","status":"open","created_at":now},{"id":1,"parent_id":0,"author":"a","text":"parent","status":"open","created_at":now}],"tags":[],"events":[],"links":[],"attachments":[]}
 	var first: String = db.import_item_full_checked(db.next_uuid7_id(), exported)
 	var thread_rows: Array = db.execute_query({"filter":{"title":"Thread"}})
 	if not first.is_empty() or thread_rows.is_empty(): db.close(); return "forward-thread setup failed: %s" % first
 	var comments: Array = db.list_comments(str(thread_rows[0].id))
-	var broken: Dictionary = exported.duplicate(true); broken.item.title = "Broken"; broken.comments = [{"id":3,"parent_id":99,"author":"x","text":"orphan","status":"open"}]
+	var path: String = db.get_path(); db.close(); db = DocketDBJsonl.open_jsonl(path)
+	if db == null or db.get_item(str(thread_rows[0].id)).is_empty(): return "valid imported comment thread did not reopen"
+	var broken: Dictionary = exported.duplicate(true); broken.item.title = "Broken"; broken.comments = [{"id":3,"parent_id":99,"author":"x","text":"orphan","status":"open","created_at":now}]
 	var before: String = FileAccess.get_file_as_string(db.get_path()); var second: String = db.import_item_full_checked(db.next_uuid7_id(), broken)
-	var r = A.is_true(first.is_empty() and comments.size() == 2 and comments[1].parent_id == comments[0].id and second.contains("unresolved parent") and FileAccess.get_file_as_string(db.get_path()) == before and db.execute_query({"filter":{"title":"Broken"}}).is_empty(), "forward comment parents remap topologically and unresolved parents roll back the whole import")
+	var malformed: Dictionary = exported.duplicate(true); malformed.item.title = "Missing metadata"; malformed.comments[0].erase("created_at")
+	var third: String = db.import_item_full_checked(db.next_uuid7_id(), malformed)
+	var r = A.is_true(first.is_empty() and comments.size() == 2 and comments[1].parent_id == comments[0].id and second.contains("unresolved parent") and third.contains("missing id or created_at") and FileAccess.get_file_as_string(db.get_path()) == before and db.execute_query({"filter":{"title":"Broken"}}).is_empty() and db.execute_query({"filter":{"title":"Missing metadata"}}).is_empty(), "valid forward comment parents reopen while unresolved parents and missing required metadata leave canonical data unchanged")
 	db.close(); return r
 
 func test_legacy_jsonl_mirror_uses_compatibility_registry_without_upgrade() -> Variant:

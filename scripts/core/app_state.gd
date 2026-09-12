@@ -159,6 +159,9 @@ func get_project_dbs() -> Dictionary:
 func get_type_registry(project_name: String = "") -> TypeRegistry:
 	var key: String = project_name if not project_name.is_empty() else (db.get_project_name() if db != null else "")
 	var registry: TypeRegistry = _type_registries.get(key)
+	if registry == null and _project_dbs.has(key):
+		registry = TypeRegistry.for_db(_project_dbs[key], key)
+		_type_registries[key] = registry
 	if registry != null:
 		var error: String = registry.refresh_if_changed()
 		if error.is_empty(): registry_diagnostics.erase(key)

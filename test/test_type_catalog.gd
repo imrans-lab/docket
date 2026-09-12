@@ -48,11 +48,30 @@ func _make_db(project: String, items: Array) -> DocketDB:
 func _two_project_state() -> AppState:
 	var state := AppState.new()
 	state.schema = _schema()
-	var alpha := _make_db("Alpha", [{"type": "discussion", "status": "active", "title": "Alpha thread"}, {"type": "code_review", "status": "requested", "title": "Alpha review"}])
-	var beta := _make_db("Beta", [{"type": "discussion", "status": "resolved", "title": "Beta thread"}, {"type": "code_review", "status": "approved", "title": "Beta review"}, {"type": "code_review", "status": "requested", "title": "Beta requested review"}])
+	var alpha: DocketDBJsonl = _make_dynamic_db("Alpha", [{"type": "discussion", "status": "active", "title": "Alpha thread"}, {"type": "code_review", "status": "requested", "title": "Alpha review"}])
+	var beta: DocketDBJsonl = _make_dynamic_db("Beta", [{"type": "discussion", "status": "resolved", "title": "Beta thread"}, {"type": "code_review", "status": "approved", "title": "Beta review"}, {"type": "code_review", "status": "requested", "title": "Beta requested review"}])
 	state._project_dbs = {"Alpha": alpha, "Beta": beta}
 	state.db = alpha
 	return state
+
+
+func _make_dynamic_db(project: String, items: Array) -> DocketDBJsonl:
+	var db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl("%s/%s.dct" % [_db_dir, project])
+	db.set_project_name_checked(project)
+	var registry: TypeRegistry = TypeRegistry.for_db(db, project)
+	var definition: Dictionary = {"slug":"code_review","label":"Code Review","description":"Review a revision","use_when":"approval is required","fields":[{"key":"title","type":"string","required":true,"nullable":false},{"key":"revision","type":"string","required":false,"nullable":true},{"key":"reviewer","type":"string","required":false,"nullable":true}],"lifecycle":{"initial_state":"requested","states":[{"key":"requested","state_category":"queued","state_outcome":""},{"key":"approved","state_category":"terminal","state_outcome":"success"}],"terminal_states":["approved"],"transitions":{"requested":["approved"],"approved":[]},"guards":{},"enforcement":"strict"},"protected":false,"protected_behavior":{"regular_creation_allowed":true}}
+	var defined: Dictionary = registry.define_type("code_review", definition, "tester", "catalog fixture")
+	assert(not defined.has("error"), "code_review fixture definition failed: %s" % defined.get("error", "unknown"))
+	registry.activate_type("code_review", str(defined.get("type", {}).get("current_revision", "")), "tester", "catalog fixture")
+	var now: String = Time.get_datetime_string_from_system(true)
+	for value in items:
+		var item: Dictionary = value
+		var descriptor: Dictionary = registry.get_type(str(item.type))
+		var id: String = db.next_uuid7_id()
+		var error: String = db.insert_item(id, {"type":item.type,"type_id":descriptor.id,"type_revision":descriptor.current_revision,"status":item.status,"title":item.title,"created_at":now,"updated_at":now,"fields":{},"extras":{}})
+		assert(error.is_empty(), "catalog fixture item failed: %s" % error)
+	_dbs.append(db)
+	return db
 
 
 func _schema() -> Dictionary:

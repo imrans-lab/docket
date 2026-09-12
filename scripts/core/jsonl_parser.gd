@@ -352,7 +352,8 @@ static func _validate_registry_records(result: Dictionary) -> String:
 	for revision_id in revisions:
 		var revision: Dictionary = revisions[revision_id]
 		if not ids.has(revision.type_id): return "revision '%s' refers to missing type '%s'" % [revision_id, revision.type_id]
-		var parent := str(revision.get("parent_revision", ""))
+		var parent_value: Variant = revision.get("parent_revision")
+		var parent: String = "" if parent_value == null else str(parent_value)
 		if not parent.is_empty() and (not revisions.has(parent) or revisions[parent].type_id != revision.type_id): return "revision '%s' has invalid parent '%s'" % [revision_id, parent]
 	return ""
 

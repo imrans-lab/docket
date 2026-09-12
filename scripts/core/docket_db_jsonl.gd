@@ -461,6 +461,12 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 
 
 func import_item_full_checked(new_id: String, exported: Dictionary) -> String:
+	var comments: Variant = exported.get("comments", [])
+	if not comments is Array: return "import comments must be an array"
+	for value in comments:
+		if not value is Dictionary: return "import comments must be objects"
+		var comment: Dictionary = value
+		if int(comment.get("id", 0)) <= 0 or str(comment.get("created_at", "")).is_empty(): return "import comment is missing id or created_at"
 	var precheck := _begin_canonical_mutation()
 	if not precheck.is_empty(): return precheck
 	super.import_item_full(new_id, exported)

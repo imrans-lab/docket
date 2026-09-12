@@ -199,7 +199,8 @@ func revision_ancestry(revision_id: String) -> Dictionary:
 		var revision: Dictionary = get_revision(current)
 		if revision.has("error"): return revision
 		chain.push_front(revision)
-		current = str(revision.get("parent_revision", ""))
+		var parent: Variant = revision.get("parent_revision")
+		current = "" if parent == null else str(parent)
 	return {"revisions":chain}
 
 func import_historical_revision(type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool = true) -> String:
@@ -709,7 +710,9 @@ func _project_candidate(item: Dictionary, definition: Dictionary) -> Dictionary:
 	var result: Dictionary = {}
 	var custom: Dictionary = item.get("fields", {})
 	for descriptor in definition.fields:
-		if custom.has(descriptor.key) and not bool(definition.get("protected", false)): result[descriptor.key] = custom[descriptor.key]
+		var custom_authority: bool = not bool(definition.get("protected", false)) and str(descriptor.key) not in UNIVERSAL_MUTABLE
+		if custom_authority:
+			if custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
 		elif item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
 		elif custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
 		elif descriptor.has("default"): result[descriptor.key] = descriptor.default
@@ -772,7 +775,9 @@ func _candidate_values(item: Dictionary, definition: Dictionary) -> Dictionary:
 	var result: Dictionary = {}
 	var custom: Dictionary = item.get("fields", {})
 	for descriptor in definition.fields:
-		if custom.has(descriptor.key) and not bool(definition.get("protected", false)): result[descriptor.key] = custom[descriptor.key]
+		var custom_authority: bool = not bool(definition.get("protected", false)) and str(descriptor.key) not in UNIVERSAL_MUTABLE
+		if custom_authority:
+			if custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
 		elif item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
 		elif custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
 	for key in UNIVERSAL_MUTABLE:

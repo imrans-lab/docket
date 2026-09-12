@@ -252,3 +252,10 @@ Registry (3/27), type catalog (27/32) and MCP (63/67) expose regressions still
 requiring fixes. Logs are `d-tools-query-1.log` and `d-test_*-1.log` under the
 verification directory. Sol is correcting the causes before another reviewed
 verification pass; D remains unaccepted.
+
+The reviewed correction `47add87` imports cleanly and restores registry 27/27,
+MCP 67/67, query-field validation 11/11 and functional cross-project 3/3.
+D tools/query checks now pass 19/27, while catalog remains 27/32. Remaining
+work includes null ancestry handling, custom-field absence authority, valid
+comment import/reopen checks and updating schema-only catalog integration
+fixtures to use real project registries. Logs are `d-test_*-2.log`.
