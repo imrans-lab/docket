@@ -430,7 +430,7 @@ func test_staleness_cache_valid_when_unchanged() -> Variant:
 	## If the JSONL file is unchanged, is_cache_valid returns true.
 	var jsonl_path := _test_dir + "/stale_valid.dct.jsonl"
 	var db := DocketDBJsonl.create_new_jsonl(jsonl_path)
-	db.close()  # triggers final flush
+	db.close()
 
 	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	return A.is_true(JSONLCache.is_cache_valid(jsonl_path, cache_path), "cache is valid when file unchanged")

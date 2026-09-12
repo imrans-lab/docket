@@ -467,8 +467,11 @@ func test_new_type_compound_persists_definition_revision_binding_and_event() -> 
 func test_import_and_delete_failures_roll_back_complete_operations() -> Variant:
 	var path := DIR + "/import-delete-failure.dct"
 	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
-	var original := _read_file(path)
 	var db := DocketDBJsonl.open_jsonl(path)
+	db.update_item_fields_checked("ORD-0001", {"tags":["must-survive"]})
+	db.add_event_checked("ORD-0001", "prepared", "tester")
+	var original := _read_file(path)
+	var expected_events := db.get_events("ORD-0001")
 	var exported := db.export_item_full("ORD-0001")
 	db._exec("CREATE TRIGGER reject_import_event BEFORE INSERT ON item_events BEGIN SELECT RAISE(ABORT, 'event rejected'); END;")
 	var error := db.import_item_full_checked("ORD-0002", exported)
@@ -481,11 +484,15 @@ func test_import_and_delete_failures_roll_back_complete_operations() -> Variant:
 	if r is String: db.close(); return r
 	r = A.is_true(db.has_item("ORD-0001"), "failed cascading delete restores the complete item")
 	if r is String: db.close(); return r
+	r = A.eq(db.get_item("ORD-0001").tags, ["must-survive"], "earlier tag deletion rolls back")
+	if r is String: db.close(); return r
+	r = A.eq(db.get_events("ORD-0001"), expected_events, "rejected event deletion preserves events")
+	if r is String: db.close(); return r
 	db.close()
 	r = A.eq(_read_file(path), original, "failed import and delete preserve canonical bytes")
 	if r is String: return r
 	db = DocketDBJsonl.open_jsonl(path)
-	r = A.is_true(db != null and db.has_item("ORD-0001") and not db.has_item("ORD-0002"), "canonical reopen observes no partial operation")
+	r = A.is_true(db != null and db.has_item("ORD-0001") and not db.has_item("ORD-0002") and db.get_item("ORD-0001").tags == ["must-survive"] and db.get_events("ORD-0001") == expected_events, "canonical reopen observes the complete pre-failure item")
 	if db != null: db.close()
 	return r
 
