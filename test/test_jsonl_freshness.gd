@@ -201,14 +201,19 @@ func test_validator_flags_duplicate_ids() -> Variant:
 	return A.contains(str(report["errors"]), "duplicate item id", "names the problem")
 
 
-func test_validator_warns_on_orphaned_events() -> Variant:
-	_write(META + "\n" + _item_line("a1", "one") + "\n"
+func test_validator_refuses_orphaned_events_without_rewriting_source() -> Variant:
+	var canonical := (META + "\n" + _item_line("a1", "one") + "\n"
 		+ '{"_type":"event","item_id":"ghost","seq":1,"event_type":"created","timestamp":"2026-01-01T00:00:00"}' + "\n")
+	_write(canonical)
 	var report := JSONLValidator.validate_file(_path)
-	var r = A.is_true(report["ok"], "orphans are a warning, not an error")
-	if r != true:
-		return r
-	return A.contains(str(report["warnings"]), "ghost", "names the missing item")
+	var r = A.is_false(report["ok"], "orphaned canonical records are refused")
+	if r is String: return r
+	r = A.contains(str(report["errors"]), "ghost", "error names the missing item")
+	if r is String: return r
+	var file := FileAccess.open(_path, FileAccess.READ)
+	var preserved := file.get_as_text()
+	file.close()
+	return A.eq(preserved, canonical, "validation does not rewrite the refused source")
 
 
 func test_validator_accepts_clean_file() -> Variant:
