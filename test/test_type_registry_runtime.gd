@@ -366,7 +366,7 @@ func test_protected_builtin_and_custom_blocked_behavior_are_distinct() -> Varian
 	var custom_def := _definition("custom_blocked"); custom_def.protected = true; custom_def.protected_behavior = {"regular_creation_allowed":false,"blocking":{"enabled":true,"state":"blocked"}}; custom_def.lifecycle.states.append({"key":"blocked","state_category":"waiting","state_outcome":""}); custom_def.lifecycle.transitions.queued.append("blocked"); custom_def.lifecycle.transitions.blocked = []
 	var custom := registry.define_type("custom_blocked", custom_def, "tester", "custom blocked"); registry.activate_type("custom_blocked", custom.type.current_revision, "tester", "activate")
 	var made := registry.create_item({"type":"custom_blocked","title":"Allowed"}, "tester")
-	var stored := registry.get_type("custom_blocked").definition
+	var stored: Dictionary = registry.get_type("custom_blocked").definition
 	var r = A.is_true(secret.has("error") and not made.has("error") and stored.protected == false and not stored.protected_behavior.has("blocking"), "custom definitions cannot spoof protected creation or work-item effects")
 	db.close(); return r
 
@@ -473,7 +473,7 @@ func test_evolution_validates_new_descriptors_against_preserved_opaque_values() 
 	db.update_item_fields_checked(valid_item.id, {"fields":{"later_count":0,"later_flag":false,"later_note":"","later_null":null}})
 	var current := registry.get_type("widget"); var evolved: Dictionary = current.definition.duplicate(true)
 	evolved.fields.append_array([{"key":"later_count","type":"integer","required":false,"nullable":true,"default":7},{"key":"later_flag","type":"boolean","required":false,"nullable":true,"default":true},{"key":"later_note","type":"string","required":false,"nullable":true,"default":"default"},{"key":"later_null","type":"string","required":false,"nullable":true,"default":"default"}])
-	var before_text := FileAccess.get_file_as_string(path); var before_events := db.get_events(invalid_item.id); var before_pin := db.get_item(invalid_item.id).type_revision
+	var before_text := FileAccess.get_file_as_string(path); var before_events := db.get_events(invalid_item.id); var before_pin: String = str(db.get_item(invalid_item.id).type_revision)
 	var preview := registry.preview_evolution("widget", evolved, current.current_revision, [invalid_item.id])
 	var r = A.is_true(preview.error.contains("later_count") and registry.get_type("widget").current_revision == current.current_revision and db.get_item(invalid_item.id).type_revision == before_pin and db.get_events(invalid_item.id) == before_events and FileAccess.get_file_as_string(path) == before_text, "preview rejects a new descriptor incompatible with preserved opaque data without mutation")
 	if r is String: db.close(); return r

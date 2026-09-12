@@ -95,7 +95,7 @@ func _validate_definition_trust(record: Dictionary, definition: Dictionary) -> S
 	if str(definition.slug) != str(record.slug): return "type '%s' revision has a conflicting slug" % record.slug
 	if str(record.lifecycle) not in ["draft", "active", "deprecated"]: return "type '%s' has invalid registry lifecycle" % record.slug
 	var shipped_types: Dictionary = TypeRegistryBootstrap.load_shipped_schema().get("types", {})
-	var trusted_builtin := shipped_types.has(record.slug) and str(record.id) == "builtin:%s" % record.slug and record.provenance.get("kind") == "starter" and bool(record.provenance.get("protected", false))
+	var trusted_builtin: bool = shipped_types.has(record.slug) and str(record.id) == "builtin:%s" % record.slug and record.provenance.get("kind") == "starter" and bool(record.provenance.get("protected", false))
 	if trusted_builtin:
 		var expected_behavior := {"regular_creation_allowed":str(record.slug) not in ["secret", "encrypted_note"]}
 		if record.slug == "work_item": expected_behavior["blocking"] = {"enabled":true,"state":"blocked"}
