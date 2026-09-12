@@ -666,7 +666,7 @@ func _condition_snapshots() -> Array:
 	var conditions: Array = []
 	for i in _condition_rows.size():
 		var row: Dictionary = _condition_rows[i]
-		var field := row.field.get_item_text(row.field.selected)
+		var field: String = row.field.get_item_text(row.field.selected)
 		var value: Variant = ""
 		if field == "type" and row.type_chooser.visible:
 			value = row.type_chooser.selected_values()
@@ -691,7 +691,7 @@ func _refresh_scoped_controls() -> void:
 	for i in _condition_rows.size():
 		var row: Dictionary = _condition_rows[i]
 		var scope := QueryTypeScope.branch_scope(conditions, i, _type_catalog)
-		var field_name := row.field.get_item_text(row.field.selected)
+		var field_name: String = row.field.get_item_text(row.field.selected)
 		var offered_fields := QueryTypeScope.fields(_type_catalog, scope)
 		row.field.clear()
 		for offered in offered_fields:

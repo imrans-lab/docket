@@ -447,7 +447,7 @@ func _bind_project_conditions(query: Dictionary, project_name: String) -> Dictio
 		if replaced.has("error"): return replaced
 		bound["filter"] = replaced.value
 		return {"query": bound, "excluded": false}
-	var flat_filter := filter.duplicate(true)
+	var flat_filter: Dictionary = filter.duplicate(true)
 	var flat_query := {"filter": flat_filter}
 	var project_filter := _extract_project_filter(flat_query)
 	if not project_filter.is_empty():
@@ -473,7 +473,7 @@ func _replace_project_predicates(node: Variant, project_name: String) -> Diction
 		var replacement := {"field": "id", "op": "is_not_empty", "value": ""} if match_result.matches else {"field": "id", "op": "in", "value": []}
 		if node.has("conj"): replacement["conj"] = node.conj
 		return {"value": replacement}
-	var replaced_dict := node.duplicate(true)
+	var replaced_dict: Dictionary = node.duplicate(true)
 	for key in ["conditions", "$and", "$or"]:
 		if replaced_dict.has(key):
 			var children := _replace_project_predicates(replaced_dict[key], project_name)
