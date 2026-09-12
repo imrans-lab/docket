@@ -137,8 +137,8 @@ static func serialize_type_registry(db: DocketDB) -> String:
 	for row in db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"):
 		var definition = JSON.parse_string(str(row.definition_json))
 		var record := {"_type": "type_def_version", "id": row.id, "type_id": row.type_id, "definition": definition if definition is Dictionary else {}, "author": row.author, "created_at": row.created_at, "reason": row.reason}
-		var parent := str(row.get("parent_revision", ""))
-		if not parent.is_empty(): record["parent_revision"] = parent
+		var parent_value = row.get("parent_revision")
+		if parent_value != null and not str(parent_value).is_empty(): record["parent_revision"] = str(parent_value)
 		lines.append(_to_ordered_json(record))
 	return "\n".join(lines)
 

@@ -115,9 +115,9 @@ func get_path() -> String:
 
 func close() -> void:
 	if _mutation_depth > 0: return
-	# Flush JSONL one last time before closing
-	if _is_open and not _jsonl_path.is_empty() and not _write_blocked and FileAccess.file_exists(_jsonl_path):
-		_flush_jsonl()
+	# Durable mutations already replace canonical JSONL before reporting success.
+	# Close only releases the disposable cache, so read-only sessions and rejected
+	# operations cannot normalize or rewrite source bytes as a side effect.
 	super.close()
 
 

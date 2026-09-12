@@ -429,7 +429,7 @@ func test_bump_retrieval_updates_jsonl() -> Variant:
 # -- Retrieval bump: one flush per batch, not one per item --------------------
 
 ## Counts actual whole-database REWRITES — the expensive thing — not calls to
-## _flush_jsonl(). Those differ: a call made while _flush_depth > 0 returns
+	## _flush_jsonl(). Those differ: a call made while _mutation_depth > 0 returns
 ## early and writes nothing, which is exactly what coalescing does. Counting
 ## calls would score a correctly-coalesced batch as 9 (8 suppressed + 1 real).
 ##
@@ -440,7 +440,7 @@ class CountingJsonlDB extends DocketDBJsonl:
 	var write_count: int = 0
 
 	func _flush_jsonl() -> String:
-		if _flush_depth == 0:
+		if _mutation_depth == 0:
 			write_count += 1  # this call is the one that reaches the disk
 		return super._flush_jsonl()
 
