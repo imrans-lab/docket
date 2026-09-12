@@ -39,7 +39,7 @@ legacy cache is outside the supported upgrade workflow.
 | A: Query UX | `1fd1046` | Terra cleared | 61 targeted tests pass; GUI accepted |
 | B: Storage | `8fe623a` | Terra cleared | Storage 45/45, freshness 14/14; broader failures resolved; old-reader checks pass |
 | C: Registry and validation | `59b3e1c` | Terra cleared | Registry 27/27 and 174 related regressions pass |
-| D: MCP and queries | In progress | Pending | Not run |
+| D: MCP and queries | `c9ef61c` | Terra cleared | 263 targeted and related tests pass |
 | E: GUI and integration | Pending | Pending | Not run |
 
 Specific revisions, findings and command results are recorded here and in the
@@ -259,3 +259,21 @@ D tools/query checks now pass 19/27, while catalog remains 27/32. Remaining
 work includes null ancestry handling, custom-field absence authority, valid
 comment import/reopen checks and updating schema-only catalog integration
 fixtures to use real project registries. Logs are `d-test_*-2.log`.
+
+### D: accepted
+
+Final reviewed source/test snapshot: `c9ef61c956754270fdf27974d368bc1559a291e3`.
+Terra reviewed each correction before execution. The final Godot 4.7.1 import
+is clean. All 263 checks pass on this snapshot: tools/query 27, catalog 32,
+registry 27, storage 45, parser 37, MCP 67, freshness 14, query-field validation
+11 and functional cross-project 3.
+
+The final changes preserve custom-field absence/default authority, exact
+historical definitions and threaded relations through transfers, and explicit
+query bindings across projects and saved queries. Tests cover rejected target,
+source, reference and audit writes; malformed input; public diagnostics; and
+reopened data. Expected injected SQL failures are logged; no script exceptions
+occur. No live file was upgraded.
+
+Evidence: `d-import-3.log`, `d-test_*-3.log`, and `d-test_*-final.log` in
+`/tmp/docket-dynamic-verification/logs/`. All D findings and gates are complete.
