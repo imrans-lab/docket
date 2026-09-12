@@ -1,18 +1,17 @@
 # Docket JSONL Format Specification
 
-**Version:** 1.0.0
-**Status:** Draft
-**Date:** 2026-07-28
+**Current version:** 2.0.0
+**Legacy version:** 1.0.0
 
-This document first specifies the legacy `1.0.0` contract. The
-[version 2.0.0 contract](#docket-jsonl-20-storage-contract) later in this
-document replaces the cache naming, line-kind ordering, and empty-value rules
-where it explicitly says so. Existing `1.0.0` files retain the legacy rules
-until an explicit upgrade.
+New projects use the [2.0 storage contract](#docket-jsonl-20-storage-contract): project-owned immutable type revisions, pinned item meaning, and lossless JSON envelopes. Existing 1.0 projects remain 1.0 until an explicit previewed upgrade; opening a file never upgrades it.
+
+The sections before the 2.0 contract are the legacy compatibility reference. Their omit-empty rule, `.cache` name, and line-kind list apply only to 1.0 files.
 
 ---
 
-## 1. Overview
+## Legacy 1.0 compatibility reference
+
+### 1. Overview
 
 A `.dct` file is the canonical text representation of a JSONL-backed Docket
 project. Each line is a self-contained JSON object with a `_type` discriminator
@@ -24,7 +23,7 @@ The adjacent SQLite cache is disposable and rebuilt from the `.dct` source.
 ### 1.1 File Extension
 
 - Canonical file: `<project>.dct`
-- Cache file: `<project>.dct.cache` (SQLite, gitignored)
+- Cache file: `<project>.dct.cache` (SQLite, gitignored; 1.0 only)
 - Lock file: `<project>.dct.lock` (advisory; contains owner PID and timestamp)
 
 ### 1.2 Encoding
@@ -629,28 +628,17 @@ and `type_revision`. A missing definition or revision makes the item readable
 with an unresolved-definition diagnostic, while destructive writes and close
 flush are blocked until repaired.
 
-## Item envelopes
+## Item envelopes and field authority
 
-Universal and legacy compatibility keys remain top-level. Reserved keys are
-`_type`, `id`, `type`, `type_id`, `type_revision`, `status`, `title`,
-`description`, `created_at`, `updated_at`, `created_by`, `assigned_to`,
-`directed_to`, `priority`, `severity`, `tags`, `events`, `links`, `parent`,
-`blocked_by`, and every legacy built-in flat field listed in this document's
-1.0 item schema. Those flat keys remain authoritative for existing APIs and
-storage columns.
+Internal identity and relation keys are reserved: `_type`, `id`, `type`, `type_id`, `type_revision`, `status`, `created_at`, `updated_at`, `events`, `links`, `fields`, `extras`, `fields_json`, `extras_json`, and `unset_fields`. Universal mutable keys (`title`, `description`, `assigned_to`, `directed_to`, `priority`, `severity`, `tags`, `parent`, and `blocked_by`) keep fixed top-level kinds.
 
-New definition-owned values live only in `fields`, a JSON object. Unknown
-future top-level payloads live only in `extras`, a JSON object. A key appearing
-both at top level and in either envelope, or in both envelopes, is ambiguous
-and is rejected. No per-type or per-field table or column is created.
+Protected built-ins may additionally use their historical flat columns. Custom definitions do not acquire those columns by reusing a name: a custom `research_cost:string` is stored in `fields.research_cost`, even though a built-in has an integer column of that name. Candidate validation, query, export/import, and repinning follow the pinned definition's authority.
 
-Envelope membership distinguishes unset from explicit JSON `null`. Values
-preserve `false`, `0`, empty strings, empty arrays/objects, Unicode, literal
-escapes, arrays, objects, and null. Ordinary edits replace only keys explicitly
-provided and never apply the legacy empty-value stripping rule to envelopes.
-Objects serialize recursively with lexicographically sorted keys; arrays retain
-order. Record kinds sort as meta, type definitions by slug/id, revisions by
-type/id, then the existing 1.0 record order.
+Definition-owned custom values live in `fields`. Unknown future payload lives in `extras` and is preserved read-only. Ambiguous flat/envelope or fields/extras authority is rejected. The cache uses a fixed generic schema; definitions never add tables or columns.
+
+Envelope membership distinguishes unset from explicit JSON `null`. It preserves `false`, `0`, empty strings and containers, Unicode, literal escapes, arrays, objects, and null. Updates replace only supplied keys. Objects serialize recursively with sorted keys; arrays retain order. Records sort as meta, definitions, revisions, then the legacy record families.
+
+The parser-tested [`dynamic_types_record_order_v2.jsonl`](../test/fixtures/dynamic_types_record_order_v2.jsonl) contains a valid full digest and representative lossless values. Definition resolution is independent of record order.
 
 Legacy SQLite must first be explicitly promoted to canonical JSONL. Custom
 type activation is allowed only after an explicit 2.0 preview and checked

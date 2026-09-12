@@ -11,7 +11,7 @@ MCP.
 
 ## Features
 
-- **14 creatable work-item types** with advisory state flows: Bug, DCR, RCA,
+- **Project-owned item types** with immutable pinned meaning. New projects seed 14 protected types: Bug, DCR, RCA,
   Chore, Work Item, Test, Hint, Insight, Question, Discussion, KB, Skill, Prompt,
   and Policy. The schema retains the former Secret and Encrypted Note item types
   for backward compatibility.
@@ -20,7 +20,7 @@ MCP.
   the GUI, and create cross-project references
 - **`.dcq` query files** — save and share queries between projects
 - **JSONL-canonical storage** — `.dct` files are human-readable, diffable, mergeable text (committed to git)
-  - Automatic SQLite cache (`.dct.cache`, gitignored) for fast queries and concurrent access
+  - Disposable SQLite cache (`.dct.v2.cache` for current files; `.dct.cache` for legacy 1.0 files, gitignored) for fast queries
   - Spec in `data/jsonl_format.md` (deterministic key order, one-line JSON objects, atomic writes, advisory locking)
 - **MCP tool registry** over HTTP JSON-RPC 2.0 for items, queries, comments,
   attachments, projects, knowledge retrieval, diagnostics, and the vault
@@ -94,6 +94,10 @@ docket
 Opens the tracker UI with menu bar, query grid, and item detail forms. Use
 **File > New Docket** to create a `.dct`, or **File > Open...** for an existing
 one.
+
+### Dynamic project types
+
+New projects use JSONL 2.0 and store complete type definitions in the `.dct`; existing 1.0 projects stay unchanged until explicit upgrade. See [Dynamic item types](docs/dynamic-item-types.md) for Project Types, MCP workflows, typed queries, compatibility, and safe upgrades. Custom JSON values preserve false, zero, null, empty values, Unicode, and literal escapes.
 
 ### MCP server
 
@@ -249,10 +253,10 @@ godot --path . -- --file minerva.dct --file services.dct --query bugs.dcq
 - **Structure:** one JSON object per line (JSONL), human-readable and diffable
 - **Spec:** `data/jsonl_format.md` documents line types, sort order, encoding rules
 - **Atomic writes:** temp file + rename, with a best-effort advisory `.dct.lock`
-- **Conciseness:** omit empty fields, deterministic key order for byte-identical output
+- **Determinism:** stable record/key order; 2.0 JSON envelopes preserve empty and null values
 
 ### SQLite Cache
-- **File:** `.dct.cache` (auto-generated, gitignored)
+- **File:** `.dct.v2.cache` for 2.0 or `.dct.cache` for legacy 1.0 (auto-generated, gitignored)
 - **Auto-rebuilt:** from `.dct` on first access or after modification
 - **Concurrent access:** WAL mode, 15-second busy timeout
 - **Performance:** fast queries, efficient indexing
@@ -432,14 +436,14 @@ GUI has always done.
 ## Concurrent Access and Multi-Machine Use
 
 For JSONL-backed projects, the `.dct` file is canonical and the SQLite
-`.dct.cache` is disposable. Every mutation rewrites the complete `.dct` through
+adjacent versioned cache is disposable. Every mutation rewrites the complete `.dct` through
 a temporary file and rename.
 
-Because a write rewrites the entire file from cache, a cache that has gone stale would overwrite whatever landed on disk in the meantime. Docket therefore re-checks the file's fingerprint (size + mtime) before every MCP tool call and on each GUI poll tick, and rebuilds the cache from the `.dct` when it changed. This is what makes `git pull` safe while Docket is running.
+Because a write rewrites the entire file from cache, a stale cache could overwrite newer canonical data. Docket therefore uses a strong content fingerprint at write boundaries and rebuilds after an external change.
 
 Two consequences worth knowing:
 
-- **Fingerprint granularity.** Staleness is detected by size + mtime, and mtime has 1-second resolution. An external write in the same second as Docket's own write that leaves the file exactly the same size can be missed. Use `docket_reload` (or **File > Reload from Disk**) if you suspect this.
+- **Explicit reload.** Use `docket_reload` (or **File > Reload from Disk**) when you want to discard the current cache view immediately after resolving external changes.
 - **The lock is advisory and best-effort.** Lock creation is not an operating
   system atomic-create primitive, and the current writer proceeds after a lock
   timeout. It reduces ordinary overlap but is not a correctness boundary.
