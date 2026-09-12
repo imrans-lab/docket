@@ -470,5 +470,8 @@ func test_public_flat_project_filter_must_match_routed_project() -> Variant:
 	var matching: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"ALPHA","type":"discussion"}})
 	var mismatch: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"beta","type":"discussion"}})
 	var invalid_shape: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":{"op":"eq","value":"alpha"},"type":"discussion"}})
-	var r = A.is_true(not matching.has("error") and matching.count == 1 and matching.items[0].id == created.id and mismatch.has("error") and invalid_shape.has("error"), "redundant flat project scope is checked against routing while mismatches and operator-shaped values are refused")
+	var mixed_tree: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"alpha","$and":[{"field":"type","op":"eq","value":"discussion"}]}})
+	var mixed_conditions: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"alpha","conditions":[{"field":"type","op":"eq","value":"discussion"}]}})
+	var mixed_leaf: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"alpha","field":"type","op":"eq","value":"discussion"}})
+	var r = A.is_true(not matching.has("error") and matching.count == 1 and matching.items[0].id == created.id and mismatch.has("error") and invalid_shape.has("error") and mixed_tree.has("error") and mixed_conditions.has("error") and mixed_leaf.has("error"), "only a matching genuinely flat project filter is normalized; mixed structured filters are refused intact")
 	alpha.close(); beta.close(); return r

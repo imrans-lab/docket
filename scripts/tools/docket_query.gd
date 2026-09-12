@@ -24,9 +24,11 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if args.has("filter"):
 		var filter = args.filter
 		# A redundant flat project predicate is safe only when it names the same
-		# already-selected database. Nested project scope requires AppState's
-		# branch-preserving cross-project coordinator.
+		# already-selected database. AST marker keys make the whole object a
+		# structured filter, where removing one sibling would change its meaning.
 		if filter is Dictionary and filter.has("project"):
+			for structured_key: String in ["conditions", "$and", "$or", "field", "op", "type_id", "field_key"]:
+				if filter.has(structured_key): return {"error":"filter.project cannot be combined with structured query key '%s'; use project routing or a branch-preserving cross-project query" % structured_key}
 			var routed_project: String = str(args.get("project", db.get_project_name()))
 			if not filter.project is String: return {"error":"filter.project must be a project name"}
 			if str(filter.project).nocasecmp_to(routed_project) != 0 and str(filter.project).nocasecmp_to(db.get_project_name()) != 0: return {"error":"filter.project conflicts with the routed project '%s'" % routed_project}
