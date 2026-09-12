@@ -23,7 +23,7 @@ Docket file is upgraded as part of this implementation run.
 
 The standalone Docket baseline instead refuses unknown record kinds. A detached
 checkout of that exact baseline is prepared for post-review compatibility
-checks. No legacy-reader check has run yet.
+checks. The checks below now confirm that refusal on disposable files.
 
 Terra's independent source audit confirmed the baseline standalone reader has
 no effective higher-version check and can bypass parsing with a matching old
@@ -37,8 +37,8 @@ legacy cache is outside the supported upgrade workflow.
 | Batch | Implementation | Review | Verification |
 | --- | --- | --- | --- |
 | A: Query UX | `1fd1046` | Terra cleared | 61 targeted tests pass; GUI accepted |
-| B: Storage | In progress | Pending | Not run |
-| C: Registry and validation | Pending | Pending | Not run |
+| B: Storage | `8fe623a` | Terra cleared | Storage 45/45, freshness 14/14; broader failures resolved; old-reader checks pass |
+| C: Registry and validation | In progress | Pending | Not run |
 | D: MCP and queries | Pending | Pending | Not run |
 | E: GUI and integration | Pending | Pending | Not run |
 
@@ -140,3 +140,40 @@ reference rewriting, project metadata and vault/retrieval mutations. The
 ordinary-write finding remains open. Sol is consolidating all canonical-data
 mutations behind a shared nested transaction/completion mechanism; cache-only
 operational telemetry remains outside canonical persistence.
+
+### B: accepted
+
+Final reviewed source/test snapshot: `8fe623a04845ed184a01c7d2e040aff5e4608837`.
+The shared mutation boundary coalesces nested operations, propagates SQL and
+canonical write/read errors, restores the cache after failures, and prevents
+public flush/close/reload calls from publishing or swapping mid-transaction.
+Registry and legacy counter operations use the same checked boundary. Close
+releases the cache without rewriting canonical data; checked mutations already
+persist their changes immediately.
+
+Verification found and corrected NULL parent revision serialization, unnecessary
+close-time writes, stale test helper state, assertion typing, and a deletion
+trigger fixture with no target event. Terra reviewed each correction before
+reruns. Storage now passes 45/45, including SQLite JSON capability, envelope
+preservation and injected write/read/rollback failures. Freshness passes 14/14.
+
+The full `./run_tests.sh` run from reviewed `f120b28` completed 691 tests,
+with 689 passing and two failures. Both were test setup/expectation defects:
+the deletion fixture and the older orphan-warning expectation. Their reviewed
+corrections pass in the targeted runs above; application source did not change
+after that full run. The integrated E gate will run the full suite again.
+
+Actual standalone baseline `ed48d8e` refused new records through cold validation
+and the server's open path with a real `.v2.cache` present and no legacy cache.
+Canonical SHA-256 remained
+`5685c683b4592ad9bddc33e793b61f260839387261832112228e7540930c2324`;
+v2 cache SHA-256 remained
+`eba0f2e10a694ba1a5439d0d539ef26cab861f954de81cee1ffba60323944d3f`.
+The current reader created that cache successfully. These checks do not make
+Minerva compatible; incompatible writers remain excluded from upgraded files.
+
+Evidence under `/tmp/docket-dynamic-verification/logs/`:
+`b-storage-3.log`, `b-freshness-final.log`, `b-full-1.log`,
+`b-old-cold-validate.log`, `b-old-warm-open.log`, and
+`b-current-warm-open.log`. Matching Godot 4.7.1 imports are clean.
+No live files or other repositories were changed or upgraded.
