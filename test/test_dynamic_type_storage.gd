@@ -666,3 +666,26 @@ func test_checked_setters_return_sql_and_canonical_write_failures() -> Variant:
 	r = A.eq(_read_file(path), original, "checked setter failures preserve canonical bytes")
 	db.close()
 	return r
+
+func test_next_id_checked_distinguishes_counter_and_canonical_failures() -> Variant:
+	var path := DIR + "/next-id-checked-failures.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var original := _read_file(path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var counter_before := db.get_counter()
+	db._exec("CREATE TRIGGER reject_next_counter BEFORE UPDATE ON docket_meta WHEN NEW.key='counter' BEGIN SELECT RAISE(ABORT, 'next counter rejected'); END;")
+	var result := db.next_id_checked()
+	var r = A.is_true(str(result.id).is_empty() and not str(result.error).is_empty(), "checked ID allocation distinguishes SQL failure from an ID")
+	if r != true: db.close(); return r
+	r = A.eq(db.get_counter(), counter_before, "failed counter update rolls back")
+	if r != true: db.close(); return r
+	db._atomic_write_hook = func(_path, _text): return "injected next-id canonical failure"
+	result = db.next_id_checked()
+	db._atomic_write_hook = Callable()
+	r = A.is_true(str(result.id).is_empty() and str(result.error).contains("canonical failure"), "checked ID allocation reports canonical replacement failure")
+	if r != true: db.close(); return r
+	r = A.eq(db.get_counter(), counter_before, "failed canonical replacement reconstructs original counter")
+	if r != true: db.close(); return r
+	r = A.eq(_read_file(path), original, "failed allocations preserve canonical bytes")
+	db.close()
+	return r

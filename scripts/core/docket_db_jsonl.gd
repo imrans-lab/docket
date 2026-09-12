@@ -188,6 +188,8 @@ func flush() -> void:
 	flush_checked()
 
 func flush_checked() -> String:
+	## An empty result inside a nested mutation means the flush is deferred; the
+	## outermost completion remains responsible for durable commit and errors.
 	return _flush_jsonl()
 
 
@@ -259,6 +261,7 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	## pointer, item pins, and audit events before one canonical replacement.
 	var error := _mutation_precheck()
 	if not error.is_empty(): return error
+	_last_sql_error = ""
 	if JSONLParser._parse_type_def(type_def).is_empty() or JSONLParser._parse_type_def_version(revision).is_empty(): return "incomplete type definition snapshot"
 	if str(type_def.get("id", "")) != str(revision.get("type_id", "")): return "revision belongs to another type"
 	var expected_revision_id: String = "%s@%s" % [revision.type_id, TypeRegistryBootstrap._definition_hash(revision.definition)]
@@ -273,7 +276,9 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 		if not has_item(str(binding.item_id)): return "item binding refers to missing item '%s'" % binding.item_id
 	for event in events:
 		if not has_item(str(event.item_id)): return "event refers to missing item '%s'" % event.item_id
-	error = _exec_checked("BEGIN TRANSACTION;")
+	if not _last_sql_error.is_empty(): return _last_sql_error
+	error = _begin_canonical_mutation()
+	if not error.is_empty(): return error
 	if error.is_empty():
 		if existing.is_empty(): error = _exec_checked("INSERT INTO type_defs (id,slug,lifecycle,current_revision,provenance_json) VALUES (?,?,?,?,?);", [type_def.id, type_def.slug, type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true)])
 	if error.is_empty(): error = _exec_checked("INSERT INTO type_def_versions (id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES (?,?,?,?,?,?,?);", [revision.id, revision.type_id, revision.get("parent_revision", null), JSON.stringify(revision.definition, "", true, true), revision.author, revision.created_at, revision.reason])
@@ -284,10 +289,7 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	for event in events:
 		if not error.is_empty(): break
 		error = _exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [event.item_id, event.event_type, event.get("actor", ""), event.timestamp, event.get("note", "")])
-	if not error.is_empty(): _rollback(); return error
-	error = _exec_checked("COMMIT;")
-	if not error.is_empty(): _rollback(); return error
-	return _flush_jsonl()
+	return _complete_canonical_mutation(error)
 
 
 # -- JSONL write-through ------------------------------------------------------
@@ -479,10 +481,16 @@ func rewrite_refs_checked(old_qualified: String, new_qualified: String, old_bare
 # -- ID generation (mutates counter) -----------------------------------------
 
 func next_id() -> String:
-	if not _begin_canonical_mutation().is_empty(): return ""
+	var checked := next_id_checked()
+	return str(checked.id) if str(checked.error).is_empty() else ""
+
+
+func next_id_checked() -> Dictionary:
+	var begin_error := _begin_canonical_mutation()
+	if not begin_error.is_empty(): return {"id": "", "error": begin_error}
 	var result := super.next_id()
-	if not _complete_canonical_mutation().is_empty(): return ""
-	return result
+	var error := _complete_canonical_mutation()
+	return {"id": result if error.is_empty() else "", "error": error}
 
 
 # next_uuid7_id() does NOT mutate the counter — it's stateless. No override needed.
