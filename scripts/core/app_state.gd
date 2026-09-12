@@ -172,6 +172,71 @@ func get_type_registry(project_name: String = "") -> TypeRegistry:
 func get_db_for_project(project_name: String) -> DocketDB:
 	return _project_dbs.get(project_name)
 
+func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: bool) -> Dictionary:
+	if not exclusive_writer_confirmed:
+		return {"success":false,"error":"confirm exclusive promotion workflow with incompatible writers stopped"}
+	if not _project_dbs.has(project_name):
+		return {"success":false,"error":"project is no longer open"}
+	var old_db: DocketDB = _project_dbs[project_name]
+	if old_db is DocketDBJsonl:
+		return {"success":false,"error":"project is already JSONL"}
+	var path: String = old_db.get_path()
+	var was_primary: bool = old_db == db
+	old_db.close()
+	var result: Dictionary = JSONLMigration.migrate_to_jsonl(path)
+	result["path"] = path
+	var reopened: DocketDB
+	if JSONLMigration.detect_format(path) == "jsonl":
+		reopened = DocketDBJsonl.open_jsonl(path)
+	elif JSONLMigration.detect_format(path) == "sqlite":
+		reopened = DocketDB.new()
+		if not reopened.open(path):
+			reopened = null
+	if reopened == null:
+		_project_dbs.erase(project_name)
+		_type_registries.erase(project_name)
+		if was_primary:
+			db = null
+		result["success"] = false
+		result["error"] = str(result.get("error", "")) + ("; " if not str(result.get("error", "")).is_empty() else "") + "project could not be reopened"
+		file_changed.emit()
+		return result
+	_project_dbs[project_name] = reopened
+	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
+	if was_primary:
+		db = reopened
+		dct_path = path
+	file_changed.emit()
+	return result
+
+func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, exclusive_writer_confirmed: bool) -> Dictionary:
+	if not _project_dbs.has(project_name):
+		return {"ok":false,"error":"project is no longer open"}
+	var old_db: DocketDB = _project_dbs[project_name]
+	if not old_db is DocketDBJsonl:
+		return {"ok":false,"error":"legacy SQLite must be explicitly promoted to JSONL first"}
+	var path: String = old_db.get_path()
+	var was_primary: bool = old_db == db
+	old_db.close()
+	var result: Dictionary = JSONLTypeUpgrade.apply(path, preview, schema, exclusive_writer_confirmed)
+	var reopened: DocketDBJsonl = DocketDBJsonl.open_jsonl(path)
+	if reopened == null:
+		_project_dbs.erase(project_name)
+		_type_registries.erase(project_name)
+		if was_primary:
+			db = null
+		result.ok = false
+		result.error = str(result.get("error", "")) + ("; " if not str(result.get("error", "")).is_empty() else "") + "project could not be reopened"
+		file_changed.emit()
+		return result
+	_project_dbs[project_name] = reopened
+	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
+	if was_primary:
+		db = reopened
+		dct_path = path
+	file_changed.emit()
+	return result
+
 
 func find_item_db(id: String) -> DocketDB:
 	## Search all loaded project DBs for an item by ID.

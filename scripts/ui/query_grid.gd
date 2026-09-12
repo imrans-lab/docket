@@ -3,8 +3,8 @@ class_name QueryGrid
 ## Query panel: visual condition builder + spreadsheet-style results with resizable columns.
 ## Custom header row supports drag-to-resize and click-to-sort.
 
-signal item_selected(id: String)
-signal item_activated(id: String)
+signal item_selected(id: String, project: String)
+signal item_activated(id: String, project: String)
 
 var _state: AppState
 var _run_btn: Button
@@ -986,7 +986,7 @@ func _populate_tree() -> void:
 			else:
 				row.set_text(col_idx, str(item.get(field, "")))
 		# Metadata always stores full ID for selection signals
-		row.set_metadata(0, full_id)
+		row.set_metadata(0, {"id":full_id,"project":str(item.get("project", ""))})
 
 	_count_label.text = "%d items" % _current_results.size()
 
@@ -994,15 +994,15 @@ func _populate_tree() -> void:
 func _on_item_selected() -> void:
 	var selected := _tree.get_selected()
 	if selected:
-		var id: String = selected.get_metadata(0)
-		item_selected.emit(id)
+		var origin: Dictionary = selected.get_metadata(0)
+		item_selected.emit(str(origin.id), str(origin.project))
 
 
 func _on_item_activated() -> void:
 	var selected := _tree.get_selected()
 	if selected:
-		var id: String = selected.get_metadata(0)
-		item_activated.emit(id)
+		var origin: Dictionary = selected.get_metadata(0)
+		item_activated.emit(str(origin.id), str(origin.project))
 
 
 func _on_tree_item_mouse_selected(_position: Vector2, mouse_button_index: int) -> void:

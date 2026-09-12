@@ -3,7 +3,7 @@ class_name AppShell
 ## Top-level VBoxContainer: MenuBar + content area with work-entry switching.
 ## Each open query or item is a "work entry" listed in the Work menu.
 
-enum ViewMode { QUERY, DETAIL, SPLIT }
+enum ViewMode { QUERY, DETAIL, SPLIT, TYPES }
 
 var _state: AppState
 var _menu_builder: MenuBuilder
@@ -11,6 +11,7 @@ var _content_area: PanelContainer
 var _query_grid: QueryGrid
 var _record_form: RecordForm
 var _split_container: HSplitContainer
+var _project_types: ProjectTypesPanel
 var _current_mode: ViewMode = ViewMode.QUERY
 
 var _file_label: Label
@@ -175,6 +176,9 @@ func _build_ui() -> void:
 	_record_form.item_changed.connect(_on_item_changed)
 	_record_form.back_pressed.connect(_on_back_pressed)
 	_record_form.child_opened.connect(_open_item_entry)
+	_project_types = ProjectTypesPanel.new()
+	_project_types.init(_state)
+	_project_types.registry_changed.connect(func(_project: String): _query_grid.refresh())
 
 	_split_container = HSplitContainer.new()
 	_split_container.split_offset = 500
@@ -336,6 +340,9 @@ func _activate_work_entry(idx: int) -> void:
 	elif entry.type == "item":
 		switch_view(ViewMode.DETAIL)
 		_record_form.load_item(entry.item_id)
+	elif entry.type == "types":
+		_project_types.refresh()
+		switch_view(ViewMode.TYPES)
 
 	_rebuild_work_menu()
 
@@ -379,6 +386,8 @@ func switch_view(mode: ViewMode) -> void:
 			_content_area.add_child(_split_container)
 			_split_container.add_child(_query_grid)
 			_split_container.add_child(_record_form)
+		ViewMode.TYPES:
+			_content_area.add_child(_project_types)
 
 
 func _detach_all() -> void:
@@ -388,6 +397,8 @@ func _detach_all() -> void:
 		_record_form.get_parent().remove_child(_record_form)
 	if _split_container and _split_container.get_parent():
 		_split_container.get_parent().remove_child(_split_container)
+	if _project_types and _project_types.get_parent():
+		_project_types.get_parent().remove_child(_project_types)
 
 
 # -- External change polling -----------------------------------------------
@@ -563,6 +574,12 @@ func _on_menu_action(action: String) -> void:
 			_on_reload_from_disk()
 		"vault":
 			_show_vault()
+		"project_types":
+			var existing := -1
+			for i in range(_work_entries.size()):
+				if _work_entries[i].type == "types": existing = i; break
+			if existing < 0: existing = _add_work_entry("types", "Project Types", "", "")
+			_activate_work_entry(existing)
 		"save_as":
 			_save_dialog.popup_centered(Vector2i(600, 400))
 		"add_project":
@@ -666,9 +683,9 @@ func _save_session() -> void:
 
 # -- Grid/form callbacks ---------------------------------------------------
 
-func _on_item_selected(id: String) -> void:
+func _on_item_selected(id: String, project: String = "") -> void:
 	if _record_form.is_inside_tree():
-		_record_form.load_item(id)
+		_record_form.load_item(id, project)
 
 
 func _create_and_edit_item(type_name: String) -> void:
@@ -687,7 +704,9 @@ func _create_and_edit_item(type_name: String) -> void:
 	switch_view(ViewMode.DETAIL)
 
 
-func _on_item_activated(id: String) -> void:
+
+func _on_item_activated(id: String, project: String = "") -> void:
+	_on_item_selected(id, project)
 	_open_item_entry(id)
 
 

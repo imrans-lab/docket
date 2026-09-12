@@ -1104,14 +1104,14 @@ func get_current_id() -> String:
 	return _current_id
 
 
-func load_item(id: String) -> void:
+func load_item(id: String, project: String = "") -> void:
 	_loading = true
 	_current_id = id
 	_is_draft = false
 	_draft_item = {}
 
 	# Search across all project DBs for the item
-	var item_db: DocketDB = _state.find_item_db(id)
+	var item_db: DocketDB = _state.get_db_for_project(project) if not project.is_empty() else _state.find_item_db(id)
 	if item_db == null:
 		_id_label.text = "(item not found)"
 		_project_label.text = ""
@@ -1119,7 +1119,7 @@ func load_item(id: String) -> void:
 		_loading = false
 		return
 
-	_current_project = _state.get_project_name_for_item(id)
+	_current_project = project if not project.is_empty() else _state.get_project_name_for_item(id)
 	_project_option.visible = false  # Hide selector for existing items
 	_project_inline_label.visible = false
 	# Show Move button when 2+ projects and item is saved
