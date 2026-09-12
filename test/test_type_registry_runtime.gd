@@ -109,6 +109,9 @@ func test_definition_validation_and_idempotent_conflict_behavior() -> Variant:
 	if r is String: db.close(); return r
 	invalid = _definition("constraint"); invalid.fields[0].pattern = ".*"
 	r = A.contains(registry.validate_definition(invalid), "descriptor property", "unimplemented field constraints are refused instead of advertised")
+	if r is String: db.close(); return r
+	invalid = _definition("values"); invalid.fields[0].values = ["ignored"]
+	r = A.contains(registry.validate_definition(invalid), "enum type", "enum values cannot be accepted on a non-enum descriptor")
 	db.close(); return r
 
 func test_custom_definition_is_draft_until_explicit_audited_activation() -> Variant:
@@ -193,8 +196,46 @@ func test_unknown_stored_payload_survives_typed_edit_but_unknown_edit_is_rejecte
 	var item := db.get_item("ORD-0001")
 	var r = A.is_true(error.is_empty() and item.extras.future_payload.nested == [1.0,true,null], "typed edit preserves unknown future payload")
 	if r is String: db.close(); return r
+	var before_text := FileAccess.get_file_as_string(path); var before_events := db.get_events("ORD-0001")
 	error = registry.update_item("ORD-0001", {"fields":{"future_unknown":"edit"}}, "tester")
-	r = A.contains(error, "unsupported", "unsupported future field cannot be edited")
+	r = A.is_true(error.contains("unsupported") and db.get_item("ORD-0001").extras.future_payload.nested == [1.0,true,null] and db.get_events("ORD-0001") == before_events and FileAccess.get_file_as_string(path) == before_text, "unsupported future field edits preserve opaque data, audit, and canonical bytes")
+	if r is String: db.close(); return r
+	error = registry.update_item("ORD-0001", {"unset_fields":["future_unknown"]}, "tester")
+	r = A.is_true(error.contains("unsupported") and FileAccess.get_file_as_string(path) == before_text, "unsupported future fields cannot be erased through unset")
+	db.close(); return r
+
+func test_numeric_constraints_survive_json_roundtrip_and_nonfinite_values_refuse() -> Variant:
+	var path := DIR + "/numeric.dct"; var db := DocketDBJsonl.create_new_jsonl(path); var registry := TypeRegistry.new(db); var definition := _definition(); definition.fields[0].max_length = 20
+	var defined := registry.define_type("widget", definition, "tester", "numeric constraints")
+	var r = A.is_true(not defined.has("error"), "integral numeric length constraints define successfully")
+	if r is String: db.close(); return r
+	db.close(); db = DocketDBJsonl.open_jsonl(path); registry = TypeRegistry.new(db)
+	r = A.is_true(registry.get_diagnostic().is_empty() and registry.get_type("widget").definition.fields[0].max_length == 20.0, "JSON float representation of integral length constraints reloads")
+	if r is String: db.close(); return r
+	var repeated := registry.define_type("widget", definition, "tester", "same numeric definition")
+	r = A.is_true(repeated.get("idempotent", false), "integer-authored definition remains idempotent after JSON numeric roundtrip")
+	if r is String: db.close(); return r
+	var evolved: Dictionary = registry.get_type("widget").definition.duplicate(true); evolved.label = "Presented Widget"
+	var numeric_preview := registry.preview_evolution("widget", evolved, registry.get_type("widget").current_revision)
+	var numeric_error := registry.apply_evolution(numeric_preview, "tester", "presentation after numeric roundtrip")
+	r = A.is_true(numeric_error.is_empty() and registry.get_type("widget").definition.fields[0].max_length == 20.0, "integral constraints remain evolvable after roundtrip")
+	if r is String: db.close(); return r
+	definition = _definition("nonfinite"); definition.fields[1].minimum = INF
+	r = A.contains(registry.validate_definition(definition), "finite", "nonfinite numeric constraints are refused")
+	if r is String: db.close(); return r
+	registry.activate_type("widget", registry.get_type("widget").current_revision, "tester", "activate")
+	var made := registry.create_item({"type":"widget","title":"Finite"}, "tester")
+	var error := registry.update_item(made.id, {"ratio":NAN}, "tester")
+	r = A.contains(error, "finite", "nonfinite numeric item values are refused")
+	if r is String: db.close(); return r
+	var with_object: Dictionary = registry.get_type("widget").definition.duplicate(true); with_object.fields.append({"key":"payload","type":"object","required":false,"nullable":true})
+	var preview := registry.preview_evolution("widget", with_object, registry.get_type("widget").current_revision, [made.id])
+	error = registry.apply_evolution(preview, "tester", "object payload")
+	if error.is_empty(): error = registry.update_item(made.id, {"fields":{"payload":{"nested":[0,false,null,""]}}}, "tester")
+	r = A.is_true(error.is_empty() and db.get_item(made.id).fields.payload.nested == [0,false,null,""], "nested JSON payload preserves zero, false, null, and empty strings")
+	if r is String: db.close(); return r
+	error = registry.update_item(made.id, {"fields":{"payload":{"nested":[INF]}}}, "tester")
+	r = A.contains(error, "finite JSON", "nested JSON containers reject nonfinite payloads")
 	db.close(); return r
 
 func test_strict_guided_open_and_scalar_guard_rules() -> Variant:
@@ -358,6 +399,11 @@ func test_breaking_stale_and_injected_durable_evolution_failures_preserve_state(
 	var discussion := registry.get_type("discussion")
 	r = A.contains(registry.preview_evolution("discussion", discussion.definition, discussion.current_revision).error, "protected", "protected built-in definitions cannot be evolved")
 	if r is String: db.close(); return r
+	var array_definition := _definition("array_kind"); array_definition.fields.append({"key":"payloads","type":"array","required":false,"nullable":true})
+	var array_type := registry.define_type("array_kind", array_definition, "tester", "unconstrained array"); registry.activate_type("array_kind", array_type.type.current_revision, "tester", "activate")
+	var tightened: Dictionary = registry.get_type("array_kind").definition.duplicate(true); tightened.fields[-1].items = {"type":"string"}
+	r = A.contains(registry.preview_evolution("array_kind", tightened, registry.get_type("array_kind").current_revision).error, "items", "evolution cannot silently tighten an existing array item constraint")
+	if r is String: db.close(); return r
 	var additive: Dictionary = current.definition.duplicate(true); additive.fields.append({"key":"new_optional","type":"string","required":false,"nullable":true})
 	var preview := registry.preview_evolution("widget", additive, current.current_revision)
 	db._atomic_write_hook = func(_path, _text): return "injected evolution failure"
@@ -394,4 +440,26 @@ func test_evolution_preview_refuses_invalid_selected_item_semantics() -> Variant
 	db._exec("UPDATE items SET status='queued',type_revision=? WHERE id=?;", [other.current_revision,item.id])
 	preview = registry.preview_evolution("widget", evolved, widget.current_revision, [item.id])
 	r = A.contains(preview.error, "conflicts", "preview refuses a forged cross-type revision pin")
+	db.close(); return r
+
+func test_evolution_validates_new_descriptors_against_preserved_opaque_values() -> Variant:
+	var path := DIR + "/opaque-evolution.dct"; var db := DocketDBJsonl.create_new_jsonl(path); var registry := TypeRegistry.new(db); _define(registry)
+	var invalid_item := registry.create_item({"type":"widget","title":"Invalid opaque"}, "tester")
+	var valid_item := registry.create_item({"type":"widget","title":"Valid opaque"}, "tester")
+	db.update_item_fields_checked(invalid_item.id, {"fields":{"later_count":"wrong"}})
+	db.update_item_fields_checked(valid_item.id, {"fields":{"later_count":0,"later_flag":false,"later_note":"","later_null":null}})
+	var current := registry.get_type("widget"); var evolved: Dictionary = current.definition.duplicate(true)
+	evolved.fields.append_array([{"key":"later_count","type":"integer","required":false,"nullable":true,"default":7},{"key":"later_flag","type":"boolean","required":false,"nullable":true,"default":true},{"key":"later_note","type":"string","required":false,"nullable":true,"default":"default"},{"key":"later_null","type":"string","required":false,"nullable":true,"default":"default"}])
+	var before_text := FileAccess.get_file_as_string(path); var before_events := db.get_events(invalid_item.id); var before_pin := db.get_item(invalid_item.id).type_revision
+	var preview := registry.preview_evolution("widget", evolved, current.current_revision, [invalid_item.id])
+	var r = A.is_true(preview.error.contains("later_count") and registry.get_type("widget").current_revision == current.current_revision and db.get_item(invalid_item.id).type_revision == before_pin and db.get_events(invalid_item.id) == before_events and FileAccess.get_file_as_string(path) == before_text, "preview rejects a new descriptor incompatible with preserved opaque data without mutation")
+	if r is String: db.close(); return r
+	var tampered := {"slug":"widget","expected_current":current.current_revision,"definition":evolved,"items":[invalid_item.id]}
+	var error := registry.apply_evolution(tampered, "tester", "tampered opaque apply")
+	r = A.is_true(error.contains("later_count") and FileAccess.get_file_as_string(path) == before_text and db.get_item(invalid_item.id).type_revision == before_pin, "apply revalidates opaque values and preserves canonical state on refusal")
+	if r is String: db.close(); return r
+	preview = registry.preview_evolution("widget", evolved, current.current_revision, [valid_item.id])
+	error = registry.apply_evolution(preview, "tester", "valid opaque apply")
+	var stored: Dictionary = db.get_item(valid_item.id).fields
+	r = A.is_true(error.is_empty() and stored.later_count == 0 and stored.later_flag == false and stored.later_note == "" and stored.has("later_null") and stored.later_null == null, "explicit upgrade preserves false, zero, null, and empty opaque values instead of applying defaults")
 	db.close(); return r

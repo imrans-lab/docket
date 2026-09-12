@@ -190,3 +190,10 @@ deep-copy boundaries around immutable revisions; refusal of unsupported guard
 declarations; and rejection of invalid pinned items in evolution selections.
 Findings are children of C-R; Sol is implementing corrections before delta
 review and coordinator verification.
+
+Terra reviewed the correction at `d689e237`: the five structural findings are
+addressed. A second bounded correction is required for JSON numeric constraint
+roundtrips, finite numeric values, refusal of unknown unsets, immutable array
+constraints, and validation of preserved opaque values that become declared
+fields during an explicit revision upgrade. Three additional finding items
+track these corrections. No C runtime checks have run.

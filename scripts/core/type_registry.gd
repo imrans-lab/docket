@@ -167,7 +167,7 @@ func define_type(slug: String, definition: Dictionary, author: String, reason: S
 	if not error.is_empty(): return {"error":error}
 	if _definitions.has(slug):
 		var existing := get_type(slug)
-		if TypeRegistryBootstrap._definition_hash(existing.definition) == TypeRegistryBootstrap._definition_hash(candidate): return {"type":existing,"idempotent":true}
+		if _semantic_definition_hash(existing.definition) == _semantic_definition_hash(candidate): return {"type":existing,"idempotent":true}
 		return {"error":"slug '%s' already has different immutable meaning" % slug,"similar":_similar(candidate)}
 	var type_id := "type:%s" % _db.next_uuid7_id()
 	var revision_id := "%s@%s" % [type_id, TypeRegistryBootstrap._definition_hash(candidate)]
@@ -177,7 +177,8 @@ func define_type(slug: String, definition: Dictionary, author: String, reason: S
 	var record := {"id":type_id,"slug":slug,"lifecycle":"draft","current_revision":revision_id,"provenance":safe_provenance}
 	error = (_db as DocketDBJsonl).apply_registry_change(record, revision, [], [], "")
 	if not error.is_empty(): return {"error":error}
-	reload()
+	error = reload()
+	if not error.is_empty(): return {"error":error}
 	return {"type":get_type(slug),"idempotent":false}
 
 func deprecate_type(slug: String, expected_current: String, author: String, reason: String) -> String:
@@ -205,7 +206,7 @@ func _set_type_lifecycle(slug: String, lifecycle: String, expected_current: Stri
 	provenance.lifecycle_history = history
 	error = _db._exec_checked("UPDATE type_defs SET lifecycle=?,provenance_json=? WHERE id=? AND current_revision=?;", [record.lifecycle,JSON.stringify(provenance,"",true,true),record.id,expected_current])
 	error = (_db as DocketDBJsonl)._complete_canonical_mutation(error)
-	if error.is_empty(): reload()
+	if error.is_empty(): error = reload()
 	return error
 
 func validate_definition(definition: Dictionary) -> String:
@@ -231,6 +232,7 @@ func validate_definition(definition: Dictionary) -> String:
 		for flag in ["required", "nullable", "mutable"]:
 			if field.has(flag) and not field[flag] is bool: return "field '%s' %s must be boolean" % [key, flag]
 		if field.get("type") == "enum" and (not field.get("values", []) is Array or field.get("values", []).is_empty()): return "enum field '%s' requires values" % key
+		if field.has("values") and field.get("type") != "enum": return "field '%s' values require enum type" % key
 		if field.get("type") == "enum":
 			var enum_seen := {}
 			for option in field.values:
@@ -238,10 +240,10 @@ func validate_definition(definition: Dictionary) -> String:
 				enum_seen[option] = true
 		if field.has("items") and (str(field.type) not in ["array", "reference_list"] or not field.items is Dictionary or field.items.keys() != ["type"] or str(field.items.type) != "string"): return "field '%s' has unsupported item constraints" % key
 		for constraint in ["minimum","maximum"]:
-			if field.has(constraint) and not (field[constraint] is int or field[constraint] is float): return "field '%s' %s must be numeric" % [key,constraint]
+			if field.has(constraint) and (not (field[constraint] is int or field[constraint] is float) or not is_finite(float(field[constraint]))): return "field '%s' %s must be finite numeric" % [key,constraint]
 			if field.has(constraint) and str(field.type) not in ["integer", "number"]: return "field '%s' numeric constraints require a numeric type" % key
 		for constraint in ["min_length","max_length"]:
-			if field.has(constraint) and (not field[constraint] is int or int(field[constraint]) < 0): return "field '%s' %s must be a non-negative integer" % [key,constraint]
+			if field.has(constraint) and (not (field[constraint] is int or field[constraint] is float) or not is_finite(float(field[constraint])) or float(field[constraint]) != floor(float(field[constraint])) or float(field[constraint]) < 0.0): return "field '%s' %s must be a finite non-negative integer" % [key,constraint]
 			if field.has(constraint) and str(field.type) not in ["string", "markdown"]: return "field '%s' length constraints require a text type" % key
 		if field.has("minimum") and field.has("maximum") and field.minimum > field.maximum: return "field '%s' minimum exceeds maximum" % key
 		if field.has("min_length") and field.has("max_length") and field.min_length > field.max_length: return "field '%s' minimum length exceeds maximum" % key
@@ -484,10 +486,23 @@ func preview_evolution(slug: String, definition: Dictionary, expected_current: S
 		var resolved := resolve_item(item)
 		if resolved.has("error"): return {"error":"selected item '%s' has invalid semantics: %s" % [id, resolved.error]}
 		if str(resolved.revision.type_id) != str(current.id): return {"error":"selected item '%s' pin belongs to another type" % id}
-		error = validate_candidate(candidate, _candidate_values(item, resolved.definition))
+		var projected := _project_candidate(item, candidate)
+		error = validate_candidate(candidate, projected)
 		if not error.is_empty(): return {"error":"item '%s': %s" % [id,error]}
 		impacts.append(str(id))
 	return {"slug":slug,"expected_current":expected_current,"definition":candidate,"items":impacts,"saved_query_impact":_saved_query_impact(slug, candidate)}
+
+func _project_candidate(item: Dictionary, definition: Dictionary) -> Dictionary:
+	# Explicit selected upgrades may apply defaults, but stored false/zero/null/empty values win.
+	var result: Dictionary = {}
+	var custom: Dictionary = item.get("fields", {})
+	for descriptor in definition.fields:
+		if item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
+		elif custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
+		elif descriptor.has("default"): result[descriptor.key] = descriptor.default
+	for key in UNIVERSAL_MUTABLE:
+		if item.has(key): result[key] = item[key]
+	return result
 
 func apply_evolution(preview: Dictionary, author: String, reason: String) -> String:
 	if preview.has("error") or author.strip_edges().is_empty() or reason.strip_edges().is_empty(): return str(preview.get("error", "author and reason are required"))
@@ -528,7 +543,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 		events.append({"item_id":id,"event_type":"type_revision_changed","actor":author,"timestamp":Time.get_datetime_string_from_system(true),"note":reason})
 	var error := (_db as DocketDBJsonl).apply_registry_change(record, revision, bindings, events, current.current_revision)
 	error = (_db as DocketDBJsonl)._complete_canonical_mutation(error)
-	if error.is_empty(): reload()
+	if error.is_empty(): error = reload()
 	return error
 
 func _descriptor(record: Dictionary) -> Dictionary:
@@ -576,6 +591,7 @@ func _validate_mutable_patch(definition: Dictionary, values: Dictionary, unset: 
 	var descriptors := {}
 	for descriptor in definition.fields: descriptors[descriptor.key] = descriptor
 	for key in values.keys() + unset:
+		if not descriptors.has(key) and key not in UNIVERSAL_MUTABLE: return "field '%s' is unsupported by pinned revision" % key
 		if descriptors.has(key) and not bool(descriptors[key].get("mutable", true)): return "field '%s' is immutable" % key
 	return ""
 
@@ -613,6 +629,8 @@ func _validate_value(field: Dictionary, value, default_value: bool) -> String:
 		"array": valid = value is Array
 		"object": valid = value is Dictionary
 	if not valid: return "expected %s" % kind
+	if (kind == "integer" or kind == "number") and not is_finite(float(value)): return "numeric value must be finite"
+	if kind in ["array", "object"] and not _json_durable(value): return "value must contain only finite JSON data with string object keys"
 	if kind == "array" and field.has("items"):
 		for entry in value:
 			if not entry is String: return "array entries must be strings"
@@ -627,6 +645,19 @@ func _validate_value(field: Dictionary, value, default_value: bool) -> String:
 		if field.has("minimum") and value < field.minimum: return "below minimum"
 		if field.has("maximum") and value > field.maximum: return "above maximum"
 	return ""
+
+func _json_durable(value) -> bool:
+	if value == null or value is bool or value is String or value is int: return true
+	if value is float: return is_finite(value)
+	if value is Array:
+		for child in value:
+			if not _json_durable(child): return false
+		return true
+	if value is Dictionary:
+		for key in value:
+			if not key is String or not _json_durable(value[key]): return false
+		return true
+	return false
 
 func _looks_like_date(value: String) -> bool:
 	if value.length() != 10 or value[4] != "-" or value[7] != "-": return false
@@ -677,7 +708,7 @@ func _compatible(old: Dictionary, candidate: Dictionary) -> String:
 	for field in candidate.fields: new_fields[field.key] = field
 	for key in old_fields:
 		if not new_fields.has(key) or new_fields[key].type != old_fields[key].type: return "evolution cannot remove or change existing field '%s'" % key
-		for invariant in ["required","nullable","default","values","minimum","maximum","min_length","max_length","mutable"]:
+		for invariant in ["required","nullable","default","values","minimum","maximum","min_length","max_length","mutable","items"]:
 			if old_fields[key].get(invariant) != new_fields[key].get(invariant): return "existing field '%s' constraint '%s' cannot change" % [key,invariant]
 	for key in new_fields:
 		if not old_fields.has(key) and bool(new_fields[key].get("required", false)): return "new fields must be optional"
@@ -706,6 +737,23 @@ func _similar(candidate: Dictionary) -> Array:
 	for descriptor in list_types(true):
 		if str(descriptor.label).nocasecmp_to(str(candidate.label)) == 0 or str(descriptor.slug).similarity(str(candidate.slug)) >= 0.6: result.append({"slug":descriptor.slug,"label":descriptor.label})
 	return result
+
+func _semantic_definition_hash(definition: Dictionary) -> String:
+	# JSON readers represent every number as float, so semantic comparison removes
+	# the in-memory int/float distinction without changing persisted revisions.
+	return TypeRegistryBootstrap._definition_hash(_normalize_json_numbers(definition))
+
+func _normalize_json_numbers(value):
+	if value is int or value is float: return float(value)
+	if value is Array:
+		var array: Array = []
+		for child in value: array.append(_normalize_json_numbers(child))
+		return array
+	if value is Dictionary:
+		var object: Dictionary = {}
+		for key in value: object[key] = _normalize_json_numbers(value[key])
+		return object
+	return value
 
 func _saved_query_impact(slug: String, definition: Dictionary) -> Array:
 	var impacts: Array = []
