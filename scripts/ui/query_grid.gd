@@ -468,7 +468,9 @@ func _add_condition_row(is_first: bool) -> void:
 	var value_dropdown := OptionButton.new()
 	value_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	value_dropdown.visible = false
+	row_data["catalog_status_choice"] = {}
 	value_dropdown.item_selected.connect(func(_idx):
+		row_data["catalog_status_choice"] = {}
 		_user_has_modified = true
 		_refresh_scoped_controls()
 	)
@@ -712,7 +714,8 @@ func _refresh_scoped_controls() -> void:
 					var label := "%s — %s — %s" % [group.label, group.project, status] if not str(group.project).is_empty() else "%s — %s" % [group.label, status]
 					row.value_dropdown.add_item(label)
 					row.value_dropdown.set_item_metadata(row.value_dropdown.item_count - 1, {"key": group.key, "value": str(status), "type": group.type, "project": group.project})
-			var found := _select_dropdown_metadata(row.value_dropdown, raw_value)
+			var pending_choice = row.catalog_status_choice
+			var found := _select_status_choice(row.value_dropdown, pending_choice) if pending_choice is Dictionary and not pending_choice.is_empty() else _select_dropdown_metadata(row.value_dropdown, raw_value)
 			if not raw_value.is_empty() and raw_value != "(any)" and not found:
 				row.value_dropdown.add_item("Unavailable — %s" % raw_value)
 				row.value_dropdown.set_item_metadata(row.value_dropdown.item_count - 1, raw_value)
@@ -890,7 +893,9 @@ func _serialize_all_conditions() -> Dictionary:
 
 func _append_scoped_condition(conditions: Array, condition: Dictionary, row: Dictionary, row_index: int) -> void:
 	if condition.field == "status" and row.value_dropdown.visible and row.value_dropdown.item_count > 0:
-		var choice = row.value_dropdown.get_item_metadata(row.value_dropdown.selected)
+		var choice = row.catalog_status_choice
+		if not choice is Dictionary or choice.is_empty():
+			choice = row.value_dropdown.get_item_metadata(row.value_dropdown.selected)
 		var snapshots := _condition_snapshots()
 		var scope := QueryTypeScope.branch_scope(snapshots, row_index, _type_catalog)
 		if choice is Dictionary and not scope.known and str(choice.get("type", "")) != "":
@@ -1112,7 +1117,9 @@ func set_filter(text: String) -> void:
 		for i in parsed.conditions.size():
 			var saved: Dictionary = parsed.conditions[i]
 			if saved.get("op", "") == "catalog_status" and saved.get("value") is Dictionary:
-				_select_status_choice(_condition_rows[i].value_dropdown, saved.value)
+				var row: Dictionary = _condition_rows[i]
+				_select_status_choice(row.value_dropdown, saved.value)
+				row.catalog_status_choice = saved.value.duplicate(true)
 
 	_run_query()
 

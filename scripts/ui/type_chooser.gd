@@ -20,6 +20,7 @@ var _selected_label: Label
 var _shortcut_box: HFlowContainer
 var _empty_label: Label
 var _historical: CheckButton
+var _shortcut_error: Label
 
 
 func _init() -> void:
@@ -47,6 +48,10 @@ func _init() -> void:
 	_shortcut_box = HFlowContainer.new()
 	_shortcut_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	shortcut_scroll.add_child(_shortcut_box)
+	_shortcut_error = Label.new()
+	_shortcut_error.add_theme_color_override("font_color", Color(1.0, 0.55, 0.3))
+	_shortcut_error.visible = false
+	content.add_child(_shortcut_error)
 	_historical = CheckButton.new()
 	_historical.text = "Include deprecated types"
 	_historical.toggled.connect(func(_value): _rebuild())
@@ -72,6 +77,7 @@ func configure(catalog: Array, project_key: String) -> void:
 	var shortcuts := UserPrefs.load_type_shortcuts(project_key)
 	_pinned = shortcuts.pinned
 	_recent = shortcuts.recent
+	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild()
 
 
@@ -142,7 +148,7 @@ func _rebuild_shortcuts() -> void:
 
 func _activate_shortcut(key: String) -> void:
 	if not _selected.has(key): _selected.append(key)
-	_recent.erase(key); _recent.push_front(key)
+	_record_recent(key)
 	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild(); selection_changed.emit(selected_values())
 
@@ -156,10 +162,7 @@ func _on_selection_changed(_index: int) -> void:
 	for idx in _list.get_selected_items():
 		var key := str(_list.get_item_metadata(idx))
 		_selected.append(key)
-		_recent.erase(key)
-		_recent.push_front(key)
-	if _recent.size() > 12:
-		_recent.resize(12)
+		_record_recent(key)
 	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
 	_update_summary()
 	selection_changed.emit(selected_values())
@@ -172,7 +175,19 @@ func _on_item_clicked(index: int, _position: Vector2, mouse_button: int) -> void
 	if _pinned.has(key):
 		_pinned.erase(key)
 	else:
+		if _pinned.size() >= UserPrefs.MAX_QUERY_TYPE_PINS:
+			_shortcut_error.text = "Pin limit reached (%d). Unpin a type before adding another." % UserPrefs.MAX_QUERY_TYPE_PINS
+			_shortcut_error.visible = true
+			return
 		_pinned.append(key)
+	_shortcut_error.visible = false
 	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild()
 	shortcuts_changed.emit(_pinned.duplicate(), _recent.duplicate())
+
+
+func _record_recent(key: String) -> void:
+	_recent.erase(key)
+	_recent.push_front(key)
+	if _recent.size() > UserPrefs.MAX_QUERY_TYPE_RECENTS:
+		_recent.resize(UserPrefs.MAX_QUERY_TYPE_RECENTS)

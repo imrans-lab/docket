@@ -178,3 +178,23 @@ func test_type_shortcuts_are_separate_and_project_scoped() -> Variant:
 	r = A.eq(alpha.recent, ["discussion"], "recents remain separate")
 	if r != true: return r
 	return A.eq(beta.pinned, ["chore"], "second project remains isolated")
+
+
+func test_type_shortcut_persistence_normalizes_limits_and_order() -> Variant:
+	var pins: Array = []
+	var recents: Array = []
+	for i in 60:
+		pins.append("pin-%02d" % i)
+	for i in 20:
+		recents.append("recent-%02d" % i)
+	pins.insert(1, "pin-00")
+	recents.insert(2, "recent-00")
+	UserPrefs.save_type_shortcuts("limits", pins, recents)
+	var loaded := UserPrefs.load_type_shortcuts("limits")
+	var r = A.eq(loaded.pinned.size(), UserPrefs.MAX_QUERY_TYPE_PINS, "pin limit persisted")
+	if r != true: return r
+	r = A.eq(loaded.recent.size(), UserPrefs.MAX_QUERY_TYPE_RECENTS, "recent limit persisted")
+	if r != true: return r
+	r = A.eq(loaded.pinned.slice(0, 2), ["pin-00", "pin-01"], "duplicate removed without changing order")
+	if r != true: return r
+	return A.eq(loaded.recent[0], "recent-00", "most recent ordering preserved")

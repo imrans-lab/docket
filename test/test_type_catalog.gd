@@ -49,7 +49,7 @@ func _two_project_state() -> AppState:
 	var state := AppState.new()
 	state.schema = _schema()
 	var alpha := _make_db("Alpha", [{"type": "discussion", "status": "active", "title": "Alpha thread"}, {"type": "code_review", "status": "requested", "title": "Alpha review"}])
-	var beta := _make_db("Beta", [{"type": "discussion", "status": "resolved", "title": "Beta thread"}, {"type": "code_review", "status": "approved", "title": "Beta review"}])
+	var beta := _make_db("Beta", [{"type": "discussion", "status": "resolved", "title": "Beta thread"}, {"type": "code_review", "status": "approved", "title": "Beta review"}, {"type": "code_review", "status": "requested", "title": "Beta requested review"}])
 	state._project_dbs = {"Alpha": alpha, "Beta": beta}
 	state.db = alpha
 	return state
@@ -270,7 +270,7 @@ func test_cross_project_or_query_returns_database_rows_from_independent_branches
 func test_project_in_and_empty_operators_do_not_widen_results() -> Variant:
 	var state := _two_project_state()
 	var in_rows := state.execute_cross_project_query({"filter": {"conditions": [{"field": "project", "op": "in", "value": ["Beta"]}]}})
-	var r = A.eq(in_rows.size(), 2, "project in selects only requested database")
+	var r = A.eq(in_rows.size(), 3, "project in selects only requested database")
 	if r != true: return r
 	var empty_rows := state.execute_cross_project_query({"filter": {"conditions": [{"field": "project", "op": "is_empty"}]}})
 	return A.eq(empty_rows.size(), 0, "named projects do not satisfy is_empty")
@@ -308,8 +308,31 @@ func test_query_grid_multiselect_keeps_each_project_type_pair_coupled() -> Varia
 	var titles: Array = []
 	for item in grid._current_results: titles.append(item.title)
 	titles.sort()
-	var r = A.eq(titles, ["Alpha thread", "Beta review"], "multiselect retains project/type pair identity")
+	var r = A.eq(titles, ["Alpha thread", "Beta requested review", "Beta review"], "multiselect retains project/type pair identity")
 	grid.queue_free(); return r
+
+func test_shortcut_actions_enforce_caps_and_persist_recency_order() -> Variant:
+	var schema := {"types": {}}
+	for i in 55: schema.types["kind_%02d" % i] = {"label": "Kind %02d" % i, "states": []}
+	var catalog := TypeCatalog.from_schema(schema, "Alpha")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "shortcut-boundary")
+	for i in 14:
+		chooser._list.deselect_all(); chooser._list.select(i); chooser._on_selection_changed(i)
+	var r = A.eq(chooser._recent.size(), UserPrefs.MAX_QUERY_TYPE_RECENTS, "normal selection caps recents")
+	if r != true: chooser.queue_free(); return r
+	chooser._activate_shortcut(catalog[5].key)
+	r = A.eq(chooser._recent[0], catalog[5].key, "shortcut activation moves entry to front")
+	if r != true: chooser.queue_free(); return r
+	r = A.eq(UserPrefs.load_type_shortcuts("shortcut-boundary").recent, chooser._recent, "action order persists")
+	if r != true: chooser.queue_free(); return r
+	chooser._pinned = []
+	for i in UserPrefs.MAX_QUERY_TYPE_PINS: chooser._pinned.append(catalog[i].key)
+	var before := chooser._pinned.duplicate()
+	chooser._on_item_clicked(UserPrefs.MAX_QUERY_TYPE_PINS, Vector2.ZERO, MOUSE_BUTTON_RIGHT)
+	r = A.eq(chooser._pinned, before, "pin cap does not displace an existing pin")
+	if r != true: chooser.queue_free(); return r
+	r = A.is_true(chooser._shortcut_error.visible and chooser._shortcut_error.text.contains("50"), "pin cap is visibly explained")
+	chooser.queue_free(); return r
 
 func test_legacy_unqualified_filter_round_trips_without_rebinding() -> Variant:
 	var state := _two_project_state()
@@ -321,6 +344,25 @@ func test_legacy_unqualified_filter_round_trips_without_rebinding() -> Variant:
 	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(state); reopened.load_dcq(path)
 	var saved = JSON.parse_string(reopened.get_filter())
 	var r = A.eq(saved, original, "legacy literal survives dcq save and load")
+	grid.queue_free(); reopened.queue_free(); return r
+
+func test_grouped_status_roundtrip_keeps_exact_project_identity() -> Variant:
+	var state := _two_project_state()
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var alpha_key := ""
+	for record in grid._type_catalog:
+		if record.project == "Alpha" and record.slug == "code_review": alpha_key = record.key
+	var original := {"conditions": [{"field": "status", "op": "catalog_status", "value": {"key": alpha_key, "status": "requested"}}]}
+	grid.set_filter(JSON.stringify(original))
+	var path := _db_dir + "/grouped-status.dcq"
+	grid.save_dcq(path)
+	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(state); reopened.load_dcq(path)
+	var saved = JSON.parse_string(reopened.get_filter())
+	var r = A.eq(saved, original, "group identity survives UI and dcq round trip")
+	if r != true: grid.queue_free(); reopened.queue_free(); return r
+	r = A.eq(reopened._current_results.size(), 1, "same literal in another project remains excluded")
+	if r != true: grid.queue_free(); reopened.queue_free(); return r
+	r = A.eq(reopened._current_results[0].title, "Alpha review", "reloaded query executes against original group")
 	grid.queue_free(); reopened.queue_free(); return r
 
 func test_incompatible_status_remains_visible_in_query_grid() -> Variant:

@@ -4,6 +4,8 @@ class_name UserPrefs
 ## Provides display name and initials for comments/authorship.
 
 const _PREFS_PATH := "user://docket_prefs.json"
+const MAX_QUERY_TYPE_PINS := 50
+const MAX_QUERY_TYPE_RECENTS := 12
 
 var first_name: String = ""
 var last_name: String = ""
@@ -128,8 +130,8 @@ static func load_type_shortcuts(project: String) -> Dictionary:
 	if not project_data is Dictionary:
 		return {"pinned": [], "recent": []}
 	return {
-		"pinned": _string_array(project_data.get("pinned", [])),
-		"recent": _string_array(project_data.get("recent", [])),
+		"pinned": _normalized_shortcuts(project_data.get("pinned", []), MAX_QUERY_TYPE_PINS),
+		"recent": _normalized_shortcuts(project_data.get("recent", []), MAX_QUERY_TYPE_RECENTS),
 	}
 
 
@@ -139,8 +141,8 @@ static func save_type_shortcuts(project: String, pinned: Array, recent: Array) -
 	if not all_shortcuts is Dictionary:
 		all_shortcuts = {}
 	all_shortcuts[project] = {
-		"pinned": _unique_strings(pinned),
-		"recent": _unique_strings(recent),
+		"pinned": _normalized_shortcuts(pinned, MAX_QUERY_TYPE_PINS),
+		"recent": _normalized_shortcuts(recent, MAX_QUERY_TYPE_RECENTS),
 	}
 	data["query_type_shortcuts"] = all_shortcuts
 	_save_data(data)
@@ -160,4 +162,12 @@ static func _unique_strings(values: Array) -> Array:
 		var text := str(value)
 		if not text.is_empty() and not result.has(text):
 			result.append(text)
+	return result
+
+
+static func _normalized_shortcuts(value: Variant, limit: int) -> Array:
+	var values: Array = value if value is Array else []
+	var result := _unique_strings(values)
+	if result.size() > limit:
+		result.resize(limit)
 	return result
