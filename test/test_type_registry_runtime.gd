@@ -1,0 +1,314 @@
+extends Node
+## Project registry, typed candidate, lifecycle and evolution behavior.
+
+var A := AssertHelpers
+const DIR := "user://test_type_registry_runtime"
+
+func setup() -> void: DirAccess.make_dir_recursive_absolute(DIR)
+func teardown() -> void:
+	var dir := DirAccess.open(DIR)
+	if dir != null:
+		for name in dir.get_files(): dir.remove(name)
+	DirAccess.remove_absolute(DIR)
+
+func _db(name: String) -> DocketDBJsonl:
+	return DocketDBJsonl.create_new_jsonl(DIR + "/" + name + ".dct")
+
+func _definition(slug: String = "widget", enforcement: String = "strict") -> Dictionary:
+	return {"slug":slug,"label":slug.capitalize(),"description":"Tracks %s records" % slug,"use_when":"Use for %s work" % slug,
+		"fields":[
+			{"key":"title","type":"string","required":true,"nullable":false,"min_length":1},
+			{"key":"count","type":"integer","required":false,"nullable":true,"default":0,"minimum":0},
+			{"key":"ratio","type":"number","required":false,"nullable":true},
+			{"key":"enabled","type":"boolean","required":false,"nullable":false,"default":false},
+			{"key":"mode","type":"enum","values":["a","b"],"required":false,"nullable":true},
+			{"key":"due","type":"date","required":false,"nullable":true},
+			{"key":"at","type":"timestamp","required":false,"nullable":true},
+			{"key":"owner","type":"item_ref","required":false,"nullable":true},
+			{"key":"refs","type":"reference_list","required":false,"nullable":true},
+			{"key":"body","type":"markdown","required":false,"nullable":true}],
+		"lifecycle":{"initial_state":"queued","states":[{"key":"queued","state_category":"queued","state_outcome":""},{"key":"done","state_category":"terminal","state_outcome":"unspecified"},{"key":"held","state_category":"waiting","state_outcome":""}],"terminal_states":["done"],"transitions":{"queued":["done"],"done":[],"held":["queued"]},"guards":{"done":{"required_fields":["mode"]}},"enforcement":enforcement},
+		"protected":false,"protected_behavior":{"regular_creation_allowed":true}}
+
+func _define(registry: TypeRegistry, slug: String = "widget", enforcement: String = "strict") -> Dictionary:
+	var result := registry.define_type(slug, _definition(slug, enforcement), "tester", "test definition", {"kind":"test","protected":false})
+	if not result.has("error"): registry.activate_type(slug, result.type.current_revision, "tester", "activate for test")
+	return result
+
+func test_project_owned_same_slug_has_independent_revision_identity() -> Variant:
+	var a := _db("alpha"); var b := _db("beta")
+	var ra := TypeRegistry.new(a, "Alpha"); var rb := TypeRegistry.new(b, "Beta")
+	var da := _definition(); var dbeta := _definition(); dbeta.description = "Beta-specific meaning"
+	var one := ra.define_type("widget", da, "tester", "alpha meaning")
+	var two := rb.define_type("widget", dbeta, "tester", "beta meaning")
+	var r = A.is_true(not one.has("error") and not two.has("error") and one.type.project == "Alpha" and two.type.project == "Beta" and one.type.id != two.type.id, "same slug has distinct stable identity in each owning project")
+	if r is String: a.close(); b.close(); return r
+	r = A.neq(one.type.current_revision, two.type.current_revision, "different meanings have different immutable revisions")
+	if r is String: a.close(); b.close(); return r
+	var foreign := {"type":"widget","type_id":two.type.id,"type_revision":two.type.current_revision,"status":"queued"}
+	r = A.is_true(ra.resolve_item(foreign).read_only and ra.resolve_item(foreign).error.contains("missing pinned revision"), "a project never resolves another project's same-slug revision")
+	if r is String: a.close(); b.close(); return r
+	var alpha_id: String = one.type.id; a.close(); var reopened := DocketDBJsonl.open_jsonl(DIR + "/alpha.dct"); var loaded := TypeRegistry.new(reopened, "Alpha")
+	r = A.is_true(loaded.get_type("widget").id == alpha_id and loaded.get_revision(one.type.current_revision).definition.description == da.description, "project identity and complete pinned revision survive reopen")
+	reopened.close(); b.close(); return r
+
+func test_legacy_registry_supports_builtins_but_refuses_definition_writes() -> Variant:
+	var path := DIR + "/legacy.dct"
+	var source := FileAccess.open("res://test/fixtures/dynamic_types_legacy_v1.jsonl", FileAccess.READ)
+	var output := FileAccess.open(path, FileAccess.WRITE); output.store_string(source.get_as_text()); source.close(); output.close()
+	var db := DocketDBJsonl.open_jsonl(path); var registry := TypeRegistry.new(db, "Legacy")
+	var r = A.is_true(not registry.get_type("discussion").has("error"), "legacy flat built-in resolves through compatibility registry")
+	if r is String: db.close(); return r
+	r = A.contains(registry.define_type("widget", _definition(), "tester", "blocked").error, "read-only", "legacy registry definitions require explicit upgrade")
+	db.close(); return r
+
+func test_definition_validation_and_idempotent_conflict_behavior() -> Variant:
+	var db := _db("define"); var registry := TypeRegistry.new(db)
+	var first := _define(registry); var same := _define(registry)
+	var changed := _definition(); changed.description = "different"
+	var conflict := registry.define_type("widget", changed, "tester", "conflict")
+	var r = A.is_true(not first.has("error") and same.idempotent and conflict.has("error") and conflict.similar[0].slug == "widget" and registry.get_type("widget").use_when == "Use for widget work", "same content is idempotent, conflicts have deterministic matches, and presentation metadata resolves")
+	if r is String: db.close(); return r
+	var invalid := _definition("bad"); invalid.fields[1].type = "executable"
+	r = A.contains(registry.validate_definition(invalid), "unsupported type", "unsupported descriptor kinds refuse complete definition")
+	if r is String: db.close(); return r
+	invalid = _definition("reserved"); invalid.fields[1].key = "type_revision"
+	r = A.contains(registry.validate_definition(invalid), "reserved", "definitions cannot claim internal storage identity")
+	if r is String: db.close(); return r
+	invalid = _definition("duplicate"); invalid.lifecycle.states.append(invalid.lifecycle.states[0].duplicate(true))
+	r = A.contains(registry.validate_definition(invalid), "unique", "duplicate lifecycle identities are refused")
+	db.close(); return r
+
+func test_custom_definition_is_draft_until_explicit_audited_activation() -> Variant:
+	var db := _db("activation"); var registry := TypeRegistry.new(db)
+	var defined := registry.define_type("widget", _definition(), "author", "draft proposal", {"kind":"test"})
+	var r = A.is_true(defined.type.lifecycle == "draft" and registry.create_item({"type":"widget","title":"blocked"}).has("error"), "draft definition cannot create items")
+	if r is String: db.close(); return r
+	var error := registry.activate_type("widget", defined.type.current_revision, "reviewer", "approved semantics")
+	var active := registry.get_type("widget")
+	r = A.is_true(error.is_empty() and active.lifecycle == "active" and active.provenance.lifecycle_history[0].reason == "approved semantics", "explicit activation records author and reason")
+	if r is String: db.close(); return r
+	error = registry.deprecate_type("widget", active.current_revision, "reviewer", "retired semantics")
+	r = A.is_true(error.is_empty() and registry.create_item({"type":"widget","title":"blocked"}).has("error") and registry.get_type("widget").provenance.lifecycle_history[-1].reason == "retired semantics", "deprecated types reject creation and retain lifecycle provenance")
+	db.close(); return r
+
+func test_all_scalar_shapes_defaults_false_zero_null_and_unset() -> Variant:
+	var db := _db("shapes"); var registry := TypeRegistry.new(db); _define(registry)
+	var made := registry.create_item({"type":"widget","title":"One","ratio":1.5,"enabled":false,"mode":"a","due":"2026-09-12","at":"2026-09-12T00:00:00Z","owner":"X","refs":["A","B"],"body":"text"}, "tester")
+	var r = A.is_true(not made.has("error") and made.item.fields.count == 0 and made.item.fields.enabled == false, "creation applies typed false and zero defaults")
+	if r is String: db.close(); return r
+	var error := registry.update_item(made.id, {"fields":{"count":null}}, "tester")
+	r = A.is_true(error.is_empty() and db.get_item(made.id).fields.has("count") and db.get_item(made.id).fields.count == null, "nullable explicit null is retained distinctly from unset")
+	if r is String: db.close(); return r
+	error = registry.update_item(made.id, {"unset_fields":["ratio"]}, "tester")
+	r = A.is_true(error.is_empty() and not db.get_item(made.id).fields.has("ratio"), "explicit unset removes the selected optional key")
+	if r is String: db.close(); return r
+	error = registry.update_item(made.id, {"unset_fields":["title"]}, "tester")
+	r = A.contains(error, "required field", "required values cannot be unset")
+	if r is String: db.close(); return r
+	error = registry.update_item(made.id, {"fields":{"due":"2026-02-31"}}, "tester")
+	r = A.contains(error, "ISO date", "calendar-invalid dates are rejected")
+	if r is String: db.close(); return r
+	error = registry.update_item(made.id, {"fields":{"at":"2026-09-12T25:00:00Z"}}, "tester")
+	r = A.contains(error, "ISO timestamp", "timestamps validate time components")
+	if r is String: db.close(); return r
+	error = registry.update_item(made.id, {"fields":{"refs":["A", 2]}}, "tester")
+	r = A.contains(error, "reference_list", "reference lists reject non-string entries")
+	db.close(); return r
+
+func test_patch_shapes_authority_and_immutable_fields_are_refused() -> Variant:
+	var db := _db("patch-shapes"); var registry := TypeRegistry.new(db); var definition := _definition(); definition.fields[0].mutable = false
+	var defined := registry.define_type("widget", definition, "tester", "immutable title"); registry.activate_type("widget", defined.type.current_revision, "tester", "activate")
+	var made := registry.create_item({"type":"widget","title":"Fixed"}, "tester")
+	var r = A.contains(registry.update_item(made.id, {"fields":{"title":"Nested"},"title":"Flat"}), "ambiguous", "flat and nested authority cannot conflict")
+	if r is String: db.close(); return r
+	r = A.contains(registry.update_item(made.id, {"fields":[],"title":"Bad"}), "object", "nested fields require an object")
+	if r is String: db.close(); return r
+	r = A.contains(registry.update_item(made.id, {"fields":{"type_revision":"forged"}}), "reserved", "nested identity writes are refused")
+	if r is String: db.close(); return r
+	r = A.contains(registry.update_item(made.id, {"type":"other"}), "retype", "typed updates cannot rebind item type identity")
+	if r is String: db.close(); return r
+	r = A.contains(registry.update_item(made.id, {"fields":{"count":2},"unset_fields":["count"]}), "set and unset", "one patch cannot set and unset the same field")
+	if r is String: db.close(); return r
+	r = A.contains(registry.update_item(made.id, {"title":"Changed"}), "immutable", "immutable descriptor fields reject edits")
+	db.close(); return r
+
+func test_invalid_candidate_never_partially_mutates_item_or_audit() -> Variant:
+	var db := _db("candidate"); var registry := TypeRegistry.new(db); _define(registry)
+	var made := registry.create_item({"type":"widget","title":"Stable"}, "tester")
+	var before := db.get_events(made.id); var error := registry.update_item(made.id, {"fields":{"count":-1}}, "tester")
+	var r = A.is_true(error.contains("minimum") and db.get_item(made.id).title == "Stable" and db.get_events(made.id) == before, "invalid clone produces neither patch nor audit")
+	db.close(); return r
+
+func test_typed_item_and_audit_rollback_together_on_durable_failure() -> Variant:
+	var path := DIR + "/item-failure.dct"; var db := DocketDBJsonl.create_new_jsonl(path); var registry := TypeRegistry.new(db); _define(registry)
+	var made := registry.create_item({"type":"widget","title":"Before"}, "tester"); var before_events := db.get_events(made.id)
+	db._atomic_write_hook = func(_path, _text): return "injected typed write failure"
+	var error := registry.update_item(made.id, {"title":"After"}, "tester")
+	db._atomic_write_hook = Callable()
+	var r = A.is_true(error.contains("injected") and db.get_item(made.id).title == "Before" and db.get_events(made.id) == before_events, "failed durable publish rolls back candidate and audit in the live cache")
+	if r is String: db.close(); return r
+	db.close(); var reopened := DocketDBJsonl.open_jsonl(path)
+	r = A.is_true(reopened.get_item(made.id).title == "Before" and reopened.get_events(made.id) == before_events, "failed durable publish leaves canonical data unchanged after reopen")
+	reopened.close(); return r
+
+func test_unknown_stored_payload_survives_typed_edit_but_unknown_edit_is_rejected() -> Variant:
+	var path := DIR + "/unknown-preserved.dct"
+	var source := FileAccess.open("res://test/fixtures/dynamic_types_record_order_v2.jsonl", FileAccess.READ)
+	var output := FileAccess.open(path, FileAccess.WRITE); output.store_string(source.get_as_text()); source.close(); output.close()
+	var db := DocketDBJsonl.open_jsonl(path); var registry := TypeRegistry.new(db)
+	var error := registry.update_item("ORD-0001", {"fields":{"count":2}}, "tester")
+	var item := db.get_item("ORD-0001")
+	var r = A.is_true(error.is_empty() and item.extras.future_payload.nested == [1.0,true,null], "typed edit preserves unknown future payload")
+	if r is String: db.close(); return r
+	error = registry.update_item("ORD-0001", {"fields":{"future_unknown":"edit"}}, "tester")
+	r = A.contains(error, "unsupported", "unsupported future field cannot be edited")
+	db.close(); return r
+
+func test_strict_guided_open_and_scalar_guard_rules() -> Variant:
+	var db := _db("lifecycle"); var strict := TypeRegistry.new(db); _define(strict)
+	var item := strict.create_item({"type":"widget","title":"Flow"}, "tester")
+	var r = A.contains(strict.transition_item(item.id, "held", "tester", "because"), "strict", "strict rejects off-flow despite note")
+	if r is String: db.close(); return r
+	r = A.contains(strict.transition_item(item.id, "done", "tester", "", {"mode":""}), "requires field", "blank scalar cannot bypass transition guard")
+	if r is String: db.close(); return r
+	r = A.contains(strict.transition_item(item.id, "done", "tester", "because", {"mode":null}), "requires field", "nullable null cannot bypass a required transition guard")
+	if r is String: db.close(); return r
+	_define(strict, "guided_widget", "guided")
+	var guided := strict.create_item({"type":"guided_widget","title":"Guided"}, "tester")
+	r = A.contains(strict.transition_item(guided.id, "held", "tester"), "requires a note", "guided off-flow requires a note")
+	if r is String: db.close(); return r
+	r = A.eq(strict.transition_item(guided.id, "held", "tester", "triage"), "", "guided off-flow accepts explanatory note")
+	if r is String: db.close(); return r
+	_define(strict, "open_widget", "open")
+	var open_item := strict.create_item({"type":"open_widget","title":"Open"}, "tester")
+	r = A.eq(strict.transition_item(open_item.id, "held", "tester"), "", "open lifecycle permits off-flow without note")
+	db.close(); return r
+
+func test_registry_refresh_observes_published_project_revision_without_cross_project_leak() -> Variant:
+	var db := _db("reload"); var first := TypeRegistry.new(db, "Reload"); var second := TypeRegistry.new(db, "Reload"); var writer_guard := TypeRegistry.new(db, "Reload")
+	_define(first, "new_kind")
+	var r = A.is_true(second.get_type("new_kind").has("error"), "registry snapshot remains stable before explicit refresh")
+	if r is String: db.close(); return r
+	second.refresh_if_changed()
+	r = A.is_true(not second.get_type("new_kind").has("error"), "refresh invalidates registry snapshot after canonical publish")
+	if r is String: db.close(); return r
+	var made := writer_guard.create_item({"type":"new_kind","title":"Fresh"}, "tester")
+	r = A.is_true(not made.has("error") and made.item.type_id == first.get_type("new_kind").id, "mutating operations reload changed project definitions before validation and publish")
+	db.close(); return r
+
+func test_app_and_tool_contexts_expose_project_owned_registries() -> Variant:
+	var state := AppState.new(); state.create_dct(DIR + "/context-a.dct"); state.create_and_add_project(DIR + "/context-b.dct")
+	var projects := state.get_project_dbs(); var names: Array = projects.keys()
+	var r = A.is_true(names.size() == 2 and state.get_type_registry(str(names[0])) != state.get_type_registry(str(names[1])), "AppState keeps one registry per loaded project")
+	if r is String:
+		for name in names: state.remove_project(str(name))
+		return r
+	var tools := ToolRegistry.new(); tools.init(TypeRegistryBootstrap.load_shipped_schema(), state.db, projects)
+	r = A.is_true(tools.get_type_registry(str(names[0])).get_type("discussion").project == str(names[0]) and tools.get_type_registry(str(names[1])).get_type("discussion").project == str(names[1]), "tool context resolves type meaning through the selected project")
+	for name in names: state.remove_project(str(name))
+	return r
+
+func test_missing_pinned_revision_reports_read_only_unknown_semantics() -> Variant:
+	var db := _db("missing-pin"); var registry := TypeRegistry.new(db); _define(registry)
+	var made := registry.create_item({"type":"widget","title":"Missing pin"}, "tester")
+	var item: Dictionary = made.item.duplicate(true); item.type_revision = "type:widget@missing"
+	var resolved := registry.resolve_item(item)
+	var r = A.is_true(resolved.read_only and resolved.semantics == "unknown" and resolved.error.contains("missing pinned revision"), "missing pinned revision stays visible without inferred meaning")
+	db.close(); return r
+
+func test_invalid_historical_status_is_visible_and_blocks_lifecycle() -> Variant:
+	var db := _db("history"); var registry := TypeRegistry.new(db); _define(registry)
+	var made := registry.create_item({"type":"widget","title":"History"}, "tester")
+	db._exec("UPDATE items SET status='removed-history' WHERE id=?;", [made.id])
+	var semantics := registry.resolve_item(db.get_item(made.id))
+	var r = A.is_true(semantics.read_only and semantics.semantics == "unknown" and semantics.error.contains("historical status"), "invalid history remains visible with unknown semantics")
+	if r is String: db.close(); return r
+	r = A.contains(registry.transition_item(made.id, "done", "tester", "repair"), "historical status", "lifecycle refuses implicit historical repair")
+	if r is String: db.close(); return r
+	var repair_error := registry.repair_item_status(made.id, "queued", "reviewer", "validated historical correction")
+	r = A.is_true(repair_error.is_empty() and db.get_item(made.id).status == "queued" and db.get_events(made.id)[-1].event_type == "status_repaired", "explicit validated repair restores declared semantics with an audit event")
+	db.close(); return r
+
+func test_protected_builtin_and_custom_blocked_behavior_are_distinct() -> Variant:
+	var db := _db("protected"); var registry := TypeRegistry.new(db)
+	var secret := registry.create_item({"type":"secret","title":"No"}, "tester")
+	var custom_def := _definition("custom_blocked"); custom_def.protected = true; custom_def.protected_behavior = {"regular_creation_allowed":false,"blocking":{"enabled":true,"state":"blocked"}}; custom_def.lifecycle.states.append({"key":"blocked","state_category":"waiting","state_outcome":""}); custom_def.lifecycle.transitions.queued.append("blocked"); custom_def.lifecycle.transitions.blocked = []
+	var custom := registry.define_type("custom_blocked", custom_def, "tester", "custom blocked"); registry.activate_type("custom_blocked", custom.type.current_revision, "tester", "activate")
+	var made := registry.create_item({"type":"custom_blocked","title":"Allowed"}, "tester")
+	var stored := registry.get_type("custom_blocked").definition
+	var r = A.is_true(secret.has("error") and not made.has("error") and stored.protected == false and not stored.protected_behavior.has("blocking"), "custom definitions cannot spoof protected creation or work-item effects")
+	db.close(); return r
+
+func test_protected_work_item_blocking_effect_and_skill_outcome_field() -> Variant:
+	var db := _db("protected-effects"); var registry := TypeRegistry.new(db)
+	var blocker := registry.create_item({"type":"work_item","title":"Dependency"}, "tester")
+	var blocked := registry.create_item({"type":"work_item","title":"Dependent"}, "tester")
+	var error := registry.transition_item(blocked.id, "open", "tester")
+	if error.is_empty(): error = registry.transition_item(blocked.id, "in_progress", "tester")
+	if error.is_empty(): error = registry.transition_item(blocked.id, "blocked", "tester", "waiting", {"blocked_by":blocker.id})
+	var links := db.get_links(blocker.id)
+	var r = A.is_true(error.is_empty() and links.size() == 1 and links[0].to == blocked.id and links[0].relation == "blocks", "protected work-item metadata creates the declared blocking relation")
+	if r is String: db.close(); return r
+	var skill := registry.create_item({"type":"skill","title":"Pipeline","outcome":"Keep this instruction"}, "tester")
+	var semantics := registry.resolve_item(skill.item)
+	r = A.is_true(skill.item.outcome == "Keep this instruction" and semantics.state_outcome == "", "derived lifecycle outcome does not overwrite the skill outcome field")
+	db.close(); return r
+
+func test_legacy_sqlite_registry_keeps_builtin_create_update_transition() -> Variant:
+	var path := DIR + "/legacy.sqlite"; var db := DocketDB.new(); db.open(path); var registry := TypeRegistry.new(db, "Legacy SQLite")
+	var made := registry.create_item({"type":"discussion","title":"Legacy"}, "tester")
+	var error := registry.update_item(made.id, {"description":"flat update"}, "tester")
+	if error.is_empty(): error = registry.transition_item(made.id, "resolved", "tester")
+	var item := db.get_item(made.id)
+	var r = A.is_true(error.is_empty() and item.description == "flat update" and item.status == "resolved" and db.get_events(made.id).size() == 2, "legacy SQLite built-ins retain typed flat operations and audit events")
+	db.close(); return r
+
+func test_additive_evolution_keeps_old_pins_until_explicit_selected_apply() -> Variant:
+	var db := _db("evolve"); var registry := TypeRegistry.new(db); _define(registry)
+	var made := registry.create_item({"type":"widget","title":"Pinned"}, "tester")
+	var old_pin: String = str(made.item.type_revision)
+	db.save_query("widget queue", {"filter":{"conditions":[{"field":"type","op":"eq","value":"widget"},{"field":"status","op":"eq","value":"queued"}]}})
+	var evolved := _definition(); evolved.fields.append({"key":"reviewer","type":"string","required":false,"nullable":true,"default":"unassigned"}); evolved.lifecycle.states.append({"key":"review","state_category":"active","state_outcome":""}); evolved.lifecycle.transitions.queued.append("review"); evolved.lifecycle.transitions.review = ["done"]
+	var preview := registry.preview_evolution("widget", evolved, old_pin, [])
+	var impact_check = A.is_true(preview.saved_query_impact.size() == 1 and preview.saved_query_impact[0].name == "widget queue", "evolution preview reports actual saved-query references")
+	if impact_check is String: db.close(); return impact_check
+	var error := registry.apply_evolution(preview, "tester", "add optional review")
+	var r = A.is_true(error.is_empty() and db.get_item(made.id).type_revision == old_pin and not db.get_item(made.id).fields.has("reviewer"), "publishing additive revision neither repins nor applies defaults to old items")
+	if r is String: db.close(); return r
+	var current: String = str(registry.get_type("widget").current_revision)
+	preview = registry.preview_evolution("widget", evolved, current, [made.id])
+	error = registry.apply_evolution(preview, "tester", "apply selected pin")
+	r = A.is_true(error.is_empty() and db.get_item(made.id).type_revision == current and db.get_item(made.id).fields.reviewer == "unassigned" and db.get_events(made.id)[-1].event_type == "type_revision_changed" and registry.get_revision(current).parent_revision == old_pin, "explicit selected apply advances pin with its default, immutable parent chain, and audit")
+	db.close(); return r
+
+func test_breaking_stale_and_injected_durable_evolution_failures_preserve_state() -> Variant:
+	var db := _db("evolve-fail"); var registry := TypeRegistry.new(db); _define(registry)
+	var current := registry.get_type("widget"); var breaking: Dictionary = current.definition.duplicate(true); breaking.fields.remove_at(1)
+	var r = A.contains(registry.preview_evolution("widget", breaking, current.current_revision).error, "remove", "breaking field removal is refused")
+	if r is String: db.close(); return r
+	r = A.contains(registry.preview_evolution("widget", current.definition, "stale").error, "stale", "stale pointer is refused")
+	if r is String: db.close(); return r
+	var discussion := registry.get_type("discussion")
+	r = A.contains(registry.preview_evolution("discussion", discussion.definition, discussion.current_revision).error, "protected", "protected built-in definitions cannot be evolved")
+	if r is String: db.close(); return r
+	var additive: Dictionary = current.definition.duplicate(true); additive.fields.append({"key":"new_optional","type":"string","required":false,"nullable":true})
+	var preview := registry.preview_evolution("widget", additive, current.current_revision)
+	db._atomic_write_hook = func(_path, _text): return "injected evolution failure"
+	var error := registry.apply_evolution(preview, "tester", "failure")
+	db._atomic_write_hook = Callable(); registry.reload()
+	r = A.is_true(error.contains("injected") and registry.get_type("widget").current_revision == current.current_revision, "durable failure restores registry pointer")
+	db.close(); return r
+
+func test_evolution_revalidates_untrusted_preview_and_rejects_indirect_retype() -> Variant:
+	var db := _db("evolve-revalidate"); var registry := TypeRegistry.new(db); _define(registry); _define(registry, "other")
+	var widget := registry.get_type("widget"); var evolved: Dictionary = widget.definition.duplicate(true); evolved.label = "Clearer Widget"
+	var other := registry.create_item({"type":"other","title":"Other"}, "tester")
+	var preview := registry.preview_evolution("widget", evolved, widget.current_revision)
+	preview.items = [other.id]
+	var error := registry.apply_evolution(preview, "tester", "tampered selection")
+	var r = A.is_true(error.contains("another type") and registry.get_type("widget").current_revision == widget.current_revision and db.get_item(other.id).type == "other", "apply revalidates selected ownership and refuses indirect retype")
+	if r is String: db.close(); return r
+	var breaking: Dictionary = widget.definition.duplicate(true); breaking.lifecycle.transitions.queued.append("held")
+	r = A.contains(registry.preview_evolution("widget", breaking, widget.current_revision).error, "transition graph", "evolution cannot add a new edge between existing states")
+	db.close(); return r

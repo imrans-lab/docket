@@ -21,6 +21,7 @@ var prefs: UserPrefs
 
 # Multi-project support: project_name → DocketDB
 var _project_dbs: Dictionary = {}
+var _type_registries: Dictionary = {}
 var last_cross_project_query_error: String = ""
 
 
@@ -30,6 +31,7 @@ func load_dct(path: String) -> void:
 		db.close()
 		db = null
 	_project_dbs.clear()
+	_type_registries.clear()
 
 	if FileAccess.file_exists(path):
 		match JSONLMigration.detect_format(path):
@@ -66,6 +68,7 @@ func load_dct(path: String) -> void:
 		proj_name = path.get_file().get_basename()
 		db.set_project_name(proj_name)
 	_project_dbs[proj_name] = db
+	_type_registries[proj_name] = TypeRegistry.new(db, proj_name)
 
 	file_changed.emit()
 
@@ -143,12 +146,19 @@ func add_project(path: String) -> void:
 			new_db.set_id_prefix(new_prefix)
 
 	_project_dbs[proj_name] = new_db
+	_type_registries[proj_name] = TypeRegistry.new(new_db, proj_name)
 
 	file_changed.emit()
 
 
 func get_project_dbs() -> Dictionary:
 	return _project_dbs
+
+func get_type_registry(project_name: String = "") -> TypeRegistry:
+	var key := project_name if not project_name.is_empty() else (db.get_project_name() if db != null else "")
+	var registry: TypeRegistry = _type_registries.get(key)
+	if registry != null: registry.refresh_if_changed()
+	return registry
 
 
 func get_db_for_project(project_name: String) -> DocketDB:
@@ -181,6 +191,7 @@ func remove_project(project_name: String) -> Dictionary:
 	var closing_db: DocketDB = _project_dbs[project_name]
 	closing_db.close()
 	_project_dbs.erase(project_name)
+	_type_registries.erase(project_name)
 
 	# If we just closed the primary, promote the next one or clear
 	if closing_db == db:
@@ -283,10 +294,12 @@ func create_dct(path: String) -> void:
 		db.close()
 		db = null
 	_project_dbs.clear()
+	_type_registries.clear()
 	# Default new dockets to JSONL format
 	db = DocketDBJsonl.create_new_jsonl(path)
 	var proj_name := db.get_project_name()
 	_project_dbs[proj_name] = db
+	_type_registries[proj_name] = TypeRegistry.new(db, proj_name)
 	file_changed.emit()
 
 
@@ -309,6 +322,7 @@ func create_and_add_project(path: String) -> void:
 			push_warning("DocketDB: ID prefix '%s' in project '%s' collides with '%s'" % [new_prefix, proj_name, existing_name])
 
 	_project_dbs[proj_name] = new_db
+	_type_registries[proj_name] = TypeRegistry.new(new_db, proj_name)
 	file_changed.emit()
 
 

@@ -5,6 +5,7 @@ class_name ToolRegistry
 var _schema: Dictionary
 var _db: DocketDB
 var _project_dbs: Dictionary = {}  # project_name → DocketDB
+var _type_registries: Dictionary = {}  # project_name → project-owned semantics
 var _tools: Dictionary = {}
 var add_project_fn: Callable  # func(path: String) -> Dictionary
 var remove_project_fn: Callable  # func(name: String) -> Dictionary
@@ -57,6 +58,7 @@ func init(schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -> voi
 	_schema = schema
 	_db = db
 	_project_dbs = project_dbs
+	_rebuild_type_registries()
 	_tools = _build_tools()
 	_init_schema_dependent_tools(schema)
 
@@ -65,8 +67,22 @@ func update_db(schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -
 	_schema = schema
 	_db = db
 	_project_dbs = project_dbs
+	_rebuild_type_registries()
 	_tools = _build_tools()
 	_init_schema_dependent_tools(schema)
+
+func _rebuild_type_registries() -> void:
+	_type_registries.clear()
+	for project in _project_dbs:
+		_type_registries[project] = TypeRegistry.new(_project_dbs[project], str(project))
+	if _db != null and not _db in _project_dbs.values():
+		var project_name := _db.get_project_name()
+		_type_registries[project_name] = TypeRegistry.new(_db, project_name)
+
+func get_type_registry(project_name: String) -> TypeRegistry:
+	var registry: TypeRegistry = _type_registries.get(project_name)
+	if registry != null: registry.refresh_if_changed()
+	return registry
 
 
 func has_tool(name: String) -> bool:
@@ -132,10 +148,13 @@ func refresh_stale_dbs() -> Array:
 		var pdb: DocketDB = _project_dbs[proj_name]
 		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).ensure_fresh():
 			reloaded.append(proj_name)
+			if _type_registries.has(proj_name): (_type_registries[proj_name] as TypeRegistry).reload()
 	# Single-project callers may hold _db without it being in _project_dbs.
 	if _db is DocketDBJsonl and not _db in _project_dbs.values():
 		if (_db as DocketDBJsonl).ensure_fresh():
 			reloaded.append(_db.get_project_name())
+			var project_name := _db.get_project_name()
+			if _type_registries.has(project_name): (_type_registries[project_name] as TypeRegistry).reload()
 	return reloaded
 
 

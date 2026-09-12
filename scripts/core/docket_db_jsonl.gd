@@ -285,6 +285,9 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	if error.is_empty() and not existing.is_empty(): error = _exec_checked("UPDATE type_defs SET lifecycle=?,current_revision=?,provenance_json=? WHERE id=? AND current_revision=?;", [type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true), type_def.id, expected_current_revision])
 	for binding in item_bindings:
 		if not error.is_empty(): break
+		if binding.has("changes"):
+			error = update_item_fields_checked(str(binding.item_id), binding.changes)
+			if not error.is_empty(): break
 		error = _exec_checked("UPDATE items SET type=?,type_id=?,type_revision=? WHERE id=?;", [type_def.slug, binding.type_id, binding.type_revision, binding.item_id])
 	for event in events:
 		if not error.is_empty(): break

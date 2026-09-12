@@ -83,7 +83,7 @@ static func _complete_definition(slug: String, source: Dictionary) -> Dictionary
 		fields.append(descriptor)
 	var behavior := {"regular_creation_allowed": slug not in ["secret", "encrypted_note"]}
 	if slug == "work_item": behavior["blocking"] = {"enabled": true, "state": "blocked"}
-	return {"slug": slug, "label": source.get("label", slug), "description": source.get("description", ""), "fields": fields, "lifecycle": {"initial_state": source.get("initial_state", ""), "states": states, "terminal_states": terminal, "transitions": source.get("transitions", {}).duplicate(true), "guards": source.get("transition_rules", {}).duplicate(true), "enforcement": "guided"}, "protected": true, "protected_behavior": behavior}
+	return {"slug": slug, "label": source.get("label", slug), "description": source.get("description", ""), "use_when": source.get("use_when", source.get("description", "")), "fields": fields, "lifecycle": {"initial_state": source.get("initial_state", ""), "states": states, "terminal_states": terminal, "transitions": source.get("transitions", {}).duplicate(true), "guards": source.get("transition_rules", {}).duplicate(true), "enforcement": "guided"}, "protected": true, "protected_behavior": behavior}
 
 static func _field_type(key: String) -> String:
 	if key in INTEGER_FIELDS: return "integer"
