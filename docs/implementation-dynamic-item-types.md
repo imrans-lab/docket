@@ -177,3 +177,16 @@ Evidence under `/tmp/docket-dynamic-verification/logs/`:
 `b-old-cold-validate.log`, `b-old-warm-open.log`, and
 `b-current-warm-open.log`. Matching Godot 4.7.1 imports are clean.
 No live files or other repositories were changed or upgraded.
+
+### C: first review
+
+Terra reviewed `bf08a2d40486926bea621af9380c31415c2b5002` against `4d28a59`.
+The batch adds project registries, typed operations, lifecycle/repair/evolution
+and 20 authored behavioral tests. No C runtime checks have run.
+
+Five findings require corrections: shared registry ownership and refresh before
+data publication; semantic/protected-behavior validation of loaded snapshots;
+deep-copy boundaries around immutable revisions; refusal of unsupported guard
+declarations; and rejection of invalid pinned items in evolution selections.
+Findings are children of C-R; Sol is implementing corrections before delta
+review and coordinator verification.

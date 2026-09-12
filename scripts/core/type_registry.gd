@@ -14,6 +14,19 @@ var _legacy: bool
 var _definitions: Dictionary = {}
 var _revisions: Dictionary = {}
 var _generation: String = ""
+var _load_error: String = ""
+
+static var _shared_by_db: Dictionary = {}
+
+static func for_db(db: DocketDB, project: String = "") -> TypeRegistry:
+	# Weak registry entries let UI and MCP contexts share semantics without extending DB lifetime.
+	var key: int = db.get_instance_id()
+	var held: WeakRef = _shared_by_db.get(key)
+	var existing: TypeRegistry = held.get_ref() if held != null else null
+	if existing != null: return existing
+	var registry: TypeRegistry = TypeRegistry.new(db, project)
+	_shared_by_db[key] = weakref(registry)
+	return registry
 
 func _init(db: DocketDB, project: String = "") -> void:
 	_db = db
@@ -21,35 +34,91 @@ func _init(db: DocketDB, project: String = "") -> void:
 	reload()
 
 func reload() -> String:
-	_definitions.clear()
-	_revisions.clear()
-	_legacy = _db.get_meta_value("jsonl_version", "1.0.0") != "2.0.0"
-	if _legacy:
+	if _db == null or not _db.is_open(): return _refuse_reload("project database is closed")
+	var next_definitions: Dictionary = {}
+	var next_revisions: Dictionary = {}
+	_db._last_sql_error = ""
+	var next_legacy: bool = _db.get_meta_value("jsonl_version", "1.0.0") != "2.0.0"
+	if next_legacy:
 		var seeded := TypeRegistryBootstrap.records(TypeRegistryBootstrap.load_shipped_schema())
-		for value in seeded.type_defs: _definitions[value.slug] = value
-		for value in seeded.type_def_versions: _revisions[value.id] = value
+		for value in seeded.type_defs: next_definitions[value.slug] = value
+		for value in seeded.type_def_versions: next_revisions[value.id] = value
+		_definitions = next_definitions
+		_revisions = next_revisions
+		_legacy = true
+		_load_error = ""
 		_generation = "legacy-1.0"
 		return ""
 	for row in _db._exec_select("SELECT * FROM type_defs ORDER BY slug,id;"):
 		var provenance = JSON.parse_string(str(row.provenance_json))
-		_definitions[str(row.slug)] = {"id":str(row.id),"slug":str(row.slug),"lifecycle":str(row.lifecycle),"current_revision":str(row.current_revision),"provenance":provenance if provenance is Dictionary else {}}
+		if not provenance is Dictionary: return _refuse_reload("malformed provenance for type '%s'" % row.id)
+		next_definitions[str(row.slug)] = {"id":str(row.id),"slug":str(row.slug),"lifecycle":str(row.lifecycle),"current_revision":str(row.current_revision),"provenance":provenance}
 	for row in _db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"):
 		var definition = JSON.parse_string(str(row.definition_json))
-		if not definition is Dictionary: return "malformed stored definition '%s'" % row.id
-		_revisions[str(row.id)] = {"id":str(row.id),"type_id":str(row.type_id),"parent_revision":row.get("parent_revision"),"definition":definition,"author":str(row.author),"created_at":str(row.created_at),"reason":str(row.reason)}
-	if not _db._last_sql_error.is_empty(): return _db._last_sql_error
+		if not definition is Dictionary: return _refuse_reload("malformed stored definition '%s'" % row.id)
+		var validation_error := validate_definition(definition)
+		if not validation_error.is_empty(): return _refuse_reload("stored revision '%s' is invalid: %s" % [row.id, validation_error])
+		next_revisions[str(row.id)] = {"id":str(row.id),"type_id":str(row.type_id),"parent_revision":row.get("parent_revision"),"definition":definition,"author":str(row.author),"created_at":str(row.created_at),"reason":str(row.reason)}
+	if not _db._last_sql_error.is_empty(): return _refuse_reload(_db._last_sql_error)
+	var records_by_id := {}
+	for slug in next_definitions:
+		var record: Dictionary = next_definitions[slug]
+		records_by_id[record.id] = record
+		if not next_revisions.has(record.current_revision): return _refuse_reload("type '%s' has a missing current revision" % slug)
+		if str(next_revisions[record.current_revision].type_id) != str(record.id): return _refuse_reload("type '%s' current revision belongs to another identity" % slug)
+	for revision in next_revisions.values():
+		if not records_by_id.has(revision.type_id): return _refuse_reload("revision '%s' has no owning type" % revision.id)
+		var trust_error := _validate_definition_trust(records_by_id[revision.type_id], revision.definition)
+		if not trust_error.is_empty(): return _refuse_reload(trust_error)
+	_definitions = next_definitions
+	_revisions = next_revisions
+	_legacy = false
+	_load_error = ""
 	_generation = _db.get_meta_value("jsonl_hash", "")
 	return ""
 
+func _refuse_reload(error: String) -> String:
+	_load_error = "type registry is read-only: %s" % error
+	return _load_error
+
+func get_diagnostic() -> String:
+	return _read_error()
+
+func _read_error() -> String:
+	if _db == null or not _db.is_open(): return "type registry is read-only: project database is closed"
+	return _load_error
+
+func get_generation_token() -> String:
+	return _generation
+
+func _validate_definition_trust(record: Dictionary, definition: Dictionary) -> String:
+	if str(definition.slug) != str(record.slug): return "type '%s' revision has a conflicting slug" % record.slug
+	if str(record.lifecycle) not in ["draft", "active", "deprecated"]: return "type '%s' has invalid registry lifecycle" % record.slug
+	var shipped_types: Dictionary = TypeRegistryBootstrap.load_shipped_schema().get("types", {})
+	var trusted_builtin := shipped_types.has(record.slug) and str(record.id) == "builtin:%s" % record.slug and record.provenance.get("kind") == "starter" and bool(record.provenance.get("protected", false))
+	if trusted_builtin:
+		var expected_behavior := {"regular_creation_allowed":str(record.slug) not in ["secret", "encrypted_note"]}
+		if record.slug == "work_item": expected_behavior["blocking"] = {"enabled":true,"state":"blocked"}
+		if not bool(definition.protected) or definition.protected_behavior != expected_behavior: return "trusted built-in '%s' has invalid protected metadata" % record.slug
+		return ""
+	if bool(definition.protected) or definition.protected_behavior != {"regular_creation_allowed":true}: return "custom type '%s' claims protected behavior" % record.slug
+	return ""
+
 func refresh_if_changed() -> String:
+	if _db == null or not _db.is_open(): return _read_error()
 	if _db is DocketDBJsonl:
 		var json_db := _db as DocketDBJsonl
 		if json_db.ensure_fresh(): return reload()
-		if json_db.is_stale(): return json_db.last_write_error if not json_db.last_write_error.is_empty() else "canonical source changed but could not be reloaded"
+		if json_db.is_stale():
+			var source_error := json_db.last_write_error if not json_db.last_write_error.is_empty() else "canonical source changed but could not be reloaded"
+			return _refuse_reload(source_error)
 	var current := _db.get_meta_value("jsonl_hash", "")
-	return reload() if current != _generation and not current.is_empty() else ""
+	if current != _generation and not current.is_empty(): return reload()
+	return _load_error
 
 func list_types(include_deprecated: bool = false) -> Array:
+	var read_error := _read_error()
+	if not read_error.is_empty(): return [{"error":read_error,"read_only":true,"project":_project}]
 	var result: Array = []
 	for slug in _definitions:
 		var record: Dictionary = _definitions[slug]
@@ -58,14 +127,20 @@ func list_types(include_deprecated: bool = false) -> Array:
 	return result
 
 func get_type(slug: String) -> Dictionary:
+	var read_error := _read_error()
+	if not read_error.is_empty(): return {"error":read_error,"read_only":true}
 	if not _definitions.has(slug): return {"error":"unknown type '%s' in project '%s'" % [slug, _project]}
 	return _descriptor(_definitions[slug])
 
 func get_revision(revision_id: String) -> Dictionary:
+	var read_error := _read_error()
+	if not read_error.is_empty(): return {"error":read_error,"read_only":true}
 	if not _revisions.has(revision_id): return {"error":"unknown revision '%s' in project '%s'" % [revision_id, _project]}
 	return (_revisions[revision_id] as Dictionary).duplicate(true)
 
 func resolve_item(item: Dictionary) -> Dictionary:
+	var read_error := _read_error()
+	if not read_error.is_empty(): return {"error":read_error,"semantics":"unknown","read_only":true}
 	var revision_id := str(item.get("type_revision", ""))
 	if revision_id.is_empty() and _legacy:
 		var record: Dictionary = _definitions.get(str(item.get("type", "")), {})
@@ -75,8 +150,8 @@ func resolve_item(item: Dictionary) -> Dictionary:
 	var definition: Dictionary = revision.definition
 	if not _legacy and (str(revision.type_id) != str(item.get("type_id", "")) or str(definition.slug) != str(item.get("type", ""))): return {"error":"item type identity conflicts with its pinned revision","semantics":"unknown","read_only":true}
 	var state := _state(definition, str(item.get("status", "")))
-	if state.is_empty(): return {"error":"historical status '%s' is absent from pinned revision" % item.get("status", ""),"semantics":"unknown","read_only":true,"revision":revision}
-	return {"project":_project,"revision":revision,"definition":definition,"state_category":state.state_category,"state_outcome":state.get("state_outcome", ""),"is_terminal":definition.lifecycle.terminal_states.has(item.status),"read_only":false}
+	if state.is_empty(): return {"error":"historical status '%s' is absent from pinned revision" % item.get("status", ""),"semantics":"unknown","read_only":true,"revision":revision.duplicate(true)}
+	return {"project":_project,"revision":revision.duplicate(true),"definition":definition.duplicate(true),"state_category":state.state_category,"state_outcome":state.get("state_outcome", ""),"is_terminal":definition.lifecycle.terminal_states.has(item.status),"read_only":false}
 
 func define_type(slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary = {}) -> Dictionary:
 	var refresh_error := refresh_if_changed()
@@ -137,7 +212,8 @@ func validate_definition(definition: Dictionary) -> String:
 	for key in ["slug","label","description","fields","lifecycle","protected","protected_behavior"]:
 		if not definition.has(key): return "definition missing '%s'" % key
 	if not _valid_identifier(str(definition.slug)): return "slug must use lowercase letters, digits, and underscores"
-	if not definition.label is String or definition.label.strip_edges().is_empty() or not definition.description is String: return "label and description must be strings and label cannot be blank"
+	if not definition.label is String or not definition.description is String: return "label and description must be strings"
+	if str(definition.label).strip_edges().is_empty(): return "label cannot be blank"
 	if definition.has("use_when") and not definition.use_when is String: return "use_when must be a string"
 	if not definition.protected is bool or not definition.protected_behavior is Dictionary: return "protected metadata has invalid shape"
 	if not definition.fields is Array or not definition.lifecycle is Dictionary: return "fields and lifecycle have invalid shapes"
@@ -145,6 +221,8 @@ func validate_definition(definition: Dictionary) -> String:
 	for value in definition.fields:
 		if not value is Dictionary: return "field descriptors must be objects"
 		var field: Dictionary = value
+		for property in field:
+			if property not in ["key","type","required","nullable","default","mutable","label","description","help","values","minimum","maximum","min_length","max_length","items"]: return "field descriptor property '%s' is unsupported" % property
 		var key := str(field.get("key", ""))
 		if not _valid_identifier(key) or keys.has(key): return "field keys must be lowercase identifiers and unique"
 		if key in RESERVED_FIELD_KEYS: return "field key '%s' is reserved" % key
@@ -158,6 +236,7 @@ func validate_definition(definition: Dictionary) -> String:
 			for option in field.values:
 				if not option is String or option.strip_edges().is_empty() or enum_seen.has(option): return "enum field '%s' values must be unique strings" % key
 				enum_seen[option] = true
+		if field.has("items") and (str(field.type) not in ["array", "reference_list"] or not field.items is Dictionary or field.items.keys() != ["type"] or str(field.items.type) != "string"): return "field '%s' has unsupported item constraints" % key
 		for constraint in ["minimum","maximum"]:
 			if field.has(constraint) and not (field[constraint] is int or field[constraint] is float): return "field '%s' %s must be numeric" % [key,constraint]
 			if field.has(constraint) and str(field.type) not in ["integer", "number"]: return "field '%s' numeric constraints require a numeric type" % key
@@ -202,6 +281,8 @@ func validate_definition(definition: Dictionary) -> String:
 		if not lifecycle.transitions.has(state): return "transition graph missing state '%s'" % state
 	for target in lifecycle.guards:
 		if not states.has(target) or not lifecycle.guards[target] is Dictionary: return "guard target '%s' is invalid" % target
+		for property in lifecycle.guards[target]:
+			if property != "required_fields": return "guard property '%s' is unsupported" % property
 		var required_value = lifecycle.guards[target].get("required_fields", [])
 		if not required_value is Array: return "guard required_fields must be an array"
 		var guarded := {}
@@ -400,7 +481,10 @@ func preview_evolution(slug: String, definition: Dictionary, expected_current: S
 		var item: Dictionary = _db.get_item(str(id))
 		if item.is_empty(): return {"error":"selected item '%s' is missing" % id}
 		if str(item.type_id) != str(current.id): return {"error":"selected item '%s' belongs to another type" % id}
-		error = validate_candidate(candidate, _candidate_values(item, current.definition))
+		var resolved := resolve_item(item)
+		if resolved.has("error"): return {"error":"selected item '%s' has invalid semantics: %s" % [id, resolved.error]}
+		if str(resolved.revision.type_id) != str(current.id): return {"error":"selected item '%s' pin belongs to another type" % id}
+		error = validate_candidate(candidate, _candidate_values(item, resolved.definition))
 		if not error.is_empty(): return {"error":"item '%s': %s" % [id,error]}
 		impacts.append(str(id))
 	return {"slug":slug,"expected_current":expected_current,"definition":candidate,"items":impacts,"saved_query_impact":_saved_query_impact(slug, candidate)}
@@ -529,6 +613,9 @@ func _validate_value(field: Dictionary, value, default_value: bool) -> String:
 		"array": valid = value is Array
 		"object": valid = value is Dictionary
 	if not valid: return "expected %s" % kind
+	if kind == "array" and field.has("items"):
+		for entry in value:
+			if not entry is String: return "array entries must be strings"
 	if kind == "enum" and value not in field.values: return "value is not in enum"
 	if kind == "date" and not _looks_like_date(value): return "expected ISO date YYYY-MM-DD"
 	if kind == "timestamp" and not _looks_like_timestamp(value): return "expected ISO timestamp"

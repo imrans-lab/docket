@@ -35,6 +35,32 @@ func _define(registry: TypeRegistry, slug: String = "widget", enforcement: Strin
 	if not result.has("error"): registry.activate_type(slug, result.type.current_revision, "tester", "activate for test")
 	return result
 
+func _rewrite_definition(path: String, slug: String, mutate: Callable) -> void:
+	var file := FileAccess.open(path, FileAccess.READ); var records: Array = []
+	for line in file.get_as_text().split("\n", false): records.append(JSON.parse_string(line))
+	file.close()
+	var type_id := ""; var old_revision := ""; var new_revision := ""
+	for record in records:
+		if record.get("_type") == "type_def" and record.get("slug") == slug: type_id = record.id; old_revision = record.current_revision
+	for record in records:
+		if record.get("_type") == "type_def_version" and record.get("id") == old_revision:
+			mutate.call(record.definition)
+			new_revision = "%s@%s" % [type_id, TypeRegistryBootstrap._definition_hash(record.definition)]
+			record.id = new_revision
+	for record in records:
+		if record.get("_type") == "type_def" and record.get("slug") == slug: record.current_revision = new_revision
+		if record.get("_type") == "item" and record.get("type_revision") == old_revision: record.type_revision = new_revision
+	var output := FileAccess.open(path, FileAccess.WRITE)
+	for record in records: output.store_line(JSON.stringify(record, "", true, true))
+	output.close()
+
+func _add_unsupported_guard(definition: Dictionary) -> void:
+	definition.lifecycle.guards.done.actor = "admin"
+
+func _spoof_protected_behavior(definition: Dictionary) -> void:
+	definition.protected = true
+	definition.protected_behavior = {"regular_creation_allowed":true,"blocking":{"enabled":true,"state":"queued"}}
+
 func test_project_owned_same_slug_has_independent_revision_identity() -> Variant:
 	var a := _db("alpha"); var b := _db("beta")
 	var ra := TypeRegistry.new(a, "Alpha"); var rb := TypeRegistry.new(b, "Beta")
@@ -77,6 +103,12 @@ func test_definition_validation_and_idempotent_conflict_behavior() -> Variant:
 	if r is String: db.close(); return r
 	invalid = _definition("duplicate"); invalid.lifecycle.states.append(invalid.lifecycle.states[0].duplicate(true))
 	r = A.contains(registry.validate_definition(invalid), "unique", "duplicate lifecycle identities are refused")
+	if r is String: db.close(); return r
+	invalid = _definition("guard"); invalid.lifecycle.guards.done.actor = "admin"
+	r = A.contains(registry.validate_definition(invalid), "guard property", "unsupported guard properties are refused instead of silently ignored")
+	if r is String: db.close(); return r
+	invalid = _definition("constraint"); invalid.fields[0].pattern = ".*"
+	r = A.contains(registry.validate_definition(invalid), "descriptor property", "unimplemented field constraints are refused instead of advertised")
 	db.close(); return r
 
 func test_custom_definition_is_draft_until_explicit_audited_activation() -> Variant:
@@ -205,9 +237,43 @@ func test_app_and_tool_contexts_expose_project_owned_registries() -> Variant:
 		for name in names: state.remove_project(str(name))
 		return r
 	var tools := ToolRegistry.new(); tools.init(TypeRegistryBootstrap.load_shipped_schema(), state.db, projects)
-	r = A.is_true(tools.get_type_registry(str(names[0])).get_type("discussion").project == str(names[0]) and tools.get_type_registry(str(names[1])).get_type("discussion").project == str(names[1]), "tool context resolves type meaning through the selected project")
+	var retained := state.get_type_registry(str(names[0]))
+	r = A.is_true(tools.get_type_registry(str(names[0])) == retained and tools.get_type_registry(str(names[1])).get_type("discussion").project == str(names[1]), "AppState and tool context share one registry for each DB and resolve the selected project")
+	if not r is String:
+		var primary_name := state.db.get_project_name(); var shared := state.get_type_registry(primary_name); _define(shared, "shared_kind")
+		_rewrite_definition(state.db.get_path(), "shared_kind", Callable(self, "_spoof_protected_behavior"))
+		state.reload_all(); var from_tools := tools.get_type_registry(primary_name)
+		r = A.is_true(from_tools == shared and shared.get_diagnostic().contains("protected behavior") and state.registry_diagnostics.has(primary_name) and tools.get_type_registry_diagnostics().has(primary_name), "the shared registry exposes one read-only failure diagnostic through both interfaces")
 	for name in names: state.remove_project(str(name))
+	if not r is String: r = A.contains(retained.get_diagnostic(), "database is closed", "held registries surface a read-only diagnostic after their project closes")
 	return r
+
+func test_held_app_registry_reloads_external_definition_before_publish() -> Variant:
+	var path := DIR + "/held-reload.dct"; var state := AppState.new(); state.load_dct(path); var project := state.db.get_project_name(); var held := state.get_type_registry(project)
+	var external := DocketDBJsonl.open_jsonl(path); var external_registry := TypeRegistry.for_db(external, project); _define(external_registry, "external_kind"); external.close()
+	var reloaded := state.reload_stale()
+	var r = A.is_true(reloaded.has(project) and state.get_type_registry(project) == held and not held.get_type("external_kind").has("error"), "AppState refreshes its held shared registry before reporting an external reload")
+	state.remove_project(project); return r
+
+func test_opened_semantically_invalid_and_spoofed_definitions_are_read_only() -> Variant:
+	var malformed_path := DIR + "/semantic-invalid.dct"; var db := DocketDBJsonl.create_new_jsonl(malformed_path); var registry := TypeRegistry.new(db); _define(registry); db.close()
+	_rewrite_definition(malformed_path, "widget", Callable(self, "_add_unsupported_guard"))
+	db = DocketDBJsonl.open_jsonl(malformed_path); registry = TypeRegistry.new(db)
+	var r = A.is_true(registry.get_diagnostic().contains("guard property") and registry.get_type("widget").read_only, "opened semantic snapshots with ignored guard vocabulary are refused read-only")
+	db.close()
+	if r is String: return r
+	var spoof_path := DIR + "/protected-spoof.dct"; db = DocketDBJsonl.create_new_jsonl(spoof_path); registry = TypeRegistry.new(db); _define(registry); db.close()
+	_rewrite_definition(spoof_path, "widget", Callable(self, "_spoof_protected_behavior"))
+	db = DocketDBJsonl.open_jsonl(spoof_path); registry = TypeRegistry.new(db)
+	r = A.is_true(registry.get_diagnostic().contains("protected behavior") and registry.create_item({"type":"widget","title":"blocked"}).has("error"), "custom canonical definitions cannot acquire protected built-in effects")
+	db.close(); return r
+
+func test_resolved_outputs_do_not_alias_immutable_registry_snapshots() -> Variant:
+	var db := _db("copies"); var registry := TypeRegistry.new(db); _define(registry); var made := registry.create_item({"type":"widget","title":"Copy"}, "tester")
+	var first := registry.resolve_item(made.item); first.definition.label = "Mutated"; first.revision.definition.description = "Mutated"
+	var second := registry.resolve_item(made.item)
+	var r = A.is_true(second.definition.label == "Widget" and second.revision.definition.description == "Tracks widget records", "resolved definition and revision results are defensive deep copies")
+	db.close(); return r
 
 func test_missing_pinned_revision_reports_read_only_unknown_semantics() -> Variant:
 	var db := _db("missing-pin"); var registry := TypeRegistry.new(db); _define(registry)
@@ -311,4 +377,21 @@ func test_evolution_revalidates_untrusted_preview_and_rejects_indirect_retype() 
 	if r is String: db.close(); return r
 	var breaking: Dictionary = widget.definition.duplicate(true); breaking.lifecycle.transitions.queued.append("held")
 	r = A.contains(registry.preview_evolution("widget", breaking, widget.current_revision).error, "transition graph", "evolution cannot add a new edge between existing states")
+	db.close(); return r
+
+func test_evolution_preview_refuses_invalid_selected_item_semantics() -> Variant:
+	var db := _db("evolve-invalid-selection"); var registry := TypeRegistry.new(db); _define(registry); _define(registry, "other")
+	var widget := registry.get_type("widget"); var item := registry.create_item({"type":"widget","title":"Selected"}, "tester"); var evolved: Dictionary = widget.definition.duplicate(true); evolved.label = "Evolved Widget"
+	db._exec("UPDATE items SET type_revision='missing-pin' WHERE id=?;", [item.id])
+	var preview := registry.preview_evolution("widget", evolved, widget.current_revision, [item.id])
+	var r = A.is_true(preview.error.contains("missing pinned revision") and registry.get_type("widget").current_revision == widget.current_revision, "preview refuses a selected item with a missing revision before registry writes")
+	if r is String: db.close(); return r
+	db._exec("UPDATE items SET type_revision=?,status='removed-history' WHERE id=?;", [widget.current_revision,item.id])
+	preview = registry.preview_evolution("widget", evolved, widget.current_revision, [item.id])
+	r = A.contains(preview.error, "historical status", "preview refuses selected invalid historical status")
+	if r is String: db.close(); return r
+	var other := registry.get_type("other")
+	db._exec("UPDATE items SET status='queued',type_revision=? WHERE id=?;", [other.current_revision,item.id])
+	preview = registry.preview_evolution("widget", evolved, widget.current_revision, [item.id])
+	r = A.contains(preview.error, "conflicts", "preview refuses a forged cross-type revision pin")
 	db.close(); return r

@@ -22,6 +22,7 @@ var prefs: UserPrefs
 # Multi-project support: project_name → DocketDB
 var _project_dbs: Dictionary = {}
 var _type_registries: Dictionary = {}
+var registry_diagnostics: Dictionary = {}
 var last_cross_project_query_error: String = ""
 
 
@@ -32,6 +33,7 @@ func load_dct(path: String) -> void:
 		db = null
 	_project_dbs.clear()
 	_type_registries.clear()
+	registry_diagnostics.clear()
 
 	if FileAccess.file_exists(path):
 		match JSONLMigration.detect_format(path):
@@ -68,7 +70,7 @@ func load_dct(path: String) -> void:
 		proj_name = path.get_file().get_basename()
 		db.set_project_name(proj_name)
 	_project_dbs[proj_name] = db
-	_type_registries[proj_name] = TypeRegistry.new(db, proj_name)
+	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
 
 	file_changed.emit()
 
@@ -146,7 +148,7 @@ func add_project(path: String) -> void:
 			new_db.set_id_prefix(new_prefix)
 
 	_project_dbs[proj_name] = new_db
-	_type_registries[proj_name] = TypeRegistry.new(new_db, proj_name)
+	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 
 	file_changed.emit()
 
@@ -155,9 +157,12 @@ func get_project_dbs() -> Dictionary:
 	return _project_dbs
 
 func get_type_registry(project_name: String = "") -> TypeRegistry:
-	var key := project_name if not project_name.is_empty() else (db.get_project_name() if db != null else "")
+	var key: String = project_name if not project_name.is_empty() else (db.get_project_name() if db != null else "")
 	var registry: TypeRegistry = _type_registries.get(key)
-	if registry != null: registry.refresh_if_changed()
+	if registry != null:
+		var error: String = registry.refresh_if_changed()
+		if error.is_empty(): registry_diagnostics.erase(key)
+		else: registry_diagnostics[key] = error
 	return registry
 
 
@@ -192,6 +197,7 @@ func remove_project(project_name: String) -> Dictionary:
 	closing_db.close()
 	_project_dbs.erase(project_name)
 	_type_registries.erase(project_name)
+	registry_diagnostics.erase(project_name)
 
 	# If we just closed the primary, promote the next one or clear
 	if closing_db == db:
@@ -295,11 +301,12 @@ func create_dct(path: String) -> void:
 		db = null
 	_project_dbs.clear()
 	_type_registries.clear()
+	registry_diagnostics.clear()
 	# Default new dockets to JSONL format
 	db = DocketDBJsonl.create_new_jsonl(path)
 	var proj_name := db.get_project_name()
 	_project_dbs[proj_name] = db
-	_type_registries[proj_name] = TypeRegistry.new(db, proj_name)
+	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
 	file_changed.emit()
 
 
@@ -322,7 +329,7 @@ func create_and_add_project(path: String) -> void:
 			push_warning("DocketDB: ID prefix '%s' in project '%s' collides with '%s'" % [new_prefix, proj_name, existing_name])
 
 	_project_dbs[proj_name] = new_db
-	_type_registries[proj_name] = TypeRegistry.new(new_db, proj_name)
+	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 	file_changed.emit()
 
 
@@ -502,8 +509,15 @@ func reload_stale() -> Array:
 	var reloaded: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).ensure_fresh():
-			reloaded.append(proj_name)
+		if pdb is DocketDBJsonl:
+			var db_reloaded: bool = (pdb as DocketDBJsonl).ensure_fresh()
+			var registry: TypeRegistry = _type_registries[proj_name]
+			var previous_generation: String = registry.get_generation_token()
+			var error: String = registry.reload() if db_reloaded else registry.refresh_if_changed()
+			if not error.is_empty(): registry_diagnostics[proj_name] = error
+			else:
+				registry_diagnostics.erase(proj_name)
+				if db_reloaded or registry.get_generation_token() != previous_generation: reloaded.append(proj_name)
 	return reloaded
 
 
@@ -513,8 +527,17 @@ func reload_all() -> Array:
 	var reloaded: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).reload():
-			reloaded.append(proj_name)
+		if pdb is DocketDBJsonl:
+			var loaded: bool = (pdb as DocketDBJsonl).reload()
+			var registry: TypeRegistry = _type_registries[proj_name]
+			var error: String = registry.reload() if loaded else registry.refresh_if_changed()
+			if not loaded and error.is_empty():
+				error = (pdb as DocketDBJsonl).last_write_error
+				if error.is_empty(): error = "canonical project could not be reloaded"
+			if error.is_empty():
+				registry_diagnostics.erase(proj_name)
+				reloaded.append(proj_name)
+			else: registry_diagnostics[proj_name] = error
 	if not reloaded.is_empty():
 		data_changed.emit()
 	return reloaded

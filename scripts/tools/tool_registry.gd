@@ -6,6 +6,7 @@ var _schema: Dictionary
 var _db: DocketDB
 var _project_dbs: Dictionary = {}  # project_name → DocketDB
 var _type_registries: Dictionary = {}  # project_name → project-owned semantics
+var _type_registry_diagnostics: Dictionary = {}
 var _tools: Dictionary = {}
 var add_project_fn: Callable  # func(path: String) -> Dictionary
 var remove_project_fn: Callable  # func(name: String) -> Dictionary
@@ -73,16 +74,23 @@ func update_db(schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -
 
 func _rebuild_type_registries() -> void:
 	_type_registries.clear()
+	_type_registry_diagnostics.clear()
 	for project in _project_dbs:
-		_type_registries[project] = TypeRegistry.new(_project_dbs[project], str(project))
+		_type_registries[project] = TypeRegistry.for_db(_project_dbs[project], str(project))
 	if _db != null and not _db in _project_dbs.values():
 		var project_name := _db.get_project_name()
-		_type_registries[project_name] = TypeRegistry.new(_db, project_name)
+		_type_registries[project_name] = TypeRegistry.for_db(_db, project_name)
 
 func get_type_registry(project_name: String) -> TypeRegistry:
 	var registry: TypeRegistry = _type_registries.get(project_name)
-	if registry != null: registry.refresh_if_changed()
+	if registry != null:
+		var error: String = registry.refresh_if_changed()
+		if error.is_empty(): _type_registry_diagnostics.erase(project_name)
+		else: _type_registry_diagnostics[project_name] = error
 	return registry
+
+func get_type_registry_diagnostics() -> Dictionary:
+	return _type_registry_diagnostics.duplicate(true)
 
 
 func has_tool(name: String) -> bool:
@@ -146,15 +154,26 @@ func refresh_stale_dbs() -> Array:
 	var reloaded: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).ensure_fresh():
-			reloaded.append(proj_name)
-			if _type_registries.has(proj_name): (_type_registries[proj_name] as TypeRegistry).reload()
+		if pdb is DocketDBJsonl:
+			var db_reloaded: bool = (pdb as DocketDBJsonl).ensure_fresh()
+			var registry: TypeRegistry = _type_registries.get(proj_name)
+			var previous_generation: String = registry.get_generation_token() if registry != null else ""
+			var error: String = registry.reload() if db_reloaded and registry != null else (registry.refresh_if_changed() if registry != null else "")
+			if not error.is_empty(): _type_registry_diagnostics[proj_name] = error
+			else:
+				_type_registry_diagnostics.erase(proj_name)
+				if db_reloaded or (registry != null and registry.get_generation_token() != previous_generation): reloaded.append(proj_name)
 	# Single-project callers may hold _db without it being in _project_dbs.
 	if _db is DocketDBJsonl and not _db in _project_dbs.values():
-		if (_db as DocketDBJsonl).ensure_fresh():
-			reloaded.append(_db.get_project_name())
-			var project_name := _db.get_project_name()
-			if _type_registries.has(project_name): (_type_registries[project_name] as TypeRegistry).reload()
+		var project_name := _db.get_project_name()
+		var db_reloaded: bool = (_db as DocketDBJsonl).ensure_fresh()
+		var registry: TypeRegistry = _type_registries.get(project_name)
+		var previous_generation: String = registry.get_generation_token() if registry != null else ""
+		var error: String = registry.reload() if db_reloaded and registry != null else (registry.refresh_if_changed() if registry != null else "")
+		if not error.is_empty(): _type_registry_diagnostics[project_name] = error
+		else:
+			_type_registry_diagnostics.erase(project_name)
+			if db_reloaded or (registry != null and registry.get_generation_token() != previous_generation): reloaded.append(project_name)
 	return reloaded
 
 
