@@ -598,7 +598,7 @@ the v2 cache.
 Each type has exactly one stable record:
 
 ```json
-{"_type":"type_def","id":"type:widget","slug":"widget","lifecycle":"active","current_revision":"type:widget@7e8f","provenance":{"kind":"custom","protected":false}}
+{"_type":"type_def","id":"type:widget","slug":"widget","lifecycle":"active","current_revision":"type:widget@a14d4f6948c5086b31fd71df6e2c4e30b8864d4d3dc1614eb71fc99fc0ca427d","provenance":{"kind":"custom","protected":false}}
 ```
 
 `id` is immutable and project-local. `slug` is immutable and unique within the
@@ -609,11 +609,12 @@ an object recording origin and ratification data.
 Revisions are immutable, complete snapshots:
 
 ```json
-{"_type":"type_def_version","id":"type:widget@7e8f","type_id":"type:widget","definition":{"slug":"widget","label":"Widget","description":"Tracks a manufactured widget","fields":[{"key":"serial_number","type":"string","required":true,"nullable":false,"mutable":false}],"lifecycle":{"initial_state":"queued","states":[{"key":"queued","state_category":"queued","state_outcome":""}],"terminal_states":[],"transitions":{"queued":[]},"guards":{},"enforcement":"strict"},"protected":false,"protected_behavior":{"regular_creation_allowed":true}},"author":"alex","created_at":"2026-09-12T00:00:00Z","reason":"initial custom definition"}
+{"_type":"type_def_version","id":"type:widget@a14d4f6948c5086b31fd71df6e2c4e30b8864d4d3dc1614eb71fc99fc0ca427d","type_id":"type:widget","definition":{"slug":"widget","label":"Widget","description":"Tracks a manufactured widget","fields":[{"key":"serial_number","type":"string","required":true,"nullable":false,"mutable":false}],"lifecycle":{"initial_state":"queued","states":[{"key":"queued","state_category":"queued","state_outcome":""}],"terminal_states":[],"transitions":{"queued":[]},"guards":{},"enforcement":"strict"},"protected":false,"protected_behavior":{"regular_creation_allowed":true}},"author":"alex","created_at":"2026-09-12T00:00:00Z","reason":"initial custom definition"}
 ```
 
-The shortened `7e8f` suffix above is illustrative. Implementations use the
-full lowercase SHA-256 digest of the canonical complete `definition` object.
+Every revision ID is `<type_id>@<digest>`, where `<digest>` is the full
+lowercase SHA-256 digest of the deterministic canonical complete `definition`
+object. Readers reject missing, shortened, or content-mismatched identities.
 
 `parent_revision` is omitted only for the first revision. The `definition`
 object contains the complete meaning: presentation, typed field descriptors,

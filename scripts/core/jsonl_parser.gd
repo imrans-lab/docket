@@ -1,9 +1,9 @@
 extends RefCounted
 class_name JSONLParser
 ## Reads a .dct.jsonl file and produces structured in-memory dictionaries.
-## Implements the Docket JSONL Format Specification v1.0.0.
+## Implements the supported Docket JSONL 1.0.0 and 2.0.0 contracts.
 
-# Known _type values; anything else is skipped with a warning.
+# Unknown record kinds are refused because this writer cannot preserve them.
 const KNOWN_TYPES := [
 	"meta", "item", "event", "comment", "link",
 	"attachment", "secret", "secret_version", "saved_query",
@@ -21,8 +21,7 @@ const CONFLICT_MARKERS := ["<<<<<<<", "=======", ">>>>>>>", "|||||||"]
 
 static func parse_file(path: String) -> Dictionary:
 	## Read a .dct.jsonl file and return structured data.
-	## Returns a dict with keys: meta, items, events, comments, links,
-	## attachments, secrets, secret_versions, saved_queries.
+	## Returns meta, registry records, items, related records and diagnostics.
 	## meta is a Dictionary; all others are Arrays of Dictionaries.
 	var empty := _empty_result()
 
@@ -67,8 +66,7 @@ static func parse_file(path: String) -> Dictionary:
 		# — the record never reached the cache, and close() rewrites the file
 		# from the cache, so merely opening and closing the project erased it.
 		#
-		# Contrast an *unknown* _type below, which is forward compatibility
-		# rather than damage and must not abort the read.
+		# Unknown record kinds are fatal for the same loss-prevention reason.
 		var parsed = _parse_json_line(line, line_number)
 		if parsed == null:
 			file.close()
@@ -152,6 +150,9 @@ static func parse_file(path: String) -> Dictionary:
 	var registry_error := _validate_registry_records(result)
 	if not registry_error.is_empty():
 		return _corrupt(path, 0, registry_error, "")
+	var dependency_error := _validate_record_dependencies(result)
+	if not dependency_error.is_empty():
+		return _corrupt(path, 0, dependency_error, "")
 	result["registry_diagnostics"] = _item_registry_diagnostics(result)
 	return result
 
@@ -339,11 +340,13 @@ static func _validate_registry_records(result: Dictionary) -> String:
 	for value in result.type_def_versions:
 		var revision: Dictionary = value
 		if revisions.has(revision.id): return "duplicate type_def_version id '%s'" % revision.id
+		var expected_id: String = "%s@%s" % [revision.type_id, TypeRegistryBootstrap._definition_hash(revision.definition)]
+		if str(revision.id) != expected_id: return "revision '%s' does not match its canonical definition digest" % revision.id
 		revisions[revision.id] = revision
 	for type_id in ids:
 		var definition: Dictionary = ids[type_id]
 		if str(definition.lifecycle) not in ["draft", "active", "deprecated"]: return "type '%s' has invalid lifecycle" % definition.slug
-		if not revisions.has(definition.current_revision): continue
+		if not revisions.has(definition.current_revision): return "type '%s' points to missing current revision '%s'" % [definition.slug, definition.current_revision]
 		if revisions[definition.current_revision].type_id != type_id: return "type '%s' points to another type's revision" % definition.slug
 		if str(revisions[definition.current_revision].definition.slug) != str(definition.slug): return "type '%s' current revision changes immutable slug" % definition.slug
 	for revision_id in revisions:
@@ -378,6 +381,17 @@ static func _item_registry_diagnostics(result: Dictionary) -> Array:
 			if not states.has(item.status): reason = "status '%s' is absent from pinned revision" % item.status
 		if not reason.is_empty(): diagnostics.append({"item_id": item.id, "reason": reason})
 	return diagnostics
+
+
+static func _validate_record_dependencies(result: Dictionary) -> String:
+	var item_ids := {}
+	for item in result.items: item_ids[item.id] = true
+	for bucket in ["events", "comments", "attachments"]:
+		for record in result[bucket]:
+			if not item_ids.has(record.item_id): return "orphaned %s record for missing item '%s'" % [str(record._type), str(record.item_id)]
+	for link in result.links:
+		if not item_ids.has(link.from_id): return "orphaned link record for missing source item '%s'" % link.from_id
+	return ""
 
 
 static func _parse_event(d: Dictionary) -> Dictionary:
@@ -566,7 +580,7 @@ static func _parse_json_line(line: String, line_number: int) -> Variant:
 	var result = JSON.parse_string(line)
 	if result == null:
 		if line_number >= 0:
-			push_warning("JSONLParser: line %d is not valid JSON, skipping: %s" % [line_number, line.substr(0, 80)])
+			push_warning("JSONLParser: line %d is not valid JSON and is rejected: %s" % [line_number, line.substr(0, 80)])
 		else:
 			push_warning("JSONLParser: invalid JSON: %s" % line.substr(0, 80))
 		return null

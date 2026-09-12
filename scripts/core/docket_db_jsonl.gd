@@ -225,6 +225,8 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	if not error.is_empty(): return error
 	if JSONLParser._parse_type_def(type_def).is_empty() or JSONLParser._parse_type_def_version(revision).is_empty(): return "incomplete type definition snapshot"
 	if str(type_def.get("id", "")) != str(revision.get("type_id", "")): return "revision belongs to another type"
+	var expected_revision_id: String = "%s@%s" % [revision.type_id, TypeRegistryBootstrap._definition_hash(revision.definition)]
+	if str(revision.id) != expected_revision_id: return "revision id does not match canonical definition digest"
 	if str(type_def.current_revision) != str(revision.id): return "current pointer does not target proposed revision"
 	if _exec_select("SELECT 1 FROM type_def_versions WHERE id=?;", [revision.id]).size() > 0: return "immutable revision id already exists"
 	var existing := _exec_select("SELECT slug,current_revision FROM type_defs WHERE id=?;", [type_def.id])
@@ -236,13 +238,13 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	for event in events:
 		if not has_item(str(event.item_id)): return "event refers to missing item '%s'" % event.item_id
 	error = _exec_checked("BEGIN TRANSACTION;")
-	if error.is_empty(): error = _exec_checked("INSERT INTO type_def_versions (id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES (?,?,?,?,?,?,?);", [revision.id, revision.type_id, revision.get("parent_revision", null), JSON.stringify(revision.definition, "", true, true), revision.author, revision.created_at, revision.reason])
 	if error.is_empty():
 		if existing.is_empty(): error = _exec_checked("INSERT INTO type_defs (id,slug,lifecycle,current_revision,provenance_json) VALUES (?,?,?,?,?);", [type_def.id, type_def.slug, type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true)])
-		else: error = _exec_checked("UPDATE type_defs SET lifecycle=?,current_revision=?,provenance_json=? WHERE id=? AND current_revision=?;", [type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true), type_def.id, expected_current_revision])
+	if error.is_empty(): error = _exec_checked("INSERT INTO type_def_versions (id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES (?,?,?,?,?,?,?);", [revision.id, revision.type_id, revision.get("parent_revision", null), JSON.stringify(revision.definition, "", true, true), revision.author, revision.created_at, revision.reason])
+	if error.is_empty() and not existing.is_empty(): error = _exec_checked("UPDATE type_defs SET lifecycle=?,current_revision=?,provenance_json=? WHERE id=? AND current_revision=?;", [type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true), type_def.id, expected_current_revision])
 	for binding in item_bindings:
 		if not error.is_empty(): break
-		error = _exec_checked("UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [binding.type_id, binding.type_revision, binding.item_id])
+		error = _exec_checked("UPDATE items SET type=?,type_id=?,type_revision=? WHERE id=?;", [type_def.slug, binding.type_id, binding.type_revision, binding.item_id])
 	for event in events:
 		if not error.is_empty(): break
 		error = _exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [event.item_id, event.event_type, event.get("actor", ""), event.timestamp, event.get("note", "")])
@@ -371,10 +373,16 @@ func insert_item(id: String, item: Dictionary) -> String:
 		if rows.size() != 1: return "type '%s' has no active project definition" % candidate.get("type", "")
 		candidate["type_id"] = rows[0].id
 		candidate["type_revision"] = rows[0].current_revision
-	var result := super.insert_item(id, candidate)
-	if result.is_empty():  # success
-		result = _flush_jsonl()
-	return result
+	_last_sql_error = ""
+	var result := _exec_checked("BEGIN TRANSACTION;")
+	if result.is_empty(): result = super.insert_item(id, candidate)
+	if result.is_empty() and not _last_sql_error.is_empty(): result = _last_sql_error
+	if result.is_empty(): result = _exec_checked("COMMIT;")
+	if not result.is_empty():
+		_rollback()
+		reload()
+		return result
+	return _flush_jsonl()
 
 
 func update_item_fields(id: String, changes: Dictionary) -> void:
@@ -384,8 +392,15 @@ func update_item_fields(id: String, changes: Dictionary) -> void:
 func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 	var precheck := _mutation_precheck()
 	if not precheck.is_empty(): return precheck
-	var error := super.update_item_fields_checked(id, changes)
-	if not error.is_empty(): return error
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN TRANSACTION;")
+	if error.is_empty(): error = super.update_item_fields_checked(id, changes)
+	if error.is_empty() and not _last_sql_error.is_empty(): error = _last_sql_error
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty():
+		_rollback()
+		reload()
+		return error
 	return _flush_jsonl()
 
 
@@ -396,18 +411,40 @@ func set_item_field(id: String, field: String, val) -> void:
 
 
 func delete_item(id: String) -> void:
-	if not _mutation_precheck().is_empty(): return
+	delete_item_checked(id)
+
+
+func delete_item_checked(id: String) -> String:
+	var precheck := _mutation_precheck()
+	if not precheck.is_empty(): return precheck
 	# delete_item internally calls delete_secret (which we override).
 	_flush_depth += 1
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN TRANSACTION;")
 	super.delete_item(id)
 	_flush_depth -= 1
-	_flush_jsonl()
+	if error.is_empty() and not _last_sql_error.is_empty(): error = _last_sql_error
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty():
+		_rollback(); reload(); return error
+	return _flush_jsonl()
 
 
 func import_item_full(new_id: String, exported: Dictionary) -> void:
-	if not _mutation_precheck().is_empty(): return
+	import_item_full_checked(new_id, exported)
+
+
+func import_item_full_checked(new_id: String, exported: Dictionary) -> String:
+	var precheck := _mutation_precheck()
+	if not precheck.is_empty(): return precheck
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN TRANSACTION;")
 	super.import_item_full(new_id, exported)
-	_flush_jsonl()
+	if error.is_empty() and not _last_sql_error.is_empty(): error = _last_sql_error
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty():
+		_rollback(); reload(); return error
+	return _flush_jsonl()
 
 
 func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String) -> int:
@@ -468,17 +505,40 @@ func set_counter(val: int) -> void:
 # -- Events -------------------------------------------------------------------
 
 func add_event(item_id: String, event_type: String, actor: String, note: String = "") -> void:
-	if not _mutation_precheck().is_empty(): return
+	add_event_checked(item_id, event_type, actor, note)
+
+
+func add_event_checked(item_id: String, event_type: String, actor: String, note: String = "") -> String:
+	var precheck := _mutation_precheck()
+	if not precheck.is_empty(): return precheck
+	if _flush_depth > 0:
+		super.add_event(item_id, event_type, actor, note)
+		return _last_sql_error
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN TRANSACTION;")
 	super.add_event(item_id, event_type, actor, note)
-	_flush_jsonl()
+	if error.is_empty() and not _last_sql_error.is_empty(): error = _last_sql_error
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty(): _rollback(); reload(); return error
+	return _flush_jsonl()
 
 
 # -- Links --------------------------------------------------------------------
 
 func add_link(from_id: String, to_id: String, relation: String) -> void:
-	if not _mutation_precheck().is_empty(): return
+	add_link_checked(from_id, to_id, relation)
+
+
+func add_link_checked(from_id: String, to_id: String, relation: String) -> String:
+	var precheck := _mutation_precheck()
+	if not precheck.is_empty(): return precheck
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN TRANSACTION;")
 	super.add_link(from_id, to_id, relation)
-	_flush_jsonl()
+	if error.is_empty() and not _last_sql_error.is_empty(): error = _last_sql_error
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty(): _rollback(); reload(); return error
+	return _flush_jsonl()
 
 
 # -- Attachments --------------------------------------------------------------
@@ -486,17 +546,33 @@ func add_link(from_id: String, to_id: String, relation: String) -> void:
 func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "") -> Dictionary:
 	var precheck := _mutation_precheck()
 	if not precheck.is_empty(): return {"error": precheck}
+	_last_sql_error = ""
+	var transaction_error := _exec_checked("BEGIN TRANSACTION;")
+	if not transaction_error.is_empty(): return {"error": transaction_error}
 	var result := super.attach_file(item_id, filename, data, mime, desc)
-	if not result.has("error"):
-		var flush_error := _flush_jsonl()
-		if not flush_error.is_empty(): return {"error": flush_error}
+	if result.has("error"): transaction_error = str(result.error)
+	if transaction_error.is_empty() and not _last_sql_error.is_empty(): transaction_error = _last_sql_error
+	if transaction_error.is_empty(): transaction_error = _exec_checked("COMMIT;")
+	if not transaction_error.is_empty(): _rollback(); reload(); return {"error": transaction_error}
+	var flush_error := _flush_jsonl()
+	if not flush_error.is_empty(): return {"error": flush_error}
 	return result
 
 
 func detach_file(att_id: int) -> void:
-	if not _mutation_precheck().is_empty(): return
+	detach_file_checked(att_id)
+
+
+func detach_file_checked(att_id: int) -> String:
+	var precheck := _mutation_precheck()
+	if not precheck.is_empty(): return precheck
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN TRANSACTION;")
 	super.detach_file(att_id)
-	_flush_jsonl()
+	if error.is_empty() and not _last_sql_error.is_empty(): error = _last_sql_error
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty(): _rollback(); reload(); return error
+	return _flush_jsonl()
 
 
 # -- Comments -----------------------------------------------------------------
@@ -505,10 +581,19 @@ func add_comment(item_id: String, author: String, text: String, parent_id: int =
 	var precheck := _mutation_precheck()
 	if not precheck.is_empty(): return {"error": precheck}
 	# add_comment internally calls add_event (which triggers our override + flush).
-	# Use depth guard to coalesce into a single flush.
+	# One transaction and depth guard make the comment, event and item timestamp
+	# one persistence unit.
+	_last_sql_error = ""
+	var transaction_error := _exec_checked("BEGIN TRANSACTION;")
+	if not transaction_error.is_empty(): return {"error": transaction_error}
 	_flush_depth += 1
 	var result := super.add_comment(item_id, author, text, parent_id)
 	_flush_depth -= 1
+	if result.has("error"): transaction_error = str(result.error)
+	if transaction_error.is_empty() and not _last_sql_error.is_empty(): transaction_error = _last_sql_error
+	if transaction_error.is_empty(): transaction_error = _exec_checked("COMMIT;")
+	if not transaction_error.is_empty():
+		_rollback(); reload(); return {"error": transaction_error}
 	var flush_error := _flush_jsonl()
 	if not flush_error.is_empty(): return {"error": flush_error}
 	return result

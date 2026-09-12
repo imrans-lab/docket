@@ -290,10 +290,10 @@ func test_checked_registry_compound_write_rolls_back_cache_after_canonical_failu
 	var old_definition: Dictionary = parsed.type_defs[0]
 	var old_revision: Dictionary = parsed.type_def_versions[0]
 	var new_revision := old_revision.duplicate(true)
-	new_revision.id = "type:widget@next"
 	new_revision.parent_revision = old_revision.id
 	new_revision.definition.label = "Changed Widget"
 	new_revision.reason = "test checked compound write"
+	new_revision.id = "%s@%s" % [new_revision.type_id, TypeRegistryBootstrap._definition_hash(new_revision.definition)]
 	var new_definition := old_definition.duplicate(true)
 	new_definition.current_revision = new_revision.id
 	db._atomic_write_hook = func(_path, _text): return "injected canonical failure"
@@ -313,10 +313,10 @@ func test_checked_registry_compound_write_persists_one_coherent_snapshot_without
 	var definition: Dictionary = parsed.type_defs[0].duplicate(true)
 	var revision: Dictionary = parsed.type_def_versions[0].duplicate(true)
 	var previous := str(revision.id)
-	revision.id = "type:widget@coherent"
 	revision.parent_revision = previous
 	revision.definition.fields.append({"key":"reviewer","type":"string","required":false,"nullable":true})
 	revision.reason = "coherent write fixture"
+	revision.id = "%s@%s" % [revision.type_id, TypeRegistryBootstrap._definition_hash(revision.definition)]
 	definition.current_revision = revision.id
 	var error := db.apply_registry_change(definition, revision, [{"item_id":"ORD-0001","type_id":definition.id,"type_revision":revision.id}], [{"item_id":"ORD-0001","event_type":"type_revision_changed","timestamp":"2026-09-12T00:00:00Z"}], previous)
 	var after_columns := db._exec_select("PRAGMA table_info(items);").size()
@@ -382,3 +382,121 @@ func test_new_file_seed_failure_does_not_publish_partial_canonical_state() -> Va
 	r = A.eq(definitions.size(), 0, "failed seed transaction rolls back registry rows")
 	if r != true: return r
 	return A.eq(version, "", "failed seed transaction does not mark cache as format 2")
+
+func test_registry_rejects_forged_digest_and_missing_active_pointer() -> Variant:
+	var path := DIR + "/registry-forged.dct"
+	var original := _copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var forged := original.replace("Fixture", "Changed without revision identity")
+	var file := FileAccess.open(path, FileAccess.WRITE); file.store_string(forged); file.close()
+	var parsed := JSONLParser.parse_file(path)
+	var r = A.contains(parsed.error, "canonical definition digest", "definition content is bound to immutable revision id")
+	if r != true: return r
+	file = FileAccess.open(path, FileAccess.WRITE); file.store_string(original.replace("current_revision\":\"type:widget@", "current_revision\":\"type:widget@missing-")); file.close()
+	parsed = JSONLParser.parse_file(path)
+	return A.contains(parsed.error, "missing current revision", "active pointer must resolve")
+
+func test_orphaned_related_record_refuses_cache_rebuild() -> Variant:
+	var path := DIR + "/orphan.dct"
+	var original := _copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var orphan := '{"_type":"event","item_id":"MISSING","seq":1,"event_type":"created","timestamp":"2026-09-12T00:00:00Z"}\n'
+	var file := FileAccess.open(path, FileAccess.WRITE); file.store_string(original + orphan); file.close()
+	var parsed := JSONLParser.parse_file(path)
+	var r = A.contains(parsed.error, "orphaned event", "canonical related records are never silently dropped")
+	if r != true: return r
+	return A.eq(JSONLCache.rebuild_cache(path, path + ".v2.cache"), null, "invalid canonical source cannot produce a cache")
+
+func test_related_insert_failure_rolls_back_cache_and_canonical() -> Variant:
+	var path := DIR + "/related-insert-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var original := _read_file(path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	db._exec("CREATE TRIGGER reject_tag BEFORE INSERT ON item_tags BEGIN SELECT RAISE(ABORT, 'tag rejected'); END;")
+	var error := db.insert_item("ORD-0002", {"type":"widget","status":"queued","title":"Rejected","created_at":"x","updated_at":"x","tags":["blocked"]})
+	var r = A.is_true(not error.is_empty(), "related-row SQL failure reaches caller")
+	if r != true: db.close(); return r
+	r = A.is_false(db.has_item("ORD-0002"), "main row is rolled back with related row")
+	if r != true: db.close(); return r
+	db.close()
+	return A.eq(_read_file(path), original, "failed insert leaves canonical bytes unchanged")
+
+func test_tag_update_rejects_malformed_or_ambiguous_envelopes_before_mutation() -> Variant:
+	var path := DIR + "/envelope-update-refusal.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var original := _read_file(path)
+	db._exec("UPDATE items SET fields_json='not-json' WHERE id='ORD-0001';")
+	var error := db.update_item_fields_checked("ORD-0001", {"title":"unsafe"})
+	var r = A.contains(error, "malformed", "malformed stored envelope blocks updates")
+	if r != true: db.close(); return r
+	db.reload()
+	error = db.update_item_fields_checked("ORD-0001", {"fields_json":"{}"})
+	r = A.contains(error, "internal envelope", "internal encoded columns are never accepted")
+	if r != true: db.close(); return r
+	error = db.update_item_fields_checked("ORD-0001", {"fields":{"count":2},"unset_fields":["count"]})
+	r = A.contains(error, "ambiguous set/unset", "same key cannot be set and unset")
+	db.close()
+	if r != true: return r
+	return A.eq(_read_file(path), original, "rejected envelope changes preserve canonical bytes")
+
+func test_new_type_compound_persists_definition_revision_binding_and_event() -> Variant:
+	var path := DIR + "/new-type-compound.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var parsed := JSONLParser.parse_file(path)
+	var revision: Dictionary = parsed.type_def_versions[0].duplicate(true)
+	revision.type_id = "type:gadget"
+	revision.definition.slug = "gadget"
+	revision.definition.label = "Gadget"
+	revision.id = "%s@%s" % [revision.type_id, TypeRegistryBootstrap._definition_hash(revision.definition)]
+	var definition := {"id":"type:gadget","slug":"gadget","lifecycle":"active","current_revision":revision.id,"provenance":{"kind":"custom","protected":false}}
+	var error := db.apply_registry_change(definition, revision, [{"item_id":"ORD-0001","type_id":definition.id,"type_revision":revision.id}], [{"item_id":"ORD-0001","event_type":"type_revision_changed","timestamp":"2026-09-12T00:00:00Z"}], "")
+	var r = A.eq(error, "", "new type stages parent before FK-bound revision")
+	if r != true: db.close(); return r
+	db.close()
+	db = DocketDBJsonl.open_jsonl(path)
+	var item := db.get_item("ORD-0001")
+	r = A.eq(item.type_id, definition.id, "binding survives canonical reopen")
+	if r != true: db.close(); return r
+	var events := db.get_events("ORD-0001")
+	var found := false
+	for event in events:
+		if event.event_type == "type_revision_changed": found = true
+	db.close()
+	return A.is_true(found, "compound audit event survives canonical reopen")
+
+func test_import_and_delete_failures_roll_back_complete_operations() -> Variant:
+	var path := DIR + "/import-delete-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var original := _read_file(path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var exported := db.export_item_full("ORD-0001")
+	db._exec("CREATE TRIGGER reject_import_event BEFORE INSERT ON item_events BEGIN SELECT RAISE(ABORT, 'event rejected'); END;")
+	var error := db.import_item_full_checked("ORD-0002", exported)
+	var r = A.is_true(not error.is_empty() and not db.has_item("ORD-0002"), "failed related import rolls back its main row")
+	if r != true: db.close(); return r
+	db._exec("DROP TRIGGER IF EXISTS reject_import_event;")
+	db._exec("CREATE TRIGGER reject_delete_event BEFORE DELETE ON item_events BEGIN SELECT RAISE(ABORT, 'delete rejected'); END;")
+	error = db.delete_item_checked("ORD-0001")
+	r = A.is_true(not error.is_empty() and db.has_item("ORD-0001"), "failed cascading delete restores the complete item")
+	if r != true: db.close(); return r
+	db.close()
+	r = A.eq(_read_file(path), original, "failed import and delete preserve canonical bytes")
+	if r != true: return r
+	db = DocketDBJsonl.open_jsonl(path)
+	r = A.is_true(db != null and db.has_item("ORD-0001") and not db.has_item("ORD-0002"), "canonical reopen observes no partial operation")
+	if db != null: db.close()
+	return r
+
+func test_event_failure_returns_error_and_restores_item_timestamp() -> Variant:
+	var path := DIR + "/event-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var before := db.get_item("ORD-0001")
+	db._exec("CREATE TRIGGER reject_event BEFORE INSERT ON item_events BEGIN SELECT RAISE(ABORT, 'event rejected'); END;")
+	var error := db.add_event_checked("ORD-0001", "changed", "tester")
+	var after := db.get_item("ORD-0001")
+	var r = A.is_true(not error.is_empty(), "event insertion failure is observable")
+	if r != true: db.close(); return r
+	r = A.eq(after.updated_at, before.updated_at, "event and timestamp update share one rollback boundary")
+	db.close()
+	return r

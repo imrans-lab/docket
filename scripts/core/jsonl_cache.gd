@@ -2,8 +2,8 @@ extends RefCounted
 class_name JSONLCache
 ## Builds and validates a SQLite cache from a JSONL file.
 ##
-## The cache file lives at <jsonl_path>.cache (e.g. "project.dct.jsonl.cache")
-## and is gitignored/disposable — it can be deleted and rebuilt at any time.
+## Version 1 caches use <jsonl_path>.cache and version 2 caches use
+## <jsonl_path>.v2.cache. Both are gitignored and disposable.
 ##
 ## Cache freshness is content-addressed. Size/mtime can collide for rapid
 ## same-length edits, which is unacceptable at a write boundary.
@@ -220,13 +220,13 @@ static func _insert_items(db: DocketDB, items: Array) -> void:
 	for item in items:
 		var id: String = str(item.get("id", ""))
 		if id.is_empty():
-			push_warning("JSONLCache: skipping item with empty id")
+			db._last_sql_error = "invalid canonical record: item with empty id"
 			continue
 		# insert_item() accepts the parsed dict directly.
 		# Tags are in item["tags"]; events/links arrays are empty (loaded separately).
 		var err := db.insert_item(id, item)
 		if not err.is_empty():
-			push_warning("JSONLCache: insert_item failed for %s: %s" % [id, err])
+			db._last_sql_error = "canonical item insert failed for %s: %s" % [id, err]
 
 
 # -- Events -------------------------------------------------------------------
@@ -249,10 +249,10 @@ static func _insert_events(db: DocketDB, events: Array) -> void:
 		var timestamp: String = str(ev.get("timestamp", ""))
 		var note: String = str(ev.get("note", ""))
 		if item_id.is_empty() or event_type.is_empty():
-			push_warning("JSONLCache: skipping event with missing item_id or event_type")
+			db._last_sql_error = "invalid canonical record: event with missing item_id or event_type"
 			continue
 		if not valid_ids.has(item_id):
-			push_warning("JSONLCache: skipping orphaned event for missing item %s" % item_id)
+			db._last_sql_error = "invalid canonical record: orphaned event for missing item %s" % item_id
 			continue
 		db._exec(
 			"INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
@@ -275,10 +275,10 @@ static func _insert_comments(db: DocketDB, comments: Array) -> void:
 		var item_id: String = str(c.get("item_id", ""))
 		var created_at: String = str(c.get("created_at", ""))
 		if item_id.is_empty() or created_at.is_empty():
-			push_warning("JSONLCache: skipping comment with missing item_id or created_at")
+			db._last_sql_error = "invalid canonical record: comment with missing item_id or created_at"
 			continue
 		if not valid_ids.has(item_id):
-			push_warning("JSONLCache: skipping orphaned comment for missing item %s" % item_id)
+			db._last_sql_error = "invalid canonical record: orphaned comment for missing item %s" % item_id
 			continue
 		var parent_id: int = int(c.get("parent_id", 0))
 		var author: String = str(c.get("author", ""))
@@ -303,7 +303,7 @@ static func _insert_links(db: DocketDB, links: Array) -> void:
 		var to_id: String = str(lnk.get("to_id", ""))
 		var relation: String = str(lnk.get("relation", ""))
 		if from_id.is_empty() or to_id.is_empty() or relation.is_empty():
-			push_warning("JSONLCache: skipping link with missing from_id, to_id, or relation")
+			db._last_sql_error = "invalid canonical record: link with missing from_id, to_id, or relation"
 			continue
 		db._exec(
 			"INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);",
@@ -322,7 +322,7 @@ static func _insert_attachments(db: DocketDB, attachments: Array) -> void:
 		var filename: String = str(att.get("filename", ""))
 		var created_at: String = str(att.get("created_at", ""))
 		if item_id.is_empty() or filename.is_empty() or created_at.is_empty():
-			push_warning("JSONLCache: skipping attachment with missing required fields")
+			db._last_sql_error = "invalid canonical record: attachment with missing required fields"
 			continue
 		# data is already a PackedByteArray from the parser
 		var data: PackedByteArray = att.get("data", PackedByteArray())
@@ -346,7 +346,7 @@ static func _insert_secrets(db: DocketDB, secrets: Array) -> void:
 		var created_at: String = str(s.get("created_at", ""))
 		var updated_at: String = str(s.get("updated_at", ""))
 		if handle.is_empty() or created_at.is_empty() or updated_at.is_empty():
-			push_warning("JSONLCache: skipping secret with missing required fields")
+			db._last_sql_error = "invalid canonical record: secret with missing required fields"
 			continue
 		# ciphertext/iv/mac are PackedByteArrays decoded by the parser
 		var ciphertext: PackedByteArray = s.get("ciphertext", PackedByteArray())
@@ -407,7 +407,7 @@ static func _insert_secret_versions(db: DocketDB, secret_versions: Array) -> voi
 		var version: int = int(sv.get("version", 0))
 		var created_at: String = str(sv.get("created_at", ""))
 		if handle.is_empty() or version == 0 or created_at.is_empty():
-			push_warning("JSONLCache: skipping secret_version with missing required fields")
+			db._last_sql_error = "invalid canonical record: secret_version with missing required fields"
 			continue
 		var ciphertext: PackedByteArray = sv.get("ciphertext", PackedByteArray())
 		var iv: PackedByteArray = sv.get("iv", PackedByteArray())
@@ -426,7 +426,7 @@ static func _insert_saved_queries(db: DocketDB, saved_queries: Array) -> void:
 		var name: String = str(sq.get("name", ""))
 		var query_dict = sq.get("query", {})
 		if name.is_empty():
-			push_warning("JSONLCache: skipping saved_query with empty name")
+			db._last_sql_error = "invalid canonical record: saved_query with empty name"
 			continue
 		if not query_dict is Dictionary:
 			query_dict = {}

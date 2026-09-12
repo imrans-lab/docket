@@ -407,6 +407,7 @@ func update_item_fields(id: String, changes: Dictionary) -> void:
 func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 	if changes.is_empty():
 		return ""
+	if changes.has("fields_json") or changes.has("extras_json"): return "internal envelope columns are not accepted as item input"
 	var field_changes = changes.get("fields", {})
 	var extra_changes = changes.get("extras", {})
 	if changes.has("fields") and not field_changes is Dictionary: return "fields must be an object"
@@ -415,6 +416,22 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 		if extra_changes.has(key) or changes.has(key): return "ambiguous item key '%s'" % key
 	for key in extra_changes:
 		if changes.has(key): return "ambiguous item key '%s'" % key
+	var unset_fields: Array = changes.get("unset_fields", [])
+	var unset_extras: Array = changes.get("unset_extras", [])
+	for key in unset_fields:
+		if field_changes.has(key) or extra_changes.has(key) or unset_extras.has(key): return "ambiguous set/unset item key '%s'" % key
+	for key in unset_extras:
+		if extra_changes.has(key) or field_changes.has(key): return "ambiguous set/unset item key '%s'" % key
+	var envelope_rows := _exec_select("SELECT fields_json,extras_json FROM items WHERE id=?;", [id])
+	if envelope_rows.is_empty(): return "item '%s' does not exist" % id
+	var existing_fields = JSON.parse_string(str(envelope_rows[0].get("fields_json", "{}")))
+	var existing_extras = JSON.parse_string(str(envelope_rows[0].get("extras_json", "{}")))
+	if not existing_fields is Dictionary or not existing_extras is Dictionary: return "stored item envelopes are malformed"
+	for key in existing_fields:
+		if existing_extras.has(key): return "stored item envelopes contain ambiguous key '%s'" % key
+		if extra_changes.has(key) or (changes.has(key) and key not in ["fields", "unset_fields"]): return "item key '%s' belongs to fields" % key
+	for key in existing_extras:
+		if field_changes.has(key): return "item key '%s' belongs to extras" % key
 	var sets := PackedStringArray()
 	var bindings: Array = []
 	var stored_changes := changes.duplicate(true)
@@ -429,11 +446,7 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 		stored_changes["extras"] = combined_extras
 	for envelope in ["fields", "extras"]:
 		if (stored_changes.has(envelope) and stored_changes[envelope] is Dictionary) or stored_changes.has("unset_%s" % envelope):
-			var rows := _exec_select("SELECT %s_json FROM items WHERE id=?;" % envelope, [id])
-			var merged := {}
-			if not rows.is_empty():
-				var decoded = JSON.parse_string(str(rows[0].get("%s_json" % envelope, "{}")))
-				if decoded is Dictionary: merged = decoded
+			var merged: Dictionary = (existing_fields if envelope == "fields" else existing_extras).duplicate(true)
 			merged.merge(stored_changes.get(envelope, {}), true)
 			for key in changes.get("unset_%s" % envelope, []): merged.erase(key)
 			stored_changes["%s_json" % envelope] = JSON.stringify(merged, "", true, true)
@@ -1045,10 +1058,10 @@ func attach_file(item_id: String, filename: String, data: PackedByteArray, mime:
 		return {"error": "File too large: %d bytes (max 5 MB)" % size_bytes}
 	var ts := Time.get_datetime_string_from_system(true)
 
-	# Use raw query_with_bindings for BLOB support
-	_db.query_with_bindings(
+	var insert_error := _exec_checked(
 		"INSERT INTO attachments (item_id, filename, mime_type, size_bytes, data, created_at, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
 		[item_id, filename, mime, size_bytes, data, ts, desc])
+	if not insert_error.is_empty(): return {"error": insert_error}
 
 	# Get the inserted row id
 	var rows := _exec_select("SELECT last_insert_rowid() as lid;")

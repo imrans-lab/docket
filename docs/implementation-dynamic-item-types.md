@@ -115,3 +115,14 @@ These are implementation/review requirements, not yet verified results.
 The post-review gate will run storage/JSON capability checks and existing
 persistence regressions, then exercise the actual baseline standalone reader
 against cold and warm disposable v2 files. No B runtime checks have run.
+
+### B: first review
+
+Terra reviewed `2fb7b5fd4663d380ee7d7e6dc25312ae5815f8d6` against `45e4e7d`.
+Changes are required: reject invalid current revision pointers and forged
+content-derived revision identities; insert new type/revision rows in valid
+foreign-key order; make ordinary CRUD failures transactional and observable;
+and refuse cache rebuilds that would skip canonical records. Tests must prove
+successful new-type compound creation and ordinary failure rollback, including
+reopened state. Five finding items are children of B-R. Sol is correcting the
+batch; runtime verification remains unexecuted.
