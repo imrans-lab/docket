@@ -29,6 +29,9 @@ const _CURSOR_COLOR := Color(0.24, 0.38, 0.58, 0.75)
 func _init() -> void:
 	_button = Button.new()
 	_button.text = "Any type"
+	# Ellipsis removes label length from the button's minimum-width contract, so
+	# a registry-provided label cannot expand the surrounding query row.
+	_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_button.pressed.connect(_request_open_popup)
 	_button.gui_input.connect(_on_button_gui_input)
 	add_child(_button)
@@ -232,7 +235,13 @@ func _update_summary() -> void:
 	var summary := "Selected: %s" % ", ".join(labels) if not labels.is_empty() else "Selected: none"
 	_selected_label.text = summary
 	_selected_label.tooltip_text = summary
-	_button.text = "Any type" if labels.is_empty() else ", ".join(labels)
+	if labels.is_empty():
+		_button.text = "Any type"
+	elif labels.size() == 1:
+		_button.text = labels[0]
+	else:
+		_button.text = "%d types selected" % labels.size()
+	_button.tooltip_text = summary
 	_rebuild_shortcuts()
 
 

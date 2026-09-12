@@ -252,6 +252,46 @@ func test_popup_opens_below_anchor_with_opaque_bounded_content() -> Variant:
 	r = A.is_true(chooser._selected_label.tooltip_text.contains("Popup Type 099"), "clipped selection summary preserves full accessible detail")
 	chooser._popup.hide(); chooser.queue_free(); return r
 
+func test_query_grid_large_selection_keeps_row_bounded_and_full_identity_detail() -> Variant:
+	var schema: Dictionary = {"types": {}}
+	for i in 120:
+		var slug := "grid_type_%03d" % i
+		schema.types[slug] = {"label": "Grid Type %03d" % i, "description": "Grid geometry fixture", "states": []}
+	var long_label := "Extremely long registry label "
+	for _i in 100: long_label += "segment "
+	schema.types["long_type"] = {"label": long_label, "description": "Long label fixture", "states": []}
+	var state := AppState.new()
+	state.schema = schema
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var chooser: TypeChooser = grid._condition_rows[0].type_chooser
+	var keys: Array = []
+	for record in grid._type_catalog:
+		if str(record.slug).begins_with("grid_type_") and keys.size() < 100: keys.append(record.key)
+	chooser.set_selected_values(keys)
+	var row_minimum: Vector2 = grid._condition_rows[0].hbox.get_combined_minimum_size()
+	var r = A.eq(chooser._button.text, "100 types selected", "multi-selection trigger remains concise")
+	if r != true: grid.queue_free(); return r
+	r = A.eq(chooser.selected_values(), keys, "concise trigger retains every selected catalog identity")
+	if r != true: grid.queue_free(); return r
+	grid._user_has_modified = true
+	var serialized: Dictionary = JSON.parse_string(grid.get_filter())
+	r = A.eq(serialized.conditions[0].value, keys, "QueryGrid serialization retains all catalog identities")
+	if r != true: grid.queue_free(); return r
+	r = A.is_true(chooser._button.tooltip_text.contains("Grid Type 099"), "trigger tooltip preserves full human-readable selection")
+	if r != true: grid.queue_free(); return r
+	r = A.is_true(row_minimum.x <= 700, "large selection cannot widen QueryGrid row; minimum=%s" % row_minimum)
+	if r != true: grid.queue_free(); return r
+	var long_key := ""
+	for record in grid._type_catalog:
+		if record.slug == "long_type": long_key = record.key
+	chooser.set_selected_values([long_key])
+	r = A.eq(chooser._button.text, long_label, "single selection still presents its human label")
+	if r != true: grid.queue_free(); return r
+	r = A.is_true(chooser._button.get_combined_minimum_size().x <= 240, "ellipsis prevents one long label from setting row width; button minimum=%s" % chooser._button.get_combined_minimum_size())
+	if r != true: grid.queue_free(); return r
+	r = A.is_true(chooser._button.tooltip_text.contains(long_label), "full long label remains available as detail")
+	grid.queue_free(); return r
+
 func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
 	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha", {"discussion": 1}), "row-test")
 	var discussion_index := -1
