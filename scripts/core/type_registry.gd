@@ -708,13 +708,9 @@ func preview_evolution(slug: String, definition: Dictionary, expected_current: S
 func _project_candidate(item: Dictionary, definition: Dictionary) -> Dictionary:
 	# Explicit selected upgrades may apply defaults, but stored false/zero/null/empty values win.
 	var result: Dictionary = {}
-	var custom: Dictionary = item.get("fields", {})
 	for descriptor in definition.fields:
-		var custom_authority: bool = not bool(definition.get("protected", false)) and str(descriptor.key) not in UNIVERSAL_MUTABLE
-		if custom_authority:
-			if custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
-		elif item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
-		elif custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
+		var stored: Dictionary = _stored_descriptor_value(item, descriptor, definition)
+		if bool(stored.present): result[descriptor.key] = stored.value
 		elif descriptor.has("default"): result[descriptor.key] = descriptor.default
 	for key in UNIVERSAL_MUTABLE:
 		if item.has(key): result[key] = item[key]
@@ -737,9 +733,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 		for id in checked.items:
 			if not bind_error.is_empty(): break
 			var item: Dictionary = _db.get_item(id)
-			var defaults := {}
-			for descriptor in checked.definition.fields:
-				if descriptor.has("default") and not item.has(descriptor.key) and not item.get("fields", {}).has(descriptor.key): defaults[descriptor.key] = descriptor.default
+			var defaults: Dictionary = _upgrade_defaults(item, checked.definition)
 			if not defaults.is_empty(): bind_error = (_db as DocketDBJsonl).update_item_fields_checked(id, _storage_patch(defaults, [], checked.definition))
 			if not bind_error.is_empty(): break
 			bind_error = _db._exec_checked("UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [current.id, revision_id, id])
@@ -752,9 +746,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 	var events: Array = []
 	for id in checked.items:
 		var item: Dictionary = _db.get_item(id)
-		var defaults := {}
-		for descriptor in checked.definition.fields:
-			if descriptor.has("default") and not item.has(descriptor.key) and not item.get("fields", {}).has(descriptor.key): defaults[descriptor.key] = descriptor.default
+		var defaults: Dictionary = _upgrade_defaults(item, checked.definition)
 		bindings.append({"item_id":id,"type_id":current.id,"type_revision":revision_id,"changes":_storage_patch(defaults, [], checked.definition)})
 		events.append({"item_id":id,"event_type":"type_revision_changed","actor":author,"timestamp":Time.get_datetime_string_from_system(true),"note":reason})
 	var error := (_db as DocketDBJsonl).apply_registry_change(record, revision, bindings, events, current.current_revision)
@@ -773,16 +765,27 @@ func _state(definition: Dictionary, key: String) -> Dictionary:
 
 func _candidate_values(item: Dictionary, definition: Dictionary) -> Dictionary:
 	var result: Dictionary = {}
-	var custom: Dictionary = item.get("fields", {})
 	for descriptor in definition.fields:
-		var custom_authority: bool = not bool(definition.get("protected", false)) and str(descriptor.key) not in UNIVERSAL_MUTABLE
-		if custom_authority:
-			if custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
-		elif item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
-		elif custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
+		var stored: Dictionary = _stored_descriptor_value(item, descriptor, definition)
+		if bool(stored.present): result[descriptor.key] = stored.value
 	for key in UNIVERSAL_MUTABLE:
 		if item.has(key): result[key] = item[key]
 	return result
+
+func _stored_descriptor_value(item: Dictionary, descriptor: Dictionary, definition: Dictionary) -> Dictionary:
+	var key: String = str(descriptor.key)
+	var custom: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+	var custom_authority: bool = not bool(definition.get("protected", false)) and key not in UNIVERSAL_MUTABLE
+	if custom_authority: return {"present":true,"value":custom[key]} if custom.has(key) else {"present":false}
+	if item.has(key): return {"present":true,"value":item[key]}
+	if custom.has(key): return {"present":true,"value":custom[key]}
+	return {"present":false}
+
+func _upgrade_defaults(item: Dictionary, definition: Dictionary) -> Dictionary:
+	var defaults: Dictionary = {}
+	for descriptor in definition.fields:
+		if descriptor.has("default") and not bool(_stored_descriptor_value(item, descriptor, definition).present): defaults[descriptor.key] = descriptor.default
+	return defaults
 
 func _normalize_input(input: Dictionary, allow_type: bool = false) -> Dictionary:
 	for key in input:

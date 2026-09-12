@@ -144,20 +144,25 @@ func test_new_descriptor_does_not_reinterpret_old_opaque_value_until_explicit_re
 	if defined.has("error"): db.close(); return "opaque type definition failed: %s" % defined.error
 	registry.activate_type("opaque_widget", defined.type.current_revision, "tester", "activate")
 	var made: Dictionary = registry.create_item({"type":"opaque_widget","title":"Opaque"}, "tester")
+	var defaulted: Dictionary = registry.create_item({"type":"opaque_widget","title":"Defaulted"}, "tester")
 	db.update_item_fields_checked(made.id, {"fields":{"research_cost":"kept"}})
-	var evolved: Dictionary = base.duplicate(true); evolved.fields.append({"key":"research_cost","type":"string","required":false,"nullable":true})
+	var evolved: Dictionary = base.duplicate(true); evolved.fields.append({"key":"research_cost","type":"string","required":false,"nullable":true,"default":"planned"})
 	var preview: Dictionary = registry.preview_evolution("opaque_widget", evolved, defined.type.current_revision, [])
 	var apply_error: String = registry.apply_evolution(preview, "tester", "publish descriptor")
 	var current: Dictionary = registry.get_type("opaque_widget")
 	var before_rows: Array = db.execute_registry_query({"filter":{"field_key":"research_cost","type_id":current.id,"op":"eq","value":"kept"}}, registry)
 	var current_item: Dictionary = registry.create_item({"type":"opaque_widget","title":"Current","research_cost":"aaa"}, "tester")
 	var before_sorted: Array = db.execute_registry_query({"sort":[{"field_key":"research_cost","type_id":current.id,"dir":"asc","nulls":"last"}]}, registry)
-	var r = A.is_true(apply_error.is_empty() and before_rows.is_empty() and before_sorted.size() == 2 and before_sorted[0].id == current_item.id and before_sorted[1].id == made.id, "old pin keeps formerly opaque key outside typed filter and sort meaning")
+	var r = A.is_true(apply_error.is_empty() and before_rows.is_empty() and before_sorted.size() == 3 and before_sorted[0].id == current_item.id, "old pins keep formerly opaque keys outside typed filter and sort meaning")
 	if r is String: db.close(); return r
-	var repin: Dictionary = registry.preview_evolution("opaque_widget", evolved, current.current_revision, [made.id])
+	var repin: Dictionary = registry.preview_evolution("opaque_widget", evolved, current.current_revision, [made.id, defaulted.id])
+	if repin.has("error"): db.close(); return "selected default preview failed: %s" % repin.error
 	apply_error = registry.apply_evolution(repin, "tester", "explicit repin")
 	var after_rows: Array = db.execute_registry_query({"filter":{"field_key":"research_cost","type_id":current.id,"op":"eq","value":"kept"}}, registry)
-	r = A.is_true(apply_error.is_empty() and after_rows.size() == 1, "explicit validated repin activates descriptor meaning without changing value")
+	r = A.is_true(apply_error.is_empty() and after_rows.size() == 1 and db.get_item(defaulted.id).fields.research_cost == "planned", "selected repin preserves opaque values and applies a custom default despite the unrelated materialized legacy column")
+	if r is String: db.close(); return r
+	var path: String = db.get_path(); db.close(); db = DocketDBJsonl.open_jsonl(path)
+	r = A.eq(db.get_item(defaulted.id).fields.research_cost, "planned", "custom upgrade default persists through reopen")
 	db.close(); return r
 
 func test_saved_query_roundtrip_keeps_identity_field_state_and_sort_bindings() -> Variant:
