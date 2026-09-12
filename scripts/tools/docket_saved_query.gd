@@ -36,8 +36,9 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 				query["sort"] = args.sort
 			if args.has("columns"):
 				query["columns"] = args.columns
-			db.save_query(name, query)
-			return {"saved": name}
+			var error: String = (db as DocketDBJsonl).save_query_checked(name, query) if db is DocketDBJsonl else ""
+			if not db is DocketDBJsonl: db.save_query(name, query)
+			return {"error":error} if not error.is_empty() else {"saved": name}
 		"load":
 			var name: String = args.get("name", "")
 			var query := db.load_query(name)

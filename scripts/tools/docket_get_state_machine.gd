@@ -16,7 +16,15 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, schema: Dictionary, _db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
+	if db is DocketDBJsonl and db.get_meta_value("jsonl_version", "1.0.0") == "2.0.0":
+		var registry := TypeRegistry.for_db(db, db.get_project_name())
+		if args.has("type") and not str(args.type).is_empty():
+			var descriptor: Dictionary = registry.resolve_type_ref(str(args.type))
+			if descriptor.has("error"): return descriptor
+			return {"type":descriptor.slug,"type_id":descriptor.id,"revision":descriptor.current_revision,"lifecycle":descriptor.definition.lifecycle}
+		var definitions: Array = registry.list_types(true)
+		return {"state_machines":definitions}
 	var types: Dictionary = schema.get("types", {})
 
 	if args.has("type") and not str(args.get("type", "")).is_empty():

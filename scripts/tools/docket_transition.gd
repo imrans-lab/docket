@@ -22,6 +22,10 @@ func get_definition() -> Dictionary:
 				"resolution": {"type": "string"},
 				"note": {"type": "string", "description": "Reason for the change. Required when the transition is outside the normal promotion flow."},
 				"blocked_by": {"type": "string"},
+				"fields": {"type":"object","description":"Typed field values committed with the transition"},
+				"unset_fields": {"type":"array","items":{"type":"string"}},
+				"expected_revision": {"type":"string","description":"Expected pinned type revision for stale-form refusal"},
+				"expected_item_token": {"type":"string","description":"Expected content token for stale-form refusal"},
 				"project": {"type": "string", "description": "Project name (optional, defaults to primary)"},
 			},
 			"required": ["id", "to"],
@@ -74,54 +78,22 @@ func _build_state_chains(schema: Dictionary) -> String:
 	return ". ".join(PackedStringArray(chains))
 
 
-func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var id: String = args.get("id", "")
 	if not db.has_item(id):
 		return {"error": "Item not found: %s" % id}
 
-	var item: Dictionary = db.get_item(id)
 	var to: String = args.get("to", "")
 	var note: String = args.get("note", "")
-	var item_type: String = str(item.get("type", ""))
-	var from_state: String = str(item.get("status", ""))
-	var extra := {}
+	var extra: Dictionary = {}
+	if args.get("fields") is Dictionary: extra["fields"] = args.fields
+	if args.get("unset_fields") is Array: extra["unset_fields"] = args.unset_fields
 	if args.has("resolution"):
 		extra["resolution"] = args.resolution
 	if args.has("blocked_by"):
 		extra["blocked_by"] = args.blocked_by
-
-	var result = StateMachine.perform_transition(schema, item, to, "agent", note, extra)
-	if result.has("error"):
-		var valid := StateMachine.get_valid_transitions(schema, item_type, from_state)
-		db.log_transition(item_type, from_state, to, false, valid)
-		return result
-
-	# Log successful transition
-	db.log_transition(item_type, from_state, to, true)
-
-	# Write back status + any extra fields + event
-	var write_back := {"status": item.status, "updated_at": item.updated_at}
-	if extra.has("resolution"):
-		write_back["resolution"] = item.get("resolution", "")
-	if extra.has("blocked_by"):
-		write_back["blocked_by"] = item.get("blocked_by", "")
-
-	db.update_item_fields(id, write_back)
-	# Persist the new event(s) — get the last event added by perform_transition
-	var events: Array = item.get("events", [])
-	if events.size() > 0:
-		var ev: Dictionary = events[events.size() - 1]
-		db.add_event(id, str(ev.get("event_type", "")), str(ev.get("actor", "")), str(ev.get("note", "")))
-
-	# Auto-create 'blocks' link when transitioning to blocked
-	if to == "blocked" and extra.has("blocked_by"):
-		var blocked_by_id: String = str(extra.blocked_by)
-		# For cross-project refs (project:id format), extract the local ID part
-		var local_blocker_id := blocked_by_id
-		if ":" in blocked_by_id:
-			local_blocker_id = blocked_by_id.split(":")[1]
-		# Only create link if the blocking item exists locally
-		if db.has_item(local_blocker_id):
-			db.add_link(local_blocker_id, id, "blocks")
-
-	return {"id": id, "status": item.status}
+	var transition_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
+	var typed_error: String = transition_registry.transition_item(id, to, "agent", note, extra, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")))
+	if not typed_error.is_empty(): return {"error":typed_error}
+	var typed_item: Dictionary = db.get_item(id)
+	return {"id":id,"status":typed_item.get("status", ""),"type_revision":typed_item.get("type_revision", ""),"item_token":transition_registry.item_token(typed_item)}

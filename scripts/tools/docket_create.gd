@@ -9,7 +9,8 @@ func get_definition() -> Dictionary:
 		"inputSchema": {
 			"type": "object",
 			"properties": {
-				"type": {"type": "string", "enum": ["bug", "dcr", "rca", "chore", "hint", "insight", "question", "work_item", "test", "discussion", "skill", "prompt", "kb", "policy"]},
+				"type": {"type": "string", "description":"Type slug in the selected project"},
+				"fields": {"type":"object","description":"Typed custom fields"},
 				"title": {"type": "string"},
 				"description": {"type": "string"},
 				"priority": {"type": "integer", "minimum": 1, "maximum": 4},
@@ -87,6 +88,13 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 				args["parent"] = "%s:%s" % [proj_name, parent_str]
 
 	var item_type: String = str(args.get("type", ""))
+	if item_type not in ["secret", "encrypted_note"]:
+		var typed_args: Dictionary = args.duplicate(true)
+		typed_args.erase("project")
+		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(typed_args, "agent")
+		if created.has("error"): return created
+		var typed_item: Dictionary = created.get("item", {})
+		return {"id":created.id,"type":typed_item.get("type", item_type),"type_id":typed_item.get("type_id", ""),"type_revision":typed_item.get("type_revision", ""),"item_token":TypeRegistry.for_db(db, db.get_project_name()).item_token(typed_item),"status":typed_item.get("status", ""),"title":typed_item.get("title", "")}
 
 	# Reject secret/encrypted_note — use docket_secret_set for vault storage
 	if item_type in ["secret", "encrypted_note"]:

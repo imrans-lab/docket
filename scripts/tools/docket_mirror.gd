@@ -19,6 +19,8 @@ func get_definition() -> Dictionary:
 				"fields": {"description": "Array of field names to pull from source, or Dict of field:value pairs to push"},
 				"transition_to": {"type": "string", "description": "Optional state to transition the target to"},
 				"note": {"type": "string", "description": "Optional audit note"},
+				"expected_revision": {"type":"string","description":"Expected pinned target type revision"},
+				"expected_item_token": {"type":"string","description":"Expected target content token"},
 			},
 			"required": ["source_id", "target_id", "fields"],
 		},
@@ -41,26 +43,36 @@ func execute(args: Dictionary, schema: Dictionary, primary_db: DocketDB, project
 	var note: String = str(args.get("note", ""))
 
 	# Resolve DBs
-	var source_db := _resolve_project_db(source_project, primary_db, project_dbs)
-	var target_db := _resolve_project_db(target_project, primary_db, project_dbs)
+	var source_db: DocketDB = _resolve_project_db(source_project, primary_db, project_dbs)
+	var target_db: DocketDB = _resolve_project_db(target_project, primary_db, project_dbs)
+	if source_db == null: return {"error":"Unknown source project '%s'" % source_project}
+	if target_db == null: return {"error":"Unknown target project '%s'" % target_project}
 
 	# Build payload from pull or push mode
-	var payload := {}
+	var payload: Dictionary = {}
 	var field_list: PackedStringArray = []
-	var source_proj_label := source_project if not source_project.is_empty() else _primary_name(primary_db, project_dbs)
+	var source_proj_label: String = source_project if not source_project.is_empty() else _primary_name(primary_db, project_dbs)
 
 	if fields is Array:
 		# Pull mode: read from source
 		if not source_db.has_item(source_id):
 			return {"error": "Source item not found: %s" % source_id}
 		var source_item: Dictionary = source_db.get_item(source_id)
+		var source_semantics: Dictionary = TypeRegistry.for_db(source_db, source_db.get_project_name()).resolve_item(source_item)
+		if source_semantics.has("error"): return {"error":"Source item semantics are unresolved: %s" % source_semantics.error}
 		for field_name in fields:
 			var fname: String = str(field_name)
-			if source_item.has(fname) and str(source_item[fname]) != "":
+			var custom: Dictionary = source_item.get("fields", {}) if source_item.get("fields", {}) is Dictionary else {}
+			var custom_declared: bool = false
+			for descriptor in source_semantics.definition.fields:
+				if str(descriptor.key) == fname and not bool(source_semantics.definition.get("protected", false)): custom_declared = true
+			if custom_declared and custom.has(fname):
+				payload[fname] = custom[fname]
+				field_list.append(fname)
+			elif source_item.has(fname):
 				payload[fname] = source_item[fname]
 				field_list.append(fname)
-		if payload.is_empty():
-			return {"error": "No matching non-empty fields found on source item"}
+		if payload.is_empty(): return {"error":"No selected fields exist on the source item"}
 	elif fields is Dictionary:
 		# Push mode: use provided values directly
 		for key in fields:
@@ -70,6 +82,16 @@ func execute(args: Dictionary, schema: Dictionary, primary_db: DocketDB, project
 			return {"error": "Fields dictionary is empty"}
 	else:
 		return {"error": "'fields' must be an Array (pull mode) or Dictionary (push mode)"}
+
+	if target_db is DocketDBJsonl and target_db.get_meta_value("jsonl_version", "1.0.0") == "2.0.0":
+		if not target_db.has_item(target_id): return {"error":"Target item not found: %s" % target_id}
+		var target_registry: TypeRegistry = TypeRegistry.for_db(target_db, target_db.get_project_name())
+		var audit: String = "Mirrored from %s:%s [%s]" % [source_proj_label,source_id,", ".join(field_list)]
+		if not note.is_empty(): audit += ": %s" % note
+		var expected_revision: String = str(args.get("expected_revision", ""))
+		var mirror_result: Dictionary = target_registry.mirror_item(target_id, {"fields":payload}, transition_to, "agent", note, audit, expected_revision, str(args.get("expected_item_token", "")))
+		if mirror_result.has("error"): return mirror_result
+		return {"target_id":target_id,"target_project":target_db.get_project_name(),"pushed_fields":Array(field_list),"transitioned_to":transition_to,"comment_id":mirror_result.get("comment_id", 0)}
 
 	# Validate target exists
 	if not target_db.has_item(target_id):
@@ -131,7 +153,7 @@ func _resolve_project_db(name: String, primary_db: DocketDB, project_dbs: Dictio
 	for proj_name in project_dbs:
 		if proj_name.to_lower() == name.to_lower():
 			return project_dbs[proj_name]
-	return primary_db
+	return null
 
 
 func _primary_name(primary_db: DocketDB, project_dbs: Dictionary) -> String:

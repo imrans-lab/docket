@@ -233,65 +233,8 @@ func find_children_across_projects(qualified_id: String) -> Array:
 
 
 func move_item(item_id: String, target_project: String) -> Dictionary:
-	## Move an item between projects. Auto-updates all references.
-	# Find source
-	var source_db: DocketDB = null
-	var source_name: String = ""
-	for proj_name in _project_dbs:
-		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb.has_item(item_id):
-			source_db = pdb
-			source_name = proj_name
-			break
-	if source_db == null:
-		return {"error": "Item not found: %s" % item_id}
-
-	# Find target
-	var target_db: DocketDB = null
-	var canonical_target := target_project
-	for proj_name in _project_dbs:
-		if proj_name.to_lower() == target_project.to_lower():
-			target_db = _project_dbs[proj_name]
-			canonical_target = proj_name
-			break
-	if target_db == null:
-		return {"error": "Target project not found: %s" % target_project}
-	if source_db == target_db:
-		return {"error": "Item is already in project '%s'" % canonical_target}
-
-	# Export item data
-	var exported := source_db.export_item_full(item_id)
-	if exported.is_empty():
-		return {"error": "Failed to export item %s" % item_id}
-
-	var new_id: String
-	var refs_updated := 0
-
-	if DocketDB._is_uuid7(item_id):
-		# UUID7 items keep their ID — globally unique, no rewrite needed
-		new_id = item_id
-		target_db.import_item_full(new_id, exported)
-		source_db.delete_item(item_id)
-	else:
-		# Legacy items get upgraded to UUID7 on move
-		new_id = target_db.next_uuid7_id()
-		target_db.import_item_full(new_id, exported)
-		source_db.delete_item(item_id)
-		# Rewrite references across ALL projects (legacy-only)
-		var old_qualified := "%s:%s" % [source_name, item_id]
-		var new_qualified := "%s:%s" % [canonical_target, new_id]
-		for proj_name in _project_dbs:
-			var pdb: DocketDB = _project_dbs[proj_name]
-			refs_updated += pdb.rewrite_refs(old_qualified, new_qualified, item_id, new_qualified)
-
-	data_changed.emit()
-	return {
-		"old_id": item_id,
-		"new_id": new_id,
-		"old_project": source_name,
-		"new_project": canonical_target,
-		"refs_updated": refs_updated,
-	}
+	## The shared transfer path enforces source identity, registry pins and durable write order.
+	return DocketMove.new().execute({"id":item_id,"target_project":target_project}, schema, db, _project_dbs)
 
 
 func create_dct(path: String) -> void:
@@ -419,6 +362,8 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 	db_query.erase("limit")
 
 	var all_results: Array = []
+	var sort_spec: Array = query.get("sort", [])
+	var query_detail: String = "full" if _sort_requires_registry_values(sort_spec) else detail
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
 		var project_query := _bind_project_conditions(db_query, proj_name)
@@ -428,31 +373,76 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 			return []
 		if bool(project_query.get("excluded", false)):
 			continue
-		var results := pdb.execute_query(project_query.query, detail)
+		var registry: TypeRegistry = get_type_registry(str(proj_name))
+		if registry == null or not registry.get_diagnostic().is_empty():
+			last_cross_project_query_error = registry.get_diagnostic() if registry != null else "type registry unavailable for project '%s'" % proj_name
+			return []
+		var typed: bool = _query_has_typed_binding(project_query.query)
+		var results: Array = pdb.execute_registry_query(project_query.query, registry, query_detail) if typed or _sort_requires_registry_values(sort_spec) else pdb.execute_query(project_query.query, query_detail)
+		if not pdb.last_query_error.is_empty():
+			last_cross_project_query_error = "%s: %s" % [proj_name,pdb.last_query_error]
+			return []
+		if results.size() == 1 and results[0] is Dictionary and results[0].has("_error"):
+			last_cross_project_query_error = "%s: %s" % [proj_name,results[0]._error]
+			return []
 		for item in results:
 			item["project"] = proj_name
 		all_results.append_array(results)
 
 	# Apply sort across union
-	var sort_spec: Array = query.get("sort", [])
 	if sort_spec.size() > 0:
-		var field: String = str(sort_spec[0].get("field", ""))
-		var dir: String = str(sort_spec[0].get("dir", "asc")).to_lower()
-		if not field.is_empty():
-			all_results.sort_custom(func(a, b):
-				var va = a.get(field, "")
-				var vb = b.get(field, "")
-				if dir == "desc":
-					return va > vb
-				return va < vb
-			)
+		all_results.sort_custom(func(a, b): return _compare_query_rows(a, b, sort_spec))
 
 	# Apply limit across union
 	var limit: int = int(query.get("limit", 0))
 	if limit > 0 and all_results.size() > limit:
 		all_results.resize(limit)
+	if detail == "lean" and query_detail != "lean":
+		var lean: Array = []
+		for item in all_results: lean.append({"id":item.get("id", ""),"title":item.get("title", ""),"project":item.get("project", "")})
+		return lean
 
 	return all_results
+
+func _sort_requires_registry_values(specs: Array) -> bool:
+	for value in specs:
+		if value is Dictionary and (value.has("field_key") or str(value.get("field", "")) in RegistryQuery.DERIVED_FIELDS): return true
+	return false
+
+func _query_has_typed_binding(value) -> bool:
+	if value is Dictionary:
+		if value.has("type_id") or value.has("field_key") or str(value.get("field", "")) in RegistryQuery.DERIVED_FIELDS: return true
+		for child in value.values():
+			if _query_has_typed_binding(child): return true
+	elif value is Array:
+		for child in value:
+			if _query_has_typed_binding(child): return true
+	return false
+
+func _compare_query_rows(a: Dictionary, b: Dictionary, specs: Array) -> bool:
+	for value in specs:
+		if not value is Dictionary: continue
+		var spec: Dictionary = value
+		var av = _query_sort_value(a, spec)
+		var bv = _query_sort_value(b, spec)
+		var a_null: bool = av == null
+		var b_null: bool = bv == null
+		if a_null != b_null: return b_null if str(spec.get("nulls", "last")) == "last" else a_null
+		if a_null: continue
+		if av == bv: continue
+		var less: bool = str(av) < str(bv) if typeof(av) != typeof(0) and typeof(av) != typeof(0.0) else float(av) < float(bv)
+		return not less if str(spec.get("dir", "asc")) == "desc" else less
+	var project_compare: int = str(a.get("project", "")).casecmp_to(str(b.get("project", "")))
+	if project_compare != 0: return project_compare < 0
+	return str(a.get("id", "")) < str(b.get("id", ""))
+
+func _query_sort_value(item: Dictionary, spec: Dictionary):
+	var type_id: String = str(spec.get("type_id", ""))
+	if not type_id.is_empty() and str(item.get("type_id", "")) != type_id: return null
+	var field: String = str(spec.get("field_key", spec.get("field", "")))
+	if item.has(field): return item[field]
+	var custom: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+	return custom.get(field)
 
 
 func _bind_project_conditions(query: Dictionary, project_name: String) -> Dictionary:

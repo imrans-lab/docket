@@ -95,7 +95,23 @@ static func compile_catalog_conditions(conditions: Array, catalog: Array, includ
 		current.append(_compile_condition(cond, catalog, include_project))
 	groups.append(current)
 	var compiled: Array = []
-	for group in groups: compiled.append(group[0] if group.size() == 1 else {"$and": group})
+	for group in groups:
+		var identities: Array = []
+		for group_condition in group:
+			if group_condition.get("field", "") == "type" and group_condition.get("op", "") == "catalog_in":
+				for identity in group_condition.get("value", []):
+					var scoped_record := TypeCatalog.find_by_key(catalog, str(identity))
+					if not scoped_record.is_empty() and not identities.has(scoped_record.id): identities.append(scoped_record.id)
+		var expanded: Array = []
+		for group_condition in group:
+			var scoped_condition: Dictionary = group_condition.duplicate(true)
+			if str(scoped_condition.get("field", "")) not in UNIVERSAL_FIELDS:
+				scoped_condition["field_key"] = scoped_condition.field
+				if identities.size() == 1: scoped_condition["type_id"] = identities[0]
+			expanded.append(scoped_condition)
+		var compiled_group: Array = []
+		for scoped_condition in expanded: compiled_group.append(_compile_condition(scoped_condition, catalog, include_project))
+		compiled.append(compiled_group[0] if compiled_group.size() == 1 else {"$and":compiled_group})
 	if compiled.size() == 1:
 		return compiled[0] if compiled[0] is Dictionary and compiled[0].has("$and") else {"$and": [compiled[0]]}
 	return {"$or": compiled}
@@ -104,18 +120,18 @@ static func _compile_condition(cond: Dictionary, catalog: Array, include_project
 	if cond.get("field", "") == "status" and cond.get("op", "") == "catalog_status":
 		var choice: Dictionary = cond.get("value", {})
 		var record := TypeCatalog.find_by_key(catalog, str(choice.get("key", "")))
-		if record.is_empty(): return {"field": "id", "op": "in", "value": []}
-		var predicates: Array = [{"field": "type", "op": "eq", "value": record.slug}, {"field": "status", "op": "eq", "value": choice.get("status", "")}]
+		if record.is_empty(): return {"field":"type","type_id":str(choice.get("key", "")),"op":"eq","value":""}
+		var predicates: Array = [{"field":"type","type_id":record.id,"op":"eq","value":record.slug}, {"field":"status","type_id":record.id,"op":"eq","value":choice.get("status", "")}]
 		if include_project and not str(record.project).is_empty(): predicates.push_front({"field": "project", "op": "eq", "value": record.project})
 		return {"$and": predicates}
 	if cond.get("field", "") != "type" or cond.get("op", "") != "catalog_in": return cond
 	var alternatives: Array = []
 	for key in cond.get("value", []):
 		var record := TypeCatalog.find_by_key(catalog, str(key))
-		if record.is_empty(): alternatives.append({"field": "id", "op": "eq", "value": "__unknown_type_identity__"})
+		if record.is_empty(): alternatives.append({"field":"type","type_id":str(key),"op":"eq","value":""})
 		else:
-			var pair: Array = [{"field": "type", "op": "eq", "value": record.slug}]
+			var pair: Array = [{"field":"type","type_id":record.id,"op":"eq","value":record.slug}]
 			if include_project and not str(record.project).is_empty(): pair.push_front({"field": "project", "op": "eq", "value": record.project})
 			alternatives.append(pair[0] if pair.size() == 1 else {"$and": pair})
-	if alternatives.is_empty(): return {"field": "id", "op": "eq", "value": "__empty_type_selection__"}
+	if alternatives.is_empty(): return {"field":"id","op":"in","value":[]}
 	return alternatives[0] if alternatives.size() == 1 else {"$or": alternatives}

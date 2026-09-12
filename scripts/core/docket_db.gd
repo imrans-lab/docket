@@ -544,6 +544,7 @@ func export_item_full(id: String) -> Dictionary:
 	var comments: Array = []
 	for cr in comment_rows:
 		comments.append({
+			"id": int(cr.get("id", 0)),
 			"parent_id": int(cr.get("parent_id", 0)),
 			"author": str(cr.get("author", "")),
 			"text": str(cr.get("text", "")),
@@ -623,12 +624,18 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 
 	# Comments
 	var comments: Array = exported.get("comments", [])
+	var comment_ids := {}
 	for c in comments:
+		var old_id: int = int(c.get("id", 0))
+		var old_parent: int = int(c.get("parent_id", 0))
+		var mapped_parent: int = int(comment_ids.get(old_parent, 0))
 		_exec("INSERT INTO comments (item_id, parent_id, author, text, status, created_at, resolved_at, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-			[new_id, int(c.get("parent_id", 0)), str(c.get("author", "")),
+			[new_id, mapped_parent, str(c.get("author", "")),
 			 str(c.get("text", "")), str(c.get("status", "open")),
 			 str(c.get("created_at", "")), str(c.get("resolved_at", "")),
 			 str(c.get("resolved_by", ""))])
+		var inserted: Array = _exec_select("SELECT last_insert_rowid() AS id;")
+		if old_id > 0 and not inserted.is_empty(): comment_ids[old_id] = int(inserted[0].id)
 
 	# Attachments
 	var attachments: Array = exported.get("attachments", [])
@@ -902,6 +909,42 @@ func execute_query(query: Dictionary, detail: String = "full") -> Array:
 		var item := _build_item_dict(row)
 		if detail == "full_stripped":
 			item = _strip_empty(item)
+		results.append(item)
+	return results
+
+func execute_registry_query(query: Dictionary, registry: TypeRegistry, detail: String = "full") -> Array:
+	## Typed bindings are compiled separately so legacy literal filters keep their
+	## historical meaning and cannot be widened by partial translation.
+	var compiled: Dictionary = RegistryQuery.compile(query, registry, _item_columns())
+	if compiled.has("error"):
+		last_query_error = str(compiled.error)
+		return []
+	last_query_error = ""
+	var sql := "SELECT * FROM items"
+	if not str(compiled.where).is_empty(): sql += " WHERE " + str(compiled.where)
+	var bindings: Array = compiled.bindings.duplicate()
+	if not str(compiled.order).is_empty():
+		sql += " ORDER BY " + str(compiled.order)
+		bindings.append_array(compiled.order_bindings)
+	var limit: int = int(query.get("limit", 0))
+	if limit > 0: sql += " LIMIT %d" % limit
+	_last_sql_error = ""
+	var rows: Array = _exec_select(sql + ";", bindings)
+	if not _last_sql_error.is_empty():
+		last_query_error = _last_sql_error
+		return []
+	if detail == "lean": return _build_lean_rows(rows)
+	var results: Array = []
+	for row in rows:
+		var item: Dictionary = _build_item_dict(row)
+		var semantics: Dictionary = registry.resolve_item(item)
+		if not semantics.has("error"):
+			item["state_category"] = semantics.state_category
+			item["state_outcome"] = semantics.state_outcome
+			item["is_terminal"] = semantics.is_terminal
+		else:
+			item["type_diagnostic"] = semantics.error
+		if detail == "full_stripped": item = _strip_empty(item)
 		results.append(item)
 	return results
 

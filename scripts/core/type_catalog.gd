@@ -28,6 +28,19 @@ static func from_schema(schema: Dictionary, project: String = "", counts: Dictio
 		})
 	return sorted(result)
 
+static func from_registry(registry: TypeRegistry, counts: Dictionary = {}) -> Array:
+	var result: Array = []
+	for value in registry.list_types(true):
+		if not value is Dictionary or value.has("error"): continue
+		var descriptor: Dictionary = value
+		var definition: Dictionary = descriptor.definition
+		var states: Array = []
+		for state in definition.lifecycle.states: states.append(str(state.key))
+		var fields: Array = []
+		for field in definition.fields: fields.append(str(field.key))
+		result.append({"id":descriptor.id,"key":identity(registry.get_project_name(),str(descriptor.id)),"slug":descriptor.slug,"label":definition.label,"description":definition.description,"use_when":definition.get("use_when", ""),"aliases":definition.get("aliases", []),"project":registry.get_project_name(),"item_count":int(counts.get(descriptor.slug, 0)),"deprecated":descriptor.lifecycle == "deprecated","states":states,"fields":fields,"revision":descriptor.current_revision})
+	return sorted(result)
+
 
 static func identity(project: String, type_id: String) -> String:
 	# JSON encoding avoids delimiter ambiguity while remaining stable in prefs.

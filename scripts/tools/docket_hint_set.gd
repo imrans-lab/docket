@@ -45,7 +45,10 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 			changes["confidence"] = args.confidence
 		if args.has("research_cost"):
 			changes["research_cost"] = int(args.research_cost)
-		# Validate via DataModel then write back
+		if db is DocketDBJsonl:
+			var update_error: String = TypeRegistry.for_db(db, db.get_project_name()).update_item(existing_id, changes, "agent")
+			return {"error":update_error} if not update_error.is_empty() else db.get_item(existing_id)
+		# SQLite compatibility still uses the shipped flat schema.
 		var result = DataModel.update_item(schema, existing, changes)
 		if result.has("error"):
 			return result
@@ -71,5 +74,5 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 		if item.has("error"):
 			return item
 		var id := db.next_uuid7_id()
-		db.insert_item(id, item)
-		return db.get_item(id)
+		var insert_error: String = db.insert_item(id, item)
+		return {"error":insert_error} if not insert_error.is_empty() else db.get_item(id)

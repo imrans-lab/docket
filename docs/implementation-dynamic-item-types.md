@@ -39,7 +39,7 @@ legacy cache is outside the supported upgrade workflow.
 | A: Query UX | `1fd1046` | Terra cleared | 61 targeted tests pass; GUI accepted |
 | B: Storage | `8fe623a` | Terra cleared | Storage 45/45, freshness 14/14; broader failures resolved; old-reader checks pass |
 | C: Registry and validation | `59b3e1c` | Terra cleared | Registry 27/27 and 174 related regressions pass |
-| D: MCP and queries | Pending | Pending | Not run |
+| D: MCP and queries | In progress | Pending | Not run |
 | E: GUI and integration | Pending | Pending | Not run |
 
 Specific revisions, findings and command results are recorded here and in the
@@ -217,3 +217,13 @@ between those related checks and the final test-only snapshot.
 
 Evidence: `c-import-2.log`, `c-registry-2.log`, and `c-test_*-1.log` under
 `/tmp/docket-dynamic-verification/logs/`. All C findings and gates are complete.
+
+### D: implementation in progress
+
+Baseline: `7ceccaf0747b3acab9b0c0bbbacacfe0de0a61f5`.
+Sol is implementing type discovery/definition operations, shared typed MCP
+mutations, definition-aware transfers, pinned-revision query resolution, and
+saved-query bindings. Queries must preserve literal legacy filters and report
+unsupported typed conditions without dropping branches. Transfers must preserve
+opaque payloads and threaded comments, and commit the destination before source
+deletion. Runtime verification remains pending until Terra clears the batch.

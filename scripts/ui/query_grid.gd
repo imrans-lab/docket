@@ -95,6 +95,7 @@ var _multi_project: bool = false
 # Sort state
 var _sort_field: String = ""
 var _sort_dir: String = "asc"
+var _sort_binding: Dictionary = {}
 
 # Header drag state
 var _drag_col: int = -1   # index of column whose RIGHT edge is being dragged
@@ -137,7 +138,9 @@ func _rebuild_type_catalog() -> void:
 			for item in project_db.execute_query({"filter": {}}):
 				var slug := str(item.get("type", ""))
 				counts[slug] = int(counts.get(slug, 0)) + 1
-		_type_catalog.append_array(TypeCatalog.from_schema(_state.schema, project, counts))
+		var registry: TypeRegistry = _state.get_type_registry(project)
+		if registry != null and registry.get_diagnostic().is_empty(): _type_catalog.append_array(TypeCatalog.from_registry(registry, counts))
+		else: _type_catalog.append_array(TypeCatalog.from_schema(_state.schema, project, counts))
 	_type_catalog = TypeCatalog.sorted(_type_catalog)
 
 
@@ -390,9 +393,11 @@ func _toggle_sort(col: int) -> void:
 		else:
 			_sort_field = ""
 			_sort_dir = "asc"
+			_sort_binding.clear()
 	else:
 		_sort_field = field
 		_sort_dir = "asc"
+		_sort_binding.clear()
 	_header.queue_redraw()
 	_run_query()
 
@@ -783,7 +788,9 @@ func _run_query() -> void:
 	var filter := _build_conditions_filter()
 	var query := {"filter": filter}
 	if not _sort_field.is_empty():
-		query["sort"] = [{"field": _sort_field, "dir": _sort_dir}]
+		var sort_value: Dictionary = _sort_binding.duplicate(true)
+		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
+		query["sort"] = [sort_value]
 
 	# Use cross-project query if multiple projects loaded
 	if _state._project_dbs.size() > 1:
@@ -793,7 +800,10 @@ func _run_query() -> void:
 			_count_label.text = _state.last_cross_project_query_error
 			return
 	elif _state.db:
-		_current_results = _state.db.execute_query(query)
+		var registry: TypeRegistry = _state.get_type_registry()
+		_current_results = _state.db.execute_registry_query(query, registry) if registry != null else _state.db.execute_query(query)
+		if not _state.db.last_query_error.is_empty():
+			_tree.clear(); _count_label.text = _state.db.last_query_error; return
 	else:
 		_current_results = []
 	_populate_tree()
@@ -1173,7 +1183,8 @@ func get_filter_summary() -> String:
 
 
 func load_dcq(path: String) -> void:
-	## Load a .dcq query file and apply its filter.
+	## Load both filter and sort; identity-bearing dictionaries remain opaque so
+	## a missing project/type binding is surfaced during execution.
 	var f := FileAccess.open(path, FileAccess.READ)
 	if not f:
 		return
@@ -1184,6 +1195,11 @@ func load_dcq(path: String) -> void:
 		set_filter(JSON.stringify(parsed.ui_filter))
 	elif parsed.has("filter") and parsed.filter is Dictionary and parsed.filter.has("conditions"):
 		set_filter(JSON.stringify(parsed.filter))
+	if parsed.get("sort") is Array and not parsed.sort.is_empty() and parsed.sort[0] is Dictionary:
+		_sort_field = str(parsed.sort[0].get("field_key", parsed.sort[0].get("field", "")))
+		_sort_dir = str(parsed.sort[0].get("dir", "asc"))
+		_sort_binding = parsed.sort[0].duplicate(true)
+		_run_query()
 
 
 func save_dcq(path: String) -> void:
@@ -1195,7 +1211,9 @@ func save_dcq(path: String) -> void:
 	var dcq := {"filter": filter, "ui_filter": ui_filter}
 	# Include sort if active
 	if not _sort_field.is_empty():
-		dcq["sort"] = [{"field": _sort_field, "dir": _sort_dir}]
+		var sort_value: Dictionary = _sort_binding.duplicate(true)
+		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
+		dcq["sort"] = [sort_value]
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(dcq, "\t"))

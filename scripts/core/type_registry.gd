@@ -132,11 +132,107 @@ func get_type(slug: String) -> Dictionary:
 	if not _definitions.has(slug): return {"error":"unknown type '%s' in project '%s'" % [slug, _project]}
 	return _descriptor(_definitions[slug])
 
+func resolve_type_ref(reference: String) -> Dictionary:
+	## Slugs and stable type IDs occupy separate namespaces; labels are never identities.
+	var read_error := _read_error()
+	if not read_error.is_empty(): return {"error":read_error,"read_only":true}
+	if _definitions.has(reference): return _descriptor(_definitions[reference])
+	var matches: Array = []
+	for slug in _definitions:
+		var record: Dictionary = _definitions[slug]
+		if str(record.get("id", "")) == reference: matches.append(_descriptor(record))
+	if matches.size() == 1: return matches[0]
+	return {"error":"unknown type reference '%s' in project '%s'" % [reference, _project]}
+
+func get_project_name() -> String:
+	return _project
+
+func is_legacy() -> bool:
+	return _legacy
+
 func get_revision(revision_id: String) -> Dictionary:
 	var read_error := _read_error()
 	if not read_error.is_empty(): return {"error":read_error,"read_only":true}
 	if not _revisions.has(revision_id): return {"error":"unknown revision '%s' in project '%s'" % [revision_id, _project]}
 	return (_revisions[revision_id] as Dictionary).duplicate(true)
+
+func revisions_for_type(type_id: String) -> Array:
+	var result: Array = []
+	for revision_id in _revisions:
+		var revision: Dictionary = _revisions[revision_id]
+		if str(revision.get("type_id", "")) == type_id: result.append(revision.duplicate(true))
+	result.sort_custom(func(a, b): return str(a.id) < str(b.id))
+	return result
+
+func all_revisions() -> Array:
+	var result: Array = []
+	for revision_id in _revisions: result.append((_revisions[revision_id] as Dictionary).duplicate(true))
+	result.sort_custom(func(a, b): return str(a.id) < str(b.id))
+	return result
+
+func revision_ancestry(revision_id: String) -> Dictionary:
+	var chain: Array = []
+	var seen: Dictionary = {}
+	var current: String = revision_id
+	while not current.is_empty():
+		if seen.has(current): return {"error":"revision ancestry contains a cycle"}
+		seen[current] = true
+		var revision: Dictionary = get_revision(current)
+		if revision.has("error"): return revision
+		chain.push_front(revision)
+		current = str(revision.get("parent_revision", ""))
+	return {"revisions":chain}
+
+func import_historical_revision(type_record: Dictionary, revision: Dictionary, author: String, reason: String) -> String:
+	## Transfers install exact historical meaning without activating it or
+	## replacing an existing current pointer.
+	var refresh_error := refresh_if_changed()
+	if not refresh_error.is_empty(): return refresh_error
+	if _legacy: return "target must be explicitly upgraded to JSONL 2.0 before importing a type revision"
+	if author.strip_edges().is_empty() or reason.strip_edges().is_empty(): return "author and reason are required for definition import"
+	if not revision.get("definition") is Dictionary: return "imported revision is incomplete"
+	var definition: Dictionary = revision.definition
+	var validation_error := validate_definition(definition)
+	if not validation_error.is_empty(): return validation_error
+	if bool(definition.get("protected", false)) or bool(type_record.get("provenance", {}).get("protected", false)): return "protected definitions cannot be imported"
+	var type_id: String = str(revision.get("type_id", ""))
+	var revision_id: String = str(revision.get("id", ""))
+	if revision_id != "%s@%s" % [type_id,TypeRegistryBootstrap._definition_hash(definition)]: return "revision content identity is invalid"
+	if _revisions.has(revision_id): return ""
+	var existing: Dictionary = _definitions.get(str(definition.slug), {})
+	if not existing.is_empty() and str(existing.id) != type_id: return "target slug belongs to a different type identity"
+	var json_db := _db as DocketDBJsonl
+	var error := json_db._begin_canonical_mutation()
+	if not error.is_empty(): return error
+	if existing.is_empty():
+		var provenance: Dictionary = type_record.get("provenance", {}).duplicate(true) if type_record.get("provenance", {}) is Dictionary else {}
+		provenance["imported_by"] = author
+		provenance["import_reason"] = reason
+		provenance["protected"] = false
+		error = _db._exec_checked("INSERT INTO type_defs(id,slug,lifecycle,current_revision,provenance_json) VALUES(?,?,?,?,?);", [type_id,definition.slug,"draft",revision_id,JSON.stringify(provenance,"",true,true)])
+	var parent = revision.get("parent_revision")
+	if error.is_empty(): error = _db._exec_checked("INSERT INTO type_def_versions(id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES(?,?,?,?,?,?,?);", [revision_id,type_id,parent if parent != null and not str(parent).is_empty() else null,JSON.stringify(definition,"",true,true),author,Time.get_datetime_string_from_system(true),reason])
+	error = json_db._complete_canonical_mutation(error)
+	if error.is_empty(): error = reload()
+	return error
+
+func import_revision_and_item(type_record: Dictionary, revision: Dictionary, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
+	return import_revisions_and_item(type_record, [revision] if not revision.is_empty() else [], new_id, exported, author, reason)
+
+func import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
+	var json_db := _db as DocketDBJsonl
+	var error := json_db._begin_canonical_mutation()
+	if not error.is_empty(): return error
+	for revision in revisions:
+		if not error.is_empty(): break
+		if not revision is Dictionary: error = "revision import chain is malformed"
+		else:
+			var revision_record: Dictionary = revision
+			error = import_historical_revision(type_record, revision_record, author, reason)
+	if error.is_empty(): error = json_db.import_item_full_checked(new_id, exported)
+	error = json_db._complete_canonical_mutation(error)
+	var reload_error: String = reload()
+	return error if not error.is_empty() else reload_error
 
 func resolve_item(item: Dictionary) -> Dictionary:
 	var read_error := _read_error()
@@ -229,6 +325,7 @@ func validate_definition(definition: Dictionary) -> String:
 		if key in RESERVED_FIELD_KEYS: return "field key '%s' is reserved" % key
 		keys[key] = true
 		if str(field.get("type", "")) not in FIELD_TYPES: return "field '%s' has unsupported type" % key
+		if key in UNIVERSAL_MUTABLE and str(field.get("type", "")) != str(_universal_descriptor(key).type): return "universal field '%s' must retain its fixed %s kind" % [key,_universal_descriptor(key).type]
 		for flag in ["required", "nullable", "mutable"]:
 			if field.has(flag) and not field[flag] is bool: return "field '%s' %s must be boolean" % [key, flag]
 		if field.get("type") == "enum" and (not field.get("values", []) is Array or field.get("values", []).is_empty()): return "enum field '%s' requires values" % key
@@ -331,19 +428,27 @@ func create_item(fields: Dictionary, actor: String = "") -> Dictionary:
 		item.erase("type_id")
 		item.erase("type_revision")
 	for key in candidate:
-		if key in DocketDB._ITEM_COLS or key == "tags": item[key] = candidate[key]
+		if key in UNIVERSAL_MUTABLE: item[key] = candidate[key]
+		elif bool(definition.get("protected", false)) and key in DocketDB._ITEM_COLS: item[key] = candidate[key]
 		elif key != "type": item.fields[key] = candidate[key]
 	var id := _db.next_uuid7_id()
 	error = _db.insert_item(id, item)
 	return {"error":error} if not error.is_empty() else {"id":id,"item":_db.get_item(id)}
 
-func update_item(id: String, changes: Dictionary, actor: String = "") -> String:
+func item_token(item_or_id) -> String:
+	var item: Dictionary = _db.get_item(str(item_or_id)) if item_or_id is String else item_or_id
+	if item.is_empty(): return ""
+	return TypeRegistryBootstrap._definition_hash(_normalize_json_numbers(item))
+
+func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "") -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item := _db.get_item(id)
 	if item.is_empty(): return "item not found"
 	var resolved := resolve_item(item)
 	if resolved.has("error"): return resolved.error
+	if not expected_revision.is_empty() and str(item.get("type_revision", "")) != expected_revision: return "stale expected item revision"
+	if not expected_item_token.is_empty() and item_token(item) != expected_item_token: return "stale expected item token"
 	if changes.has("type") or changes.has("type_id") or changes.has("type_revision") or changes.has("status"): return "registry-backed retype/status update is not allowed"
 	var normalized := _normalize_input(changes)
 	if normalized.has("error"): return normalized.error
@@ -355,7 +460,7 @@ func update_item(id: String, changes: Dictionary, actor: String = "") -> String:
 	for key in normalized.values: candidate[key] = normalized.values[key]
 	var error := validate_candidate(resolved.definition, candidate)
 	if not error.is_empty(): return error
-	var patch := _storage_patch(normalized.values, normalized.unset)
+	var patch := _storage_patch(normalized.values, normalized.unset, resolved.definition)
 	if not _db is DocketDBJsonl:
 		_db._last_sql_error = ""
 		error = _db._exec_checked("BEGIN TRANSACTION;")
@@ -372,13 +477,15 @@ func update_item(id: String, changes: Dictionary, actor: String = "") -> String:
 	if error.is_empty(): error = (_db as DocketDBJsonl).add_event_checked(id, "typed_update", actor)
 	return (_db as DocketDBJsonl)._complete_canonical_mutation(error)
 
-func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}) -> String:
+func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "") -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item: Dictionary = _db.get_item(id)
 	if item.is_empty(): return "item not found"
 	var resolved: Dictionary = resolve_item(item)
 	if resolved.has("error"): return resolved.error
+	if not expected_revision.is_empty() and str(item.get("type_revision", "")) != expected_revision: return "stale expected item revision"
+	if not expected_item_token.is_empty() and item_token(item) != expected_item_token: return "stale expected item token"
 	var definition: Dictionary = resolved.definition
 	var lifecycle: Dictionary = definition.lifecycle
 	if _state(definition, target).is_empty(): return "target state '%s' is not declared" % target
@@ -397,7 +504,7 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 		if not candidate.has(field) or candidate[field] == null or (candidate[field] is String and candidate[field].strip_edges().is_empty()): return "transition to '%s' requires field '%s'" % [target, field]
 	var error := validate_candidate(definition, candidate)
 	if not error.is_empty(): return error
-	var patch := _storage_patch(normalized.values, normalized.unset)
+	var patch := _storage_patch(normalized.values, normalized.unset, definition)
 	patch.status = target
 	if not _db is DocketDBJsonl:
 		_db._last_sql_error = ""
@@ -419,6 +526,23 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 		if ":" in blocker: blocker = blocker.split(":", false, 1)[1]
 		if _db.has_item(blocker): error = (_db as DocketDBJsonl).add_link_checked(blocker, id, "blocks")
 	return (_db as DocketDBJsonl)._complete_canonical_mutation(error)
+
+func mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String = "", expected_item_token: String = "") -> Dictionary:
+	## The outer mutation makes the candidate patch, transition and audit records
+	## one canonical unit while the ordinary typed operations retain validation.
+	if not _db is DocketDBJsonl: return {"error":"registry mirror requires JSONL 2.0 storage"}
+	var json_db := _db as DocketDBJsonl
+	var error := json_db._begin_canonical_mutation()
+	if not error.is_empty(): return {"error":error}
+	if not target.is_empty(): error = transition_item(id, target, actor, note, changes, expected_revision, expected_item_token)
+	else: error = update_item(id, changes, actor, expected_revision, expected_item_token)
+	var comment: Dictionary = {}
+	if error.is_empty():
+		comment = json_db.add_comment(id, actor, audit_text)
+		error = str(comment.get("error", ""))
+	if error.is_empty(): error = json_db.add_event_checked(id, "mirrored", actor, audit_text)
+	error = json_db._complete_canonical_mutation(error)
+	return {"error":error} if not error.is_empty() else {"comment_id":comment.get("id", 0)}
 
 func repair_item_status(id: String, target: String, actor: String, reason: String, fields: Dictionary = {}) -> String:
 	var refresh_error := refresh_if_changed()
@@ -448,7 +572,7 @@ func repair_item_status(id: String, target: String, actor: String, reason: Strin
 		if not candidate.has(key) or candidate[key] == null or (candidate[key] is String and candidate[key].strip_edges().is_empty()): return "repair to '%s' requires field '%s'" % [target, key]
 	var error := validate_candidate(definition, candidate)
 	if not error.is_empty(): return error
-	var patch := _storage_patch(normalized.values, normalized.unset); patch.status = target
+	var patch := _storage_patch(normalized.values, normalized.unset, definition); patch.status = target
 	if not _db is DocketDBJsonl:
 		_db._last_sql_error = ""
 		error = _db._exec_checked("BEGIN TRANSACTION;")
@@ -497,7 +621,8 @@ func _project_candidate(item: Dictionary, definition: Dictionary) -> Dictionary:
 	var result: Dictionary = {}
 	var custom: Dictionary = item.get("fields", {})
 	for descriptor in definition.fields:
-		if item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
+		if custom.has(descriptor.key) and not bool(definition.get("protected", false)): result[descriptor.key] = custom[descriptor.key]
+		elif item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
 		elif custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
 		elif descriptor.has("default"): result[descriptor.key] = descriptor.default
 	for key in UNIVERSAL_MUTABLE:
@@ -524,7 +649,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 			var defaults := {}
 			for descriptor in checked.definition.fields:
 				if descriptor.has("default") and not item.has(descriptor.key) and not item.get("fields", {}).has(descriptor.key): defaults[descriptor.key] = descriptor.default
-			if not defaults.is_empty(): bind_error = (_db as DocketDBJsonl).update_item_fields_checked(id, _storage_patch(defaults, []))
+			if not defaults.is_empty(): bind_error = (_db as DocketDBJsonl).update_item_fields_checked(id, _storage_patch(defaults, [], checked.definition))
 			if not bind_error.is_empty(): break
 			bind_error = _db._exec_checked("UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [current.id, revision_id, id])
 			if bind_error.is_empty(): bind_error = _db._exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [id,"type_revision_changed",author,Time.get_datetime_string_from_system(true),reason])
@@ -539,7 +664,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 		var defaults := {}
 		for descriptor in checked.definition.fields:
 			if descriptor.has("default") and not item.has(descriptor.key) and not item.get("fields", {}).has(descriptor.key): defaults[descriptor.key] = descriptor.default
-		bindings.append({"item_id":id,"type_id":current.id,"type_revision":revision_id,"changes":_storage_patch(defaults, [])})
+		bindings.append({"item_id":id,"type_id":current.id,"type_revision":revision_id,"changes":_storage_patch(defaults, [], checked.definition)})
 		events.append({"item_id":id,"event_type":"type_revision_changed","actor":author,"timestamp":Time.get_datetime_string_from_system(true),"note":reason})
 	var error := (_db as DocketDBJsonl).apply_registry_change(record, revision, bindings, events, current.current_revision)
 	error = (_db as DocketDBJsonl)._complete_canonical_mutation(error)
@@ -559,7 +684,8 @@ func _candidate_values(item: Dictionary, definition: Dictionary) -> Dictionary:
 	var result: Dictionary = {}
 	var custom: Dictionary = item.get("fields", {})
 	for descriptor in definition.fields:
-		if item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
+		if custom.has(descriptor.key) and not bool(definition.get("protected", false)): result[descriptor.key] = custom[descriptor.key]
+		elif item.has(descriptor.key): result[descriptor.key] = item[descriptor.key]
 		elif custom.has(descriptor.key): result[descriptor.key] = custom[descriptor.key]
 	for key in UNIVERSAL_MUTABLE:
 		if item.has(key): result[key] = item[key]
@@ -600,13 +726,14 @@ func _universal_descriptor(key: String) -> Dictionary:
 	if key == "tags": return {"key":key,"type":"array","nullable":true}
 	return {"key":key,"type":"string","nullable":true}
 
-func _storage_patch(values: Dictionary, unset: Array) -> Dictionary:
+func _storage_patch(values: Dictionary, unset: Array, definition: Dictionary = {}) -> Dictionary:
 	var patch := {"fields":{},"unset_fields":[]}
+	var protected_builtin: bool = bool(definition.get("protected", false))
 	for key in values:
-		if key in DocketDB._ITEM_COLS or key == "tags": patch[key] = values[key]
+		if key in UNIVERSAL_MUTABLE or (protected_builtin and key in DocketDB._ITEM_COLS): patch[key] = values[key]
 		else: patch.fields[key] = values[key]
 	for key in unset:
-		if key in DocketDB._ITEM_COLS or key == "tags": patch[key] = null
+		if key in UNIVERSAL_MUTABLE or (protected_builtin and key in DocketDB._ITEM_COLS): patch[key] = null
 		else: patch.unset_fields.append(key)
 	if patch.fields.is_empty(): patch.erase("fields")
 	if patch.unset_fields.is_empty(): patch.erase("unset_fields")
@@ -761,24 +888,27 @@ func _saved_query_impact(slug: String, definition: Dictionary) -> Array:
 	for descriptor in definition.fields: fields[descriptor.key] = true
 	var states := {}
 	for state in definition.lifecycle.states: states[state.key] = true
+	var type_id: String = str(_definitions.get(slug, {}).get("id", ""))
 	for query in _db.list_queries():
 		var references: Array = []
-		_collect_query_references(query.get("query", query), slug, fields, states, references)
+		_collect_query_references(query.get("query", query), slug, type_id, fields, states, references)
 		if not references.is_empty(): impacts.append({"name":query.get("name", ""),"references":references})
 	return impacts
 
-func _collect_query_references(value, slug: String, fields: Dictionary, states: Dictionary, references: Array) -> void:
+func _collect_query_references(value, slug: String, type_id: String, fields: Dictionary, states: Dictionary, references: Array) -> void:
 	if value is Array:
-		for child in value: _collect_query_references(child, slug, fields, states, references)
+		for child in value: _collect_query_references(child, slug, type_id, fields, states, references)
 		return
 	if not value is Dictionary: return
 	var node: Dictionary = value
 	var field := str(node.get("field", ""))
-	if field == "type" and _query_value_contains(node.get("value"), slug): _append_unique(references, "type")
+	var bound_here: bool = type_id.is_empty() or str(node.get("type_id", type_id)) == type_id
+	if field == "type" and bound_here and (_query_value_contains(node.get("value"), slug) or str(node.get("type_id", "")) == type_id): _append_unique(references, "type")
 	elif field == "status":
-		for state in states:
-			if _query_value_contains(node.get("value"), state): _append_unique(references, "status:%s" % state)
-	elif fields.has(field): _append_unique(references, "field:%s" % field)
+		if bound_here:
+			for state in states:
+				if _query_value_contains(node.get("value"), state): _append_unique(references, "status:%s" % state)
+	elif bound_here and fields.has(str(node.get("field_key", field))): _append_unique(references, "field:%s" % node.get("field_key", field))
 	for key in node:
 		var base_key := str(key).split("__", false, 1)[0]
 		if base_key == "type" and _query_value_contains(node[key], slug): _append_unique(references, "type")
@@ -786,7 +916,7 @@ func _collect_query_references(value, slug: String, fields: Dictionary, states: 
 			for state in states:
 				if _query_value_contains(node[key], state): _append_unique(references, "status:%s" % state)
 		elif fields.has(base_key): _append_unique(references, "field:%s" % base_key)
-		_collect_query_references(node[key], slug, fields, states, references)
+		_collect_query_references(node[key], slug, type_id, fields, states, references)
 
 func _query_value_contains(value, expected: String) -> bool:
 	if value is Array: return value.has(expected)

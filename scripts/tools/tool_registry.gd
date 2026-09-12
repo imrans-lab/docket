@@ -52,6 +52,12 @@ func _build_tools() -> Dictionary:
 		"docket_flush": DocketFlush.new(),
 		"docket_validate": DocketValidate.new(),
 		"docket_audit_log": DocketAuditLog.new(),
+		"docket_type_list": DocketTypeList.new(),
+		"docket_type_get": DocketTypeGet.new(),
+		"docket_type_validate": DocketTypeValidate.new(),
+		"docket_type_define": DocketTypeDefine.new(),
+		"docket_type_activate": DocketTypeActivate.new(),
+		"docket_type_evolve": DocketTypeEvolve.new(),
 	}
 
 
@@ -126,7 +132,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		return perr
 
 	# Pre-resolve short ID prefixes to full IDs before dispatching
-	var id_err := _resolve_id_args(arguments)
+	var id_err := _resolve_id_args(name, arguments)
 	if not id_err.is_empty():
 		var ierr := {"error": id_err}
 		_log_error(name, arguments, ierr)
@@ -135,6 +141,9 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	var result: Dictionary
 	if name in ["docket_move", "docket_mirror", "docket_link"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs)
+	elif name.begins_with("docket_type_"):
+		var typed_db: DocketDB = _resolve_db(arguments)
+		result = _tools[name].execute(arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name()))
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn)
@@ -183,10 +192,15 @@ func _log_error(tool_name: String, args: Dictionary, result: Dictionary) -> void
 		_db.log_mcp_error(tool_name, str(result.error), arg_keys)
 
 
-func _resolve_id_args(args: Dictionary) -> String:
+func _resolve_id_args(tool_name: String, args: Dictionary) -> String:
 	## Returns "" on success, or an error describing an ambiguous short ID.
 	## Try to resolve short hex prefixes in ID fields to full IDs.
-	for field in _ID_FIELDS:
+	var fields: Array = _ID_FIELDS.duplicate()
+	# Transition targets and type references are domain keys, even when they look
+	# like hexadecimal item prefixes.
+	if tool_name == "docket_transition": fields.erase("to")
+	if tool_name.begins_with("docket_type_"): fields.clear()
+	for field in fields:
 		if not args.has(field):
 			continue
 		var val: String = str(args[field])
@@ -205,12 +219,20 @@ func _resolve_id_args(args: Dictionary) -> String:
 			# project happened to come first in iteration order — silently acting
 			# on the wrong item, in the wrong project.
 			var matches := {}  # full_id -> project name
-			for proj_name in _project_dbs:
-				var pdb: DocketDB = _project_dbs[proj_name]
+			var requested_project: String = str(args.get("project", ""))
+			if field == "source_id" or (tool_name == "docket_move" and field == "id"): requested_project = str(args.get("source_project", requested_project))
+			elif field == "target_id": requested_project = str(args.get("target_project", requested_project))
+			var candidates: Dictionary = _project_dbs
+			if not requested_project.is_empty():
+				candidates = {}
+				for project_name in _project_dbs:
+					if str(project_name).to_lower() == requested_project.to_lower(): candidates[project_name] = _project_dbs[project_name]
+			for proj_name in candidates:
+				var pdb: DocketDB = candidates[proj_name]
 				var r := pdb.resolve_short_id(val)
 				if not r.is_empty():
 					matches[r] = proj_name
-			if matches.is_empty() and _db != null:
+			if matches.is_empty() and _db != null and requested_project.is_empty():
 				var fallback := _db.resolve_short_id(val)
 				if not fallback.is_empty():
 					matches[fallback] = _db.get_project_name()
