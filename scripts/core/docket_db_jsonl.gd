@@ -467,16 +467,16 @@ func import_item_full_checked(new_id: String, exported: Dictionary) -> String:
 	return _complete_canonical_mutation()
 
 
-func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String) -> int:
-	var result := rewrite_refs_checked(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare)
+func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:
+	var result := rewrite_refs_checked(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare, rewrite_bare)
 	if not str(result.error).is_empty(): last_write_error = str(result.error)
 	return int(result.count)
 
 
-func rewrite_refs_checked(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String) -> Dictionary:
+func rewrite_refs_checked(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> Dictionary:
 	var begin_error := _begin_canonical_mutation()
 	if not begin_error.is_empty(): return {"count": 0, "error": begin_error}
-	var count := super.rewrite_refs(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare)
+	var count := super.rewrite_refs(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare, rewrite_bare)
 	var error := _complete_canonical_mutation()
 	return {"count": count if error.is_empty() else 0, "error": error}
 

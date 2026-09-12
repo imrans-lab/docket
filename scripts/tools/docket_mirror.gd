@@ -27,7 +27,7 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, schema: Dictionary, primary_db: DocketDB, project_dbs: Dictionary = {}) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, primary_db: DocketDB, project_dbs: Dictionary = {}) -> Dictionary:
 	var source_id: String = str(args.get("source_id", ""))
 	var target_id: String = str(args.get("target_id", ""))
 	if source_id.is_empty() or target_id.is_empty():
@@ -83,67 +83,13 @@ func execute(args: Dictionary, schema: Dictionary, primary_db: DocketDB, project
 	else:
 		return {"error": "'fields' must be an Array (pull mode) or Dictionary (push mode)"}
 
-	if target_db is DocketDBJsonl and target_db.get_meta_value("jsonl_version", "1.0.0") == "2.0.0":
-		if not target_db.has_item(target_id): return {"error":"Target item not found: %s" % target_id}
-		var target_registry: TypeRegistry = TypeRegistry.for_db(target_db, target_db.get_project_name())
-		var audit: String = "Mirrored from %s:%s [%s]" % [source_proj_label,source_id,", ".join(field_list)]
-		if not note.is_empty(): audit += ": %s" % note
-		var expected_revision: String = str(args.get("expected_revision", ""))
-		var mirror_result: Dictionary = target_registry.mirror_item(target_id, {"fields":payload}, transition_to, "agent", note, audit, expected_revision, str(args.get("expected_item_token", "")))
-		if mirror_result.has("error"): return mirror_result
-		return {"target_id":target_id,"target_project":target_db.get_project_name(),"pushed_fields":Array(field_list),"transitioned_to":transition_to,"comment_id":mirror_result.get("comment_id", 0)}
-
-	# Validate target exists
-	if not target_db.has_item(target_id):
-		return {"error": "Target item not found: %s" % target_id}
-
-	# Apply field updates via DataModel validation
-	var target_item: Dictionary = target_db.get_item(target_id)
-	var update_result = DataModel.update_item(schema, target_item, payload)
-	if update_result.has("error"):
-		return update_result
-
-	var write_back := DataModel.build_write_back(target_item, payload)
-	target_db.update_item_fields(target_id, write_back)
-
-	# Optional transition
-	var transitioned_to := ""
-	if not transition_to.is_empty():
-		var extra := {}
-		var trans_result = StateMachine.perform_transition(schema, target_item, transition_to, "agent", note, extra)
-		if trans_result.has("error"):
-			return trans_result
-
-		var trans_write := {"status": target_item.status, "updated_at": target_item.updated_at}
-		target_db.update_item_fields(target_id, trans_write)
-
-		# Persist transition event
-		var events: Array = target_item.get("events", [])
-		if events.size() > 0:
-			var ev: Dictionary = events[events.size() - 1]
-			target_db.add_event(target_id, str(ev.get("event_type", "")), str(ev.get("actor", "")), str(ev.get("note", "")))
-
-		transitioned_to = transition_to
-
-	# Audit comment
-	var comment_text := "Mirrored from %s:%s [%s]" % [source_proj_label, source_id, ", ".join(field_list)]
-	if not note.is_empty():
-		comment_text += ": %s" % note
-	var comment_result := target_db.add_comment(target_id, "agent", comment_text)
-
-	# Mirrored event
-	target_db.add_event(target_id, "mirrored", "agent", comment_text)
-
-	var result := {
-		"target_id": target_id,
-		"target_project": target_project if not target_project.is_empty() else source_proj_label,
-		"pushed_fields": Array(field_list),
-	}
-	if not transitioned_to.is_empty():
-		result["transitioned_to"] = transitioned_to
-	if comment_result.has("id"):
-		result["comment_id"] = comment_result.id
-	return result
+	if not target_db.has_item(target_id): return {"error":"Target item not found: %s" % target_id}
+	var target_registry: TypeRegistry = TypeRegistry.for_db(target_db, target_db.get_project_name())
+	var audit: String = "Mirrored from %s:%s [%s]" % [source_proj_label,source_id,", ".join(field_list)]
+	if not note.is_empty(): audit += ": %s" % note
+	var mirror_result: Dictionary = target_registry.mirror_item(target_id, {"fields":payload}, transition_to, "agent", note, audit, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")))
+	if mirror_result.has("error"): return mirror_result
+	return {"target_id":target_id,"target_project":target_db.get_project_name(),"pushed_fields":Array(field_list),"transitioned_to":transition_to,"comment_id":mirror_result.get("comment_id", 0)}
 
 
 func _resolve_project_db(name: String, primary_db: DocketDB, project_dbs: Dictionary) -> DocketDB:

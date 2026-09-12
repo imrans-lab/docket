@@ -10,7 +10,7 @@ func get_definition() -> Dictionary:
 			"type": "object",
 			"properties": {
 				"filter": {"type": "object", "description": "Field filters. Supports three formats: flat dict (legacy), {\"$or\":[...]}/{\"$and\":[...]} tree, or {\"conditions\":[...]} list."},
-				"sort": {"type": "array", "items": {"type": "object", "properties": {"field": {"type": "string"}, "dir": {"type": "string", "enum": ["asc", "desc"]}}}},
+				"sort": {"type": "array", "items": {"type": "object", "properties": {"field": {"type": "string"}, "field_key":{"type":"string"}, "type_id":{"type":"string"}, "dir": {"type": "string", "enum": ["asc", "desc"]}, "nulls":{"type":"string","enum":["first","last"]}}}},
 				"limit": {"type": "integer", "minimum": 1},
 				"detail": {"type": "string", "enum": ["lean", "full"], "description": "Response detail level. Default: auto (lean when unfiltered or >5 results; full null-stripped when filtered and ≤5 results)."},
 				"project": {"type": "string", "description": "Project to query. Omit to use the primary project. An unknown name is an error, not a silent fallback."},

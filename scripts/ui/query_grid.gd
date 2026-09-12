@@ -96,6 +96,7 @@ var _multi_project: bool = false
 var _sort_field: String = ""
 var _sort_dir: String = "asc"
 var _sort_binding: Dictionary = {}
+var _dcq_columns: Array = []
 
 # Header drag state
 var _drag_col: int = -1   # index of column whose RIGHT edge is being dragged
@@ -916,16 +917,14 @@ func _serialize_all_conditions() -> Dictionary:
 	return {"conditions": conditions}
 
 
-func _append_scoped_condition(conditions: Array, condition: Dictionary, row: Dictionary, row_index: int) -> void:
+func _append_scoped_condition(conditions: Array, condition: Dictionary, row: Dictionary, _row_index: int) -> void:
 	if condition.field == "status" and row.value_dropdown.visible and row.value_dropdown.item_count > 0:
 		var choice = row.catalog_status_choice
 		if not choice is Dictionary or choice.is_empty():
 			choice = row.value_dropdown.get_item_metadata(row.value_dropdown.selected)
-		var snapshots := _condition_snapshots()
-		var scope := QueryTypeScope.branch_scope(snapshots, row_index, _type_catalog)
-		if choice is Dictionary and not scope.known and str(choice.get("type", "")) != "":
+		if choice is Dictionary and not str(choice.get("key", "")).is_empty():
 			condition["op"] = "catalog_status"
-			condition["value"] = {"key": choice.key, "status": choice.value}
+			condition["value"] = {"key": choice.key, "status":choice.get("value", choice.get("status", ""))}
 			conditions.append(condition)
 			return
 	conditions.append(condition)
@@ -1200,6 +1199,7 @@ func load_dcq(path: String) -> void:
 		_sort_dir = str(parsed.sort[0].get("dir", "asc"))
 		_sort_binding = parsed.sort[0].duplicate(true)
 		_run_query()
+	_dcq_columns = parsed.get("columns", []).duplicate(true) if parsed.get("columns", []) is Array else []
 
 
 func save_dcq(path: String) -> void:
@@ -1208,7 +1208,8 @@ func save_dcq(path: String) -> void:
 	# catalog identities needed to reconstruct the chooser without rebinding.
 	var ui_filter := _serialize_all_conditions()
 	var filter := _build_conditions_filter()
-	var dcq := {"filter": filter, "ui_filter": ui_filter}
+	var saved_columns: Array = _dcq_columns.duplicate(true) if not _dcq_columns.is_empty() else _col_fields.duplicate()
+	var dcq := {"filter": filter, "ui_filter": ui_filter, "columns":saved_columns}
 	# Include sort if active
 	if not _sort_field.is_empty():
 		var sort_value: Dictionary = _sort_binding.duplicate(true)

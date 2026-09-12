@@ -92,7 +92,7 @@ static func compile_catalog_conditions(conditions: Array, catalog: Array, includ
 		var cond: Dictionary = conditions[i].duplicate(true)
 		if i > 0 and str(cond.get("conj", "and")) == "or": groups.append(current); current = []
 		cond.erase("conj")
-		current.append(_compile_condition(cond, catalog, include_project))
+		current.append(cond)
 	groups.append(current)
 	var compiled: Array = []
 	for group in groups:
@@ -101,13 +101,30 @@ static func compile_catalog_conditions(conditions: Array, catalog: Array, includ
 			if group_condition.get("field", "") == "type" and group_condition.get("op", "") == "catalog_in":
 				for identity in group_condition.get("value", []):
 					var scoped_record := TypeCatalog.find_by_key(catalog, str(identity))
-					if not scoped_record.is_empty() and not identities.has(scoped_record.id): identities.append(scoped_record.id)
+					if not scoped_record.is_empty() and not identities.has(scoped_record.key): identities.append(scoped_record.key)
 		var expanded: Array = []
 		for group_condition in group:
 			var scoped_condition: Dictionary = group_condition.duplicate(true)
 			if str(scoped_condition.get("field", "")) not in UNIVERSAL_FIELDS:
 				scoped_condition["field_key"] = scoped_condition.field
-				if identities.size() == 1: scoped_condition["type_id"] = identities[0]
+				if identities.size() == 1:
+					var single: Dictionary = TypeCatalog.find_by_key(catalog, str(identities[0]))
+					scoped_condition["type_id"] = single.id
+					if include_project and not str(single.project).is_empty(): scoped_condition = {"$and":[{"field":"project","op":"eq","value":single.project},scoped_condition]}
+				elif identities.size() > 1:
+					var kind: String = ""
+					var alternatives: Array = []
+					for identity in identities:
+						var record: Dictionary = TypeCatalog.find_by_key(catalog, str(identity))
+						var record_kind: String = str(record.get("field_kinds", {}).get(scoped_condition.field, ""))
+						if record_kind.is_empty() or (not kind.is_empty() and kind != record_kind):
+							scoped_condition = {"binding_error":"Field '%s' is not compatible across the selected type identities." % scoped_condition.field}
+							alternatives.clear(); break
+						kind = record_kind
+						var alternative: Dictionary = scoped_condition.duplicate(true); alternative["type_id"] = record.id
+						if include_project and not str(record.project).is_empty(): alternative = {"$and":[{"field":"project","op":"eq","value":record.project},alternative]}
+						alternatives.append(alternative)
+					if not alternatives.is_empty(): scoped_condition = {"$or":alternatives}
 			expanded.append(scoped_condition)
 		var compiled_group: Array = []
 		for scoped_condition in expanded: compiled_group.append(_compile_condition(scoped_condition, catalog, include_project))

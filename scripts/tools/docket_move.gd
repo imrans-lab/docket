@@ -75,6 +75,11 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 	# needs decrypt-then-re-encrypt with both passwords, so refusing is the
 	# honest behaviour until that exists.
 	var vault_handles: Array = source_db.list_secrets_owned_by(item_id)
+	for conventional_handle in [item_id,item_id + ":notes"]:
+		var has_current: bool = not source_db.get_secret_raw(conventional_handle).is_empty()
+		var history: Array = source_db._exec_select("SELECT 1 FROM docket_secret_versions WHERE handle=? LIMIT 1;", [conventional_handle])
+		if (has_current or not history.is_empty()) and not vault_handles.has(conventional_handle): vault_handles.append(conventional_handle)
+	if not source_db._last_sql_error.is_empty(): return {"error":"Source vault read failed; nothing was copied: %s" % source_db._last_sql_error}
 	if not vault_handles.is_empty():
 		return {"error": (
 			"Cannot move '%s': it holds encrypted vault content (%s). " % [item_id, ", ".join(PackedStringArray(vault_handles))]
@@ -83,9 +88,9 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 		)}
 
 	# Export full item (data + events + comments + attachments)
-	var exported: Dictionary = source_db.export_item_full(item_id)
-	if exported.is_empty():
-		return {"error": "Failed to export item %s" % item_id}
+	var export_result: Dictionary = source_db.export_item_full_checked(item_id)
+	if export_result.has("error"): return {"error":"Source export failed; nothing was copied: %s" % export_result.error}
+	var exported: Dictionary = export_result.export
 
 	var new_id: String
 	var refs_updated: int = 0
@@ -93,8 +98,8 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 	var pending_type: Dictionary = {}
 	var pending_revisions: Array = []
 	var target_registry: TypeRegistry = TypeRegistry.for_db(target_db, canonical_target)
+	var source_registry: TypeRegistry = TypeRegistry.for_db(source_db, source_name)
 	if not str(source_item.get("type_revision", "")).is_empty():
-		var source_registry: TypeRegistry = TypeRegistry.for_db(source_db, source_name)
 		if target_registry.is_legacy(): return {"error":"Target must be explicitly upgraded before moving a pinned v2 item"}
 		var revision: Dictionary = source_registry.get_revision(str(source_item.type_revision))
 		if revision.has("error"): return revision
@@ -113,33 +118,24 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 		if builtin.has("error") or not bool(builtin.definition.get("protected", false)): return {"error":"Legacy item type has no compatible protected builtin in target"}
 		source_item["type_id"] = builtin.id
 		source_item["type_revision"] = builtin.current_revision
-	if DocketDB._is_uuid7(item_id):
-		# UUID7 items keep their ID — globally unique, no rewrite needed
-		new_id = item_id
-		var target_error: String = _import_checked(target_db, new_id, exported, target_registry, pending_type, pending_revisions, args)
-		if not target_error.is_empty(): return {"error":"Target write failed; source preserved: %s" % target_error}
-		var source_error: String = _delete_checked(source_db, item_id)
-		if not source_error.is_empty(): return {"error":"Target copy is durable but source deletion failed: %s" % source_error,"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
-	else:
-		# Legacy items get upgraded to UUID7 on move
-		new_id = target_db.next_uuid7_id()
-		var target_error: String = _import_checked(target_db, new_id, exported, target_registry, pending_type, pending_revisions, args)
-		if not target_error.is_empty(): return {"error":"Target write failed; source preserved: %s" % target_error}
-		var source_error: String = _delete_checked(source_db, item_id)
-		if not source_error.is_empty(): return {"error":"Target copy is durable but source deletion failed: %s" % source_error,"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
-		# Rewrite cross-project references in ALL projects
-		var old_qualified: String = "%s:%s" % [source_name, item_id]
-		var new_qualified: String = "%s:%s" % [canonical_target, new_id]
-		for proj_name in project_dbs:
-			var pdb: DocketDB = project_dbs[proj_name]
-			if pdb is DocketDBJsonl:
-				var rewrite: Dictionary = (pdb as DocketDBJsonl).rewrite_refs_checked(old_qualified, new_qualified, item_id, new_qualified)
-				if not str(rewrite.get("error", "")).is_empty(): return {"error":"Item moved, but reference rewrite failed in '%s': %s" % [proj_name,rewrite.error],"partial_move":true,"new_id":new_id,"new_project":canonical_target}
-				refs_updated += int(rewrite.count)
-			else:
-				pdb._last_sql_error = ""
-				refs_updated += pdb.rewrite_refs(old_qualified, new_qualified, item_id, new_qualified)
-				if not pdb._last_sql_error.is_empty(): return {"error":"Item moved, but reference rewrite failed in '%s': %s" % [proj_name,pdb._last_sql_error],"partial_move":true,"new_id":new_id,"new_project":canonical_target}
+	new_id = item_id if DocketDB._is_uuid7(item_id) else target_db.next_uuid7_id()
+	var reference_prepare_error: String = _prepare_export_refs(exported, source_registry, source_name, canonical_target, item_id, new_id)
+	if not reference_prepare_error.is_empty(): return {"error":"Source reference semantics are unresolved; nothing was copied: %s" % reference_prepare_error}
+	var target_error: String = _import_checked(target_db, new_id, exported, target_registry, pending_type, pending_revisions, args)
+	if not target_error.is_empty(): return {"error":"Target write failed; source preserved: %s" % target_error}
+	var old_qualified: String = "%s:%s" % [source_name,item_id]
+	var new_qualified: String = "%s:%s" % [canonical_target,new_id]
+	for proj_name in project_dbs:
+		var pdb: DocketDB = project_dbs[proj_name]
+		# Bare IDs are local. Only the source project's bare reference identifies
+		# the moved item; another project may own an unrelated item with that ID.
+		var bare_target: String = new_qualified if str(proj_name) == source_name else item_id
+		var project_registry: TypeRegistry = TypeRegistry.for_db(pdb, str(proj_name))
+		var rewrite: Dictionary = project_registry.rewrite_move_references(old_qualified,new_qualified,item_id,bare_target,str(proj_name) == source_name)
+		if not str(rewrite.get("error", "")).is_empty(): return {"error":"Target copy is durable, but reference rewrite failed in '%s': %s" % [proj_name,rewrite.error],"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
+		refs_updated += int(rewrite.count)
+	var source_error: String = _delete_checked(source_db,item_id)
+	if not source_error.is_empty(): return {"error":"Target copy is durable but source deletion failed: %s" % source_error,"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
 
 	return {
 		"old_id": item_id,
@@ -148,6 +144,29 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 		"new_project": canonical_target,
 		"refs_updated": refs_updated,
 	}
+
+func _prepare_export_refs(exported: Dictionary, registry: TypeRegistry, source_project: String, target_project: String, old_id: String, new_id: String) -> String:
+	var item: Dictionary = exported.item
+	for key in ["parent","blocked_by"]:
+		if item.has(key): item[key] = _transfer_ref(str(item[key]),source_project,target_project,old_id,new_id)
+	for link in exported.get("links", []): link["to"] = _transfer_ref(str(link.get("to", "")),source_project,target_project,old_id,new_id)
+	if registry == null: return "source registry is unavailable"
+	var resolved: Dictionary = registry.resolve_item(item)
+	if resolved.has("error"): return str(resolved.error)
+	var custom: Dictionary = item.get("fields", {})
+	for descriptor in resolved.definition.fields:
+		var key: String = str(descriptor.key)
+		if not custom.has(key): continue
+		if descriptor.type == "item_ref": custom[key] = _transfer_ref(str(custom[key]),source_project,target_project,old_id,new_id)
+		elif descriptor.type == "reference_list" and custom[key] is Array:
+			var refs: Array = []
+			for reference in custom[key]: refs.append(_transfer_ref(str(reference),source_project,target_project,old_id,new_id))
+			custom[key] = refs
+	return ""
+
+func _transfer_ref(reference: String, source_project: String, target_project: String, old_id: String, new_id: String) -> String:
+	if reference == old_id or reference == "%s:%s" % [source_project,old_id]: return "%s:%s" % [target_project,new_id]
+	return reference if reference.contains(":") or reference.is_empty() else "%s:%s" % [source_project,reference]
 
 func _import_checked(db: DocketDB, id: String, exported: Dictionary, registry: TypeRegistry, type_record: Dictionary, revisions: Array, args: Dictionary) -> String:
 	if db is DocketDBJsonl: return registry.import_revisions_and_item(type_record, revisions, id, exported, str(args.get("author", "")), str(args.get("reason", "")))

@@ -227,3 +227,14 @@ saved-query bindings. Queries must preserve literal legacy filters and report
 unsupported typed conditions without dropping branches. Transfers must preserve
 opaque payloads and threaded comments, and commit the destination before source
 deletion. Runtime verification remains pending until Terra clears the batch.
+
+### D: first review
+
+Terra reviewed `f117b71d2db6d43da1c2cc594ea7e91a1ae1f0f7` against `7ceccaf`.
+Eight grouped findings require corrections: complete source export and legacy
+vault checks; references and incoming/threaded relations during moves; exact
+historical revision provenance and trusted builtin import; atomic legacy/SQLite
+mirror; query shape and branch-scope validation; pinned cross-project sorting;
+saved-query/MCP validation; and multi-type chooser binding preservation.
+Sol is implementing the corrections and regression coverage. Comments were
+generally salient; no D runtime checks have run.

@@ -13,6 +13,9 @@ Type and status conditions use `field` with the same `type_id`. Derived fields
 all types; each row is then interpreted through its pinned `type_revision`.
 Labels are presentation only and never bind a query. A missing type identity is
 an error and must be rebound explicitly in the destination project.
+Bound type identity predicates use `eq`; status predicates use `eq`, `neq`, or
+`in`. Other operators are refused rather than approximated with a slug or a
+positive identity filter.
 
 Supported scalar operators are `eq`, `neq`, `in`, `is_empty`, `is_not_empty`,
 `is_null`, and `is_missing`. Text fields additionally support `contains`, `not_contains`, and
@@ -28,6 +31,11 @@ Typed sorts use the same `field_key` and `type_id`, plus `dir` (`asc` or `desc`)
 and `nulls` (`first` or `last`, default `last`). Rows whose pinned revision does not declare the
 field sort as null. Multiple sort entries apply in order, followed by item ID as
 the deterministic tie break.
+
+An empty `$and` group matches every row and an empty `$or` group matches none.
+This identity behavior is also used for generated constant branches. A node
+that mixes `$and` and `$or`, or combines a boolean operator with leaf keys, is
+invalid.
 
 Saved project queries and `.dcq` files persist these dictionaries verbatim,
 including every filter and sort identity. Loading never substitutes a same-slug

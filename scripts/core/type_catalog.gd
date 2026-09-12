@@ -12,6 +12,9 @@ static func from_schema(schema: Dictionary, project: String = "", counts: Dictio
 		var slug := str(slug_value)
 		var definition: Dictionary = types[slug_value]
 		var lifecycle := str(definition.get("lifecycle", "active"))
+		var schema_fields: Array = _fields_for_definition(definition)
+		var schema_kinds: Dictionary = {}
+		for schema_field in schema_fields: schema_kinds[str(schema_field)] = "legacy"
 		result.append({
 			"id": str(definition.get("id", slug)),
 			"key": identity(project, str(definition.get("id", slug))),
@@ -24,7 +27,8 @@ static func from_schema(schema: Dictionary, project: String = "", counts: Dictio
 			"item_count": int(counts.get(slug, 0)),
 			"deprecated": lifecycle == "deprecated" or bool(definition.get("deprecated", false)),
 			"states": definition.get("states", []).duplicate(),
-			"fields": _fields_for_definition(definition),
+			"fields": schema_fields,
+			"field_kinds": schema_kinds,
 		})
 	return sorted(result)
 
@@ -37,8 +41,10 @@ static func from_registry(registry: TypeRegistry, counts: Dictionary = {}) -> Ar
 		var states: Array = []
 		for state in definition.lifecycle.states: states.append(str(state.key))
 		var fields: Array = []
-		for field in definition.fields: fields.append(str(field.key))
-		result.append({"id":descriptor.id,"key":identity(registry.get_project_name(),str(descriptor.id)),"slug":descriptor.slug,"label":definition.label,"description":definition.description,"use_when":definition.get("use_when", ""),"aliases":definition.get("aliases", []),"project":registry.get_project_name(),"item_count":int(counts.get(descriptor.slug, 0)),"deprecated":descriptor.lifecycle == "deprecated","states":states,"fields":fields,"revision":descriptor.current_revision})
+		var field_kinds: Dictionary = {}
+		for field in definition.fields:
+			fields.append(str(field.key)); field_kinds[str(field.key)] = str(field.type)
+		result.append({"id":descriptor.id,"key":identity(registry.get_project_name(),str(descriptor.id)),"slug":descriptor.slug,"label":definition.label,"description":definition.description,"use_when":definition.get("use_when", ""),"aliases":definition.get("aliases", []),"project":registry.get_project_name(),"item_count":int(counts.get(descriptor.slug, 0)),"deprecated":descriptor.lifecycle == "deprecated","states":states,"fields":fields,"field_kinds":field_kinds,"revision":descriptor.current_revision})
 	return sorted(result)
 
 

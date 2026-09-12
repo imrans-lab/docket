@@ -440,6 +440,18 @@ func _query_sort_value(item: Dictionary, spec: Dictionary):
 	var type_id: String = str(spec.get("type_id", ""))
 	if not type_id.is_empty() and str(item.get("type_id", "")) != type_id: return null
 	var field: String = str(spec.get("field_key", spec.get("field", "")))
+	if field in RegistryQuery.DERIVED_FIELDS: return item.get(field)
+	if spec.has("field_key"):
+		var registry: TypeRegistry = get_type_registry(str(item.get("project", "")))
+		if registry == null: return null
+		var resolved: Dictionary = registry.resolve_item(item)
+		if resolved.has("error"): return null
+		var declared: bool = false
+		for descriptor in resolved.definition.fields:
+			if str(descriptor.key) == field: declared = true
+		if not declared: return null
+		var typed_fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+		return typed_fields.get(field)
 	if item.has(field): return item[field]
 	var custom: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
 	return custom.get(field)

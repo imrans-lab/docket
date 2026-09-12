@@ -8,6 +8,11 @@ var _path: String
 var _is_open: bool = false
 var _last_sql_error: String = ""
 
+func item_columns() -> Array:
+	var result: Array = []
+	for value in _ITEM_COLS: result.append(str(value))
+	return result
+
 
 # -- Lifecycle ----------------------------------------------------------------
 
@@ -507,7 +512,8 @@ func export_item_full(id: String) -> Dictionary:
 		var raw_key := "%s_json" % envelope
 		var decoded = JSON.parse_string(str(row.get(raw_key, "{}")))
 		exported.item.erase(raw_key)
-		exported.item[envelope] = decoded if decoded is Dictionary else {}
+		if not decoded is Dictionary: return {"_error":"malformed %s envelope for item %s" % [envelope,id]}
+		exported.item[envelope] = decoded
 	exported["item"]["title"] = str(row.get("title", ""))
 
 	# Tags
@@ -538,6 +544,10 @@ func export_item_full(id: String) -> Dictionary:
 			"relation": str(lr.get("relation", "")),
 		})
 	exported["links"] = links
+	var incoming_rows := _exec_select("SELECT from_id,relation FROM item_links WHERE to_id=? OR to_id LIKE ?;", [id,"%:" + id])
+	var incoming: Array = []
+	for incoming_row in incoming_rows: incoming.append({"from":str(incoming_row.get("from_id", "")),"relation":str(incoming_row.get("relation", ""))})
+	exported["incoming_links"] = incoming
 
 	# Comments
 	var comment_rows := _exec_select("SELECT * FROM comments WHERE item_id=? ORDER BY id ASC;", [id])
@@ -556,8 +566,7 @@ func export_item_full(id: String) -> Dictionary:
 	exported["comments"] = comments
 
 	# Attachments (with binary data)
-	_db.query_with_bindings("SELECT * FROM attachments WHERE item_id=?;", [id])
-	var att_rows: Array = _db.query_result if _db.query_result else []
+	var att_rows: Array = _exec_select("SELECT * FROM attachments WHERE item_id=?;", [id])
 	var attachments: Array = []
 	for ar in att_rows:
 		attachments.append({
@@ -570,6 +579,15 @@ func export_item_full(id: String) -> Dictionary:
 	exported["attachments"] = attachments
 
 	return exported
+
+func export_item_full_checked(id: String) -> Dictionary:
+	## A move may delete its source only after every related collection was read.
+	_last_sql_error = ""
+	var exported: Dictionary = export_item_full(id)
+	if not _last_sql_error.is_empty(): return {"error":_last_sql_error}
+	if exported.has("_error"): return {"error":exported._error}
+	if exported.is_empty(): return {"error":"item not found: %s" % id}
+	return {"export":exported}
 
 
 func import_item_full(new_id: String, exported: Dictionary) -> void:
@@ -625,17 +643,22 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 	# Comments
 	var comments: Array = exported.get("comments", [])
 	var comment_ids := {}
-	for c in comments:
-		var old_id: int = int(c.get("id", 0))
-		var old_parent: int = int(c.get("parent_id", 0))
-		var mapped_parent: int = int(comment_ids.get(old_parent, 0))
-		_exec("INSERT INTO comments (item_id, parent_id, author, text, status, created_at, resolved_at, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-			[new_id, mapped_parent, str(c.get("author", "")),
-			 str(c.get("text", "")), str(c.get("status", "open")),
-			 str(c.get("created_at", "")), str(c.get("resolved_at", "")),
-			 str(c.get("resolved_by", ""))])
-		var inserted: Array = _exec_select("SELECT last_insert_rowid() AS id;")
-		if old_id > 0 and not inserted.is_empty(): comment_ids[old_id] = int(inserted[0].id)
+	var pending_comments: Array = comments.duplicate(true)
+	while not pending_comments.is_empty():
+		var progressed: bool = false
+		for index in range(pending_comments.size() - 1, -1, -1):
+			var c: Dictionary = pending_comments[index]
+			var old_id: int = int(c.get("id", 0)); var old_parent: int = int(c.get("parent_id", 0))
+			if old_parent != 0 and not comment_ids.has(old_parent): continue
+			var mapped_parent: int = int(comment_ids.get(old_parent, 0))
+			var comment_error := _exec_checked("INSERT INTO comments (item_id, parent_id, author, text, status, created_at, resolved_at, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?);", [new_id,mapped_parent,str(c.get("author", "")),str(c.get("text", "")),str(c.get("status", "open")),str(c.get("created_at", "")),str(c.get("resolved_at", "")),str(c.get("resolved_by", ""))])
+			if not comment_error.is_empty(): return
+			var inserted: Array = _exec_select("SELECT last_insert_rowid() AS id;")
+			if old_id > 0 and not inserted.is_empty(): comment_ids[old_id] = int(inserted[0].id)
+			pending_comments.remove_at(index); progressed = true
+		if not progressed:
+			if _last_sql_error.is_empty(): _last_sql_error = "comment thread contains an unresolved parent"
+			return
 
 	# Attachments
 	var attachments: Array = exported.get("attachments", [])
@@ -674,7 +697,7 @@ func delete_item(id: String) -> void:
 	_exec("DELETE FROM items WHERE id=?;", [id])
 
 
-func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String) -> int:
+func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:
 	## Rewrite parent and blocked_by references from old to new.
 	## Returns the total number of rows updated.
 	var count := 0
@@ -684,16 +707,23 @@ func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: Str
 	count += _get_changes_count()
 
 	# Rewrite bare parent refs (backwards compat)
-	_exec("UPDATE items SET parent=? WHERE parent=?;", [new_qualified_for_bare, old_bare_id])
-	count += _get_changes_count()
+	if rewrite_bare:
+		_exec("UPDATE items SET parent=? WHERE parent=?;", [new_qualified_for_bare, old_bare_id])
+		count += _get_changes_count()
 
 	# Rewrite qualified blocked_by refs
 	_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified, old_qualified])
 	count += _get_changes_count()
 
 	# Rewrite bare blocked_by refs
-	_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified_for_bare, old_bare_id])
+	if rewrite_bare:
+		_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified_for_bare, old_bare_id])
+		count += _get_changes_count()
+	_exec("UPDATE item_links SET to_id=? WHERE to_id=?;", [new_qualified, old_qualified])
 	count += _get_changes_count()
+	if rewrite_bare:
+		_exec("UPDATE item_links SET to_id=? WHERE to_id=?;", [new_qualified_for_bare, old_bare_id])
+		count += _get_changes_count()
 
 	return count
 

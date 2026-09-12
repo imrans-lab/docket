@@ -10,7 +10,7 @@ static func compile(query: Dictionary, registry: TypeRegistry, allowed_fields: A
 	var translated: Dictionary
 	if filter_value is Dictionary and filter_value.has("conditions"):
 		translated = _conditions(filter_value.conditions, registry)
-	elif filter_value is Dictionary and (filter_value.has("$or") or filter_value.has("$and")):
+	elif filter_value is Dictionary and (filter_value.has("$or") or filter_value.has("$and") or filter_value.has("field_key") or filter_value.has("op") or filter_value.has("type_id")):
 		translated = _tree(filter_value, registry)
 	elif filter_value is Dictionary:
 		translated = DocketDBFilter.translate_filter(filter_value)
@@ -28,7 +28,9 @@ static func _conditions(conditions: Array, registry: TypeRegistry) -> Dictionary
 	for index in conditions.size():
 		var condition = conditions[index]
 		if not condition is Dictionary: return {"error":"query conditions must be objects"}
-		if index > 0 and str(condition.get("conj", "and")).to_lower() == "or":
+		var conjunction: String = str(condition.get("conj", "and")).to_lower()
+		if conjunction not in ["and", "or"]: return {"error":"unknown query conjunction '%s'" % conjunction}
+		if index > 0 and conjunction == "or":
 			groups.append(group)
 			group = []
 		group.append(condition)
@@ -36,15 +38,19 @@ static func _conditions(conditions: Array, registry: TypeRegistry) -> Dictionary
 	var parts: PackedStringArray = PackedStringArray()
 	var bindings: Array = []
 	for and_group in groups:
-		var compiled: Dictionary = _join(and_group, "AND", registry)
+		var scoped: Dictionary = _bind_sibling_scope(and_group)
+		if scoped.has("error"): return scoped
+		var compiled: Dictionary = _join(scoped.children, "AND", registry)
 		if compiled.has("error"): return compiled
 		parts.append("(%s)" % compiled.sql)
 		bindings.append_array(compiled.bindings)
 	return {"where":" OR ".join(parts),"bindings":bindings}
 
 static func _tree(node: Dictionary, registry: TypeRegistry) -> Dictionary:
+	if node.has("$and") and node.has("$or"): return {"error":"a boolean query node cannot contain both $and and $or"}
 	for operator in ["$and", "$or"]:
 		if node.has(operator):
+			if node.size() != 1: return {"error":"boolean query nodes cannot mix operators with condition keys"}
 			if not node[operator] is Array: return {"error":"%s must contain an array" % operator}
 			var children: Array = node[operator].duplicate(true)
 			if children.is_empty(): return {"where":"1" if operator == "$and" else "0","bindings":[]}
@@ -81,6 +87,12 @@ static func _join_compiled(values: Array, separator: String) -> Dictionary:
 	return {"sql":separator.join(parts),"where":separator.join(parts),"bindings":bindings}
 
 static func _condition(condition: Dictionary, registry: TypeRegistry) -> Dictionary:
+	if condition.has("binding_error"): return {"error":str(condition.binding_error)}
+	for key in condition:
+		if str(key) not in ["field","field_key","type_id","op","value","conj"]: return {"error":"unknown condition property '%s'" % key}
+	for string_key in ["field","field_key","type_id","op","conj"]:
+		if condition.has(string_key) and not condition[string_key] is String: return {"error":"condition %s must be a string" % string_key}
+	if condition.has("field") and condition.has("field_key") and str(condition.field) != str(condition.field_key): return {"error":"condition has conflicting field and field_key"}
 	var field: String = str(condition.get("field_key", condition.get("field", "")))
 	var type_id: String = str(condition.get("type_id", ""))
 	if type_id.is_empty():
@@ -90,6 +102,7 @@ static func _condition(condition: Dictionary, registry: TypeRegistry) -> Diction
 	if revisions.is_empty(): return {"error":"type identity '%s' is not present in project '%s'" % [type_id, registry.get_project_name()]}
 	var legacy_slug: String = str(revisions[0].definition.slug)
 	if field == "type":
+		if str(condition.get("op", "eq")) != "eq": return {"error":"bound type identity supports only equality"}
 		var declared_slug: String = str(condition.get("value", ""))
 		if str(condition.get("op", "eq")) == "eq" and not declared_slug.is_empty() and declared_slug != legacy_slug: return {"error":"type slug '%s' conflicts with bound identity '%s'" % [declared_slug,type_id]}
 		return _scalar("type" if registry.is_legacy() else "type_id", condition.get("op", "eq"), legacy_slug if registry.is_legacy() else type_id)
@@ -270,7 +283,14 @@ static func _sort(specs_value, registry: TypeRegistry) -> Dictionary:
 	for value in specs_value:
 		if not value is Dictionary: return {"error":"sort entries must be objects"}
 		var spec: Dictionary = value
-		var direction: String = "DESC" if str(spec.get("dir", "asc")).to_lower() == "desc" else "ASC"
+		for key in spec:
+			if str(key) not in ["field","field_key","type_id","dir","nulls"]: return {"error":"unknown sort property '%s'" % key}
+		for string_key in ["field","field_key","type_id","dir","nulls"]:
+			if spec.has(string_key) and not spec[string_key] is String: return {"error":"sort %s must be a string" % string_key}
+		if spec.has("field") and spec.has("field_key") and str(spec.field) != str(spec.field_key): return {"error":"sort has conflicting field and field_key"}
+		var requested_direction: String = str(spec.get("dir", "asc")).to_lower()
+		if requested_direction not in ["asc","desc"]: return {"error":"sort direction must be asc or desc"}
+		var direction: String = "DESC" if requested_direction == "desc" else "ASC"
 		var nulls: String = str(spec.get("nulls", "last")).to_lower()
 		if nulls not in ["first","last"]: return {"error":"sort nulls must be first or last"}
 		var field: String = str(spec.get("field_key", spec.get("field", "")))
@@ -286,7 +306,14 @@ static func _sort(specs_value, registry: TypeRegistry) -> Dictionary:
 			if not why.is_empty(): return {"error":why}
 			expression = field
 		elif field in ["type","status"]:
-			expression = "type_id" if field == "type" else "status"
+			var scoped_revisions: Array = registry.revisions_for_type(type_id)
+			if scoped_revisions.is_empty(): return {"error":"sort type identity '%s' is not present in this project" % type_id}
+			if registry.is_legacy():
+				expression = "CASE WHEN type=? THEN %s END" % field
+				local_bindings = [str(scoped_revisions[0].definition.slug)]
+			else:
+				expression = "CASE WHEN type_id=? THEN %s END" % ("type_id" if field == "type" else "status")
+				local_bindings = [type_id]
 		else:
 			var revisions: Array = registry.revisions_for_type(type_id)
 			if registry.is_legacy():

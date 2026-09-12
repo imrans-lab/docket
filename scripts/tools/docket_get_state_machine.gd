@@ -5,10 +5,11 @@ class_name DocketGetStateMachine
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_get_state_machine",
-		"description": "Return the full state machine definition for a given item type, including all states, the initial state, and the normal promotion flow from each state. The flow is advisory: any state can transition to any other state of the type, but off-flow transitions require a note. If 'type' is omitted, returns state machines for all types.",
+		"description": "Return the project registry's full pinned lifecycle definition. Enforcement may be strict, guided, or open; callers must follow the returned transitions and guards.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
+				"project": {"type":"string", "description":"Project whose pinned type semantics should be returned."},
 				"type": {"type": "string", "description": "Item type (e.g. 'bug', 'work_item'). Omit to get all types."},
 			},
 			"required": [],

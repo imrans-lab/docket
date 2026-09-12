@@ -43,6 +43,12 @@ func test_type_tools_discover_validate_define_activate_and_stale_item_context() 
 	var discovered: Dictionary = tools.call_tool("docket_type_get", {"project":"Tools","type":defined.type.id})
 	r = A.is_true(listed.count == 1 and listed.types[0].id == defined.type.id and not listed.types[0].has("definition") and discovered.definition.lifecycle.guards.done.required_fields == ["memo"], "compact list and complete get expose identity and lifecycle")
 	if r is String: db.close(); return r
+	var mismatched: Dictionary = tools.call_tool("docket_type_get", {"project":"Tools","type":"discussion","revision":discovered.current_revision})
+	r = A.contains(str(mismatched.get("error", "")), "does not belong", "type and revision selectors must identify the same definition")
+	if r is String: db.close(); return r
+	var machine: Dictionary = tools.call_tool("docket_get_state_machine", {"project":"Tools","type":defined.type.id})
+	r = A.is_true(not machine.has("error") and machine.type_id == defined.type.id and machine.lifecycle.enforcement == "strict", "state-machine discovery resolves the selected project's registry identity")
+	if r is String: db.close(); return r
 	var made: Dictionary = tools.call_tool("docket_create", {"project":"Tools","type":"widget","title":"One","fields":{"score":0,"enabled":false}})
 	if made.has("error"): db.close(); return "create failed: %s" % made.error
 	var fetched: Dictionary = tools.call_tool("docket_get", {"project":"Tools","id":made.id})
@@ -82,6 +88,9 @@ func test_pinned_json_fields_distinguish_values_and_reject_incompatible_operator
 	if r is String: db.close(); return r
 	db.execute_registry_query({"filter":{"field_key":"enabled","type_id":type_id,"op":"eq","value":"false"}}, registry)
 	r = A.contains(db.last_query_error, "boolean operand", "string false cannot masquerade as boolean false")
+	if r is String: db.close(); return r
+	db.execute_registry_query({"filter":{"field_key":"score","type_id":type_id,"op":"gt","value":{"number":0}}}, registry)
+	r = A.contains(db.last_query_error, "numeric operand", "numeric comparison refuses object operands")
 	if r is String: db.close(); return r
 	db.execute_registry_query({"filter":{"$or":{"field":"title","op":"eq","value":"Zero"}}}, registry)
 	r = A.contains(db.last_query_error, "array", "malformed boolean tree is refused without dropping its predicate")
@@ -136,7 +145,9 @@ func test_new_descriptor_does_not_reinterpret_old_opaque_value_until_explicit_re
 	var apply_error: String = registry.apply_evolution(preview, "tester", "publish descriptor")
 	var current: Dictionary = registry.get_type("opaque_widget")
 	var before_rows: Array = db.execute_registry_query({"filter":{"field_key":"research_cost","type_id":current.id,"op":"eq","value":"kept"}}, registry)
-	var r = A.is_true(apply_error.is_empty() and before_rows.is_empty(), "old pin keeps formerly opaque key outside typed query meaning")
+	var current_item: Dictionary = registry.create_item({"type":"opaque_widget","title":"Current","research_cost":"aaa"}, "tester")
+	var before_sorted: Array = db.execute_registry_query({"sort":[{"field_key":"research_cost","type_id":current.id,"dir":"asc","nulls":"last"}]}, registry)
+	var r = A.is_true(apply_error.is_empty() and before_rows.is_empty() and before_sorted.size() == 2 and before_sorted[0].id == current_item.id and before_sorted[1].id == made.id, "old pin keeps formerly opaque key outside typed filter and sort meaning")
 	if r is String: db.close(); return r
 	var repin: Dictionary = registry.preview_evolution("opaque_widget", evolved, current.current_revision, [made.id])
 	apply_error = registry.apply_evolution(repin, "tester", "explicit repin")
@@ -159,11 +170,12 @@ func test_dcq_roundtrip_preserves_typed_sort_binding_verbatim() -> Variant:
 	var db: DocketDBJsonl = _db("DCQ"); var registry: TypeRegistry = _registry_with_widget(db); var type_id: String = registry.get_type("widget").id
 	var state: AppState = AppState.new(); state.db = db; state.schema = {}; state._project_dbs = {"DCQ":db}; state._type_registries = {"DCQ":registry}
 	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
+	grid._dcq_columns = ["id", "score", "state_category"]
 	grid._sort_field = "score"; grid._sort_dir = "desc"; grid._sort_binding = {"field_key":"score","type_id":type_id,"nulls":"first"}
 	var path: String = DIR + "/typed.dcq"; grid.save_dcq(path)
 	var loaded: QueryGrid = QueryGrid.new(); add_child(loaded); loaded.init(state); loaded.load_dcq(path)
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
-	var r = A.is_true(parsed is Dictionary and parsed.sort[0].type_id == type_id and loaded._sort_binding.type_id == type_id and loaded._sort_binding.nulls == "first" and loaded._sort_dir == "desc", "dcq load/save keeps stable field identity and null ordering")
+	var r = A.is_true(parsed is Dictionary and parsed.sort[0].type_id == type_id and parsed.columns == ["id", "score", "state_category"] and loaded._dcq_columns == parsed.columns and loaded._sort_binding.type_id == type_id and loaded._sort_binding.nulls == "first" and loaded._sort_dir == "desc", "dcq load/save keeps stable field identity, columns, and null ordering")
 	grid.queue_free(); loaded.queue_free(); db.close(); return r
 
 func test_custom_field_colliding_with_builtin_column_keeps_custom_kind_and_authority() -> Variant:
@@ -198,6 +210,11 @@ func test_move_refuses_owned_vault_and_preserves_threaded_comments_on_success() 
 	var r = A.is_true(refused.error.contains("vault") and source.has_item(item.id) and not target.has_item(item.id), "any owned vault handle blocks transfer")
 	if r is String: source.close(); target.close(); return r
 	source.delete_secret_checked("unusual-handle")
+	source.set_secret_checked(item.id, PackedByteArray([4]), PackedByteArray([5]), PackedByteArray([6]), false, "")
+	refused = mover.execute({"id":item.id,"source_project":"Source","target_project":"Target","import_definition":true,"author":"tester","reason":"move"}, {}, source, projects)
+	r = A.is_true(refused.error.contains("vault") and source.has_item(item.id) and not target.has_item(item.id), "unowned conventional legacy ciphertext also blocks transfer")
+	if r is String: source.close(); target.close(); return r
+	source.delete_secret_checked(item.id)
 	var moved: Dictionary = mover.execute({"id":item.id,"source_project":"Source","target_project":"Target","import_definition":true,"author":"tester","reason":"move"}, {}, source, projects)
 	if moved.has("error"): source.close(); target.close(); return "move failed: %s" % moved.error
 	var comments: Array = target.list_comments(moved.new_id); var moved_item: Dictionary = target.get_item(moved.new_id)
@@ -209,9 +226,10 @@ func test_move_failure_order_preserves_source_and_reports_durable_partial_copy()
 	var source: DocketDBJsonl = _db("FailSource"); var target: DocketDBJsonl = _db("FailTarget")
 	var registry: TypeRegistry = _registry_with_widget(source); var item: Dictionary = registry.create_item({"type":"widget","title":"Stable"}, "tester")
 	var mover: DocketMove = DocketMove.new(); var projects: Dictionary = {"FailSource":source,"FailTarget":target}
+	var held_target_registry: TypeRegistry = TypeRegistry.for_db(target, "FailTarget")
 	target._exec("CREATE TRIGGER reject_import BEFORE INSERT ON items BEGIN SELECT RAISE(FAIL, 'target rejected'); END;")
 	var failed: Dictionary = mover.execute({"id":item.id,"source_project":"FailSource","target_project":"FailTarget","import_definition":true,"author":"tester","reason":"failure order"}, {}, source, projects)
-	var r = A.is_true(failed.error.contains("Target write failed") and source.has_item(item.id) and not target.has_item(item.id) and TypeRegistry.for_db(target, "FailTarget").get_type("widget").has("error"), "target failure rolls back imported definition and never deletes source")
+	var r = A.is_true(failed.error.contains("Target write failed") and source.has_item(item.id) and not target.has_item(item.id) and held_target_registry.get_type("widget").has("error"), "target failure rolls back imported definition, refreshes an already-held registry, and never deletes source")
 	if r is String: source.close(); target.close(); return r
 	target._exec("DROP TRIGGER IF EXISTS reject_import;")
 	source._exec("CREATE TRIGGER reject_source_delete BEFORE DELETE ON items BEGIN SELECT RAISE(FAIL, 'source rejected'); END;")
@@ -229,6 +247,168 @@ func test_mirror_validates_target_pin_and_commits_patch_transition_and_audit_tog
 	var after: Dictionary = target.get_item(target_item.id)
 	var r = A.is_true(not result.has("error") and after.status == "done" and after.fields.score == 7 and after.fields.memo == "ready" and target.list_comments(target_item.id).size() == 1, "mirror commits typed patch, guarded transition and audit")
 	if r is String: source.close(); target.close(); return r
+	var canonical_before: String = FileAccess.get_file_as_string(target.get_path()); var token_before: String = target_registry.item_token(after)
+	target._exec("CREATE TRIGGER reject_second_mirror BEFORE INSERT ON comments BEGIN SELECT RAISE(FAIL, 'audit rejected'); END;")
+	var failed: Dictionary = target_registry.mirror_item(target_item.id, {"fields":{"score":9}}, "", "tester", "", "second mirror", after.type_revision, token_before)
+	r = A.is_true(failed.has("error") and target.get_item(target_item.id).fields.score == 7 and FileAccess.get_file_as_string(target.get_path()) == canonical_before, "v2 audit failure rolls back the candidate patch and canonical publication")
+	if r is String: source.close(); target.close(); return r
 	var unknown: Dictionary = mirror.execute({"source_id":source_item.id,"source_project":"Missing","target_id":target_item.id,"target_project":"MirrorTarget","fields":["score"]}, {}, source, projects)
 	r = A.contains(unknown.error, "Unknown source project", "unknown mirror project cannot fall back to primary")
 	source.close(); target.close(); return r
+
+func test_query_rejects_mixed_trees_unknown_conjunction_and_foreign_sort_identity() -> Variant:
+	var db: DocketDBJsonl = _db("Validation"); var registry: TypeRegistry = _registry_with_widget(db)
+	var made: Dictionary = registry.create_item({"type":"widget","title":"Visible"}, "tester")
+	var type_id: String = registry.get_type("widget").id
+	var malformed: Array = [
+		{"filter":{"$and":[],"$or":[]}},
+		{"filter":{"$and":[],"field":"title","op":"eq","value":"x"}},
+		{"filter":{"conditions":[{"field":"title","op":"eq","value":"x"},{"conj":"xor","field":"title","op":"eq","value":"y"}]}},
+		{"filter":{"field":"type","type_id":type_id,"op":"neq","value":"widget"}},
+		{"sort":[{"field":"status","type_id":"type:foreign","dir":"asc"}]},
+	]
+	for query in malformed:
+		db.execute_registry_query(query, registry)
+		var check = A.is_true(not db.last_query_error.is_empty(), "malformed or foreign typed query is refused")
+		if check is String: db.close(); return check
+	var all_rows: Array = db.execute_registry_query({"filter":{"$and":[]}}, registry)
+	var no_rows: Array = db.execute_registry_query({"filter":{"$or":[]}}, registry)
+	var scoped_rows: Array = db.execute_registry_query({"filter":{"conditions":[{"field":"type","type_id":type_id,"op":"eq","value":"widget"},{"conj":"and","field":"status","op":"eq","value":"queued"}]}}, registry)
+	var r = A.is_true(db.last_query_error.is_empty() and no_rows.is_empty() and all_rows.size() == 1 and all_rows[0].id == made.id and scoped_rows.size() == 1 and scoped_rows[0].id == made.id, "empty boolean identities and conditions-list sibling type scope retain their documented meaning")
+	db.close(); return r
+
+func test_saved_query_tool_validates_bindings_before_canonical_write() -> Variant:
+	var db: DocketDBJsonl = _db("SavedTool"); var tools: ToolRegistry = ToolRegistry.new(); tools.init({}, db, {"SavedTool":db})
+	var before: String = FileAccess.get_file_as_string(db.get_path())
+	var result: Dictionary = tools.call_tool("docket_saved_query", {"project":"SavedTool","action":"save","name":"bad","filter":{"field_key":"score","type_id":"type:missing","op":"eq","value":1}})
+	var r = A.is_true(result.has("error") and db.load_query("bad").is_empty() and FileAccess.get_file_as_string(db.get_path()) == before, "public saved-query tool refuses absent identities without changing canonical data")
+	db.close(); return r
+
+func test_move_source_relation_read_failure_copies_nothing() -> Variant:
+	var source: DocketDBJsonl = _db("ReadSource"); var target: DocketDBJsonl = _db("ReadTarget")
+	var registry: TypeRegistry = _registry_with_widget(source); var item: Dictionary = registry.create_item({"type":"widget","title":"Complete"}, "tester")
+	var source_bytes: String = FileAccess.get_file_as_string(source.get_path()); var target_bytes: String = FileAccess.get_file_as_string(target.get_path())
+	source._exec("DROP TABLE attachments;")
+	var moved: Dictionary = DocketMove.new().execute({"id":item.id,"source_project":"ReadSource","target_project":"ReadTarget","import_definition":true,"author":"tester","reason":"read failure"}, {}, source, {"ReadSource":source,"ReadTarget":target})
+	var held_target: TypeRegistry = TypeRegistry.for_db(target, "ReadTarget")
+	var r = A.is_true(moved.has("error") and moved.error.contains("Source export failed") and FileAccess.get_file_as_string(source.get_path()) == source_bytes and FileAccess.get_file_as_string(target.get_path()) == target_bytes and source.has_item(item.id) and not target.has_item(item.id) and held_target.get_type("widget").has("error"), "relation read failure cannot copy a partial export or publish a ghost definition")
+	source.close(); target.close(); return r
+
+func test_query_scope_expands_compatible_multitype_field_and_keeps_grouped_status_identity() -> Variant:
+	var catalog: Array = [
+		{"id":"type:a","key":TypeCatalog.identity("P","type:a"),"slug":"alpha","project":"P","fields":["score"],"field_kinds":{"score":"number"}},
+		{"id":"type:b","key":TypeCatalog.identity("P","type:b"),"slug":"beta","project":"P","fields":["score"],"field_kinds":{"score":"number"}},
+	]
+	var compiled: Dictionary = QueryTypeScope.compile_catalog_conditions([{"field":"type","op":"catalog_in","value":[catalog[0].key,catalog[1].key]},{"conj":"and","field":"score","op":"gte","value":1}], catalog, true)
+	var encoded: String = JSON.stringify(compiled)
+	var status: Dictionary = QueryTypeScope.compile_catalog_conditions([{"field":"type","op":"catalog_in","value":[catalog[0].key,catalog[1].key]},{"conj":"and","field":"status","op":"catalog_status","value":{"key":catalog[1].key,"status":"done"}}], catalog, true)
+	var r = A.is_true(encoded.contains("type:a") and encoded.contains("type:b") and encoded.count("field_key") == 2 and JSON.stringify(status).contains("type:b") and JSON.stringify(status).contains("done"), "multi-type custom fields expand to explicit branches and grouped status retains its chosen identity")
+	return r
+
+func test_query_grid_compiles_multitype_field_and_status_choice_to_exact_identities() -> Variant:
+	var db: DocketDBJsonl = _db("Grid"); var registry: TypeRegistry = _registry_with_widget(db)
+	var second: Dictionary = _definition("Second"); second.slug = "second"
+	var defined: Dictionary = registry.define_type("second", second, "tester", "second"); registry.activate_type("second", defined.type.current_revision, "tester", "ready")
+	var state: AppState = AppState.new(); state.db = db; state.schema = {}; state._project_dbs = {"Grid":db}; state._type_registries = {"Grid":registry}
+	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
+	var keys: Array = []
+	for record in grid._type_catalog:
+		if record.slug in ["widget","second"]: keys.append(record.key)
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type","op":"catalog_in","value":keys},{"conj":"and","field":"score","op":"gte","value":0}]}))
+	var compiled: Dictionary = grid._build_conditions_filter(); var encoded: String = JSON.stringify(compiled)
+	var status_key: String = ""
+	for record in grid._type_catalog:
+		if record.slug == "second": status_key = str(record.key)
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type","op":"catalog_in","value":keys},{"conj":"and","field":"status","op":"catalog_status","value":{"key":status_key,"status":"queued"}}]}))
+	var status_encoded: String = JSON.stringify(grid._build_conditions_filter())
+	var r = A.is_true(encoded.count("field_key") == 2 and encoded.contains(registry.get_type("widget").id) and encoded.contains(registry.get_type("second").id) and status_encoded.contains(status_key) == false and status_encoded.contains(registry.get_type("second").id), "QueryGrid emits explicit compatible field branches and preserves the selected status identity")
+	grid.queue_free(); db.close(); return r
+
+func test_uuid_move_retargets_qualified_incoming_and_declared_json_references_only() -> Variant:
+	var source: DocketDBJsonl = _db("RefSource"); var target: DocketDBJsonl = _db("RefTarget"); var other: DocketDBJsonl = _db("Other")
+	var definition: Dictionary = _definition("Reference Widget"); definition.fields.append({"key":"peer","type":"item_ref","required":false,"nullable":true}); definition.fields.append({"key":"peers","type":"reference_list","required":false,"nullable":true})
+	var registry: TypeRegistry = TypeRegistry.for_db(source, "RefSource"); var defined: Dictionary = registry.define_type("widget", definition, "tester", "references"); registry.activate_type("widget", defined.type.current_revision, "tester", "ready")
+	var moved_item: Dictionary = registry.create_item({"type":"widget","title":"Moved"}, "tester")
+	var remaining: Dictionary = registry.create_item({"type":"widget","title":"Remaining","peer":moved_item.id,"peers":["RefSource:%s" % moved_item.id]}, "tester")
+	source.update_item_fields_checked(remaining.id, {"extras":{"opaque":"RefSource:%s" % moved_item.id}})
+	source.add_link(remaining.id, "RefSource:%s" % moved_item.id, "depends_on")
+	var discussion: Dictionary = TypeRegistry.for_db(other, "Other").get_type("discussion")
+	other.insert_item(moved_item.id, {"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Local same ID"})
+	var other_dependent: String = other.next_uuid7_id(); other.insert_item(other_dependent, {"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Local ref","parent":moved_item.id})
+	var moved: Dictionary = DocketMove.new().execute({"id":moved_item.id,"source_project":"RefSource","target_project":"RefTarget","import_definition":true,"author":"tester","reason":"reference move"}, {}, source, {"RefSource":source,"RefTarget":target,"Other":other})
+	if moved.has("error"): source.close(); target.close(); other.close(); return "move failed: %s" % moved.error
+	var after: Dictionary = source.get_item(remaining.id); var links: Array = source.get_links(remaining.id)
+	var destination: String = "RefTarget:%s" % moved.new_id
+	var r = A.is_true(after.fields.peer == destination and after.fields.peers == [destination] and after.extras.opaque == "RefSource:%s" % moved_item.id and links.size() == 1 and links[0].to == destination and other.get_item(other_dependent).parent == moved_item.id, "UUID moves retarget qualified and source-local declared references while opaque strings and another project's local same-ID reference remain untouched")
+	source.close(); target.close(); other.close(); return r
+
+func test_sqlite_mirror_uses_typed_validation_and_rolls_back_audit_failure() -> Variant:
+	var path: String = DIR + "/mirror.sqlite"; var db: DocketDB = DocketDB.create_new(path)
+	var insert_error: String = db.insert_item("DISC-1", {"type":"discussion","status":"active","title":"Before"})
+	if not insert_error.is_empty(): db.close(); return "setup failed: %s" % insert_error
+	db._exec("CREATE TRIGGER reject_mirror_comment BEFORE INSERT ON comments BEGIN SELECT RAISE(FAIL, 'audit rejected'); END;")
+	var registry: TypeRegistry = TypeRegistry.for_db(db, "SQLite")
+	var result: Dictionary = registry.mirror_item("DISC-1", {"fields":{"title":"After"}}, "resolved", "tester", "", "mirror")
+	var after: Dictionary = db.get_item("DISC-1")
+	var r = A.is_true(result.has("error") and after.title == "Before" and after.status == "active" and db.list_comments("DISC-1").is_empty(), "SQLite mirror validates and rolls back item, transition, event and audit as one unit")
+	db.close(); return r
+
+func test_historical_import_preserves_revision_metadata_and_current_pointer() -> Variant:
+	var source: DocketDBJsonl = _db("HistorySource"); var target: DocketDBJsonl = _db("HistoryTarget")
+	var source_registry: TypeRegistry = _registry_with_widget(source); var target_registry: TypeRegistry = TypeRegistry.for_db(target, "HistoryTarget")
+	var source_type: Dictionary = source_registry.get_type("widget"); var original: Dictionary = source_registry.get_revision(source_type.current_revision)
+	var error: String = target_registry.import_historical_revision(source_type, original, "importer", "install identity")
+	if not error.is_empty(): source.close(); target.close(); return "initial import failed: %s" % error
+	var evolved_definition: Dictionary = source_type.definition.duplicate(true); evolved_definition.label = "Widget History"
+	var preview: Dictionary = source_registry.preview_evolution("widget", evolved_definition, source_type.current_revision)
+	error = source_registry.apply_evolution(preview, "historian", "published wording")
+	var historical: Dictionary = source_registry.get_revision(source_registry.get_type("widget").current_revision)
+	var target_pointer: String = target_registry.get_type("widget").current_revision
+	error = target_registry.import_historical_revision(source_registry.get_type("widget"), historical, "importer", "transfer exact history")
+	var imported: Dictionary = target_registry.get_revision(historical.id); var target_type: Dictionary = target_registry.get_type("widget")
+	var r = A.is_true(error.is_empty() and not imported.has("error") and imported.get("author") == historical.author and imported.get("created_at") == historical.created_at and imported.get("reason") == historical.reason and target_type.get("current_revision") == target_pointer and target_type.get("provenance", {}).get("imports", []).size() >= 2 and target_type.provenance.imports[-1].imported_by == "importer", "historical revision metadata stays immutable while import attribution is recorded separately and activation pointer is unchanged")
+	source.close(); target.close(); return r
+
+func test_trusted_builtin_historical_import_accepts_exact_snapshot_without_activation() -> Variant:
+	var db: DocketDBJsonl = _db("BuiltinHistory"); var registry: TypeRegistry = TypeRegistry.for_db(db, "BuiltinHistory")
+	var builtin: Dictionary = registry.get_type("discussion"); var definition: Dictionary = builtin.definition.duplicate(true); definition.label = "Discussion (historical)"
+	var revision_id: String = "%s@%s" % [builtin.id, TypeRegistryBootstrap._definition_hash(definition)]
+	var revision: Dictionary = {"id":revision_id,"type_id":builtin.id,"parent_revision":builtin.current_revision,"definition":definition,"author":"old-release","created_at":"2025-01-01T00:00:00Z","reason":"published snapshot"}
+	var pointer: String = builtin.current_revision
+	var error: String = registry.import_historical_revision(builtin, revision, "importer", "older compatible pin")
+	var imported: Dictionary = registry.get_revision(revision_id)
+	var r = A.is_true(error.is_empty() and not imported.has("error") and imported.get("author") == "old-release" and registry.get_type("discussion").current_revision == pointer, "trusted protected builtin history can be installed exactly without activation")
+	db.close(); return r
+
+func test_move_reference_rewrite_failure_keeps_source_and_reports_durable_copy() -> Variant:
+	var source: DocketDBJsonl = _db("RewriteSource"); var target: DocketDBJsonl = _db("RewriteTarget")
+	var registry: TypeRegistry = _registry_with_widget(source); var moved_item: Dictionary = registry.create_item({"type":"widget","title":"Moved"}, "tester")
+	var dependent: Dictionary = registry.create_item({"type":"widget","title":"Dependent","parent":moved_item.id}, "tester")
+	source._exec("CREATE TRIGGER reject_ref_update BEFORE UPDATE ON items WHEN OLD.id='%s' BEGIN SELECT RAISE(FAIL, 'rewrite rejected'); END;" % dependent.id)
+	var moved: Dictionary = DocketMove.new().execute({"id":moved_item.id,"source_project":"RewriteSource","target_project":"RewriteTarget","import_definition":true,"author":"tester","reason":"rewrite failure"}, {}, source, {"RewriteSource":source,"RewriteTarget":target})
+	var r = A.is_true(moved.get("partial_copy") == true and source.has_item(moved_item.id) and target.has_item(moved_item.id) and source.get_item(dependent.id).parent == moved_item.id, "reference rewrite failure leaves source authoritative and reports the durable target copy")
+	source.close(); target.close(); return r
+
+func test_import_remaps_forward_ordered_comment_thread_and_refuses_missing_parent() -> Variant:
+	var db: DocketDBJsonl = _db("Threads")
+	var discussion: Dictionary = TypeRegistry.for_db(db, "Threads").get_type("discussion")
+	var exported: Dictionary = {"item":{"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Thread","fields":{},"extras":{}},"comments":[{"id":2,"parent_id":1,"author":"b","text":"child","status":"open"},{"id":1,"parent_id":0,"author":"a","text":"parent","status":"open"}],"tags":[],"events":[],"links":[],"attachments":[]}
+	var first: String = db.import_item_full_checked(db.next_uuid7_id(), exported)
+	var thread_rows: Array = db.execute_query({"filter":{"title":"Thread"}})
+	if not first.is_empty() or thread_rows.is_empty(): db.close(); return "forward-thread setup failed: %s" % first
+	var comments: Array = db.list_comments(str(thread_rows[0].id))
+	var broken: Dictionary = exported.duplicate(true); broken.item.title = "Broken"; broken.comments = [{"id":3,"parent_id":99,"author":"x","text":"orphan","status":"open"}]
+	var before: String = FileAccess.get_file_as_string(db.get_path()); var second: String = db.import_item_full_checked(db.next_uuid7_id(), broken)
+	var r = A.is_true(first.is_empty() and comments.size() == 2 and comments[1].parent_id == comments[0].id and second.contains("unresolved parent") and FileAccess.get_file_as_string(db.get_path()) == before and db.execute_query({"filter":{"title":"Broken"}}).is_empty(), "forward comment parents remap topologically and unresolved parents roll back the whole import")
+	db.close(); return r
+
+func test_legacy_jsonl_mirror_uses_compatibility_registry_without_upgrade() -> Variant:
+	var path: String = DIR + "/legacy-mirror.dct"; var file: FileAccess = FileAccess.open(path, FileAccess.WRITE); file.store_string(FileAccess.get_file_as_string("res://test/fixtures/dynamic_types_legacy_v1.jsonl")); file.close()
+	var db: DocketDBJsonl = DocketDBJsonl.open_jsonl(path)
+	var registry: TypeRegistry = TypeRegistry.for_db(db, "legacy-fixture")
+	var result: Dictionary = registry.mirror_item("LEG-0001", {"fields":{"title":"Mirrored"}}, "resolved", "tester", "", "legacy audit")
+	var after: Dictionary = db.get_item("LEG-0001")
+	var before_bytes: String = FileAccess.get_file_as_string(path)
+	var refused: Dictionary = registry.mirror_item("LEG-0001", {"fields":{"title":""}}, "", "tester", "", "invalid")
+	var r = A.is_true(not result.has("error") and after.title == "Mirrored" and after.status == "resolved" and refused.has("error") and db.get_item("LEG-0001").title == "Mirrored" and FileAccess.get_file_as_string(path) == before_bytes and db.get_meta_value("jsonl_version", "") == "1.0.0", "legacy JSONL mirror shares candidate and lifecycle validation without upgrading format or partially applying invalid data")
+	db.close(); return r
