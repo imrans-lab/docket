@@ -80,7 +80,7 @@ func run_all() -> int:
 		print("=== %s ===" % script_name)
 
 		if test_instance.has_method("setup"):
-			await test_instance.setup()
+			await test_instance.call("setup")
 
 		var methods: Array[Dictionary] = test_instance.get_method_list()
 		for method in methods:
@@ -89,7 +89,7 @@ func run_all() -> int:
 				await _run_test(test_instance, name)
 
 		if test_instance.has_method("teardown"):
-			await test_instance.teardown()
+			await test_instance.call("teardown")
 
 		test_instance.queue_free()
 		print("")
@@ -101,7 +101,7 @@ func run_all() -> int:
 func _run_test(instance: Node, method_name: String) -> void:
 	# Per-test setup
 	if instance.has_method("before_each"):
-		await instance.before_each()
+		await instance.call("before_each")
 
 	var result: Variant = await instance.call(method_name)
 
@@ -125,7 +125,7 @@ func _run_test(instance: Node, method_name: String) -> void:
 
 	# Per-test teardown
 	if instance.has_method("after_each"):
-		await instance.after_each()
+		await instance.call("after_each")
 
 
 func _print_summary() -> void:
