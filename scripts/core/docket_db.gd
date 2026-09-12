@@ -6,6 +6,7 @@ class_name DocketDB
 var _db: SQLite
 var _path: String
 var _is_open: bool = false
+var _last_sql_error: String = ""
 
 
 # -- Lifecycle ----------------------------------------------------------------
@@ -321,20 +322,42 @@ const _ITEM_COLS: Array = [
 	# Plugin-shipped skills metadata (Minerva DCR 019df57b)
 	"source", "customised", "pristine_hash", "pristine_content",
 	"unsatisfied_deps", "deprecated",
+	"type_id", "type_revision", "fields_json", "extras_json",
 ]
 
 
 func insert_item(id: String, item: Dictionary) -> String:
 	## Inserts an item into the database. Returns "" on success, error message on failure.
 	# Insert main row
+	if item.has("fields_json") or item.has("extras_json"): return "internal envelope columns are not accepted as item input"
+	var stored_item := item.duplicate(true)
+	var fields: Dictionary = stored_item.get("fields", {}) if stored_item.get("fields", {}) is Dictionary else {}
+	var extras: Dictionary = stored_item.get("extras", {}) if stored_item.get("extras", {}) is Dictionary else {}
+	if stored_item.has("fields") and not stored_item.fields is Dictionary: return "fields must be an object"
+	if stored_item.has("extras") and not stored_item.extras is Dictionary: return "extras must be an object"
+	for key in fields:
+		if extras.has(key) or (stored_item.has(key) and key not in ["fields", "extras"]): return "ambiguous item key '%s'" % key
+	for key in extras:
+		if stored_item.has(key) and key not in ["fields", "extras"]: return "ambiguous item key '%s'" % key
+	for key in stored_item.keys():
+		if key not in _ITEM_COLS and key not in ["_type", "id", "tags", "events", "links", "fields", "extras"]:
+			if extras.has(key): return "ambiguous item key '%s'" % key
+			extras[key] = stored_item[key]
+			stored_item.erase(key)
+	if not extras.is_empty(): stored_item["extras"] = extras
+	stored_item.erase("_type")
+	for envelope in ["fields", "extras"]:
+		if stored_item.has(envelope):
+			if not stored_item[envelope] is Dictionary: return "%s must be an object" % envelope
+			stored_item["%s_json" % envelope] = JSON.stringify(stored_item[envelope], "", true, true)
 	var cols := PackedStringArray(["id"])
 	var placeholders := PackedStringArray(["?"])
 	var bindings: Array = [id]
 	for col in _ITEM_COLS:
-		if item.has(col):
+		if stored_item.has(col):
 			cols.append(col)
 			placeholders.append("?")
-			bindings.append(_normalize_text(item[col]))
+			bindings.append(stored_item[col] if col in ["fields_json", "extras_json"] else _normalize_text(stored_item[col]))
 	var sql := "INSERT INTO items (%s) VALUES (%s);" % [",".join(cols), ",".join(placeholders)]
 	var err := _exec_checked(sql, bindings)
 	if not err.is_empty():
@@ -378,25 +401,63 @@ func has_item(id: String) -> bool:
 
 
 func update_item_fields(id: String, changes: Dictionary) -> void:
+	update_item_fields_checked(id, changes)
+
+
+func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 	if changes.is_empty():
-		return
+		return ""
+	var field_changes = changes.get("fields", {})
+	var extra_changes = changes.get("extras", {})
+	if changes.has("fields") and not field_changes is Dictionary: return "fields must be an object"
+	if changes.has("extras") and not extra_changes is Dictionary: return "extras must be an object"
+	for key in field_changes:
+		if extra_changes.has(key) or changes.has(key): return "ambiguous item key '%s'" % key
+	for key in extra_changes:
+		if changes.has(key): return "ambiguous item key '%s'" % key
 	var sets := PackedStringArray()
 	var bindings: Array = []
-	for col in changes:
+	var stored_changes := changes.duplicate(true)
+	var unknown_changes := {}
+	for key in stored_changes.keys():
+		if key not in _ITEM_COLS and key not in ["tags", "events", "links", "id", "fields", "extras", "unset_fields", "unset_extras"]:
+			unknown_changes[key] = stored_changes[key]
+			stored_changes.erase(key)
+	if not unknown_changes.is_empty():
+		var combined_extras: Dictionary = stored_changes.get("extras", {}).duplicate(true)
+		combined_extras.merge(unknown_changes, true)
+		stored_changes["extras"] = combined_extras
+	for envelope in ["fields", "extras"]:
+		if (stored_changes.has(envelope) and stored_changes[envelope] is Dictionary) or stored_changes.has("unset_%s" % envelope):
+			var rows := _exec_select("SELECT %s_json FROM items WHERE id=?;" % envelope, [id])
+			var merged := {}
+			if not rows.is_empty():
+				var decoded = JSON.parse_string(str(rows[0].get("%s_json" % envelope, "{}")))
+				if decoded is Dictionary: merged = decoded
+			merged.merge(stored_changes.get(envelope, {}), true)
+			for key in changes.get("unset_%s" % envelope, []): merged.erase(key)
+			stored_changes["%s_json" % envelope] = JSON.stringify(merged, "", true, true)
+	for col in stored_changes:
 		if col in ["tags", "events", "links", "id"]:
 			continue
+		if col in ["fields", "extras", "unset_fields", "unset_extras"]: continue
+		if col not in _ITEM_COLS: continue
 		sets.append("%s=?" % col)
-		bindings.append(_normalize_text(changes[col]))
+		bindings.append(stored_changes[col] if col in ["fields_json", "extras_json"] else _normalize_text(stored_changes[col]))
 	if sets.size() > 0:
 		bindings.append(id)
-		_exec("UPDATE items SET %s WHERE id=?;" % ",".join(sets), bindings)
+		var error := _exec_checked("UPDATE items SET %s WHERE id=?;" % ",".join(sets), bindings)
+		if not error.is_empty(): return error
 
 	# Handle tags replacement
 	if changes.has("tags"):
-		_exec("DELETE FROM item_tags WHERE item_id=?;", [id])
+		var error := _exec_checked("DELETE FROM item_tags WHERE item_id=?;", [id])
+		if not error.is_empty(): return error
 		var tags: Array = changes["tags"]
 		for tag in tags:
-			_exec("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
+			error = _exec_checked("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
+			if not error.is_empty(): return error
+	return ""
 
 
 func set_item_field(id: String, field: String, val) -> void:
@@ -421,6 +482,11 @@ func export_item_full(id: String) -> Dictionary:
 	for col in _ITEM_COLS:
 		var val = row.get(col)
 		exported["item"][col] = val if val != null else ""
+	for envelope in ["fields", "extras"]:
+		var raw_key := "%s_json" % envelope
+		var decoded = JSON.parse_string(str(row.get(raw_key, "{}")))
+		exported.item.erase(raw_key)
+		exported.item[envelope] = decoded if decoded is Dictionary else {}
 	exported["item"]["title"] = str(row.get("title", ""))
 
 	# Tags
@@ -488,6 +554,9 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 	## Import a full item export under a new ID. Adds a "moved" event.
 	var item_data: Dictionary = exported.get("item", {})
 	item_data["id"] = new_id
+	for envelope in ["fields", "extras"]:
+		if item_data.get(envelope, {}) is Dictionary:
+			item_data["%s_json" % envelope] = JSON.stringify(item_data[envelope], "", true, true)
 
 	# Insert main item
 	var cols := PackedStringArray(["id"])
@@ -1348,10 +1417,13 @@ static func _has_column(col_rows: Array, col_name: String) -> bool:
 # -- Internal SQL helpers -----------------------------------------------------
 
 func _exec(sql: String, bindings: Array = []) -> void:
+	var ok: bool
 	if bindings.is_empty():
-		_db.query(sql)
+		ok = _db.query(sql)
 	else:
-		_db.query_with_bindings(sql, bindings)
+		ok = _db.query_with_bindings(sql, bindings)
+	if not ok and _last_sql_error.is_empty():
+		_last_sql_error = _db.error_message if _db.error_message else "SQL execution failed"
 
 
 func _exec_checked(sql: String, bindings: Array = []) -> String:
@@ -1363,6 +1435,7 @@ func _exec_checked(sql: String, bindings: Array = []) -> String:
 		ok = _db.query_with_bindings(sql, bindings)
 	if not ok:
 		var msg: String = _db.error_message if _db.error_message else "SQL execution failed"
+		if _last_sql_error.is_empty(): _last_sql_error = msg
 		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
 		return msg
 	return ""
@@ -1387,6 +1460,10 @@ func _begin() -> void:
 
 func _commit() -> void:
 	_exec("COMMIT;")
+
+
+func _rollback() -> void:
+	_exec("ROLLBACK;")
 
 
 static func _strip_empty(item: Dictionary) -> Dictionary:
@@ -1446,6 +1523,16 @@ func _build_item_dict(row: Dictionary) -> Dictionary:
 	item["type"] = str(row.get("type", ""))
 	item["status"] = str(row.get("status", ""))
 	item["title"] = str(row.get("title", ""))
+	item["type_id"] = str(row.get("type_id", ""))
+	item["type_revision"] = str(row.get("type_revision", ""))
+	for envelope in ["fields", "extras"]:
+		var raw := str(row.get("%s_json" % envelope, "{}"))
+		var decoded = JSON.parse_string(raw)
+		if decoded is Dictionary:
+			item[envelope] = decoded
+		else:
+			item[envelope] = {}
+			item["_storage_error"] = "malformed %s_json for item %s" % [envelope, id]
 	item["description"] = str(row.get("description", ""))
 	item["created_at"] = str(row.get("created_at", ""))
 	item["updated_at"] = str(row.get("updated_at", ""))

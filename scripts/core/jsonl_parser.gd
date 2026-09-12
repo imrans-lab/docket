@@ -6,8 +6,10 @@ class_name JSONLParser
 # Known _type values; anything else is skipped with a warning.
 const KNOWN_TYPES := [
 	"meta", "item", "event", "comment", "link",
-	"attachment", "secret", "secret_version", "saved_query"
+	"attachment", "secret", "secret_version", "saved_query",
+	"type_def", "type_def_version"
 ]
+const SUPPORTED_VERSIONS := ["1.0.0", "2.0.0"]
 
 # Git conflict-marker line prefixes. A valid JSONL line is always a JSON object
 # starting with '{', so any line starting with one of these is unambiguously a
@@ -129,6 +131,12 @@ static func parse_file(path: String) -> Dictionary:
 			"saved_query":
 				bucket = "saved_queries"
 				record = _parse_saved_query(parsed)
+			"type_def":
+				bucket = "type_defs"
+				record = _parse_type_def(parsed)
+			"type_def_version":
+				bucket = "type_def_versions"
+				record = _parse_type_def_version(parsed)
 
 		if not bucket.is_empty():
 			if record.is_empty():
@@ -138,6 +146,13 @@ static func parse_file(path: String) -> Dictionary:
 			result[bucket].append(record)
 
 	file.close()
+	var version := str(result.meta.get("version", ""))
+	if version not in SUPPORTED_VERSIONS:
+		return _corrupt(path, 0, "unsupported format version '%s'" % version, "")
+	var registry_error := _validate_registry_records(result)
+	if not registry_error.is_empty():
+		return _corrupt(path, 0, registry_error, "")
+	result["registry_diagnostics"] = _item_registry_diagnostics(result)
 	return result
 
 
@@ -181,6 +196,10 @@ static func parse_line(json_text: String) -> Dictionary:
 			return _parse_secret_version(parsed)
 		"saved_query":
 			return _parse_saved_query(parsed)
+		"type_def":
+			return _parse_type_def(parsed)
+		"type_def_version":
+			return _parse_type_def_version(parsed)
 
 	return {}
 
@@ -224,13 +243,25 @@ static func _parse_item(d: Dictionary) -> Dictionary:
 	# Required fields
 	if not _has_required(d, ["id", "type", "status", "title", "created_at", "updated_at"]):
 		return {}
+	if d.has("fields_json") or d.has("extras_json"): return {}
 	var out := {"_type": "item"}
+	if d.has("fields") and not d.fields is Dictionary: return {}
+	if d.has("extras") and not d.extras is Dictionary: return {}
+	var fields: Dictionary = d.get("fields", {})
+	var extras: Dictionary = d.get("extras", {})
+	for key in fields:
+		if extras.has(key) or d.has(key): return {}
+	for key in extras:
+		if d.has(key): return {}
 	out["id"] = _str_field(d, "id", "")
 	out["type"] = _str_field(d, "type", "")
 	out["status"] = _str_field(d, "status", "")
 	out["title"] = _str_field(d, "title", "")
 	out["created_at"] = _str_field(d, "created_at", "")
 	out["updated_at"] = _str_field(d, "updated_at", "")
+	for key in ["type_id", "type_revision"]: _copy_str_opt(d, out, key)
+	if d.has("fields"): out["fields"] = fields.duplicate(true)
+	if d.has("extras"): out["extras"] = extras.duplicate(true)
 	# Optional string fields
 	for key in ["description", "created_by", "assigned_to", "directed_to",
 				"resolution", "environment", "repro_steps",
@@ -267,7 +298,86 @@ static func _parse_item(d: Dictionary) -> Dictionary:
 		out["optimization"] = d["optimization"].duplicate(true)
 	if d.has("pristine_content") and d["pristine_content"] is Dictionary:
 		out["pristine_content"] = d["pristine_content"].duplicate(true)
+	var known: Array = DocketDB._ITEM_COLS.duplicate()
+	known.append_array(["_type", "id", "tags", "events", "links", "fields", "extras"])
+	var preserved_extras: Dictionary = out.get("extras", {})
+	for key in d:
+		if key not in known:
+			if preserved_extras.has(key): return {}
+			preserved_extras[key] = d[key]
+	if not preserved_extras.is_empty(): out["extras"] = preserved_extras
 	return out
+
+
+static func _parse_type_def(d: Dictionary) -> Dictionary:
+	if not _has_required(d, ["id", "slug", "lifecycle", "current_revision", "provenance"]): return {}
+	if not d.provenance is Dictionary: return {}
+	return d.duplicate(true)
+
+
+static func _parse_type_def_version(d: Dictionary) -> Dictionary:
+	if not _has_required(d, ["id", "type_id", "definition", "author", "created_at", "reason"]): return {}
+	if not d.definition is Dictionary: return {}
+	for key in ["slug", "label", "description", "fields", "lifecycle", "protected", "protected_behavior"]:
+		if not d.definition.has(key): return {}
+	if not d.definition.fields is Array or not d.definition.lifecycle is Dictionary: return {}
+	for key in ["initial_state", "states", "terminal_states", "transitions", "guards", "enforcement"]:
+		if not d.definition.lifecycle.has(key): return {}
+	return d.duplicate(true)
+
+
+static func _validate_registry_records(result: Dictionary) -> String:
+	var ids := {}
+	var slugs := {}
+	var revisions := {}
+	for value in result.type_defs:
+		var record: Dictionary = value
+		if ids.has(record.id): return "duplicate type_def id '%s'" % record.id
+		if slugs.has(record.slug): return "duplicate type_def slug '%s'" % record.slug
+		ids[record.id] = record
+		slugs[record.slug] = true
+	for value in result.type_def_versions:
+		var revision: Dictionary = value
+		if revisions.has(revision.id): return "duplicate type_def_version id '%s'" % revision.id
+		revisions[revision.id] = revision
+	for type_id in ids:
+		var definition: Dictionary = ids[type_id]
+		if str(definition.lifecycle) not in ["draft", "active", "deprecated"]: return "type '%s' has invalid lifecycle" % definition.slug
+		if not revisions.has(definition.current_revision): continue
+		if revisions[definition.current_revision].type_id != type_id: return "type '%s' points to another type's revision" % definition.slug
+		if str(revisions[definition.current_revision].definition.slug) != str(definition.slug): return "type '%s' current revision changes immutable slug" % definition.slug
+	for revision_id in revisions:
+		var revision: Dictionary = revisions[revision_id]
+		if not ids.has(revision.type_id): return "revision '%s' refers to missing type '%s'" % [revision_id, revision.type_id]
+		var parent := str(revision.get("parent_revision", ""))
+		if not parent.is_empty() and (not revisions.has(parent) or revisions[parent].type_id != revision.type_id): return "revision '%s' has invalid parent '%s'" % [revision_id, parent]
+	return ""
+
+
+static func _item_registry_diagnostics(result: Dictionary) -> Array:
+	var diagnostics: Array = []
+	if str(result.meta.get("version", "")) != "2.0.0": return diagnostics
+	var definitions := {}
+	var revisions := {}
+	for value in result.type_defs: definitions[value.id] = value
+	for value in result.type_def_versions: revisions[value.id] = value
+	for value in result.type_defs:
+		if not revisions.has(value.current_revision): diagnostics.append({"type_id": value.id, "reason": "missing current revision '%s'" % value.current_revision})
+	for value in result.items:
+		var item: Dictionary = value
+		var type_id := str(item.get("type_id", ""))
+		var revision_id := str(item.get("type_revision", ""))
+		var reason := ""
+		if not definitions.has(type_id): reason = "missing type definition '%s'" % type_id
+		elif not revisions.has(revision_id): reason = "missing type revision '%s'" % revision_id
+		elif revisions[revision_id].type_id != type_id: reason = "revision belongs to another type"
+		elif definitions[type_id].slug != item.type: reason = "legacy slug does not match pinned type"
+		else:
+			var states: Array = []
+			for state in revisions[revision_id].definition.lifecycle.states: states.append(state.key)
+			if not states.has(item.status): reason = "status '%s' is absent from pinned revision" % item.status
+		if not reason.is_empty(): diagnostics.append({"item_id": item.id, "reason": reason})
+	return diagnostics
 
 
 static func _parse_event(d: Dictionary) -> Dictionary:
@@ -417,11 +527,14 @@ static func _empty_result() -> Dictionary:
 		"secrets": [],
 		"secret_versions": [],
 		"saved_queries": [],
+		"type_defs": [],
+		"type_def_versions": [],
 		# "" when the file parsed. Non-empty means the file must NOT be opened,
 		# cached, or written back — see parse_file.
 		"error": "",
 		# Non-fatal per-line problems, for `validate` reporting.
 		"issues": [],
+		"registry_diagnostics": [],
 	}
 
 

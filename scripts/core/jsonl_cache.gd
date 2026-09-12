@@ -5,14 +5,15 @@ class_name JSONLCache
 ## The cache file lives at <jsonl_path>.cache (e.g. "project.dct.jsonl.cache")
 ## and is gitignored/disposable — it can be deleted and rebuilt at any time.
 ##
-## Cache freshness is detected by storing the JSONL file's size + modification
-## time in docket_meta. This avoids a full SHA-256 read on every open while
-## still catching any modification.
+## Cache freshness is content-addressed. Size/mtime can collide for rapid
+## same-length edits, which is unacceptable at a write boundary.
 
 
 # Reason the most recent rebuild_cache() returned null. Read it immediately
 # after a null return — the next rebuild overwrites it.
 static var last_error: String = ""
+static var cache_delete_hook: Callable
+static var rebuild_failure_hook: Callable
 
 
 # -- Public API ---------------------------------------------------------------
@@ -20,7 +21,7 @@ static var last_error: String = ""
 static func open_or_rebuild(jsonl_path: String) -> DocketDB:
 	## Open the cache if it is fresh, otherwise rebuild it from the JSONL file.
 	## Returns an open DocketDB on success, null on failure.
-	var cache_path := _cache_path_for(jsonl_path)
+	var cache_path := cache_path_for(jsonl_path)
 	if is_cache_valid(jsonl_path, cache_path):
 		var db := DocketDB.new()
 		if db.open(cache_path):
@@ -47,10 +48,17 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 		last_error = "failed to parse JSONL (or missing meta): %s" % jsonl_path
 		push_error("JSONLCache: %s" % last_error)
 		return null
+	var expected_cache_path := cache_path_for_version(jsonl_path, str(parsed.meta.version))
+	if cache_path != expected_cache_path:
+		last_error = "format %s requires cache path %s" % [parsed.meta.version, expected_cache_path]
+		return null
 	last_error = ""
 
 	# Remove stale cache files (db + WAL/SHM)
-	_delete_cache_files(cache_path)
+	var delete_error := _delete_cache_files(cache_path)
+	if not delete_error.is_empty():
+		last_error = delete_error
+		return null
 
 	# Create a fresh database
 	var db := DocketDB.create_new(cache_path)
@@ -59,9 +67,18 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 		return null
 
 	# Bulk insert everything in one transaction for performance
-	db._begin()
+	db._last_sql_error = ""
+	var transaction_error := db._exec_checked("BEGIN TRANSACTION;")
+	if not transaction_error.is_empty():
+		last_error = "cache transaction failed: %s" % transaction_error
+		db.close()
+		_delete_cache_files(cache_path)
+		return null
 
 	_insert_meta(db, parsed["meta"])
+	if not parsed.get("registry_diagnostics", []).is_empty():
+		db.set_meta_value("registry_diagnostics", JSON.stringify(parsed.registry_diagnostics, "", true, true))
+	_insert_type_registry(db, parsed["type_defs"], parsed["type_def_versions"])
 	_insert_items(db, parsed["items"])
 	_insert_events(db, parsed["events"])
 	_insert_comments(db, parsed["comments"])
@@ -70,18 +87,41 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 	_insert_secrets(db, parsed["secrets"])
 	_insert_secret_versions(db, parsed["secret_versions"])
 	_insert_saved_queries(db, parsed["saved_queries"])
+	if rebuild_failure_hook.is_valid():
+		var injected_error := str(rebuild_failure_hook.call())
+		if not injected_error.is_empty() and db._last_sql_error.is_empty(): db._last_sql_error = injected_error
 
 	# Store a fingerprint so we can validate freshness later
 	var fingerprint := _file_fingerprint(jsonl_path)
 	db.set_meta_value("jsonl_hash", fingerprint)
 
-	db._commit()
+	if not db._last_sql_error.is_empty():
+		db._rollback()
+		last_error = "cache rebuild SQL failed: %s" % db._last_sql_error
+		db.close()
+		_delete_cache_files(cache_path)
+		return null
+	transaction_error = db._exec_checked("COMMIT;")
+	if not transaction_error.is_empty():
+		db._rollback()
+		last_error = "cache commit failed: %s" % transaction_error
+		db.close()
+		_delete_cache_files(cache_path)
+		return null
 	return db
 
 
 static func is_cache_valid(jsonl_path: String, cache_path: String) -> bool:
 	## True if the cache exists and its stored fingerprint matches the JSONL file.
 	if not FileAccess.file_exists(cache_path):
+		return false
+	# Parse before trusting even a matching warm-cache fingerprint. This is the
+	# compatibility gate for higher versions, new record kinds and conflicts.
+	var parsed := JSONLParser.parse_file(jsonl_path)
+	if not str(parsed.get("error", "")).is_empty():
+		last_error = parsed.error
+		return false
+	if cache_path != cache_path_for_version(jsonl_path, str(parsed.meta.version)):
 		return false
 
 	var db := DocketDB.new()
@@ -100,30 +140,34 @@ static func is_cache_valid(jsonl_path: String, cache_path: String) -> bool:
 
 # -- Internal helpers ---------------------------------------------------------
 
-static func _cache_path_for(jsonl_path: String) -> String:
+static func cache_path_for(jsonl_path: String) -> String:
+	var parsed := JSONLParser.parse_file(jsonl_path)
+	if str(parsed.get("error", "")).is_empty(): return cache_path_for_version(jsonl_path, str(parsed.meta.version))
 	return jsonl_path + ".cache"
+
+static func cache_path_for_version(jsonl_path: String, version: String) -> String:
+	return jsonl_path + (".v2.cache" if version == "2.0.0" else ".cache")
+
+static func delete_cache_family(jsonl_path: String) -> String:
+	for base in [jsonl_path + ".cache", jsonl_path + ".v2.cache"]:
+		var error := _delete_cache_files(base)
+		if not error.is_empty(): return error
+	return ""
 
 
 static func _file_fingerprint(path: String) -> String:
-	## Returns "size:mtime" as a lightweight freshness token.
-	## Fast and sufficient for detecting any file change.
 	if not FileAccess.file_exists(path):
 		return ""
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		return ""
-	var size := f.get_length()
-	f.close()
-	# get_modified_time returns Unix timestamp (integer seconds)
-	var mtime := FileAccess.get_modified_time(path)
-	return "%d:%d" % [size, mtime]
+	return FileAccess.get_sha256(path)
 
 
-static func _delete_cache_files(cache_path: String) -> void:
+static func _delete_cache_files(cache_path: String) -> String:
 	for suffix: String in ["", "-wal", "-shm"]:
 		var p := cache_path + suffix
 		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(p)
+			var error: int = int(cache_delete_hook.call(p)) if cache_delete_hook.is_valid() else DirAccess.remove_absolute(p)
+			if error != OK: return "cannot remove incompatible cache %s (error %d)" % [p, error]
+	return ""
 
 
 # -- Meta ---------------------------------------------------------------------
@@ -162,6 +206,15 @@ static func _insert_meta(db: DocketDB, meta: Dictionary) -> void:
 
 
 # -- Items --------------------------------------------------------------------
+
+static func _insert_type_registry(db: DocketDB, definitions: Array, revisions: Array) -> void:
+	for value in definitions:
+		var record: Dictionary = value
+		db._exec("INSERT INTO type_defs (id,slug,lifecycle,current_revision,provenance_json) VALUES (?,?,?,?,?);", [record.id, record.slug, record.lifecycle, record.current_revision, JSON.stringify(record.provenance, "", true, true)])
+	for value in revisions:
+		var record: Dictionary = value
+		db._exec("INSERT INTO type_def_versions (id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES (?,?,?,?,?,?,?);", [record.id, record.type_id, record.get("parent_revision", null), JSON.stringify(record.definition, "", true, true), record.author, record.created_at, record.reason])
+
 
 static func _insert_items(db: DocketDB, items: Array) -> void:
 	for item in items:
@@ -279,7 +332,7 @@ static func _insert_attachments(db: DocketDB, attachments: Array) -> void:
 		var size_bytes: int = int(att.get("size_bytes", data.size()))
 		var description: String = str(att.get("description", ""))
 		# Insert with explicit id to preserve autoincrement value
-		db._db.query_with_bindings(
+		db._exec_checked(
 			"INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, data, created_at, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
 			[att_id, item_id, filename, mime_type, size_bytes, data, created_at, description]
 		)
@@ -301,7 +354,7 @@ static func _insert_secrets(db: DocketDB, secrets: Array) -> void:
 		var mac: PackedByteArray = s.get("mac", PackedByteArray())
 		var requires_2fa: bool = bool(s.get("requires_2fa", false))
 		var flag: int = 1 if requires_2fa else 0
-		db._db.query_with_bindings(
+		db._exec_checked(
 			"INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
 			[handle, ciphertext, iv, mac, created_at, updated_at, flag,
 				_derive_owner(db, handle, str(s.get("owner_item_id", ""))),
@@ -360,7 +413,7 @@ static func _insert_secret_versions(db: DocketDB, secret_versions: Array) -> voi
 		var iv: PackedByteArray = sv.get("iv", PackedByteArray())
 		var mac: PackedByteArray = sv.get("mac", PackedByteArray())
 		var rotated_by: String = str(sv.get("rotated_by", ""))
-		db._db.query_with_bindings(
+		db._exec_checked(
 			"INSERT INTO docket_secret_versions (handle, version, ciphertext, iv, mac, created_at, rotated_by) VALUES (?, ?, ?, ?, ?, ?, ?);",
 			[handle, version, ciphertext, iv, mac, created_at, rotated_by]
 		)

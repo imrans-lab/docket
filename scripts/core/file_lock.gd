@@ -5,7 +5,7 @@ class_name FileLock
 ## Usage:
 ##   var lock := FileLock.acquire("/path/to/project.dct.jsonl")
 ##   if lock == null:
-##       push_warning("Could not acquire lock — proceeding anyway")
+##       return an_error
 ##   else:
 ##       _do_write()
 ##       lock.release()
@@ -33,23 +33,24 @@ static func acquire(path: String, timeout_ms: int = 5000) -> FileLock:
 	var deadline_ms := Time.get_ticks_msec() + timeout_ms
 
 	while true:
-		# Attempt to create the lock file exclusively
+		# Attempt the documented best-effort sidecar claim.
 		if _try_create_lock(lock_path):
 			var fl := FileLock.new()
 			fl._lock_path = lock_path
 			fl._locked = true
 			return fl
 
+		# Creation can fail without a lock file (for example an unwritable parent).
+		# Apply the deadline before every retry path so that case cannot spin forever.
+		if Time.get_ticks_msec() >= deadline_ms:
+			push_warning("FileLock: timed out waiting for lock on %s" % path)
+			return null
+
 		# Lock exists — check if it's stale
 		if _is_stale(lock_path):
 			# Remove stale lock and retry immediately
 			DirAccess.remove_absolute(lock_path)
 			continue
-
-		# Active lock held by someone else — check timeout
-		if Time.get_ticks_msec() >= deadline_ms:
-			push_warning("FileLock: timed out waiting for lock on %s" % path)
-			return null
 
 		# Brief wait before retrying — use OS.delay_msec (blocking, but short)
 		OS.delay_msec(POLL_INTERVAL_MS)
@@ -80,7 +81,8 @@ func _notification(what: int) -> void:
 # -- Private helpers ----------------------------------------------------------
 
 static func _try_create_lock(lock_path: String) -> bool:
-	## Attempt to create the lock file exclusively.
+	## Attempt to claim the advisory sidecar. FileAccess WRITE is not an atomic
+	## exclusive create, so this reduces overlap without promising mutual exclusion.
 	## Returns true if we successfully created it (we own it).
 	## Returns false if it already exists.
 	if FileAccess.file_exists(lock_path):

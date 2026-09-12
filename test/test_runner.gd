@@ -28,6 +28,7 @@ func _ready() -> void:
 		preload("res://test/test_meta_roundtrip.gd"),
 		preload("res://test/test_user_prefs.gd"),
 		preload("res://test/test_type_catalog.gd"),
+		preload("res://test/test_dynamic_type_storage.gd"),
 		preload("res://test/test_test_runner_async.gd"),
 		preload("res://test/test_jsonl_serializer.gd"),
 		preload("res://test/test_jsonl_parser.gd"),

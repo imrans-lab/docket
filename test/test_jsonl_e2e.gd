@@ -78,7 +78,7 @@ func _close_and_silence(db: DocketDBJsonl) -> void:
 
 
 func _delete_files(base: String) -> void:
-	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".tmp"]:
+	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".tmp"]:
 		DirAccess.remove_absolute(base + suffix)
 
 
@@ -111,7 +111,7 @@ func test_fresh_lifecycle_cache_is_sqlite() -> Variant:
 	var db := DocketDBJsonl.create_new_jsonl(jsonl_path)
 	_close_and_silence(db)
 
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	return A.is_true(JSONLMigration.is_sqlite_dct(cache_path), "cache is SQLite")
 
 
@@ -225,7 +225,7 @@ func test_cache_rebuild_from_scratch() -> Variant:
 	db.close()
 
 	# Delete the cache so reopen must rebuild
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	for suffix: String in ["", "-wal", "-shm"]:
 		DirAccess.remove_absolute(cache_path + suffix)
 
@@ -282,7 +282,7 @@ func test_cache_rebuild_preserves_events() -> Variant:
 	db.close()
 
 	# Delete cache
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	DirAccess.remove_absolute(cache_path)
 
 	var db2 := DocketDBJsonl.open_jsonl(jsonl_path)
@@ -320,7 +320,7 @@ func test_cache_rebuild_preserves_comments() -> Variant:
 	db.close()
 
 	# Delete cache
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	DirAccess.remove_absolute(cache_path)
 
 	var db2 := DocketDBJsonl.open_jsonl(jsonl_path)
@@ -359,7 +359,7 @@ func test_cache_rebuild_preserves_saved_queries() -> Variant:
 	db.save_query("all-dcr", {"filter": {"type": "dcr"}})
 	db.close()
 
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	DirAccess.remove_absolute(cache_path)
 
 	var db2 := DocketDBJsonl.open_jsonl(jsonl_path)
@@ -432,7 +432,7 @@ func test_staleness_cache_valid_when_unchanged() -> Variant:
 	var db := DocketDBJsonl.create_new_jsonl(jsonl_path)
 	db.close()  # triggers final flush
 
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	return A.is_true(JSONLCache.is_cache_valid(jsonl_path, cache_path), "cache is valid when file unchanged")
 
 
@@ -442,7 +442,7 @@ func test_staleness_cache_invalid_after_file_change() -> Variant:
 	var db := DocketDBJsonl.create_new_jsonl(jsonl_path)
 	db.close()
 
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	var before_valid := JSONLCache.is_cache_valid(jsonl_path, cache_path)
 	var r = A.is_true(before_valid, "cache valid before modification")
 	if r is String:
@@ -580,7 +580,7 @@ func test_migration_roundtrip_openable_as_jsonl_db() -> Variant:
 	JSONLMigration.migrate_to_jsonl(sqlite_path)
 
 	# sqlite_path now contains JSONL; create a cache for it to open via DocketDBJsonl
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	var rebuilt_db := JSONLCache.rebuild_cache(jsonl_path, cache_path)
 	var r = A.not_null(rebuilt_db, "cache rebuilt from migrated JSONL")
 	if r is String:
@@ -811,7 +811,7 @@ func test_multi_type_all_item_types_roundtrip() -> Variant:
 	db.close()
 
 	# Delete cache to force rebuild
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	DirAccess.remove_absolute(cache_path)
 
 	var db2 := DocketDBJsonl.open_jsonl(jsonl_path)
@@ -879,7 +879,7 @@ func test_comment_threading_parent_id_preserved() -> Variant:
 	db.close()
 
 	# Delete cache and reopen (forces full rebuild)
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	DirAccess.remove_absolute(cache_path)
 
 	var db2 := DocketDBJsonl.open_jsonl(jsonl_path)
@@ -948,7 +948,7 @@ func test_comment_threading_ids_stable_across_roundtrip() -> Variant:
 	db.close()
 
 	# Force cache rebuild
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	DirAccess.remove_absolute(cache_path)
 
 	var db2 := DocketDBJsonl.open_jsonl(jsonl_path)
@@ -1273,7 +1273,7 @@ func test_e2e_full_roundtrip_with_links_and_attachments() -> Variant:
 	db.close()
 
 	# Delete cache → force rebuild
-	var cache_path := jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	DirAccess.remove_absolute(cache_path)
 
 	var db2 := DocketDBJsonl.open_jsonl(jsonl_path)

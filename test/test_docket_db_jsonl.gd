@@ -83,7 +83,7 @@ func test_create_new_jsonl_creates_file() -> Variant:
 
 
 func test_create_new_jsonl_cache_exists() -> Variant:
-	var cache_path := _jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 	return A.is_true(FileAccess.file_exists(cache_path), "cache file exists")
 
 
@@ -337,7 +337,7 @@ func test_roundtrip_preserves_data() -> Variant:
 
 	# Close and delete cache, reopen from JSONL only
 	_db.close()
-	var cache_path := _jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 	for suffix: String in ["", "-wal", "-shm"]:
 		DirAccess.remove_absolute(cache_path + suffix)
 
@@ -439,21 +439,24 @@ func test_bump_retrieval_updates_jsonl() -> Variant:
 class CountingJsonlDB extends DocketDBJsonl:
 	var write_count: int = 0
 
-	func _flush_jsonl() -> void:
+	func _flush_jsonl() -> String:
 		if _flush_depth == 0:
 			write_count += 1  # this call is the one that reaches the disk
-		super._flush_jsonl()
+		return super._flush_jsonl()
 
 	## Mirrors create_new_jsonl(), which hardcodes DocketDBJsonl.new() and so
 	## cannot produce a subclass.
 	static func make(path: String) -> CountingJsonlDB:
 		var w := CountingJsonlDB.new()
 		w._jsonl_path = path
-		var cache := DocketDB.create_new(path + ".cache")
+		w._allow_initial_write = true
+		var cache := DocketDB.create_new(JSONLCache.cache_path_for_version(path, "2.0.0"))
 		if cache == null:
 			return null
 		w._adopt(cache)
+		TypeRegistryBootstrap.seed_cache(w)
 		w._flush_jsonl()
+		w._allow_initial_write = false
 		return w
 
 

@@ -4,6 +4,12 @@
 **Status:** Draft
 **Date:** 2026-07-28
 
+This document first specifies the legacy `1.0.0` contract. The
+[version 2.0.0 contract](#docket-jsonl-20-storage-contract) later in this
+document replaces the cache naming, line-kind ordering, and empty-value rules
+where it explicitly says so. Existing `1.0.0` files retain the legacy rules
+until an explicit upgrade.
+
 ---
 
 ## 1. Overview
@@ -572,3 +578,102 @@ Conciseness (lines are shorter, diffs are cleaner) and merge-friendliness (fewer
 ### Why deterministic key order?
 
 Without deterministic key order, logically identical data can produce different byte sequences, causing spurious Git diffs. Deterministic ordering ensures that `serialize(parse(file)) == file` for a conforming writer.
+## Docket JSONL 2.0 storage contract
+
+Version `2.0.0` adds project-local type definitions and lossless item
+envelopes. A `1.0.0` file remains a compatibility file until an explicit
+previewed upgrade is applied. Opening or editing a 1.0 file does not upgrade
+it. Writers that do not understand `type_def` and `type_def_version` must be
+stopped before upgrade and must not subsequently write the upgraded file.
+
+The meta record announces the format before any canonical or cache mutation.
+Readers refuse unsupported versions, conflict markers, duplicate identities,
+and inconsistent registry pointers. Version 2 caches use `<file>.v2.cache`;
+version 1 caches retain `<file>.cache`. Applying an upgrade invalidates the
+old cache. Rollback restores the pre-upgrade canonical snapshot and removes
+the v2 cache.
+
+## Registry records
+
+Each type has exactly one stable record:
+
+```json
+{"_type":"type_def","id":"type:widget","slug":"widget","lifecycle":"active","current_revision":"type:widget@7e8f","provenance":{"kind":"custom","protected":false}}
+```
+
+`id` is immutable and project-local. `slug` is immutable and unique within the
+project. `lifecycle` is `draft`, `active`, or `deprecated`.
+`current_revision` names one revision belonging to this type. `provenance` is
+an object recording origin and ratification data.
+
+Revisions are immutable, complete snapshots:
+
+```json
+{"_type":"type_def_version","id":"type:widget@7e8f","type_id":"type:widget","definition":{"slug":"widget","label":"Widget","description":"Tracks a manufactured widget","fields":[{"key":"serial_number","type":"string","required":true,"nullable":false,"mutable":false}],"lifecycle":{"initial_state":"queued","states":[{"key":"queued","state_category":"queued","state_outcome":""}],"terminal_states":[],"transitions":{"queued":[]},"guards":{},"enforcement":"strict"},"protected":false,"protected_behavior":{"regular_creation_allowed":true}},"author":"alex","created_at":"2026-09-12T00:00:00Z","reason":"initial custom definition"}
+```
+
+The shortened `7e8f` suffix above is illustrative. Implementations use the
+full lowercase SHA-256 digest of the canonical complete `definition` object.
+
+`parent_revision` is omitted only for the first revision. The `definition`
+object contains the complete meaning: presentation, typed field descriptors,
+initial state, ordered states with `state_category`, explicitly declared
+terminal membership and `state_outcome`, edges, guards, enforcement, and
+protected behavior. A reader never fills missing revision meaning from its
+currently shipped schema. Concurrent revision records may coexist, but there
+is one explicit current pointer and no timestamp winner.
+
+Items keep `type` and `status` for legacy APIs and additionally pin `type_id`
+and `type_revision`. A missing definition or revision makes the item readable
+with an unresolved-definition diagnostic, while destructive writes and close
+flush are blocked until repaired.
+
+## Item envelopes
+
+Universal and legacy compatibility keys remain top-level. Reserved keys are
+`_type`, `id`, `type`, `type_id`, `type_revision`, `status`, `title`,
+`description`, `created_at`, `updated_at`, `created_by`, `assigned_to`,
+`directed_to`, `priority`, `severity`, `tags`, `events`, `links`, `parent`,
+`blocked_by`, and every legacy built-in flat field listed in this document's
+1.0 item schema. Those flat keys remain authoritative for existing APIs and
+storage columns.
+
+New definition-owned values live only in `fields`, a JSON object. Unknown
+future top-level payloads live only in `extras`, a JSON object. A key appearing
+both at top level and in either envelope, or in both envelopes, is ambiguous
+and is rejected. No per-type or per-field table or column is created.
+
+Envelope membership distinguishes unset from explicit JSON `null`. Values
+preserve `false`, `0`, empty strings, empty arrays/objects, Unicode, literal
+escapes, arrays, objects, and null. Ordinary edits replace only keys explicitly
+provided and never apply the legacy empty-value stripping rule to envelopes.
+Objects serialize recursively with lexicographically sorted keys; arrays retain
+order. Record kinds sort as meta, type definitions by slug/id, revisions by
+type/id, then the existing 1.0 record order.
+
+Legacy SQLite must first be explicitly promoted to canonical JSONL. Custom
+type activation is allowed only after an explicit 2.0 preview and checked
+apply. The preview reports starter definitions, item bindings, unresolved
+slugs/statuses, cache changes, and snapshot paths without mutating either
+canonical source or cache.
+
+Starter state categories are part of each immutable snapshot. The published
+mapping is: bug `new/triaged:queued`, `active:active`,
+`resolved/verified:waiting`, `closed:terminal`; DCR
+`proposed/approved:queued`, `designing/implementing/reviewing:active`,
+`shipped:terminal`; RCA `detected:queued`,
+`investigating/root_caused/remediating:active`, `verified:waiting`,
+`closed:terminal`; chore `open:queued`, `in_progress:active`, `done:terminal`;
+hint `draft:queued`, `validated:active`, `promoted:terminal`; insight
+`draft:queued`, `confirmed:terminal`; question `asked:queued`,
+`researching:active`, `escalated:waiting`, `answered:terminal`; work item
+`backlog/open:queued`, `in_progress:active`, `blocked:waiting`, `done:terminal`;
+secret `active/rotated:active`, `revoked:terminal`; encrypted note
+`draft:queued`, `sealed:terminal`; test `draft/ready:queued`,
+`passing/failing:active`, `skipped:waiting`, `retired:terminal`; discussion
+`active:active`, `resolved:waiting`; skill, prompt, and KB `draft:queued`,
+`active:active`, `archived:waiting`; policy `draft/proposed:queued`,
+`active:active`, `suspended/archived:waiting`. This preserves the original
+schema: Discussion's `resolved` and skill/prompt/KB/policy `archived` states
+remain nonterminal. Terminal outcomes are `unspecified` unless a definition
+explicitly supplies stronger meaning.

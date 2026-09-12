@@ -93,3 +93,25 @@ Evidence: `/tmp/docket-dynamic-verification/logs/a-type-catalog-7.log`,
 `a-multiselect-final.png`, `a-discussion-statuses-final.png` in the same
 verification directory. The final Godot 4.7.1 import has no script errors.
 All A implementation, finding, review and verification items are done.
+
+### B: storage implementation in progress
+
+Starter revisions must contain complete field and lifecycle meaning, with
+content-derived revision identities. State categories are assigned explicitly
+per built-in type; historical terminal membership is preserved, and terminal
+outcomes remain `unspecified` where the schema gives no stronger meaning.
+
+Canonical writes must reject missing or unresolved sources before changing
+the cache, compare strong source hashes to catch same-size external edits,
+and propagate lock/write failures. Compound registry writes stage revision,
+current pointer, item bindings and audit evidence together. Failed canonical
+writes restore the disposable cache from committed canonical state.
+
+Upgrade preview/apply must compare complete source content, preserve unrelated
+records including vault and attachment payloads, and require an exclusive
+writer workflow. Rollback must refuse to overwrite post-upgrade changes.
+These are implementation/review requirements, not yet verified results.
+
+The post-review gate will run storage/JSON capability checks and existing
+persistence regressions, then exercise the actual baseline standalone reader
+against cold and warm disposable v2 files. No B runtime checks have run.

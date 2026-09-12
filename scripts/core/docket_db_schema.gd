@@ -38,7 +38,23 @@ static func init_schema(db: DocketDB) -> void:
 		pristine_hash TEXT DEFAULT '',
 		pristine_content TEXT DEFAULT '',
 		unsatisfied_deps TEXT DEFAULT '',
-		deprecated INTEGER DEFAULT 0
+		deprecated INTEGER DEFAULT 0,
+		type_id TEXT DEFAULT '', type_revision TEXT DEFAULT '',
+		fields_json TEXT NOT NULL DEFAULT '{}',
+		extras_json TEXT NOT NULL DEFAULT '{}'
+	);""")
+
+	# Registry rows are fixed-shape cache records. Complete definitions stay in
+	# JSON, so adding a type, state, or field never changes SQLite's schema.
+	db._exec("""CREATE TABLE IF NOT EXISTS type_defs (
+		id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, lifecycle TEXT NOT NULL,
+		current_revision TEXT NOT NULL, provenance_json TEXT NOT NULL
+	);""")
+	db._exec("""CREATE TABLE IF NOT EXISTS type_def_versions (
+		id TEXT PRIMARY KEY, type_id TEXT NOT NULL, parent_revision TEXT,
+		definition_json TEXT NOT NULL, author TEXT NOT NULL,
+		created_at TEXT NOT NULL, reason TEXT NOT NULL,
+		FOREIGN KEY(type_id) REFERENCES type_defs(id)
 	);""")
 
 	db._exec("""CREATE TABLE IF NOT EXISTS item_tags (
@@ -173,6 +189,23 @@ static func _backfill_secret_ownership(db: DocketDB) -> void:
 
 static func migrate_schema(db: DocketDB) -> void:
 	var col_rows := db._exec_select("PRAGMA table_info(items);")
+	for column_sql in [
+		"type_id TEXT DEFAULT ''", "type_revision TEXT DEFAULT ''",
+		"fields_json TEXT NOT NULL DEFAULT '{}'", "extras_json TEXT NOT NULL DEFAULT '{}'",
+	]:
+		var column_name := str(column_sql).get_slice(" ", 0)
+		if not DocketDB._has_column(col_rows, column_name):
+			db._exec("ALTER TABLE items ADD COLUMN %s;" % column_sql)
+	db._exec("""CREATE TABLE IF NOT EXISTS type_defs (
+		id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, lifecycle TEXT NOT NULL,
+		current_revision TEXT NOT NULL, provenance_json TEXT NOT NULL
+	);""")
+	db._exec("""CREATE TABLE IF NOT EXISTS type_def_versions (
+		id TEXT PRIMARY KEY, type_id TEXT NOT NULL, parent_revision TEXT,
+		definition_json TEXT NOT NULL, author TEXT NOT NULL,
+		created_at TEXT NOT NULL, reason TEXT NOT NULL,
+		FOREIGN KEY(type_id) REFERENCES type_defs(id)
+	);""")
 
 	# Add missing TEXT columns
 	for col_name in ["blocked_by", "findings",
