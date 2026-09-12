@@ -156,6 +156,9 @@ func _rebuild() -> void:
 		var marker := "★ " if _pinned.has(record.key) else ""
 		var count := int(record.item_count)
 		var text := "%s%s%s  ·  %d %s" % [marker, record.label, suffix, count, "item" if count == 1 else "items"]
+		if not purpose.is_empty():
+			var brief := purpose if purpose.length() <= 80 else purpose.left(77) + "..."
+			text += "  —  %s" % brief
 		_list.add_item(text)
 		var idx := _list.item_count - 1
 		_list.set_item_metadata(idx, record.key)

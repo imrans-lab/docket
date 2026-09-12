@@ -229,7 +229,7 @@ func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
 	for i in chooser._list.item_count:
 		if chooser._list.get_item_text(i).begins_with("discussion"): discussion_index = i
 	var text := chooser._list.get_item_text(discussion_index)
-	var r = A.is_true(text.contains("·  1 item") and not text.contains("\n"), "row has readable count separator")
+	var r = A.is_true(text.contains("·  1 item  —  Async decisions") and not text.contains("\n"), "row visibly separates count and brief purpose")
 	if r != true: chooser.queue_free(); return r
 	r = A.is_true(chooser._list.get_item_tooltip(discussion_index).contains("Async decisions"), "purpose remains available as detail")
 	chooser.queue_free(); return r
