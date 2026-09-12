@@ -18,6 +18,7 @@ var _search: LineEdit
 var _list: ItemList
 var _selected_label: Label
 var _shortcut_box: HFlowContainer
+var _shortcut_scroll: ScrollContainer
 var _empty_label: Label
 var _historical: CheckButton
 var _shortcut_error: Label
@@ -26,7 +27,8 @@ var _shortcut_error: Label
 func _init() -> void:
 	_button = Button.new()
 	_button.text = "Any type"
-	_button.pressed.connect(_open_popup)
+	_button.pressed.connect(_request_open_popup)
+	_button.gui_input.connect(_on_button_gui_input)
 	add_child(_button)
 
 	_popup = PopupPanel.new()
@@ -57,13 +59,13 @@ func _init() -> void:
 	_selected_label = Label.new()
 	_selected_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_selected_label)
-	var shortcut_scroll := ScrollContainer.new()
-	shortcut_scroll.custom_minimum_size.y = 64
-	shortcut_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	content.add_child(shortcut_scroll)
+	_shortcut_scroll = ScrollContainer.new()
+	_shortcut_scroll.custom_minimum_size.y = 48
+	_shortcut_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	content.add_child(_shortcut_scroll)
 	_shortcut_box = HFlowContainer.new()
 	_shortcut_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	shortcut_scroll.add_child(_shortcut_box)
+	_shortcut_scroll.add_child(_shortcut_box)
 	_shortcut_error = Label.new()
 	_shortcut_error.add_theme_color_override("font_color", Color(1.0, 0.55, 0.3))
 	_shortcut_error.visible = false
@@ -110,24 +112,48 @@ func update_catalog(catalog: Array, project_key: String) -> void:
 	_rebuild()
 
 
+func _request_open_popup() -> void:
+	# Opening after the activating release is fully dispatched prevents the same
+	# mouse event from being treated as an outside click by the new popup window.
+	call_deferred("_open_popup")
+
+
+func _on_button_gui_input(event: InputEvent) -> void:
+	# Button.pressed covers keyboard activation. Queue explicitly from mouse
+	# release as well so platform-specific Button signal ordering cannot expose
+	# the popup to the release that created it.
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+		_request_open_popup()
+
+
 func _open_popup() -> void:
+	if _popup.visible:
+		return
 	var anchor := _button.get_screen_position()
 	var below := Vector2i(roundi(anchor.x), roundi(anchor.y + _button.size.y + 2.0))
-	_popup.popup(Rect2i(below, Vector2i(522, 372)))
+	_popup.popup(Rect2i(below, Vector2i(522, 360)))
 	_search.call_deferred("grab_focus")
 
 
 func _on_search_gui_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_DOWN and _list.item_count > 0:
 		_list.grab_focus()
-		if _list.get_selected_items().is_empty(): _list.select(0)
+		_list.set_current(0)
 		_list.ensure_current_is_visible()
 		accept_event()
 
 
 func _on_list_gui_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and event.keycode == KEY_UP and _list.get_current() == 0:
+	if not event is InputEventKey or not event.pressed:
+		return
+	if event.keycode == KEY_UP and _list.get_current() == 0:
 		_search.grab_focus()
+		accept_event()
+	elif event.keycode == KEY_SPACE and _list.get_current() >= 0:
+		var current := _list.get_current()
+		if _list.is_selected(current): _list.deselect(current)
+		else: _list.select(current, false)
+		_on_selection_changed(current)
 		accept_event()
 
 
@@ -197,6 +223,7 @@ func _rebuild_shortcuts() -> void:
 			var shortcut := Button.new(); shortcut.text = _label_for_key(str(key)); shortcut.focus_mode = Control.FOCUS_ALL
 			shortcut.pressed.connect(_activate_shortcut.bind(str(key)))
 			_shortcut_box.add_child(shortcut)
+	_shortcut_scroll.visible = _shortcut_box.get_child_count() > 0
 
 
 func _activate_shortcut(key: String) -> void:

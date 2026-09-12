@@ -200,19 +200,25 @@ func test_type_chooser_supports_focusable_keyboard_multiselect() -> Variant:
 	r = A.eq(chooser._shortcut_box.get_child(1).focus_mode, Control.FOCUS_ALL, "shortcut action participates in keyboard focus")
 	chooser.queue_free(); return r
 
-func test_search_down_moves_focus_and_selection_to_catalog() -> Variant:
+func test_search_down_then_space_moves_focus_and_selects_catalog_value() -> Variant:
 	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha"), "input-test")
 	chooser._search.grab_focus()
 	var down := InputEventKey.new(); down.pressed = true; down.keycode = KEY_DOWN
 	chooser._on_search_gui_input(down)
 	var r = A.is_true(chooser._list.has_focus(), "Down transfers focus from search to results")
 	if r != true: chooser.queue_free(); return r
-	r = A.eq(chooser._list.get_selected_items(), PackedInt32Array([0]), "Down establishes a selectable current row")
+	r = A.eq(chooser._list.get_selected_items().size(), 0, "navigation alone does not change query selection")
+	if r != true: chooser.queue_free(); return r
+	var space := InputEventKey.new(); space.pressed = true; space.keycode = KEY_SPACE
+	chooser._on_list_gui_input(space)
+	r = A.eq(chooser.selected_values(), [chooser._list.get_item_metadata(0)], "Space commits the focused row to query selection")
 	chooser.queue_free(); return r
 
 func test_popup_opens_below_anchor_with_opaque_bounded_content() -> Variant:
 	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha"), "popup-test")
-	chooser._button.pressed.emit()
+	var release := InputEventMouseButton.new(); release.button_index = MOUSE_BUTTON_LEFT; release.pressed = false
+	chooser._on_button_gui_input(release)
+	await get_tree().process_frame
 	var minimum_y := roundi(chooser._button.get_screen_position().y + chooser._button.size.y)
 	var r = A.is_true(chooser._popup.visible, "button activation opens popup")
 	if r != true: chooser.queue_free(); return r
@@ -220,7 +226,7 @@ func test_popup_opens_below_anchor_with_opaque_bounded_content() -> Variant:
 	if r != true: chooser.queue_free(); return r
 	r = A.is_false(chooser._popup.transparent_bg, "popup owns an opaque background")
 	if r != true: chooser.queue_free(); return r
-	r = A.is_true(chooser._popup.size.y <= 400, "popup height remains bounded")
+	r = A.is_true(chooser._popup.size.y <= 400, "popup height remains bounded; actual=%d" % chooser._popup.size.y)
 	chooser._popup.hide(); chooser.queue_free(); return r
 
 func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
