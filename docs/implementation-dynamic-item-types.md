@@ -38,7 +38,7 @@ legacy cache is outside the supported upgrade workflow.
 | --- | --- | --- | --- |
 | A: Query UX | `1fd1046` | Terra cleared | 61 targeted tests pass; GUI accepted |
 | B: Storage | `8fe623a` | Terra cleared | Storage 45/45, freshness 14/14; broader failures resolved; old-reader checks pass |
-| C: Registry and validation | In progress | Pending | Not run |
+| C: Registry and validation | `59b3e1c` | Terra cleared | Registry 27/27 and 174 related regressions pass |
 | D: MCP and queries | Pending | Pending | Not run |
 | E: GUI and integration | Pending | Pending | Not run |
 
@@ -197,3 +197,23 @@ roundtrips, finite numeric values, refusal of unknown unsets, immutable array
 constraints, and validation of preserved opaque values that become declared
 fields during an explicit revision upgrade. Three additional finding items
 track these corrections. No C runtime checks have run.
+
+### C: accepted
+
+Final reviewed snapshot: `59b3e1c2f99c529166ab87490c6ab6edadfac694`.
+The registry validates stored definitions before publication, shares project
+semantics across interfaces, protects immutable revisions, and validates whole
+candidates before typed writes or selected revision upgrades. Unknown values
+survive edits, unsupported unsets are refused, and explicit upgrades preserve
+existing false/zero/null/empty values before considering defaults.
+
+After Terra clearance, verification corrected GDScript type inference and two
+test defects (JSON numeric comparison and legacy SQLite fixture initialization).
+Each correction received delta review before rerun. The Godot 4.7.1 import is
+clean; all 27 registry tests pass. An isolated checkout of reviewed `8327523`
+also passes storage 45, freshness 14, DataModel 15, StateMachine 30, MCP 67,
+and functional cross-project 3 tests (174 total). Application source is unchanged
+between those related checks and the final test-only snapshot.
+
+Evidence: `c-import-2.log`, `c-registry-2.log`, and `c-test_*-1.log` under
+`/tmp/docket-dynamic-verification/logs/`. All C findings and gates are complete.
