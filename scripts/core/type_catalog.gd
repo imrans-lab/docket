@@ -33,9 +33,16 @@ static func from_schema(schema: Dictionary, project: String = "", counts: Dictio
 	return sorted(result)
 
 static func from_registry(registry: TypeRegistry, counts: Dictionary = {}) -> Array:
+	var checked: Dictionary = from_registry_checked(registry, counts)
+	return checked.records
+
+static func from_registry_checked(registry: TypeRegistry, counts: Dictionary = {}) -> Dictionary:
 	var result: Array = []
-	for value in registry.list_types(true):
-		if not value is Dictionary or value.has("error"): continue
+	var values: Array = registry.list_types(true)
+	if values.size() == 1 and values[0] is Dictionary and values[0].has("error"): return {"records":[],"error":str(values[0].error)}
+	for value in values:
+		if not value is Dictionary: return {"records":[],"error":"type registry returned a malformed catalog entry"}
+		if value.has("error"): return {"records":[],"error":str(value.error)}
 		var descriptor: Dictionary = value
 		var definition: Dictionary = descriptor.definition
 		var states: Array = []
@@ -45,7 +52,7 @@ static func from_registry(registry: TypeRegistry, counts: Dictionary = {}) -> Ar
 		for field in definition.fields:
 			fields.append(str(field.key)); field_kinds[str(field.key)] = str(field.type)
 		result.append({"id":descriptor.id,"key":identity(registry.get_project_name(),str(descriptor.id)),"slug":descriptor.slug,"label":definition.label,"description":definition.description,"use_when":definition.get("use_when", ""),"aliases":definition.get("aliases", []),"project":registry.get_project_name(),"item_count":int(counts.get(descriptor.slug, 0)),"deprecated":descriptor.lifecycle == "deprecated","states":states,"fields":fields,"field_kinds":field_kinds,"revision":descriptor.current_revision})
-	return sorted(result)
+	return {"records":sorted(result),"error":""}
 
 
 static func identity(project: String, type_id: String) -> String:

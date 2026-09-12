@@ -411,7 +411,7 @@ func _sort_requires_registry_values(specs: Array) -> bool:
 
 func _query_has_typed_binding(value) -> bool:
 	if value is Dictionary:
-		if value.has("type_id") or value.has("field_key") or str(value.get("field", "")) in RegistryQuery.DERIVED_FIELDS: return true
+		if value.has("conditions") or value.has("$and") or value.has("$or") or value.has("type_id") or value.has("field_key") or str(value.get("field", "")) in RegistryQuery.DERIVED_FIELDS: return true
 		for child in value.values():
 			if _query_has_typed_binding(child): return true
 	elif value is Array:

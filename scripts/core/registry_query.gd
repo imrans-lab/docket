@@ -9,6 +9,8 @@ static func compile(query: Dictionary, registry: TypeRegistry, allowed_fields: A
 	var filter_value = query.get("filter", {})
 	var translated: Dictionary
 	if filter_value is Dictionary and filter_value.has("conditions"):
+		if filter_value.size() != 1: return {"error":"conditions wrapper cannot contain sibling filter keys"}
+		if not filter_value.conditions is Array: return {"error":"conditions must be an array"}
 		translated = _conditions(filter_value.conditions, registry)
 	elif filter_value is Dictionary and (filter_value.has("$or") or filter_value.has("$and") or filter_value.has("field_key") or filter_value.has("op") or filter_value.has("type_id")):
 		translated = _tree(filter_value, registry)

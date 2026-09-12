@@ -238,3 +238,8 @@ mirror; query shape and branch-scope validation; pinned cross-project sorting;
 saved-query/MCP validation; and multi-type chooser binding preservation.
 Sol is implementing the corrections and regression coverage. Comments were
 generally salient; no D runtime checks have run.
+
+Terra reviewed the correction snapshot `5bce28f`: the eight original groups
+are addressed statically. Two remaining findings require malformed `conditions`
+wrapper validation and clear public/UI diagnostics for invalid registries.
+Sol is correcting these before delta review. No D runtime checks have run.

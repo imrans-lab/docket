@@ -97,6 +97,7 @@ var _sort_field: String = ""
 var _sort_dir: String = "asc"
 var _sort_binding: Dictionary = {}
 var _dcq_columns: Array = []
+var _catalog_diagnostic: String = ""
 
 # Header drag state
 var _drag_col: int = -1   # index of column whose RIGHT edge is being dragged
@@ -126,6 +127,7 @@ func _on_file_changed() -> void:
 
 func _rebuild_type_catalog() -> void:
 	_type_catalog.clear()
+	_catalog_diagnostic = ""
 	var projects: Array = _state.get_project_dbs().keys()
 	projects.sort()
 	if projects.is_empty():
@@ -140,8 +142,11 @@ func _rebuild_type_catalog() -> void:
 				var slug := str(item.get("type", ""))
 				counts[slug] = int(counts.get(slug, 0)) + 1
 		var registry: TypeRegistry = _state.get_type_registry(project)
-		if registry != null and registry.get_diagnostic().is_empty(): _type_catalog.append_array(TypeCatalog.from_registry(registry, counts))
-		else: _type_catalog.append_array(TypeCatalog.from_schema(_state.schema, project, counts))
+		var catalog_result: Dictionary = TypeCatalog.from_registry_checked(registry, counts) if registry != null else {"records":[],"error":"type registry is unavailable"}
+		if registry != null and registry.get_diagnostic().is_empty() and str(catalog_result.error).is_empty(): _type_catalog.append_array(catalog_result.records)
+		else:
+			var reason: String = registry.get_diagnostic() if registry != null and not registry.get_diagnostic().is_empty() else str(catalog_result.error)
+			_catalog_diagnostic = "Type catalog unavailable for %s: %s" % [project, reason]
 	_type_catalog = TypeCatalog.sorted(_type_catalog)
 
 
@@ -786,6 +791,11 @@ func _op_label_to_key(label: String) -> String:
 
 func _run_query() -> void:
 	_rebuild_columns()
+	if not _catalog_diagnostic.is_empty():
+		_current_results.clear()
+		_tree.clear()
+		_count_label.text = _catalog_diagnostic
+		return
 	var filter := _build_conditions_filter()
 	var query := {"filter": filter}
 	if not _sort_field.is_empty():

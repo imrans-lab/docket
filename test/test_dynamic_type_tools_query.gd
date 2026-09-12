@@ -412,3 +412,37 @@ func test_legacy_jsonl_mirror_uses_compatibility_registry_without_upgrade() -> V
 	var refused: Dictionary = registry.mirror_item("LEG-0001", {"fields":{"title":""}}, "", "tester", "", "invalid")
 	var r = A.is_true(not result.has("error") and after.title == "Mirrored" and after.status == "resolved" and refused.has("error") and db.get_item("LEG-0001").title == "Mirrored" and FileAccess.get_file_as_string(path) == before_bytes and db.get_meta_value("jsonl_version", "") == "1.0.0", "legacy JSONL mirror shares candidate and lifecycle validation without upgrading format or partially applying invalid data")
 	db.close(); return r
+
+func test_public_query_wrappers_reject_malformed_conditions_without_persistence() -> Variant:
+	var db: DocketDBJsonl = _db("MalformedPublic"); var registry: TypeRegistry = _registry_with_widget(db); var tools: ToolRegistry = ToolRegistry.new(); tools.init({}, db, {"MalformedPublic":db})
+	var type_id: String = registry.get_type("widget").id
+	var malformed: Array = [
+		{"conditions":{"field_key":"score","type_id":type_id,"op":"eq","value":1}},
+		{"conditions":[],"$or":[],"type_id":type_id},
+		{"conditions":[],"field_key":"score","type_id":type_id},
+	]
+	var before: String = FileAccess.get_file_as_string(db.get_path())
+	for filter_value in malformed:
+		var queried: Dictionary = tools.call_tool("docket_query", {"project":"MalformedPublic","filter":filter_value})
+		var query_check = A.is_true(queried.has("error") and str(queried.error).contains("condition"), "public query refuses malformed conditions wrapper")
+		if query_check is String: db.close(); return query_check
+		var saved: Dictionary = tools.call_tool("docket_saved_query", {"project":"MalformedPublic","action":"save","name":"invalid","filter":filter_value})
+		var save_check = A.is_true(saved.has("error") and db.load_query("invalid").is_empty(), "public saved query refuses malformed conditions wrapper")
+		if save_check is String: db.close(); return save_check
+	var r = A.eq(FileAccess.get_file_as_string(db.get_path()), before, "malformed public queries never mutate canonical data")
+	db.close(); return r
+
+func test_invalid_registry_is_public_error_and_visible_empty_query_catalog() -> Variant:
+	var db: DocketDBJsonl = _db("InvalidRegistry"); var registry: TypeRegistry = TypeRegistry.for_db(db, "InvalidRegistry")
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init({}, db, {"InvalidRegistry":db})
+	var rows: Array = db._exec_select("SELECT id,definition_json FROM type_def_versions LIMIT 1;")
+	if rows.is_empty(): db.close(); return "seeded definition missing"
+	var malformed: Dictionary = JSON.parse_string(str(rows[0].definition_json)); malformed["lifecycle"] = {"states":"not-an-array"}
+	db._exec("UPDATE type_def_versions SET definition_json=? WHERE id=?;", [JSON.stringify(malformed),str(rows[0].id)])
+	var reload_error: String = registry.reload()
+	var listed: Dictionary = tools.call_tool("docket_type_list", {"project":"InvalidRegistry"})
+	var machines: Dictionary = tools.call_tool("docket_get_state_machine", {"project":"InvalidRegistry"})
+	var state: AppState = AppState.new(); state.db = db; state.schema = TypeRegistryBootstrap.load_shipped_schema(); state._project_dbs = {"InvalidRegistry":db}; state._type_registries = {"InvalidRegistry":registry}
+	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
+	var r = A.is_true(not reload_error.is_empty() and listed.has("error") and machines.has("error") and grid._type_catalog.is_empty() and grid._catalog_diagnostic.contains("read-only") and grid._count_label.text.contains("Type catalog unavailable"), "invalid stored definitions propagate through public discovery and remain visible without selectable schema fallback")
+	grid.queue_free(); db.close(); return r

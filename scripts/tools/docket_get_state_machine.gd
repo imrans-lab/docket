@@ -25,6 +25,7 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 			if descriptor.has("error"): return descriptor
 			return {"type":descriptor.slug,"type_id":descriptor.id,"revision":descriptor.current_revision,"lifecycle":descriptor.definition.lifecycle}
 		var definitions: Array = registry.list_types(true)
+		if definitions.size() == 1 and definitions[0] is Dictionary and definitions[0].has("error"): return definitions[0]
 		return {"state_machines":definitions}
 	var types: Dictionary = schema.get("types", {})
 
