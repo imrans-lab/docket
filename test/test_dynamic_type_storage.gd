@@ -500,3 +500,112 @@ func test_event_failure_returns_error_and_restores_item_timestamp() -> Variant:
 	r = A.eq(after.updated_at, before.updated_at, "event and timestamp update share one rollback boundary")
 	db.close()
 	return r
+
+func test_comment_resolution_event_failure_rolls_back_open_comment() -> Variant:
+	var path := DIR + "/comment-resolution-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var created := db.add_comment("ORD-0001", "reviewer", "keep this open")
+	var comment_id := int(created.id)
+	var canonical_before := _read_file(path)
+	var events_before := db.get_events("ORD-0001")
+	db._exec("CREATE TRIGGER reject_resolution_event BEFORE INSERT ON item_events BEGIN SELECT RAISE(ABORT, 'resolution audit rejected'); END;")
+	var resolved := db.resolve_comment(comment_id, "accepted", "reviewer")
+	var r = A.is_true(resolved.has("error"), "resolution audit failure reaches caller")
+	if r != true: db.close(); return r
+	var comment := db.get_comment(comment_id)
+	r = A.is_true(comment.status == "open" and comment.resolved_at == "" and comment.resolved_by == "", "comment resolution fields roll back with rejected audit event")
+	if r != true: db.close(); return r
+	r = A.eq(db.get_events("ORD-0001"), events_before, "failed resolution adds no event")
+	if r != true: db.close(); return r
+	db.close()
+	r = A.eq(_read_file(path), canonical_before, "failed resolution preserves canonical bytes")
+	if r != true: return r
+	db = DocketDBJsonl.open_jsonl(path)
+	comment = db.get_comment(comment_id)
+	r = A.is_true(comment.status == "open" and db.get_events("ORD-0001") == events_before, "reopen observes the original open comment and events")
+	db.close()
+	return r
+
+func test_attachment_import_failure_rolls_back_main_and_related_rows() -> Variant:
+	var path := DIR + "/attachment-import-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var exported := db.export_item_full("ORD-0001")
+	exported.events = []
+	exported.attachments = [{"filename":"blocked.bin","data":PackedByteArray([1]),"created_at":"x"}]
+	db._exec("CREATE TRIGGER reject_import_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'attachment rejected'); END;")
+	var error := db.import_item_full_checked("ORD-0002", exported)
+	var r = A.is_true(not error.is_empty(), "attachment SQL failure reaches import caller")
+	if r != true: db.close(); return r
+	r = A.is_false(db.has_item("ORD-0002"), "attachment failure rolls back imported item and moved event")
+	db.close()
+	return r
+
+func test_unset_envelopes_require_arrays_of_string_keys() -> Variant:
+	var path := DIR + "/invalid-unset.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var before := _read_file(path)
+	var error := db.update_item_fields_checked("ORD-0001", {"unset_fields":"count"})
+	var r = A.contains(error, "must be an array", "string unset payload is rejected")
+	if r != true: db.close(); return r
+	error = db.update_item_fields_checked("ORD-0001", {"unset_extras":[7]})
+	r = A.contains(error, "must be strings", "unset keys require strings")
+	db.close()
+	if r != true: return r
+	return A.eq(_read_file(path), before, "invalid unset payloads perform no canonical mutation")
+
+func test_project_meta_multiwrite_failure_rolls_back_earlier_key() -> Variant:
+	var path := DIR + "/project-meta-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	db._exec("CREATE TRIGGER reject_project_hypothesis BEFORE INSERT ON docket_meta WHEN NEW.key='project_hypothesis' BEGIN SELECT RAISE(ABORT, 'meta rejected'); END;")
+	var error := db.set_project_meta_checked({"stage":"experiment","hypothesis":"blocked"})
+	var r = A.is_true(not error.is_empty(), "middle project metadata failure reaches caller")
+	if r != true: db.close(); return r
+	r = A.eq(db.get_meta_value("project_stage", ""), "", "earlier metadata key rolls back")
+	db.close()
+	return r
+
+func test_rewrite_middle_failure_rolls_back_all_reference_columns() -> Variant:
+	var path := DIR + "/rewrite-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	db.update_item_fields_checked("ORD-0001", {"parent":"old:item","blocked_by":"old:item"})
+	db._exec("CREATE TRIGGER reject_blocked_rewrite BEFORE UPDATE OF blocked_by ON items BEGIN SELECT RAISE(ABORT, 'rewrite rejected'); END;")
+	var result := db.rewrite_refs_checked("old:item", "new:item", "old", "new:item")
+	var item := db.get_item("ORD-0001")
+	var r = A.is_true(not str(result.error).is_empty(), "middle rewrite failure reaches checked caller")
+	if r != true: db.close(); return r
+	r = A.is_true(item.parent == "old:item" and item.blocked_by == "old:item", "all reference updates roll back together")
+	db.close()
+	return r
+
+func test_vault_initialization_failure_rolls_back_all_metadata() -> Variant:
+	var path := DIR + "/vault-init-failure.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	db._exec("CREATE TRIGGER reject_vault_verify BEFORE INSERT ON docket_meta WHEN NEW.key='vault_verify' BEGIN SELECT RAISE(ABORT, 'vault rejected'); END;")
+	var error := db.init_vault_checked(PackedByteArray([1,2,3]), PackedByteArray([4,5,6]), 10)
+	var r = A.is_true(not error.is_empty(), "vault multiwrite failure reaches checked caller")
+	if r != true: db.close(); return r
+	r = A.eq(db.get_meta_value("vault_salt", ""), "", "earlier vault metadata rolls back")
+	db.close()
+	return r
+
+func test_nested_project_metadata_completion_writes_canonical_once() -> Variant:
+	var path := DIR + "/nested-one-flush.dct"
+	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	var calls := {"count":0}
+	db._atomic_write_hook = func(write_path: String, text: String):
+		calls.count += 1
+		return DocketDBJsonl._atomic_write(write_path, text)
+	var error := db.set_project_meta_checked({"stage":"experiment","hypothesis":"one transaction","success_criteria":"one flush"})
+	db._atomic_write_hook = Callable()
+	var r = A.eq(error, "", "nested metadata mutation succeeds")
+	if r != true: db.close(); return r
+	r = A.eq(calls.count, 1, "nested virtual setters complete through one durable flush")
+	db.close()
+	return r

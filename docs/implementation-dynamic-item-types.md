@@ -25,6 +25,13 @@ The standalone Docket baseline instead refuses unknown record kinds. A detached
 checkout of that exact baseline is prepared for post-review compatibility
 checks. No legacy-reader check has run yet.
 
+Terra's independent source audit confirmed the baseline standalone reader has
+no effective higher-version check and can bypass parsing with a matching old
+`.cache`. The supported upgrade must remove that cache and use `.v2.cache`.
+Post-review compatibility checks will leave the real v2 cache present and
+exercise the old application's open path. Artificially restoring a matching
+legacy cache is outside the supported upgrade workflow.
+
 ## Batch evidence
 
 | Batch | Implementation | Review | Verification |
@@ -126,3 +133,10 @@ and refuse cache rebuilds that would skip canonical records. Tests must prove
 successful new-type compound creation and ordinary failure rollback, including
 reopened state. Five finding items are children of B-R. Sol is correcting the
 batch; runtime verification remains unexecuted.
+
+At `96ed0d3`, Terra accepted the pointer/digest/FK-order/orphan corrections
+and found remaining unchecked attachment import, comment resolution,
+reference rewriting, project metadata and vault/retrieval mutations. The
+ordinary-write finding remains open. Sol is consolidating all canonical-data
+mutations behind a shared nested transaction/completion mechanism; cache-only
+operational telemetry remains outside canonical persistence.

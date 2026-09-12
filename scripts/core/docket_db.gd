@@ -416,8 +416,16 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 		if extra_changes.has(key) or changes.has(key): return "ambiguous item key '%s'" % key
 	for key in extra_changes:
 		if changes.has(key): return "ambiguous item key '%s'" % key
-	var unset_fields: Array = changes.get("unset_fields", [])
-	var unset_extras: Array = changes.get("unset_extras", [])
+	var unset_fields_value = changes.get("unset_fields", [])
+	var unset_extras_value = changes.get("unset_extras", [])
+	if not unset_fields_value is Array: return "unset_fields must be an array"
+	if not unset_extras_value is Array: return "unset_extras must be an array"
+	var unset_fields: Array = unset_fields_value
+	var unset_extras: Array = unset_extras_value
+	for key in unset_fields:
+		if not key is String: return "unset_fields entries must be strings"
+	for key in unset_extras:
+		if not key is String: return "unset_extras entries must be strings"
 	for key in unset_fields:
 		if field_changes.has(key) or extra_changes.has(key) or unset_extras.has(key): return "ambiguous set/unset item key '%s'" % key
 	for key in unset_extras:
@@ -627,7 +635,7 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 	for att in attachments:
 		var att_data = att.get("data", PackedByteArray())
 		var size_bytes: int = att_data.size() if att_data is PackedByteArray else 0
-		_db.query_with_bindings(
+		_exec_checked(
 			"INSERT INTO attachments (item_id, filename, mime_type, size_bytes, data, created_at, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
 			[new_id, str(att.get("filename", "")), str(att.get("mime_type", "")),
 			 size_bytes, att_data, str(att.get("created_at", "")),
