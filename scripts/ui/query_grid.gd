@@ -106,12 +106,18 @@ const _DRAG_ZONE: int = 5  # pixels from column edge to trigger resize
 func init(state: AppState) -> void:
 	_state = state
 	_state.file_changed.connect(_on_file_changed)
+	_state.data_changed.connect(_on_file_changed)
 	_rebuild_type_catalog()
 	_build_ui()
 
 
 func _on_file_changed() -> void:
 	_rebuild_type_catalog()
+	var shortcut_projects: Array = _state.get_project_dbs().keys()
+	shortcut_projects.sort()
+	var project_key := ",".join(shortcut_projects)
+	for row in _condition_rows:
+		row.type_chooser.update_catalog(_type_catalog, project_key)
 	_refresh_scoped_controls()
 	refresh()
 

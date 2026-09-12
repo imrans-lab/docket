@@ -26,17 +26,33 @@ var _shortcut_error: Label
 func _init() -> void:
 	_button = Button.new()
 	_button.text = "Any type"
-	_button.pressed.connect(func(): _popup.popup(Rect2i(Vector2i(_button.global_position), Vector2i(520, 380))))
+	_button.pressed.connect(_open_popup)
 	add_child(_button)
 
 	_popup = PopupPanel.new()
+	_popup.transparent_bg = false
 	add_child(_popup)
+	var panel := PanelContainer.new()
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.105, 0.105, 0.115, 1.0)
+	panel_style.border_color = Color(0.32, 0.32, 0.36, 1.0)
+	panel_style.set_border_width_all(1)
+	panel_style.set_corner_radius_all(4)
+	panel.add_theme_stylebox_override("panel", panel_style)
+	_popup.add_child(panel)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 10)
+	margin.add_theme_constant_override("margin_top", 10)
+	margin.add_theme_constant_override("margin_right", 10)
+	margin.add_theme_constant_override("margin_bottom", 10)
+	panel.add_child(margin)
 	var content := VBoxContainer.new()
 	content.custom_minimum_size = Vector2(500, 350)
-	_popup.add_child(content)
+	margin.add_child(content)
 	_search = LineEdit.new()
 	_search.placeholder_text = "Search type name, purpose, slug, or alias"
 	_search.text_changed.connect(func(_value): _rebuild())
+	_search.gui_input.connect(_on_search_gui_input)
 	content.add_child(_search)
 	_selected_label = Label.new()
 	_selected_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -64,6 +80,7 @@ func _init() -> void:
 	_list.item_selected.connect(_on_selection_changed)
 	_list.multi_selected.connect(func(_idx, _selected_state): _on_selection_changed(-1))
 	_list.item_clicked.connect(_on_item_clicked)
+	_list.gui_input.connect(_on_list_gui_input)
 	content.add_child(_list)
 	_empty_label = Label.new()
 	_empty_label.text = "No matching types"
@@ -79,6 +96,39 @@ func configure(catalog: Array, project_key: String) -> void:
 	_recent = shortcuts.recent
 	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild()
+
+
+func update_catalog(catalog: Array, project_key: String) -> void:
+	## File changes replace available records but not the user's active chooser
+	## state. Unknown selected identities remain visible for historical queries.
+	_catalog = TypeCatalog.sorted(catalog)
+	if project_key != _project_key:
+		_project_key = project_key
+		var shortcuts := UserPrefs.load_type_shortcuts(project_key)
+		_pinned = shortcuts.pinned
+		_recent = shortcuts.recent
+	_rebuild()
+
+
+func _open_popup() -> void:
+	var anchor := _button.get_screen_position()
+	var below := Vector2i(roundi(anchor.x), roundi(anchor.y + _button.size.y + 2.0))
+	_popup.popup(Rect2i(below, Vector2i(522, 372)))
+	_search.call_deferred("grab_focus")
+
+
+func _on_search_gui_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_DOWN and _list.item_count > 0:
+		_list.grab_focus()
+		if _list.get_selected_items().is_empty(): _list.select(0)
+		_list.ensure_current_is_visible()
+		accept_event()
+
+
+func _on_list_gui_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_UP and _list.get_current() == 0:
+		_search.grab_focus()
+		accept_event()
 
 
 func set_selected_values(values: Array) -> void:
@@ -104,12 +154,12 @@ func _rebuild() -> void:
 		var suffix := " — %s" % project if not project.is_empty() else ""
 		var purpose := str(record.get("description", ""))
 		var marker := "★ " if _pinned.has(record.key) else ""
-		var text := "%s%s%s  (%d)" % [marker, record.label, suffix, int(record.item_count)]
-		if not purpose.is_empty():
-			text += "\n%s" % purpose
+		var count := int(record.item_count)
+		var text := "%s%s%s  ·  %d %s" % [marker, record.label, suffix, count, "item" if count == 1 else "items"]
 		_list.add_item(text)
 		var idx := _list.item_count - 1
 		_list.set_item_metadata(idx, record.key)
+		_list.set_item_tooltip(idx, purpose if not purpose.is_empty() else "%s type" % record.label)
 		if _selected.has(record.key):
 			_list.select(idx, false)
 	_empty_label.visible = matches.is_empty()

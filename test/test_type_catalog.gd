@@ -200,6 +200,59 @@ func test_type_chooser_supports_focusable_keyboard_multiselect() -> Variant:
 	r = A.eq(chooser._shortcut_box.get_child(1).focus_mode, Control.FOCUS_ALL, "shortcut action participates in keyboard focus")
 	chooser.queue_free(); return r
 
+func test_search_down_moves_focus_and_selection_to_catalog() -> Variant:
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha"), "input-test")
+	chooser._search.grab_focus()
+	var down := InputEventKey.new(); down.pressed = true; down.keycode = KEY_DOWN
+	chooser._on_search_gui_input(down)
+	var r = A.is_true(chooser._list.has_focus(), "Down transfers focus from search to results")
+	if r != true: chooser.queue_free(); return r
+	r = A.eq(chooser._list.get_selected_items(), PackedInt32Array([0]), "Down establishes a selectable current row")
+	chooser.queue_free(); return r
+
+func test_popup_opens_below_anchor_with_opaque_bounded_content() -> Variant:
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha"), "popup-test")
+	chooser._button.pressed.emit()
+	var minimum_y := roundi(chooser._button.get_screen_position().y + chooser._button.size.y)
+	var r = A.is_true(chooser._popup.visible, "button activation opens popup")
+	if r != true: chooser.queue_free(); return r
+	r = A.is_true(chooser._popup.position.y >= minimum_y, "popup starts below invoking button")
+	if r != true: chooser.queue_free(); return r
+	r = A.is_false(chooser._popup.transparent_bg, "popup owns an opaque background")
+	if r != true: chooser.queue_free(); return r
+	r = A.is_true(chooser._popup.size.y <= 400, "popup height remains bounded")
+	chooser._popup.hide(); chooser.queue_free(); return r
+
+func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha", {"discussion": 1}), "row-test")
+	var discussion_index := -1
+	for i in chooser._list.item_count:
+		if chooser._list.get_item_text(i).begins_with("discussion"): discussion_index = i
+	var text := chooser._list.get_item_text(discussion_index)
+	var r = A.is_true(text.contains("·  1 item") and not text.contains("\n"), "row has readable count separator")
+	if r != true: chooser.queue_free(); return r
+	r = A.is_true(chooser._list.get_item_tooltip(discussion_index).contains("Async decisions"), "purpose remains available as detail")
+	chooser.queue_free(); return r
+
+func test_query_grid_refreshes_empty_catalog_after_loading_legacy_project() -> Variant:
+	var state := AppState.new(); state.schema = _schema()
+	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	grid._condition_rows[0].type_chooser._search.text = "discussion"
+	var db := _make_db("Loaded", [{"type": "discussion", "status": "active", "title": "Loaded thread"}])
+	db.close(); _dbs.erase(db)
+	state.load_dct(_db_dir + "/Loaded.dct")
+	_dbs.append(state.db)
+	var chooser: TypeChooser = grid._condition_rows[0].type_chooser
+	var r = A.eq(chooser._search.text, "discussion", "catalog refresh preserves active search")
+	if r != true: grid.queue_free(); return r
+	r = A.eq(chooser._list.item_count, 1, "loaded catalog replaces empty choices")
+	if r != true: grid.queue_free(); return r
+	r = A.is_true(chooser._list.get_item_text(0).contains("Loaded") and chooser._list.get_item_text(0).contains("1 item"), "loaded project and live count are shown")
+	if r != true: grid.queue_free(); return r
+	chooser.set_selected_values([chooser._list.get_item_metadata(0)]); grid._user_has_modified = true; grid._run_query()
+	r = A.eq(grid._current_results.size(), 1, "refreshed choice executes against loaded file")
+	grid.queue_free(); return r
+
 func test_duplicate_slug_selection_uses_catalog_identity_and_human_label() -> Variant:
 	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
 	catalog.append_array(TypeCatalog.from_schema(_schema(), "Beta"))
