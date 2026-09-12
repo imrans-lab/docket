@@ -438,6 +438,7 @@ func validate_candidate(definition: Dictionary, candidate: Dictionary, creation:
 		if key not in descriptors and key not in UNIVERSAL_MUTABLE: return "field '%s' is unsupported by pinned revision" % key
 		if descriptors.has(key):
 			var error := _validate_value(descriptors[key], candidate[key], false)
+			if not error.is_empty() and bool(definition.get("protected", false)) and str(descriptors[key].get("type", "")) in ["date", "timestamp"] and candidate[key] is String and candidate[key].is_empty(): error = ""
 			if not error.is_empty(): return "field '%s': %s" % [key, error]
 		elif key in UNIVERSAL_MUTABLE:
 			var universal_error := _validate_value(_universal_descriptor(key), candidate[key], false)
@@ -811,6 +812,7 @@ func _validate_mutable_patch(definition: Dictionary, values: Dictionary, unset: 
 func _universal_descriptor(key: String) -> Dictionary:
 	if key in ["priority", "severity"]: return {"key":key,"type":"integer","nullable":true}
 	if key == "tags": return {"key":key,"type":"array","nullable":true}
+	if key == "description": return {"key":key,"type":"markdown","nullable":true}
 	return {"key":key,"type":"string","nullable":true}
 
 func _storage_patch(values: Dictionary, unset: Array, definition: Dictionary = {}) -> Dictionary:

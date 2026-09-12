@@ -22,6 +22,7 @@ func _definition(label: String = "Widget") -> Dictionary:
 func _registry_with_widget(db: DocketDBJsonl, label: String = "Widget") -> TypeRegistry:
 	var registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
 	var defined: Dictionary = registry.define_type("widget", _definition(label), "tester", "define widget")
+	assert(not defined.has("error"), "widget fixture definition failed: %s" % defined.get("error", "unknown error"))
 	registry.activate_type("widget", str(defined.type.current_revision), "tester", "activate widget")
 	return registry
 
@@ -32,7 +33,7 @@ func test_type_tools_discover_validate_define_activate_and_stale_item_context() 
 	var r = A.is_true(invalid.get("valid") == false and invalid.error is String, "validation tool refuses incomplete definitions")
 	if r is String: db.close(); return r
 	var defined: Dictionary = tools.call_tool("docket_type_define", {"project":"Tools","slug":"widget","definition":_definition(),"author":"tester","reason":"tool definition"})
-	r = A.is_true(not defined.has("error") and defined.type.lifecycle == "draft", "define tool creates a draft")
+	r = A.is_true(not defined.has("error") and defined.get("type", {}).get("lifecycle") == "draft", "define tool creates a draft: %s" % defined.get("error", "missing type result"))
 	if r is String: db.close(); return r
 	var activated: Dictionary = tools.call_tool("docket_type_activate", {"project":"Tools","type":defined.type.id,"action":"activate","expected_revision":defined.type.current_revision,"author":"tester","reason":"ready"})
 	if activated.has("error"): db.close(); return "activation failed: %s" % activated.error
@@ -119,14 +120,16 @@ func test_unbound_derived_query_uses_each_pinned_revision_and_preserves_skill_ou
 	if r is String: db.close(); return r
 	var skill_type: Dictionary = registry.get_type("skill")
 	var skill_id: String = db.next_uuid7_id()
-	db.insert_item(skill_id, {"type":"skill","type_id":skill_type.id,"type_revision":skill_type.current_revision,"status":"draft","title":"Skill","outcome":"user-authored"})
+	var now: String = Time.get_datetime_string_from_system(true)
+	db.insert_item(skill_id, {"type":"skill","type_id":skill_type.id,"type_revision":skill_type.current_revision,"status":"draft","title":"Skill","outcome":"user-authored","created_at":now,"updated_at":now})
 	var fetched: Dictionary = db.get_item(skill_id)
 	r = A.eq(fetched.get("outcome"), "user-authored", "derived state outcome does not overwrite skill outcome")
 	db.close(); return r
 
 func test_legacy_sqlite_builtin_uses_compatibility_registry_for_derived_query() -> Variant:
 	var path: String = DIR + "/legacy.db"; var db: DocketDB = DocketDB.create_new(path)
-	var insert_error: String = db.insert_item("LEG-1", {"type":"discussion","status":"resolved","title":"Historical"})
+	var now: String = Time.get_datetime_string_from_system(true)
+	var insert_error: String = db.insert_item("LEG-1", {"type":"discussion","status":"resolved","title":"Historical","created_at":now,"updated_at":now})
 	var registry: TypeRegistry = TypeRegistry.for_db(db, "legacy")
 	var rows: Array = db.execute_registry_query({"filter":{"field":"state_category","op":"eq","value":"waiting"}}, registry)
 	var r = A.is_true(insert_error.is_empty() and rows.size() == 1 and rows[0].id == "LEG-1", "legacy SQLite items use compatibility registry without format upgrade")
@@ -137,7 +140,9 @@ func test_new_descriptor_does_not_reinterpret_old_opaque_value_until_explicit_re
 	# The fixture starts with the descriptor, so create a distinct type whose first
 	# revision lacks it and then evolve forward.
 	var base: Dictionary = _definition("Opaque Widget"); base.slug = "opaque_widget"; base.fields = base.fields.filter(func(field): return field.key != "research_cost")
-	var defined: Dictionary = registry.define_type("opaque_widget", base, "tester", "opaque base"); registry.activate_type("opaque_widget", defined.type.current_revision, "tester", "activate")
+	var defined: Dictionary = registry.define_type("opaque_widget", base, "tester", "opaque base")
+	if defined.has("error"): db.close(); return "opaque type definition failed: %s" % defined.error
+	registry.activate_type("opaque_widget", defined.type.current_revision, "tester", "activate")
 	var made: Dictionary = registry.create_item({"type":"opaque_widget","title":"Opaque"}, "tester")
 	db.update_item_fields_checked(made.id, {"fields":{"research_cost":"kept"}})
 	var evolved: Dictionary = base.duplicate(true); evolved.fields.append({"key":"research_cost","type":"string","required":false,"nullable":true})
@@ -308,7 +313,9 @@ func test_query_scope_expands_compatible_multitype_field_and_keeps_grouped_statu
 func test_query_grid_compiles_multitype_field_and_status_choice_to_exact_identities() -> Variant:
 	var db: DocketDBJsonl = _db("Grid"); var registry: TypeRegistry = _registry_with_widget(db)
 	var second: Dictionary = _definition("Second"); second.slug = "second"
-	var defined: Dictionary = registry.define_type("second", second, "tester", "second"); registry.activate_type("second", defined.type.current_revision, "tester", "ready")
+	var defined: Dictionary = registry.define_type("second", second, "tester", "second")
+	if defined.has("error"): db.close(); return "second grid type definition failed: %s" % defined.error
+	registry.activate_type("second", defined.type.current_revision, "tester", "ready")
 	var state: AppState = AppState.new(); state.db = db; state.schema = {}; state._project_dbs = {"Grid":db}; state._type_registries = {"Grid":registry}
 	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
 	var keys: Array = []
@@ -327,14 +334,17 @@ func test_query_grid_compiles_multitype_field_and_status_choice_to_exact_identit
 func test_uuid_move_retargets_qualified_incoming_and_declared_json_references_only() -> Variant:
 	var source: DocketDBJsonl = _db("RefSource"); var target: DocketDBJsonl = _db("RefTarget"); var other: DocketDBJsonl = _db("Other")
 	var definition: Dictionary = _definition("Reference Widget"); definition.fields.append({"key":"peer","type":"item_ref","required":false,"nullable":true}); definition.fields.append({"key":"peers","type":"reference_list","required":false,"nullable":true})
-	var registry: TypeRegistry = TypeRegistry.for_db(source, "RefSource"); var defined: Dictionary = registry.define_type("widget", definition, "tester", "references"); registry.activate_type("widget", defined.type.current_revision, "tester", "ready")
+	var registry: TypeRegistry = TypeRegistry.for_db(source, "RefSource"); var defined: Dictionary = registry.define_type("widget", definition, "tester", "references")
+	if defined.has("error"): source.close(); target.close(); other.close(); return "reference type definition failed: %s" % defined.error
+	registry.activate_type("widget", defined.type.current_revision, "tester", "ready")
 	var moved_item: Dictionary = registry.create_item({"type":"widget","title":"Moved"}, "tester")
 	var remaining: Dictionary = registry.create_item({"type":"widget","title":"Remaining","peer":moved_item.id,"peers":["RefSource:%s" % moved_item.id]}, "tester")
 	source.update_item_fields_checked(remaining.id, {"extras":{"opaque":"RefSource:%s" % moved_item.id}})
 	source.add_link(remaining.id, "RefSource:%s" % moved_item.id, "depends_on")
 	var discussion: Dictionary = TypeRegistry.for_db(other, "Other").get_type("discussion")
-	other.insert_item(moved_item.id, {"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Local same ID"})
-	var other_dependent: String = other.next_uuid7_id(); other.insert_item(other_dependent, {"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Local ref","parent":moved_item.id})
+	var now: String = Time.get_datetime_string_from_system(true)
+	other.insert_item(moved_item.id, {"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Local same ID","created_at":now,"updated_at":now})
+	var other_dependent: String = other.next_uuid7_id(); other.insert_item(other_dependent, {"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Local ref","parent":moved_item.id,"created_at":now,"updated_at":now})
 	var moved: Dictionary = DocketMove.new().execute({"id":moved_item.id,"source_project":"RefSource","target_project":"RefTarget","import_definition":true,"author":"tester","reason":"reference move"}, {}, source, {"RefSource":source,"RefTarget":target,"Other":other})
 	if moved.has("error"): source.close(); target.close(); other.close(); return "move failed: %s" % moved.error
 	var after: Dictionary = source.get_item(remaining.id); var links: Array = source.get_links(remaining.id)
@@ -344,7 +354,8 @@ func test_uuid_move_retargets_qualified_incoming_and_declared_json_references_on
 
 func test_sqlite_mirror_uses_typed_validation_and_rolls_back_audit_failure() -> Variant:
 	var path: String = DIR + "/mirror.sqlite"; var db: DocketDB = DocketDB.create_new(path)
-	var insert_error: String = db.insert_item("DISC-1", {"type":"discussion","status":"active","title":"Before"})
+	var now: String = Time.get_datetime_string_from_system(true)
+	var insert_error: String = db.insert_item("DISC-1", {"type":"discussion","status":"active","title":"Before","created_at":now,"updated_at":now})
 	if not insert_error.is_empty(): db.close(); return "setup failed: %s" % insert_error
 	db._exec("CREATE TRIGGER reject_mirror_comment BEFORE INSERT ON comments BEGIN SELECT RAISE(FAIL, 'audit rejected'); END;")
 	var registry: TypeRegistry = TypeRegistry.for_db(db, "SQLite")
@@ -371,7 +382,9 @@ func test_historical_import_preserves_revision_metadata_and_current_pointer() ->
 
 func test_trusted_builtin_historical_import_accepts_exact_snapshot_without_activation() -> Variant:
 	var db: DocketDBJsonl = _db("BuiltinHistory"); var registry: TypeRegistry = TypeRegistry.for_db(db, "BuiltinHistory")
-	var builtin: Dictionary = registry.get_type("discussion"); var definition: Dictionary = builtin.definition.duplicate(true); definition.label = "Discussion (historical)"
+	var builtin: Dictionary = registry.get_type("discussion")
+	if builtin.has("error"): db.close(); return "builtin registry unavailable: %s" % builtin.error
+	var definition: Dictionary = builtin.definition.duplicate(true); definition.label = "Discussion (historical)"
 	var revision_id: String = "%s@%s" % [builtin.id, TypeRegistryBootstrap._definition_hash(definition)]
 	var revision: Dictionary = {"id":revision_id,"type_id":builtin.id,"parent_revision":builtin.current_revision,"definition":definition,"author":"old-release","created_at":"2025-01-01T00:00:00Z","reason":"published snapshot"}
 	var pointer: String = builtin.current_revision
@@ -392,7 +405,9 @@ func test_move_reference_rewrite_failure_keeps_source_and_reports_durable_copy()
 func test_import_remaps_forward_ordered_comment_thread_and_refuses_missing_parent() -> Variant:
 	var db: DocketDBJsonl = _db("Threads")
 	var discussion: Dictionary = TypeRegistry.for_db(db, "Threads").get_type("discussion")
-	var exported: Dictionary = {"item":{"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Thread","fields":{},"extras":{}},"comments":[{"id":2,"parent_id":1,"author":"b","text":"child","status":"open"},{"id":1,"parent_id":0,"author":"a","text":"parent","status":"open"}],"tags":[],"events":[],"links":[],"attachments":[]}
+	if discussion.has("error"): db.close(); return "discussion registry unavailable: %s" % discussion.error
+	var now: String = Time.get_datetime_string_from_system(true)
+	var exported: Dictionary = {"item":{"type":"discussion","type_id":discussion.id,"type_revision":discussion.current_revision,"status":"active","title":"Thread","created_at":now,"updated_at":now,"fields":{},"extras":{}},"comments":[{"id":2,"parent_id":1,"author":"b","text":"child","status":"open"},{"id":1,"parent_id":0,"author":"a","text":"parent","status":"open"}],"tags":[],"events":[],"links":[],"attachments":[]}
 	var first: String = db.import_item_full_checked(db.next_uuid7_id(), exported)
 	var thread_rows: Array = db.execute_query({"filter":{"title":"Thread"}})
 	if not first.is_empty() or thread_rows.is_empty(): db.close(); return "forward-thread setup failed: %s" % first
@@ -446,3 +461,14 @@ func test_invalid_registry_is_public_error_and_visible_empty_query_catalog() -> 
 	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
 	var r = A.is_true(not reload_error.is_empty() and listed.has("error") and machines.has("error") and grid._type_catalog.is_empty() and grid._catalog_diagnostic.contains("read-only") and grid._count_label.text.contains("Type catalog unavailable"), "invalid stored definitions propagate through public discovery and remain visible without selectable schema fallback")
 	grid.queue_free(); db.close(); return r
+
+func test_public_flat_project_filter_must_match_routed_project() -> Variant:
+	var alpha: DocketDBJsonl = _db("alpha"); var beta: DocketDBJsonl = _db("beta")
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init({}, alpha, {"alpha":alpha,"beta":beta})
+	var created: Dictionary = tools.call_tool("docket_create", {"project":"alpha","type":"discussion","title":"Alpha"})
+	if created.has("error"): alpha.close(); beta.close(); return "project query setup failed: %s" % created.error
+	var matching: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"ALPHA","type":"discussion"}})
+	var mismatch: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"beta","type":"discussion"}})
+	var invalid_shape: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":{"op":"eq","value":"alpha"},"type":"discussion"}})
+	var r = A.is_true(not matching.has("error") and matching.count == 1 and matching.items[0].id == created.id and mismatch.has("error") and invalid_shape.has("error"), "redundant flat project scope is checked against routing while mismatches and operator-shaped values are refused")
+	alpha.close(); beta.close(); return r

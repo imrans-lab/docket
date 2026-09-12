@@ -23,10 +23,14 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var query := {}
 	if args.has("filter"):
 		var filter = args.filter
-		# Project belongs to routing. A nested project predicate requires the
-		# cross-project coordinator; silently erasing it changes boolean meaning.
+		# A redundant flat project predicate is safe only when it names the same
+		# already-selected database. Nested project scope requires AppState's
+		# branch-preserving cross-project coordinator.
 		if filter is Dictionary and filter.has("project"):
-			return {"error":"filter.project is ambiguous here; use the top-level project argument"}
+			var routed_project: String = str(args.get("project", db.get_project_name()))
+			if not filter.project is String: return {"error":"filter.project must be a project name"}
+			if str(filter.project).nocasecmp_to(routed_project) != 0 and str(filter.project).nocasecmp_to(db.get_project_name()) != 0: return {"error":"filter.project conflicts with the routed project '%s'" % routed_project}
+			filter = filter.duplicate(true); filter.erase("project")
 		query["filter"] = filter
 	if args.has("sort"):
 		query["sort"] = args.sort

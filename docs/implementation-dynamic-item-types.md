@@ -243,3 +243,12 @@ Terra reviewed the correction snapshot `5bce28f`: the eight original groups
 are addressed statically. Two remaining findings require malformed `conditions`
 wrapper validation and clear public/UI diagnostics for invalid registries.
 Sol is correcting these before delta review. No D runtime checks have run.
+
+Terra cleared `5518494` and its Godot 4.7.1 import is clean. Initial D checks
+report 26 total, 4 passed and 22 failed, with many cascades from definition
+setup errors. Isolated related checks on that reviewed snapshot pass storage
+45, freshness 14, query-field validation 11 and functional cross-project 3.
+Registry (3/27), type catalog (27/32) and MCP (63/67) expose regressions still
+requiring fixes. Logs are `d-tools-query-1.log` and `d-test_*-1.log` under the
+verification directory. Sol is correcting the causes before another reviewed
+verification pass; D remains unaccepted.

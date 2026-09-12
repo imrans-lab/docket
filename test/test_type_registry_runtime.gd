@@ -147,6 +147,9 @@ func test_all_scalar_shapes_defaults_false_zero_null_and_unset() -> Variant:
 	error = registry.update_item(made.id, {"fields":{"at":"2026-09-12T25:00:00Z"}}, "tester")
 	r = A.contains(error, "ISO timestamp", "timestamps validate time components")
 	if r is String: db.close(); return r
+	error = registry.update_item(made.id, {"fields":{"at":""}}, "tester")
+	r = A.contains(error, "ISO timestamp", "custom nullable timestamps accept null but not an empty string")
+	if r is String: db.close(); return r
 	error = registry.update_item(made.id, {"fields":{"refs":["A", 2]}}, "tester")
 	r = A.contains(error, "reference_list", "reference lists reject non-string entries")
 	db.close(); return r

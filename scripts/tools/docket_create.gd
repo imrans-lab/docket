@@ -91,6 +91,9 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 	if item_type not in ["secret", "encrypted_note"]:
 		var typed_args: Dictionary = args.duplicate(true)
 		typed_args.erase("project")
+		# The longstanding flat API accepts one tag and normalizes it to the
+		# canonical array shape before typed candidate validation.
+		if typed_args.has("tags") and not typed_args.tags is Array: typed_args.tags = [str(typed_args.tags)]
 		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(typed_args, "agent")
 		if created.has("error"): return created
 		var typed_item: Dictionary = created.get("item", {})
