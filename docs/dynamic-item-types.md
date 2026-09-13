@@ -25,3 +25,7 @@ New files use 2.0 and `.v2.cache`; existing JSONL files remain 1.0 with `.cache`
 Use Project Types to preview before applying a JSONL upgrade. Preview reports starter definitions, item/status bindings, unresolved data, cache changes, and backup path. Apply requires acknowledgement that incompatible writers are stopped. Minerva's independent writer is incompatible and must be excluded from upgraded files. Verified older Docket readers refuse 2.0 through cold and warm cache paths.
 
 Upgrade keeps a recovery snapshot and invalidates the old cache. Rollback refuses if the upgraded source has since changed, so it cannot silently erase later edits. Stop other writers and resolve Git conflicts explicitly before retrying from a fresh preview. The local lock is advisory; Docket does not promise cross-process transactions or compare-and-swap. Opening a file never upgrades it, and shared live files must not be upgraded automatically.
+
+## Acceptance walkthrough
+
+Run the post-review [GUI and HTTP MCP acceptance walkthrough](dynamic-item-types-acceptance.md) against disposable projects.
