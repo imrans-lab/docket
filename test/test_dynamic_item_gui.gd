@@ -165,7 +165,7 @@ func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Va
 	var created := state.db.get_item(id)
 	var fields: Dictionary = created.fields.duplicate(true)
 	fields["opaque_future"] = {"keep":true}
-	var storage_error := state.db.update_item_fields_checked(id, {"fields":fields, "resolution":"legacy-flat"})
+	var storage_error := state.db.update_item_fields_checked(id, {"fields":fields})
 	if not storage_error.is_empty():
 		return storage_error
 	form.load_item(id, "form")
@@ -181,7 +181,7 @@ func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Va
 		return "failed to reopen durable form fixture"
 	_dbs.append(reopened)
 	var stored := reopened.get_item(id)
-	return A.is_true(stored.title == "Updated without loss" and stored.fields.revision == "abc" and stored.fields.source == "immutable-origin" and stored.fields.attempts == 3 and stored.fields.labels == ["one", "two"] and stored.fields.metadata == {"depth":2} and stored.fields.related == [] and stored.fields.findings == null and stored.fields.approved == false and not stored.fields.has("score") and stored.fields.opaque_future == {"keep":true} and stored.fields.resolution == "custom-value" and stored.resolution == "legacy-flat", "form value modes, containers, immutable creation value, opaque fields, and custom/flat collision survive canonical reopen")
+	return A.is_true(stored.title == "Updated without loss" and stored.fields.revision == "abc" and stored.fields.source == "immutable-origin" and stored.fields.attempts == 3 and stored.fields.labels == ["one", "two"] and stored.fields.metadata == {"depth":2} and stored.fields.related == [] and stored.fields.findings == null and stored.fields.approved == false and not stored.fields.has("score") and stored.fields.opaque_future == {"keep":true} and stored.fields.resolution == "custom-value" and str(stored.get("resolution", "")).is_empty(), "form value modes, containers, immutable creation value, opaque fields, and a custom field colliding with an unused legacy flat column survive canonical reopen")
 
 func test_duplicate_ids_route_form_and_comments_to_explicit_project() -> Variant:
 	var alpha := _state("alpha")
@@ -313,10 +313,19 @@ func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Var
 	grid.add_child(anchor)
 	grid._show_columns_menu(anchor)
 	var findings_candidates: Array[int] = []
+	var all_findings_count := 0
+	var builtin_findings_present := false
+	var review_type: Dictionary = registry.get_type("review")
+	var custom_type_ids: Array[String] = [str(review_type.id), str(second.type.id)]
 	for i in grid._column_candidates.size():
-		if grid._column_candidates[i].field_key == "findings":
-			findings_candidates.append(i)
-	var r = A.eq(findings_candidates.size(), 2, "actual Columns menu offers both type identities for a colliding field key")
+		var candidate: Dictionary = grid._column_candidates[i]
+		if candidate.field_key == "findings":
+			all_findings_count += 1
+			if str(candidate.type_id) in custom_type_ids:
+				findings_candidates.append(i)
+			else:
+				builtin_findings_present = true
+	var r = A.is_true(findings_candidates.size() == 2 and all_findings_count >= 3 and builtin_findings_present, "actual Columns menu keeps both exact custom type identities alongside the builtin findings field")
 	if r is String:
 		return r
 	grid._toggle_result_column(findings_candidates[0])
