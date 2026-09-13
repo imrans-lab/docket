@@ -9,15 +9,21 @@ func setup() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 
 func before_each() -> void:
-	for name in ["fields.dct", "form.dct", "alpha.dct", "beta.dct"]:
-		var path := "%s/%s" % [DIR, name]
-		if FileAccess.file_exists(path):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	_reset_fixtures()
 
 func teardown() -> void:
+	_reset_fixtures()
+
+func _reset_fixtures() -> void:
 	for db in _dbs:
 		if db != null and db.is_open():
 			db.close()
+	_dbs.clear()
+	for child in get_children():
+		remove_child(child)
+		child.free()
+	for filename in DirAccess.get_files_at(DIR):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path("%s/%s" % [DIR, filename]))
 
 func _definition() -> Dictionary:
 	return {"slug":"review","label":"Review","description":"Review a revision","use_when":"approval is required","protected":false,"protected_behavior":{"regular_creation_allowed":true},"fields":[{"key":"revision","label":"Revision","help":"Commit identifier","type":"string","required":true,"nullable":false,"mutable":true},{"key":"source","label":"Source","help":"Immutable review source","type":"string","required":true,"nullable":false,"mutable":false},{"key":"findings","label":"Findings","help":"Review findings","type":"markdown","required":false,"nullable":true,"mutable":true},{"key":"attempts","label":"Attempts","type":"integer","required":false,"nullable":true,"mutable":true},{"key":"score","label":"Score","type":"number","required":false,"nullable":true,"mutable":true},{"key":"approved","label":"Approved","type":"boolean","required":false,"nullable":false,"mutable":true},{"key":"decision","label":"Decision","type":"enum","values":["accept","reject"],"required":false,"nullable":true,"mutable":true},{"key":"due_date","label":"Due date","type":"date","required":false,"nullable":true,"mutable":true},{"key":"reviewed_at","label":"Reviewed at","type":"timestamp","required":false,"nullable":true,"mutable":true},{"key":"subject","label":"Subject","type":"item_ref","required":false,"nullable":true,"mutable":true},{"key":"related","label":"Related","type":"reference_list","items":{"type":"string"},"required":false,"nullable":true,"mutable":true},{"key":"labels","label":"Labels","type":"array","items":{"type":"string"},"required":false,"nullable":true,"mutable":true},{"key":"metadata","label":"Metadata","type":"object","required":false,"nullable":true,"mutable":true}],"lifecycle":{"initial_state":"requested","states":[{"key":"requested","label":"Requested","state_category":"queued","state_outcome":""},{"key":"approved","label":"Approved","state_category":"terminal","state_outcome":"success"}],"terminal_states":["approved"],"transitions":{"requested":["approved"],"approved":[]},"guards":{"approved":{"required_fields":["findings"]}},"enforcement":"strict"}}
@@ -25,6 +31,7 @@ func _definition() -> Dictionary:
 func _state(name: String) -> AppState:
 	var path := "%s/%s.dct" % [DIR, name]
 	var db := DocketDBJsonl.create_new_jsonl(path)
+	assert(db != null, "failed to create JSONL fixture %s" % path)
 	_dbs.append(db)
 	var state := AppState.new()
 	state.schema = TypeRegistryBootstrap.load_shipped_schema()
@@ -224,8 +231,8 @@ func test_duplicate_id_activation_and_back_navigation_retain_project_origin() ->
 	beta_db.delete_item(str(beta_item.id))
 	beta_db.import_item_full(duplicate_id, beta_export)
 	var shell := AppShell.new()
-	add_child(shell)
 	shell.init(state)
+	add_child(shell)
 	shell._on_item_activated(duplicate_id, "alpha")
 	shell._on_item_activated(duplicate_id, "beta")
 	shell._on_back_pressed()
@@ -264,7 +271,7 @@ func test_draft_save_refuses_closed_origin_without_falling_back_or_losing_edits(
 	state._project_dbs.erase("beta")
 	state._type_registries.erase("beta")
 	var save_error = await form._save_changes()
-	return A.is_true(save_error is String and str(save_error).contains("originating project is closed") and state.db.list_items().is_empty() and form._title_edit.text == "Retained draft" and form._is_draft, "closed draft origin refuses save without fallback writes and retains local edits")
+	return A.is_true(save_error is String and str(save_error).contains("originating project is closed") and state.db.execute_query({}, "lean").is_empty() and form._title_edit.text == "Retained draft" and form._is_draft, "closed draft origin refuses save without fallback writes and retains local edits")
 
 func test_result_columns_require_pinned_type_identity() -> Variant:
 	var state := _state("fields")
@@ -340,8 +347,8 @@ func test_searchable_creation_catalog_includes_active_zero_count_custom_type() -
 	var state := _state("fields")
 	_active_registry(state, "fields")
 	var shell := AppShell.new()
-	add_child(shell)
 	shell.init(state)
+	add_child(shell)
 	shell._show_new_item_dialog()
 	var r = A.is_true(shell._new_item_list.item_count > 0, "searchable creation catalog includes active registry types with zero items")
 	if r is String:
@@ -355,8 +362,8 @@ func test_creation_chooser_opens_ordinary_builtin_and_custom_drafts() -> Variant
 	var state := _state("fields")
 	_active_registry(state, "fields")
 	var shell := AppShell.new()
-	add_child(shell)
 	shell.init(state)
+	add_child(shell)
 	shell._show_new_item_dialog()
 	shell._new_item_search.text = "bug"
 	shell._filter_new_item_catalog()
@@ -420,8 +427,8 @@ func test_protected_types_stay_out_of_ordinary_creation_and_keep_specialized_pat
 	if r is String:
 		return r
 	var shell := AppShell.new()
-	add_child(shell)
 	shell.init(state)
+	add_child(shell)
 	shell._show_new_item_dialog()
 	for type_value in shell._new_item_catalog:
 		if str(type_value.slug) == "secret" or str(type_value.slug) == "encrypted_note":

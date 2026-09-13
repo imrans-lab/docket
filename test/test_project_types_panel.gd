@@ -11,20 +11,29 @@ func setup() -> void:
 func before_each() -> void:
 	JSONLMigration.verification_failure_hook = Callable()
 	JSONLTypeUpgrade.cache_delete_failure_hook = Callable()
-	for filename in ["draft.dct", "lifecycle.dct", "stale.dct", "navigation.dct", "legacy-copy.dct", "legacy-copy.dct.pre-v2.bak", "promotion.dct", "promotion.dct.sqlite.bak", "origin-a.dct", "origin-b.dct", "invalid.dct"]:
-		var path := "%s/%s" % [DIR, filename]
-		if FileAccess.file_exists(path):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	_reset_fixtures()
 
 func teardown() -> void:
 	JSONLMigration.verification_failure_hook = Callable()
 	JSONLTypeUpgrade.cache_delete_failure_hook = Callable()
+	_reset_fixtures()
+
+func _reset_fixtures() -> void:
 	for db in _open:
-		if db != null and db.is_open(): db.close()
+		if db != null and db.is_open():
+			db.close()
+	_open.clear()
+	for child in get_children():
+		remove_child(child)
+		child.free()
+	for filename in DirAccess.get_files_at(DIR):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path("%s/%s" % [DIR, filename]))
 
 func _state(name: String) -> AppState:
 	var path := "%s/%s.dct" % [DIR,name]
-	var db := DocketDBJsonl.create_new_jsonl(path); _open.append(db)
+	var db := DocketDBJsonl.create_new_jsonl(path)
+	assert(db != null, "failed to create JSONL fixture %s" % path)
+	_open.append(db)
 	var state := AppState.new(); state.schema = TypeRegistryBootstrap.load_shipped_schema(); state.db = db; state.dct_path = path; state._project_dbs = {name:db}; state._type_registries = {name:TypeRegistry.for_db(db, name)}
 	return state
 
@@ -34,6 +43,8 @@ func _panel(state: AppState) -> ProjectTypesPanel:
 func _sqlite_state(name: String) -> AppState:
 	var path := "%s/%s.dct" % [DIR, name]
 	var db := DocketDB.create_new(path)
+	assert(db != null, "failed to create SQLite fixture %s" % path)
+	_open.append(db)
 	db.set_project_name(name)
 	db.insert_item("TST-0001", {"type":"bug", "status":"new", "title":"Legacy", "created_at":"2026-09-12T12:00:00Z", "updated_at":"2026-09-12T12:00:00Z"})
 	var state := AppState.new()
@@ -87,7 +98,7 @@ func test_upgrade_preview_is_read_only_and_acknowledgement_required() -> Variant
 	return A.is_true(not refused.ok and str(refused.error).contains("incompatible writers stopped") and FileAccess.get_sha256(target) == before, "upgrade apply requires explicit exclusive-writer acknowledgement")
 
 func test_app_shell_navigation_reaches_project_types() -> Variant:
-	var state := _state("navigation"); var shell := AppShell.new(); add_child(shell); shell.init(state); shell._on_menu_action("project_types")
+	var state := _state("navigation"); var shell := AppShell.new(); shell.init(state); add_child(shell); shell._on_menu_action("project_types")
 	return A.is_true(shell._current_work_idx >= 0 and shell._work_entries[shell._current_work_idx].type == "types" and shell._project_types.get_parent() != null, "File > Project Types opens a reusable management work entry")
 
 func test_sqlite_promotion_requires_ack_and_reopens_jsonl_with_backup() -> Variant:
