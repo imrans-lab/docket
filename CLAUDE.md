@@ -136,7 +136,8 @@ rm -f scripts/setup-git-filters.sh scripts/sqlite-clean.sh scripts/sqlite-smudge
 - Dictionary-based items (no custom classes for serialization)
 - Static methods on RefCounted where possible
 - Test methods return `true` (pass) or error `String` (fail)
-- New timestamps use UTC ISO 8601 with an explicit `Z` suffix.
+- New timestamps use UTC ISO 8601; callers must not assume every stored value
+  carries an explicit `Z` suffix.
 - IDs: UUID7 (32-char lowercase hex, time-ordered, globally unique). Displayed as git-style shortest unique prefix (min 7 chars). Legacy `PREFIX-NNNN` IDs still work. MCP tools accept short hex prefixes (min 4 chars).
 - Cross-project references: always-qualified `project:ID` format (e.g. `minerva:0196a3b4c5d6e7f`). UUID7 items keep their ID when moved between projects.
 - Writes are immediate: every mutation writes SQLite *and* rewrites the whole
