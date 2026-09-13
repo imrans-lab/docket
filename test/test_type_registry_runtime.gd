@@ -401,7 +401,11 @@ func test_legacy_sqlite_registry_keeps_builtin_create_update_transition() -> Var
 	var error := registry.update_item(made.id, {"description":"flat update"}, "tester")
 	if error.is_empty(): error = registry.transition_item(made.id, "resolved", "tester")
 	var item := db.get_item(made.id)
-	r = A.is_true(error.is_empty() and item.description == "flat update" and item.status == "resolved" and db.get_events(made.id).size() == 2, "legacy SQLite built-ins retain typed flat operations and audit events")
+	var events: Array = db.get_events(made.id)
+	var event_types: Array = []
+	for event: Dictionary in events:
+		event_types.append(event.get("event_type", ""))
+	r = A.is_true(error.is_empty() and item.description == "flat update" and item.status == "resolved" and event_types == ["created", "typed_update", "transition"], "legacy SQLite built-ins retain flat values and record creation, typed update, and transition semantics")
 	db.close(); return r
 
 
