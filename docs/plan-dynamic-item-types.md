@@ -2,7 +2,7 @@
 
 Docket plan: `01a096fa277f7683bc6d1fd8a18e3053` (project `docket`).
 Parent DCR: `01a096e77f2f778781b03d0aeb8384e3`; [proposal](dcr-dynamic-item-types.md).
-Source proposal: /home/imran/github/docket/docs/dcr-dynamic-item-types.md.
+Source proposal: [docs/dcr-dynamic-item-types.md](dcr-dynamic-item-types.md).
 Prepared 2026-09-12. Main thread coordinates; gpt-5.6-sol implements; gpt-5.6-terra reviews.
 
 Five batches cover twelve implementation tasks, five independent review gates and five coordinator verification gates. Task identifiers and explicit blocks links are recorded below.
@@ -146,4 +146,3 @@ E-R → E-V
 ## Review packets and execution scope
 
 Use the parent DCR and each task's description for detailed code areas, acceptance criteria, authored evidence and constraints. Execution was approved on 2026-09-12. Docket task states and gate comments record current progress and evidence. Review precedes all test execution; only the coordinator executes post-review checks.
-
