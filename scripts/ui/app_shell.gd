@@ -759,26 +759,28 @@ func _rebuild_new_item_catalog() -> void:
 	if _new_item_project.item_count == 0:
 		_filter_new_item_catalog()
 		return
-	var project := _new_item_project.get_item_text(_new_item_project.selected)
-	var registry := _state.get_type_registry(project)
+	var project: String = _new_item_project.get_item_text(_new_item_project.selected)
+	var registry: TypeRegistry = _state.get_type_registry(project)
 	if registry == null:
 		_new_item_dialog.dialog_text = "Type registry unavailable for %s." % project
 		_new_item_dialog.get_ok_button().disabled = true
 		_filter_new_item_catalog()
 		return
-	var catalog_result := registry.list_types_checked(false)
-	if not str(catalog_result.get("error", "")).is_empty():
-		_new_item_dialog.dialog_text = "Type registry error: %s" % catalog_result.error
+	var listed: Array = registry.list_types(false)
+	if not listed.is_empty() and listed[0] is Dictionary and listed[0].has("error"):
+		_new_item_dialog.dialog_text = "Type registry error: %s" % str(listed[0].error)
 		_new_item_dialog.get_ok_button().disabled = true
 		_filter_new_item_catalog()
 		return
-	for type_value in catalog_result.records:
+	for type_value in listed:
 		var type: Dictionary = type_value
 		if type.has("error") or type.lifecycle != "active":
 			continue
 		if not bool(type.definition.get("protected_behavior", {}).get("regular_creation_allowed", true)):
 			continue
-		_new_item_catalog.append(type)
+		var catalog_record: Dictionary = type.duplicate(true)
+		catalog_record["project"] = project
+		_new_item_catalog.append(catalog_record)
 	_filter_new_item_catalog()
 
 func _filter_new_item_catalog() -> void:
@@ -791,7 +793,7 @@ func _filter_new_item_catalog() -> void:
 		if not needle.is_empty() and not searchable.to_lower().contains(needle):
 			continue
 		_new_item_list.add_item("%s — %s" % [type.label, type.description])
-		_new_item_list.set_item_metadata(_new_item_list.item_count - 1, {"project":project, "type_id":type.id, "slug":type.slug})
+		_new_item_list.set_item_metadata(_new_item_list.item_count - 1, {"project":str(type.project), "type_id":type.id, "slug":type.slug})
 	if _new_item_list.item_count > 0:
 		_new_item_list.select(0)
 
