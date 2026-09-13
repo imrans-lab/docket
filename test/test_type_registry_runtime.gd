@@ -404,6 +404,26 @@ func test_legacy_sqlite_registry_keeps_builtin_create_update_transition() -> Var
 	r = A.is_true(error.is_empty() and item.description == "flat update" and item.status == "resolved" and db.get_events(made.id).size() == 2, "legacy SQLite built-ins retain typed flat operations and audit events")
 	db.close(); return r
 
+
+func test_legacy_sqlite_creation_event_is_atomic_with_item_and_counter() -> Variant:
+	var path: String = DIR + "/legacy-creation-audit.sqlite"
+	var db: DocketDB = DocketDB.create_new(path)
+	if db == null or not db.is_open():
+		return "legacy SQLite fixture could not be created"
+	var registry: TypeRegistry = TypeRegistry.new(db, "Legacy SQLite")
+	var made: Dictionary = registry.create_item({"type":"discussion","title":"Audited legacy"}, "creator")
+	var r = A.is_true(not made.has("error") and db.get_events(made.id).size() == 1 and db.get_events(made.id)[0].event_type == "created", "legacy SQLite creation stores the item and creation audit together")
+	if r is String:
+		db.close()
+		return r
+	var counter_before: int = db.get_counter()
+	db._exec("CREATE TRIGGER reject_legacy_created BEFORE INSERT ON item_events WHEN NEW.event_type='created' BEGIN SELECT RAISE(FAIL, 'legacy creation audit rejected'); END;")
+	var refused: Dictionary = registry.create_item({"type":"discussion","title":"Refused legacy"}, "creator")
+	var refused_items: Array = db.execute_query({"filter":{"title":"Refused legacy"}})
+	r = A.is_true(refused.has("error") and refused_items.is_empty() and db.get_counter() == counter_before, "legacy SQLite audit failure rolls back its item and allocated sequence")
+	db.close()
+	return r
+
 func test_additive_evolution_keeps_old_pins_until_explicit_selected_apply() -> Variant:
 	var db := _db("evolve"); var registry := TypeRegistry.new(db); _define(registry)
 	var made := registry.create_item({"type":"widget","title":"Pinned"}, "tester")
@@ -509,3 +529,35 @@ func test_creation_event_is_atomic_with_registry_item() -> Variant:
 	var refused: Dictionary = registry.create_item({"type":"widget","title":"Refused"}, "creator")
 	r = A.is_true(refused.has("error") and db.execute_query({"filter":{"title":"Refused"}}).is_empty() and FileAccess.get_file_as_string(db.get_path()) == before, "creation audit failure rolls back the item and canonical publication")
 	db.close(); return r
+
+func test_protected_historical_timestamp_is_preserved_but_malformed_and_custom_values_refuse() -> Variant:
+	var db: DocketDBJsonl = _db("historical-time")
+	var registry: TypeRegistry = TypeRegistry.new(db)
+	var skill: Dictionary = registry.create_item({"type":"skill","title":"Old skill","steps":"one"}, "tester")
+	if skill.has("error"):
+		db.close()
+		return "builtin setup failed: %s" % skill.error
+	var historical: String = "2026-09-12T12:34:56"
+	var seed_error: String = db.update_item_fields_checked(skill.id, {"last_reviewed":historical})
+	var update_error: String = registry.update_item(skill.id, {"title":"Still old"}, "tester")
+	var transition_error: String = registry.transition_item(skill.id, "active", "tester")
+	var text: String = FileAccess.get_file_as_string(db.get_path())
+	var r = A.is_true(seed_error.is_empty() and update_error.is_empty() and transition_error.is_empty() and db.get_item(skill.id).last_reviewed == historical and text.contains(historical), "ordinary builtin edits preserve a valid historical UTC timestamp byte value")
+	if r is String:
+		db.close()
+		return r
+	var malformed_seed: String = db.update_item_fields_checked(skill.id, {"last_reviewed":"2026-09-12T25:34:56"})
+	if not malformed_seed.is_empty():
+		db.close()
+		return "malformed fixture seed failed: %s" % malformed_seed
+	var malformed_error: String = registry.update_item(skill.id, {"title":"Must refuse"}, "tester")
+	r = A.contains(malformed_error, "ISO timestamp", "malformed historical builtin timestamp remains invalid")
+	if r is String:
+		db.close()
+		return r
+	_define(registry, "widget")
+	var custom: Dictionary = registry.create_item({"type":"widget","title":"Custom"}, "tester")
+	var custom_error: String = registry.update_item(custom.id, {"fields":{"at":historical}}, "tester")
+	r = A.contains(custom_error, "ISO timestamp", "custom timestamps require an explicit zone")
+	db.close()
+	return r

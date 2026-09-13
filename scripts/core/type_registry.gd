@@ -881,10 +881,13 @@ func _validate_value(field: Dictionary, value, default_value: bool) -> String:
 	return ""
 
 func _legacy_builtin_time_value(field: Dictionary, value: Variant) -> bool:
-	if not value is String: return false
+	if not value is String:
+		return false
 	var kind: String = str(field.get("type", ""))
-	if value.is_empty(): return kind in ["date", "timestamp"]
-	if kind != "timestamp" or value.length() != 19: return false
+	if value.is_empty():
+		return kind in ["date", "timestamp"]
+	if kind != "timestamp" or value.length() != 19:
+		return false
 	return _looks_like_timestamp(value + "Z")
 
 func _json_durable(value) -> bool:

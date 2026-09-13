@@ -35,6 +35,32 @@ func test_quality_score_hint() -> Variant:
 	return A.is_true(str(result.get("last_reviewed", "")).ends_with("Z"), "new quality timestamps are explicit UTC")
 
 
+func test_quality_audit_failure_rolls_back_value_and_canonical_file() -> Variant:
+	var path: String = "user://test_quality_atomic_%d.dct" % Time.get_ticks_msec()
+	var json_db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl(path)
+	var registry: TypeRegistry = TypeRegistry.for_db(json_db, json_db.get_project_name())
+	var made: Dictionary = registry.create_item({"type":"hint","title":"Atomic quality","value":"v"}, "tester")
+	if made.has("error"):
+		json_db.close()
+		_remove_jsonl_family(path)
+		return "quality fixture creation failed: %s" % made.error
+	var before: String = FileAccess.get_file_as_string(path)
+	json_db._exec("CREATE TRIGGER reject_quality_event BEFORE INSERT ON item_events WHEN NEW.event_type='quality_scored' BEGIN SELECT RAISE(FAIL, 'quality audit rejected'); END;")
+	var result: Dictionary = tool.execute({"id":made.id,"score":4,"reason":"must audit"}, schema, json_db)
+	var item: Dictionary = json_db.get_item(made.id)
+	var unchanged: bool = result.has("error") and int(item.get("quality", 0)) == 0
+	unchanged = unchanged and str(item.get("last_reviewed", "")).is_empty()
+	unchanged = unchanged and FileAccess.get_file_as_string(path) == before
+	json_db.close()
+	_remove_jsonl_family(path)
+	return A.is_true(unchanged, "quality audit storage failure rolls back typed values and canonical publication")
+
+
+func _remove_jsonl_family(path: String) -> void:
+	for suffix in ["", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".lock"]:
+		DirAccess.remove_absolute(path + suffix)
+
+
 func test_quality_score_insight() -> Variant:
 	var item = DataModel.create_item(schema, "insight", {
 		"title": "Test insight",

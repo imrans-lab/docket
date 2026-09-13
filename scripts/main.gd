@@ -36,13 +36,15 @@ func _ready() -> void:
 
 
 func _parse_args() -> Dictionary:
-	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": ""}
-
-	# User args (after --) when running via `godot --path . -- ...`
 	var args := Array(OS.get_cmdline_user_args())
-	# Exported binary: user_args is empty, fall back to full cmdline
+	# Exported binaries may not distinguish arguments after a `--` separator.
 	if args.is_empty():
 		args = Array(OS.get_cmdline_args())
+	return _parse_arg_values(args)
+
+
+func _parse_arg_values(args: Array) -> Dictionary:
+	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": ""}
 
 	var i := 0
 	while i < args.size():
@@ -127,8 +129,8 @@ func _print_help() -> void:
 	print("  docket [options]              Launch GUI (default)")
 	print("  docket --serve [options]      Start headless MCP server")
 	print("  docket --test                 Run test suite")
-	print("  docket --migrate --file <f>   Migrate a legacy JSON .dct to JSONL")
-	print("  docket --migrate-jsonl -f <f> Migrate a legacy SQLite .dct to JSONL")
+	print("  docket --migrate --file <f>   Migrate a legacy JSON .dct to SQLite")
+	print("  docket --migrate-jsonl --file <f>  Promote a legacy SQLite .dct to JSONL")
 	print("  docket --validate --file <f>  Check a .dct for structural problems")
 	print("")
 	print("OPTIONS:")
@@ -137,7 +139,7 @@ func _print_help() -> void:
 	print("  --serve             Run as headless MCP server (no GUI)")
 	print("  --port <number>     MCP server port (default: 3010)")
 	print("  --test              Run tests and exit")
-	print("  --migrate           Migrate a legacy JSON .dct to JSONL and exit")
+	print("  --migrate           Migrate a legacy JSON .dct to SQLite and exit")
 	print("  --migrate-jsonl     Migrate a legacy SQLite .dct to JSONL and exit")
 	print("  --validate          Check .dct files for conflict markers, duplicate IDs,")
 	print("                      and dangling references. Exits 1 on error.")

@@ -31,6 +31,14 @@ func teardown() -> void:
 	DirAccess.remove_absolute(_test_dir)
 
 
+func test_cli_jsonl_promotion_requires_supported_file_option() -> Variant:
+	var main := preload("res://scripts/main.gd").new()
+	var parsed: Dictionary = main._parse_arg_values(["--migrate-jsonl", "--file", "legacy.dct"])
+	var r = A.is_true(parsed.mode == "migrate_jsonl" and parsed.file == "legacy.dct" and parsed.files == ["legacy.dct"], "SQLite promotion parses the documented --file form")
+	main.free()
+	return r
+
+
 # -- Helper: create a SQLite .dct with some data ------------------------------
 
 func _make_sqlite_dct(path: String, item_count: int = 2) -> DocketDB:
