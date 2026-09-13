@@ -10,7 +10,7 @@ const JSONL_VERSION := "1.0.0"
 ## docket_meta keys that must NOT be written to the shared file.
 ## jsonl_hash is this machine's cache fingerprint — writing it would make the
 ## file's own content depend on the cache built from it.
-const _EPHEMERAL_META_KEYS := ["jsonl_hash"]
+const _EPHEMERAL_META_KEYS := ["jsonl_hash", "jsonl_version", "registry_diagnostics"]
 
 
 # -- Public API ---------------------------------------------------------------
@@ -22,6 +22,10 @@ static func serialize_all(db: DocketDB) -> String:
 	var meta_line := serialize_meta(db)
 	if not meta_line.is_empty():
 		parts.append(meta_line)
+
+	var registry_lines := serialize_type_registry(db)
+	if not registry_lines.is_empty():
+		parts.append(registry_lines)
 
 	var items_lines := serialize_items(db)
 	if not items_lines.is_empty():
@@ -62,7 +66,7 @@ static func serialize_meta(db: DocketDB) -> String:
 
 	# Required fields first (in schema order)
 	d["_type"] = "meta"
-	d["version"] = JSONL_VERSION
+	d["version"] = db.get_meta_value("jsonl_version", JSONL_VERSION)
 	d["counter"] = db.get_counter()
 	d["id_prefix"] = db.get_id_prefix()
 
@@ -119,8 +123,23 @@ static func serialize_items(db: DocketDB) -> String:
 	var lines: PackedStringArray = []
 	for row in rows:
 		var line := _serialize_item_row(db, row)
+		if line.is_empty(): return ""
 		lines.append(line)
 
+	return "\n".join(lines)
+
+
+static func serialize_type_registry(db: DocketDB) -> String:
+	var lines: PackedStringArray = []
+	for row in db._exec_select("SELECT * FROM type_defs ORDER BY slug,id;"):
+		var provenance = JSON.parse_string(str(row.provenance_json))
+		lines.append(_to_ordered_json({"_type": "type_def", "id": row.id, "slug": row.slug, "lifecycle": row.lifecycle, "current_revision": row.current_revision, "provenance": provenance if provenance is Dictionary else {}}))
+	for row in db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"):
+		var definition = JSON.parse_string(str(row.definition_json))
+		var record := {"_type": "type_def_version", "id": row.id, "type_id": row.type_id, "definition": definition if definition is Dictionary else {}, "author": row.author, "created_at": row.created_at, "reason": row.reason}
+		var parent_value = row.get("parent_revision")
+		if parent_value != null and not str(parent_value).is_empty(): record["parent_revision"] = str(parent_value)
+		lines.append(_to_ordered_json(record))
 	return "\n".join(lines)
 
 
@@ -241,8 +260,7 @@ static func serialize_links(db: DocketDB) -> String:
 static func serialize_attachments(db: DocketDB) -> String:
 	## All attachment lines sorted by (item_id ASC, id ASC).
 	## Uses raw query_with_bindings to retrieve BLOB data.
-	db._db.query("SELECT * FROM attachments ORDER BY item_id ASC, id ASC;")
-	var rows: Array = db._db.query_result if db._db.query_result else []
+	var rows: Array = db._exec_select("SELECT * FROM attachments ORDER BY item_id ASC, id ASC;")
 	if rows.is_empty():
 		return ""
 
@@ -398,6 +416,12 @@ static func _serialize_item_row(db: DocketDB, row: Dictionary) -> String:
 	d["type"] = str(row.get("type", ""))
 	d["status"] = str(row.get("status", ""))
 	d["title"] = str(row.get("title", ""))
+	_set_if_nonempty(d, "type_id", str(row.get("type_id", "")))
+	_set_if_nonempty(d, "type_revision", str(row.get("type_revision", "")))
+	for envelope in ["fields", "extras"]:
+		var decoded = JSON.parse_string(str(row.get("%s_json" % envelope, "{}")))
+		if not decoded is Dictionary: return ""
+		if not decoded.is_empty(): d[envelope] = decoded
 
 	# Optional string fields
 	_set_if_nonempty(d, "description", str(row.get("description", "")))
@@ -581,7 +605,9 @@ static func _json_value(val) -> String:
 		return "[%s]" % ",".join(items)
 	if val is Dictionary:
 		var parts: PackedStringArray = []
-		for key in val:
+		var keys: Array = val.keys()
+		keys.sort_custom(func(a, b): return str(a) < str(b))
+		for key in keys:
 			parts.append('"%s":%s' % [_json_escape(str(key)), _json_value(val[key])])
 		return "{%s}" % ",".join(parts)
 	if val is PackedByteArray:

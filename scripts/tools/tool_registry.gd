@@ -5,6 +5,8 @@ class_name ToolRegistry
 var _schema: Dictionary
 var _db: DocketDB
 var _project_dbs: Dictionary = {}  # project_name → DocketDB
+var _type_registries: Dictionary = {}  # project_name → project-owned semantics
+var _type_registry_diagnostics: Dictionary = {}
 var _tools: Dictionary = {}
 var add_project_fn: Callable  # func(path: String) -> Dictionary
 var remove_project_fn: Callable  # func(name: String) -> Dictionary
@@ -50,6 +52,12 @@ func _build_tools() -> Dictionary:
 		"docket_flush": DocketFlush.new(),
 		"docket_validate": DocketValidate.new(),
 		"docket_audit_log": DocketAuditLog.new(),
+		"docket_type_list": DocketTypeList.new(),
+		"docket_type_get": DocketTypeGet.new(),
+		"docket_type_validate": DocketTypeValidate.new(),
+		"docket_type_define": DocketTypeDefine.new(),
+		"docket_type_activate": DocketTypeActivate.new(),
+		"docket_type_evolve": DocketTypeEvolve.new(),
 	}
 
 
@@ -57,6 +65,7 @@ func init(schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -> voi
 	_schema = schema
 	_db = db
 	_project_dbs = project_dbs
+	_rebuild_type_registries()
 	_tools = _build_tools()
 	_init_schema_dependent_tools(schema)
 
@@ -65,8 +74,29 @@ func update_db(schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -
 	_schema = schema
 	_db = db
 	_project_dbs = project_dbs
+	_rebuild_type_registries()
 	_tools = _build_tools()
 	_init_schema_dependent_tools(schema)
+
+func _rebuild_type_registries() -> void:
+	_type_registries.clear()
+	_type_registry_diagnostics.clear()
+	for project in _project_dbs:
+		_type_registries[project] = TypeRegistry.for_db(_project_dbs[project], str(project))
+	if _db != null and not _db in _project_dbs.values():
+		var project_name := _db.get_project_name()
+		_type_registries[project_name] = TypeRegistry.for_db(_db, project_name)
+
+func get_type_registry(project_name: String) -> TypeRegistry:
+	var registry: TypeRegistry = _type_registries.get(project_name)
+	if registry != null:
+		var error: String = registry.refresh_if_changed()
+		if error.is_empty(): _type_registry_diagnostics.erase(project_name)
+		else: _type_registry_diagnostics[project_name] = error
+	return registry
+
+func get_type_registry_diagnostics() -> Dictionary:
+	return _type_registry_diagnostics.duplicate(true)
 
 
 func has_tool(name: String) -> bool:
@@ -102,7 +132,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		return perr
 
 	# Pre-resolve short ID prefixes to full IDs before dispatching
-	var id_err := _resolve_id_args(arguments)
+	var id_err := _resolve_id_args(name, arguments)
 	if not id_err.is_empty():
 		var ierr := {"error": id_err}
 		_log_error(name, arguments, ierr)
@@ -111,6 +141,9 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	var result: Dictionary
 	if name in ["docket_move", "docket_mirror", "docket_link"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs)
+	elif name.begins_with("docket_type_") or name == "docket_saved_query":
+		var typed_db: DocketDB = _resolve_db(arguments)
+		result = _tools[name].execute(arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name()))
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn)
@@ -130,12 +163,26 @@ func refresh_stale_dbs() -> Array:
 	var reloaded: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).ensure_fresh():
-			reloaded.append(proj_name)
+		if pdb is DocketDBJsonl:
+			var db_reloaded: bool = (pdb as DocketDBJsonl).ensure_fresh()
+			var registry: TypeRegistry = _type_registries.get(proj_name)
+			var previous_generation: String = registry.get_generation_token() if registry != null else ""
+			var error: String = registry.reload() if db_reloaded and registry != null else (registry.refresh_if_changed() if registry != null else "")
+			if not error.is_empty(): _type_registry_diagnostics[proj_name] = error
+			else:
+				_type_registry_diagnostics.erase(proj_name)
+				if db_reloaded or (registry != null and registry.get_generation_token() != previous_generation): reloaded.append(proj_name)
 	# Single-project callers may hold _db without it being in _project_dbs.
 	if _db is DocketDBJsonl and not _db in _project_dbs.values():
-		if (_db as DocketDBJsonl).ensure_fresh():
-			reloaded.append(_db.get_project_name())
+		var project_name := _db.get_project_name()
+		var db_reloaded: bool = (_db as DocketDBJsonl).ensure_fresh()
+		var registry: TypeRegistry = _type_registries.get(project_name)
+		var previous_generation: String = registry.get_generation_token() if registry != null else ""
+		var error: String = registry.reload() if db_reloaded and registry != null else (registry.refresh_if_changed() if registry != null else "")
+		if not error.is_empty(): _type_registry_diagnostics[project_name] = error
+		else:
+			_type_registry_diagnostics.erase(project_name)
+			if db_reloaded or (registry != null and registry.get_generation_token() != previous_generation): reloaded.append(project_name)
 	return reloaded
 
 
@@ -145,10 +192,15 @@ func _log_error(tool_name: String, args: Dictionary, result: Dictionary) -> void
 		_db.log_mcp_error(tool_name, str(result.error), arg_keys)
 
 
-func _resolve_id_args(args: Dictionary) -> String:
+func _resolve_id_args(tool_name: String, args: Dictionary) -> String:
 	## Returns "" on success, or an error describing an ambiguous short ID.
 	## Try to resolve short hex prefixes in ID fields to full IDs.
-	for field in _ID_FIELDS:
+	var fields: Array = _ID_FIELDS.duplicate()
+	# Transition targets and type references are domain keys, even when they look
+	# like hexadecimal item prefixes.
+	if tool_name == "docket_transition": fields.erase("to")
+	if tool_name.begins_with("docket_type_"): fields.clear()
+	for field in fields:
 		if not args.has(field):
 			continue
 		var val: String = str(args[field])
@@ -167,12 +219,20 @@ func _resolve_id_args(args: Dictionary) -> String:
 			# project happened to come first in iteration order — silently acting
 			# on the wrong item, in the wrong project.
 			var matches := {}  # full_id -> project name
-			for proj_name in _project_dbs:
-				var pdb: DocketDB = _project_dbs[proj_name]
+			var requested_project: String = str(args.get("project", ""))
+			if field == "source_id" or (tool_name == "docket_move" and field == "id"): requested_project = str(args.get("source_project", requested_project))
+			elif field == "target_id": requested_project = str(args.get("target_project", requested_project))
+			var candidates: Dictionary = _project_dbs
+			if not requested_project.is_empty():
+				candidates = {}
+				for project_name in _project_dbs:
+					if str(project_name).to_lower() == requested_project.to_lower(): candidates[project_name] = _project_dbs[project_name]
+			for proj_name in candidates:
+				var pdb: DocketDB = candidates[proj_name]
 				var r := pdb.resolve_short_id(val)
 				if not r.is_empty():
 					matches[r] = proj_name
-			if matches.is_empty() and _db != null:
+			if matches.is_empty() and _db != null and requested_project.is_empty():
 				var fallback := _db.resolve_short_id(val)
 				if not fallback.is_empty():
 					matches[fallback] = _db.get_project_name()

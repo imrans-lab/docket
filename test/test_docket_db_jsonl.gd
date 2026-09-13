@@ -83,7 +83,7 @@ func test_create_new_jsonl_creates_file() -> Variant:
 
 
 func test_create_new_jsonl_cache_exists() -> Variant:
-	var cache_path := _jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 	return A.is_true(FileAccess.file_exists(cache_path), "cache file exists")
 
 
@@ -337,7 +337,7 @@ func test_roundtrip_preserves_data() -> Variant:
 
 	# Close and delete cache, reopen from JSONL only
 	_db.close()
-	var cache_path := _jsonl_path + ".cache"
+	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 	for suffix: String in ["", "-wal", "-shm"]:
 		DirAccess.remove_absolute(cache_path + suffix)
 
@@ -429,7 +429,7 @@ func test_bump_retrieval_updates_jsonl() -> Variant:
 # -- Retrieval bump: one flush per batch, not one per item --------------------
 
 ## Counts actual whole-database REWRITES — the expensive thing — not calls to
-## _flush_jsonl(). Those differ: a call made while _flush_depth > 0 returns
+	## _flush_jsonl(). Those differ: a call made while _mutation_depth > 0 returns
 ## early and writes nothing, which is exactly what coalescing does. Counting
 ## calls would score a correctly-coalesced batch as 9 (8 suppressed + 1 real).
 ##
@@ -439,21 +439,24 @@ func test_bump_retrieval_updates_jsonl() -> Variant:
 class CountingJsonlDB extends DocketDBJsonl:
 	var write_count: int = 0
 
-	func _flush_jsonl() -> void:
-		if _flush_depth == 0:
+	func _flush_jsonl() -> String:
+		if _mutation_depth == 0:
 			write_count += 1  # this call is the one that reaches the disk
-		super._flush_jsonl()
+		return super._flush_jsonl()
 
 	## Mirrors create_new_jsonl(), which hardcodes DocketDBJsonl.new() and so
 	## cannot produce a subclass.
 	static func make(path: String) -> CountingJsonlDB:
 		var w := CountingJsonlDB.new()
 		w._jsonl_path = path
-		var cache := DocketDB.create_new(path + ".cache")
+		w._allow_initial_write = true
+		var cache := DocketDB.create_new(JSONLCache.cache_path_for_version(path, "2.0.0"))
 		if cache == null:
 			return null
 		w._adopt(cache)
+		TypeRegistryBootstrap.seed_cache(w)
 		w._flush_jsonl()
+		w._allow_initial_write = false
 		return w
 
 
@@ -557,3 +560,10 @@ func test_hint_query_through_the_tool_costs_one_rewrite() -> Variant:
 	if r is String:
 		return r
 	return true
+
+func test_new_project_defaults_derive_from_canonical_stem() -> Variant:
+	var path: String = _test_dir + "/aei.dct"
+	var db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl(path)
+	var r = A.is_true(db != null and db.get_project_name() == "aei" and db.get_id_prefix() == "AEI", "new project defaults use canonical .dct stem instead of versioned cache basename")
+	if db != null: db.close()
+	return r

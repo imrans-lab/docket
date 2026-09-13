@@ -6,6 +6,12 @@ class_name DocketDB
 var _db: SQLite
 var _path: String
 var _is_open: bool = false
+var _last_sql_error: String = ""
+
+func item_columns() -> Array:
+	var result: Array = []
+	for value in _ITEM_COLS: result.append(str(value))
+	return result
 
 
 # -- Lifecycle ----------------------------------------------------------------
@@ -321,20 +327,42 @@ const _ITEM_COLS: Array = [
 	# Plugin-shipped skills metadata (Minerva DCR 019df57b)
 	"source", "customised", "pristine_hash", "pristine_content",
 	"unsatisfied_deps", "deprecated",
+	"type_id", "type_revision", "fields_json", "extras_json",
 ]
 
 
 func insert_item(id: String, item: Dictionary) -> String:
 	## Inserts an item into the database. Returns "" on success, error message on failure.
 	# Insert main row
+	if item.has("fields_json") or item.has("extras_json"): return "internal envelope columns are not accepted as item input"
+	var stored_item := item.duplicate(true)
+	var fields: Dictionary = stored_item.get("fields", {}) if stored_item.get("fields", {}) is Dictionary else {}
+	var extras: Dictionary = stored_item.get("extras", {}) if stored_item.get("extras", {}) is Dictionary else {}
+	if stored_item.has("fields") and not stored_item.fields is Dictionary: return "fields must be an object"
+	if stored_item.has("extras") and not stored_item.extras is Dictionary: return "extras must be an object"
+	for key in fields:
+		if extras.has(key) or (stored_item.has(key) and key not in ["fields", "extras"]): return "ambiguous item key '%s'" % key
+	for key in extras:
+		if stored_item.has(key) and key not in ["fields", "extras"]: return "ambiguous item key '%s'" % key
+	for key in stored_item.keys():
+		if key not in _ITEM_COLS and key not in ["_type", "id", "tags", "events", "links", "fields", "extras"]:
+			if extras.has(key): return "ambiguous item key '%s'" % key
+			extras[key] = stored_item[key]
+			stored_item.erase(key)
+	if not extras.is_empty(): stored_item["extras"] = extras
+	stored_item.erase("_type")
+	for envelope in ["fields", "extras"]:
+		if stored_item.has(envelope):
+			if not stored_item[envelope] is Dictionary: return "%s must be an object" % envelope
+			stored_item["%s_json" % envelope] = JSON.stringify(stored_item[envelope], "", true, true)
 	var cols := PackedStringArray(["id"])
 	var placeholders := PackedStringArray(["?"])
 	var bindings: Array = [id]
 	for col in _ITEM_COLS:
-		if item.has(col):
+		if stored_item.has(col):
 			cols.append(col)
 			placeholders.append("?")
-			bindings.append(_normalize_text(item[col]))
+			bindings.append(stored_item[col] if col in ["fields_json", "extras_json"] else _normalize_text(stored_item[col]))
 	var sql := "INSERT INTO items (%s) VALUES (%s);" % [",".join(cols), ",".join(placeholders)]
 	var err := _exec_checked(sql, bindings)
 	if not err.is_empty():
@@ -378,25 +406,84 @@ func has_item(id: String) -> bool:
 
 
 func update_item_fields(id: String, changes: Dictionary) -> void:
+	update_item_fields_checked(id, changes)
+
+
+func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 	if changes.is_empty():
-		return
+		return ""
+	if changes.has("fields_json") or changes.has("extras_json"): return "internal envelope columns are not accepted as item input"
+	var field_changes = changes.get("fields", {})
+	var extra_changes = changes.get("extras", {})
+	if changes.has("fields") and not field_changes is Dictionary: return "fields must be an object"
+	if changes.has("extras") and not extra_changes is Dictionary: return "extras must be an object"
+	for key in field_changes:
+		if extra_changes.has(key) or changes.has(key): return "ambiguous item key '%s'" % key
+	for key in extra_changes:
+		if changes.has(key): return "ambiguous item key '%s'" % key
+	var unset_fields_value = changes.get("unset_fields", [])
+	var unset_extras_value = changes.get("unset_extras", [])
+	if not unset_fields_value is Array: return "unset_fields must be an array"
+	if not unset_extras_value is Array: return "unset_extras must be an array"
+	var unset_fields: Array = unset_fields_value
+	var unset_extras: Array = unset_extras_value
+	for key in unset_fields:
+		if not key is String: return "unset_fields entries must be strings"
+	for key in unset_extras:
+		if not key is String: return "unset_extras entries must be strings"
+	for key in unset_fields:
+		if field_changes.has(key) or extra_changes.has(key) or unset_extras.has(key): return "ambiguous set/unset item key '%s'" % key
+	for key in unset_extras:
+		if extra_changes.has(key) or field_changes.has(key): return "ambiguous set/unset item key '%s'" % key
+	var envelope_rows := _exec_select("SELECT fields_json,extras_json FROM items WHERE id=?;", [id])
+	if envelope_rows.is_empty(): return "item '%s' does not exist" % id
+	var existing_fields = JSON.parse_string(str(envelope_rows[0].get("fields_json", "{}")))
+	var existing_extras = JSON.parse_string(str(envelope_rows[0].get("extras_json", "{}")))
+	if not existing_fields is Dictionary or not existing_extras is Dictionary: return "stored item envelopes are malformed"
+	for key in existing_fields:
+		if existing_extras.has(key): return "stored item envelopes contain ambiguous key '%s'" % key
+		if extra_changes.has(key) or (changes.has(key) and key not in ["fields", "unset_fields"]): return "item key '%s' belongs to fields" % key
+	for key in existing_extras:
+		if field_changes.has(key): return "item key '%s' belongs to extras" % key
 	var sets := PackedStringArray()
 	var bindings: Array = []
-	for col in changes:
+	var stored_changes := changes.duplicate(true)
+	var unknown_changes := {}
+	for key in stored_changes.keys():
+		if key not in _ITEM_COLS and key not in ["tags", "events", "links", "id", "fields", "extras", "unset_fields", "unset_extras"]:
+			unknown_changes[key] = stored_changes[key]
+			stored_changes.erase(key)
+	if not unknown_changes.is_empty():
+		var combined_extras: Dictionary = stored_changes.get("extras", {}).duplicate(true)
+		combined_extras.merge(unknown_changes, true)
+		stored_changes["extras"] = combined_extras
+	for envelope in ["fields", "extras"]:
+		if (stored_changes.has(envelope) and stored_changes[envelope] is Dictionary) or stored_changes.has("unset_%s" % envelope):
+			var merged: Dictionary = (existing_fields if envelope == "fields" else existing_extras).duplicate(true)
+			merged.merge(stored_changes.get(envelope, {}), true)
+			for key in changes.get("unset_%s" % envelope, []): merged.erase(key)
+			stored_changes["%s_json" % envelope] = JSON.stringify(merged, "", true, true)
+	for col in stored_changes:
 		if col in ["tags", "events", "links", "id"]:
 			continue
+		if col in ["fields", "extras", "unset_fields", "unset_extras"]: continue
+		if col not in _ITEM_COLS: continue
 		sets.append("%s=?" % col)
-		bindings.append(_normalize_text(changes[col]))
+		bindings.append(stored_changes[col] if col in ["fields_json", "extras_json"] else _normalize_text(stored_changes[col]))
 	if sets.size() > 0:
 		bindings.append(id)
-		_exec("UPDATE items SET %s WHERE id=?;" % ",".join(sets), bindings)
+		var error := _exec_checked("UPDATE items SET %s WHERE id=?;" % ",".join(sets), bindings)
+		if not error.is_empty(): return error
 
 	# Handle tags replacement
 	if changes.has("tags"):
-		_exec("DELETE FROM item_tags WHERE item_id=?;", [id])
+		var error := _exec_checked("DELETE FROM item_tags WHERE item_id=?;", [id])
+		if not error.is_empty(): return error
 		var tags: Array = changes["tags"]
 		for tag in tags:
-			_exec("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
+			error = _exec_checked("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
+			if not error.is_empty(): return error
+	return ""
 
 
 func set_item_field(id: String, field: String, val) -> void:
@@ -421,6 +508,12 @@ func export_item_full(id: String) -> Dictionary:
 	for col in _ITEM_COLS:
 		var val = row.get(col)
 		exported["item"][col] = val if val != null else ""
+	for envelope in ["fields", "extras"]:
+		var raw_key := "%s_json" % envelope
+		var decoded = JSON.parse_string(str(row.get(raw_key, "{}")))
+		exported.item.erase(raw_key)
+		if not decoded is Dictionary: return {"_error":"malformed %s envelope for item %s" % [envelope,id]}
+		exported.item[envelope] = decoded
 	exported["item"]["title"] = str(row.get("title", ""))
 
 	# Tags
@@ -451,12 +544,17 @@ func export_item_full(id: String) -> Dictionary:
 			"relation": str(lr.get("relation", "")),
 		})
 	exported["links"] = links
+	var incoming_rows := _exec_select("SELECT from_id,relation FROM item_links WHERE to_id=? OR to_id LIKE ?;", [id,"%:" + id])
+	var incoming: Array = []
+	for incoming_row in incoming_rows: incoming.append({"from":str(incoming_row.get("from_id", "")),"relation":str(incoming_row.get("relation", ""))})
+	exported["incoming_links"] = incoming
 
 	# Comments
 	var comment_rows := _exec_select("SELECT * FROM comments WHERE item_id=? ORDER BY id ASC;", [id])
 	var comments: Array = []
 	for cr in comment_rows:
 		comments.append({
+			"id": int(cr.get("id", 0)),
 			"parent_id": int(cr.get("parent_id", 0)),
 			"author": str(cr.get("author", "")),
 			"text": str(cr.get("text", "")),
@@ -468,8 +566,7 @@ func export_item_full(id: String) -> Dictionary:
 	exported["comments"] = comments
 
 	# Attachments (with binary data)
-	_db.query_with_bindings("SELECT * FROM attachments WHERE item_id=?;", [id])
-	var att_rows: Array = _db.query_result if _db.query_result else []
+	var att_rows: Array = _exec_select("SELECT * FROM attachments WHERE item_id=?;", [id])
 	var attachments: Array = []
 	for ar in att_rows:
 		attachments.append({
@@ -483,11 +580,23 @@ func export_item_full(id: String) -> Dictionary:
 
 	return exported
 
+func export_item_full_checked(id: String) -> Dictionary:
+	## A move may delete its source only after every related collection was read.
+	_last_sql_error = ""
+	var exported: Dictionary = export_item_full(id)
+	if not _last_sql_error.is_empty(): return {"error":_last_sql_error}
+	if exported.has("_error"): return {"error":exported._error}
+	if exported.is_empty(): return {"error":"item not found: %s" % id}
+	return {"export":exported}
+
 
 func import_item_full(new_id: String, exported: Dictionary) -> void:
 	## Import a full item export under a new ID. Adds a "moved" event.
 	var item_data: Dictionary = exported.get("item", {})
 	item_data["id"] = new_id
+	for envelope in ["fields", "extras"]:
+		if item_data.get(envelope, {}) is Dictionary:
+			item_data["%s_json" % envelope] = JSON.stringify(item_data[envelope], "", true, true)
 
 	# Insert main item
 	var cols := PackedStringArray(["id"])
@@ -533,19 +642,30 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 
 	# Comments
 	var comments: Array = exported.get("comments", [])
-	for c in comments:
-		_exec("INSERT INTO comments (item_id, parent_id, author, text, status, created_at, resolved_at, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-			[new_id, int(c.get("parent_id", 0)), str(c.get("author", "")),
-			 str(c.get("text", "")), str(c.get("status", "open")),
-			 str(c.get("created_at", "")), str(c.get("resolved_at", "")),
-			 str(c.get("resolved_by", ""))])
+	var comment_ids := {}
+	var pending_comments: Array = comments.duplicate(true)
+	while not pending_comments.is_empty():
+		var progressed: bool = false
+		for index in range(pending_comments.size() - 1, -1, -1):
+			var c: Dictionary = pending_comments[index]
+			var old_id: int = int(c.get("id", 0)); var old_parent: int = int(c.get("parent_id", 0))
+			if old_parent != 0 and not comment_ids.has(old_parent): continue
+			var mapped_parent: int = int(comment_ids.get(old_parent, 0))
+			var comment_error := _exec_checked("INSERT INTO comments (item_id, parent_id, author, text, status, created_at, resolved_at, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?);", [new_id,mapped_parent,str(c.get("author", "")),str(c.get("text", "")),str(c.get("status", "open")),str(c.get("created_at", "")),str(c.get("resolved_at", "")),str(c.get("resolved_by", ""))])
+			if not comment_error.is_empty(): return
+			var inserted: Array = _exec_select("SELECT last_insert_rowid() AS id;")
+			if old_id > 0 and not inserted.is_empty(): comment_ids[old_id] = int(inserted[0].id)
+			pending_comments.remove_at(index); progressed = true
+		if not progressed:
+			if _last_sql_error.is_empty(): _last_sql_error = "comment thread contains an unresolved parent"
+			return
 
 	# Attachments
 	var attachments: Array = exported.get("attachments", [])
 	for att in attachments:
 		var att_data = att.get("data", PackedByteArray())
 		var size_bytes: int = att_data.size() if att_data is PackedByteArray else 0
-		_db.query_with_bindings(
+		_exec_checked(
 			"INSERT INTO attachments (item_id, filename, mime_type, size_bytes, data, created_at, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
 			[new_id, str(att.get("filename", "")), str(att.get("mime_type", "")),
 			 size_bytes, att_data, str(att.get("created_at", "")),
@@ -577,7 +697,7 @@ func delete_item(id: String) -> void:
 	_exec("DELETE FROM items WHERE id=?;", [id])
 
 
-func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String) -> int:
+func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:
 	## Rewrite parent and blocked_by references from old to new.
 	## Returns the total number of rows updated.
 	var count := 0
@@ -587,16 +707,23 @@ func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: Str
 	count += _get_changes_count()
 
 	# Rewrite bare parent refs (backwards compat)
-	_exec("UPDATE items SET parent=? WHERE parent=?;", [new_qualified_for_bare, old_bare_id])
-	count += _get_changes_count()
+	if rewrite_bare:
+		_exec("UPDATE items SET parent=? WHERE parent=?;", [new_qualified_for_bare, old_bare_id])
+		count += _get_changes_count()
 
 	# Rewrite qualified blocked_by refs
 	_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified, old_qualified])
 	count += _get_changes_count()
 
 	# Rewrite bare blocked_by refs
-	_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified_for_bare, old_bare_id])
+	if rewrite_bare:
+		_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified_for_bare, old_bare_id])
+		count += _get_changes_count()
+	_exec("UPDATE item_links SET to_id=? WHERE to_id=?;", [new_qualified, old_qualified])
 	count += _get_changes_count()
+	if rewrite_bare:
+		_exec("UPDATE item_links SET to_id=? WHERE to_id=?;", [new_qualified_for_bare, old_bare_id])
+		count += _get_changes_count()
 
 	return count
 
@@ -815,6 +942,42 @@ func execute_query(query: Dictionary, detail: String = "full") -> Array:
 		results.append(item)
 	return results
 
+func execute_registry_query(query: Dictionary, registry: TypeRegistry, detail: String = "full") -> Array:
+	## Typed bindings are compiled separately so legacy literal filters keep their
+	## historical meaning and cannot be widened by partial translation.
+	var compiled: Dictionary = RegistryQuery.compile(query, registry, _item_columns())
+	if compiled.has("error"):
+		last_query_error = str(compiled.error)
+		return []
+	last_query_error = ""
+	var sql := "SELECT * FROM items"
+	if not str(compiled.where).is_empty(): sql += " WHERE " + str(compiled.where)
+	var bindings: Array = compiled.bindings.duplicate()
+	if not str(compiled.order).is_empty():
+		sql += " ORDER BY " + str(compiled.order)
+		bindings.append_array(compiled.order_bindings)
+	var limit: int = int(query.get("limit", 0))
+	if limit > 0: sql += " LIMIT %d" % limit
+	_last_sql_error = ""
+	var rows: Array = _exec_select(sql + ";", bindings)
+	if not _last_sql_error.is_empty():
+		last_query_error = _last_sql_error
+		return []
+	if detail == "lean": return _build_lean_rows(rows)
+	var results: Array = []
+	for row in rows:
+		var item: Dictionary = _build_item_dict(row)
+		var semantics: Dictionary = registry.resolve_item(item)
+		if not semantics.has("error"):
+			item["state_category"] = semantics.state_category
+			item["state_outcome"] = semantics.state_outcome
+			item["is_terminal"] = semantics.is_terminal
+		else:
+			item["type_diagnostic"] = semantics.error
+		if detail == "full_stripped": item = _strip_empty(item)
+		results.append(item)
+	return results
+
 
 # -- Hint helpers -------------------------------------------------------------
 
@@ -976,10 +1139,10 @@ func attach_file(item_id: String, filename: String, data: PackedByteArray, mime:
 		return {"error": "File too large: %d bytes (max 5 MB)" % size_bytes}
 	var ts := Time.get_datetime_string_from_system(true)
 
-	# Use raw query_with_bindings for BLOB support
-	_db.query_with_bindings(
+	var insert_error := _exec_checked(
 		"INSERT INTO attachments (item_id, filename, mime_type, size_bytes, data, created_at, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
 		[item_id, filename, mime, size_bytes, data, ts, desc])
+	if not insert_error.is_empty(): return {"error": insert_error}
 
 	# Get the inserted row id
 	var rows := _exec_select("SELECT last_insert_rowid() as lid;")
@@ -1348,10 +1511,13 @@ static func _has_column(col_rows: Array, col_name: String) -> bool:
 # -- Internal SQL helpers -----------------------------------------------------
 
 func _exec(sql: String, bindings: Array = []) -> void:
+	var ok: bool
 	if bindings.is_empty():
-		_db.query(sql)
+		ok = _db.query(sql)
 	else:
-		_db.query_with_bindings(sql, bindings)
+		ok = _db.query_with_bindings(sql, bindings)
+	if not ok and _last_sql_error.is_empty():
+		_last_sql_error = _db.error_message if _db.error_message else "SQL execution failed"
 
 
 func _exec_checked(sql: String, bindings: Array = []) -> String:
@@ -1363,6 +1529,7 @@ func _exec_checked(sql: String, bindings: Array = []) -> String:
 		ok = _db.query_with_bindings(sql, bindings)
 	if not ok:
 		var msg: String = _db.error_message if _db.error_message else "SQL execution failed"
+		if _last_sql_error.is_empty(): _last_sql_error = msg
 		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
 		return msg
 	return ""
@@ -1376,6 +1543,7 @@ func _exec_select(sql: String, bindings: Array = []) -> Array:
 		ok = _db.query_with_bindings(sql, bindings)
 	if not ok:
 		var msg: String = _db.error_message if _db.error_message else "SQL query failed"
+		if _last_sql_error.is_empty(): _last_sql_error = msg
 		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
 		return []
 	return _db.query_result if _db.query_result else []
@@ -1387,6 +1555,10 @@ func _begin() -> void:
 
 func _commit() -> void:
 	_exec("COMMIT;")
+
+
+func _rollback() -> void:
+	_exec("ROLLBACK;")
 
 
 static func _strip_empty(item: Dictionary) -> Dictionary:
@@ -1446,6 +1618,16 @@ func _build_item_dict(row: Dictionary) -> Dictionary:
 	item["type"] = str(row.get("type", ""))
 	item["status"] = str(row.get("status", ""))
 	item["title"] = str(row.get("title", ""))
+	item["type_id"] = str(row.get("type_id", ""))
+	item["type_revision"] = str(row.get("type_revision", ""))
+	for envelope in ["fields", "extras"]:
+		var raw := str(row.get("%s_json" % envelope, "{}"))
+		var decoded = JSON.parse_string(raw)
+		if decoded is Dictionary:
+			item[envelope] = decoded
+		else:
+			item[envelope] = {}
+			item["_storage_error"] = "malformed %s_json for item %s" % [envelope, id]
 	item["description"] = str(row.get("description", ""))
 	item["created_at"] = str(row.get("created_at", ""))
 	item["updated_at"] = str(row.get("updated_at", ""))

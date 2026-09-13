@@ -19,13 +19,15 @@ func get_definition() -> Dictionary:
 				"fields": {"description": "Array of field names to pull from source, or Dict of field:value pairs to push"},
 				"transition_to": {"type": "string", "description": "Optional state to transition the target to"},
 				"note": {"type": "string", "description": "Optional audit note"},
+				"expected_revision": {"type":"string","description":"Expected pinned target type revision"},
+				"expected_item_token": {"type":"string","description":"Expected target content token"},
 			},
 			"required": ["source_id", "target_id", "fields"],
 		},
 	}
 
 
-func execute(args: Dictionary, schema: Dictionary, primary_db: DocketDB, project_dbs: Dictionary = {}) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, primary_db: DocketDB, project_dbs: Dictionary = {}) -> Dictionary:
 	var source_id: String = str(args.get("source_id", ""))
 	var target_id: String = str(args.get("target_id", ""))
 	if source_id.is_empty() or target_id.is_empty():
@@ -41,26 +43,36 @@ func execute(args: Dictionary, schema: Dictionary, primary_db: DocketDB, project
 	var note: String = str(args.get("note", ""))
 
 	# Resolve DBs
-	var source_db := _resolve_project_db(source_project, primary_db, project_dbs)
-	var target_db := _resolve_project_db(target_project, primary_db, project_dbs)
+	var source_db: DocketDB = _resolve_project_db(source_project, primary_db, project_dbs)
+	var target_db: DocketDB = _resolve_project_db(target_project, primary_db, project_dbs)
+	if source_db == null: return {"error":"Unknown source project '%s'" % source_project}
+	if target_db == null: return {"error":"Unknown target project '%s'" % target_project}
 
 	# Build payload from pull or push mode
-	var payload := {}
+	var payload: Dictionary = {}
 	var field_list: PackedStringArray = []
-	var source_proj_label := source_project if not source_project.is_empty() else _primary_name(primary_db, project_dbs)
+	var source_proj_label: String = source_project if not source_project.is_empty() else _primary_name(primary_db, project_dbs)
 
 	if fields is Array:
 		# Pull mode: read from source
 		if not source_db.has_item(source_id):
 			return {"error": "Source item not found: %s" % source_id}
 		var source_item: Dictionary = source_db.get_item(source_id)
+		var source_semantics: Dictionary = TypeRegistry.for_db(source_db, source_db.get_project_name()).resolve_item(source_item)
+		if source_semantics.has("error"): return {"error":"Source item semantics are unresolved: %s" % source_semantics.error}
 		for field_name in fields:
 			var fname: String = str(field_name)
-			if source_item.has(fname) and str(source_item[fname]) != "":
+			var custom: Dictionary = source_item.get("fields", {}) if source_item.get("fields", {}) is Dictionary else {}
+			var custom_declared: bool = false
+			for descriptor in source_semantics.definition.fields:
+				if str(descriptor.key) == fname and not bool(source_semantics.definition.get("protected", false)): custom_declared = true
+			if custom_declared and custom.has(fname):
+				payload[fname] = custom[fname]
+				field_list.append(fname)
+			elif source_item.has(fname):
 				payload[fname] = source_item[fname]
 				field_list.append(fname)
-		if payload.is_empty():
-			return {"error": "No matching non-empty fields found on source item"}
+		if payload.is_empty(): return {"error":"No selected fields exist on the source item"}
 	elif fields is Dictionary:
 		# Push mode: use provided values directly
 		for key in fields:
@@ -71,57 +83,13 @@ func execute(args: Dictionary, schema: Dictionary, primary_db: DocketDB, project
 	else:
 		return {"error": "'fields' must be an Array (pull mode) or Dictionary (push mode)"}
 
-	# Validate target exists
-	if not target_db.has_item(target_id):
-		return {"error": "Target item not found: %s" % target_id}
-
-	# Apply field updates via DataModel validation
-	var target_item: Dictionary = target_db.get_item(target_id)
-	var update_result = DataModel.update_item(schema, target_item, payload)
-	if update_result.has("error"):
-		return update_result
-
-	var write_back := DataModel.build_write_back(target_item, payload)
-	target_db.update_item_fields(target_id, write_back)
-
-	# Optional transition
-	var transitioned_to := ""
-	if not transition_to.is_empty():
-		var extra := {}
-		var trans_result = StateMachine.perform_transition(schema, target_item, transition_to, "agent", note, extra)
-		if trans_result.has("error"):
-			return trans_result
-
-		var trans_write := {"status": target_item.status, "updated_at": target_item.updated_at}
-		target_db.update_item_fields(target_id, trans_write)
-
-		# Persist transition event
-		var events: Array = target_item.get("events", [])
-		if events.size() > 0:
-			var ev: Dictionary = events[events.size() - 1]
-			target_db.add_event(target_id, str(ev.get("event_type", "")), str(ev.get("actor", "")), str(ev.get("note", "")))
-
-		transitioned_to = transition_to
-
-	# Audit comment
-	var comment_text := "Mirrored from %s:%s [%s]" % [source_proj_label, source_id, ", ".join(field_list)]
-	if not note.is_empty():
-		comment_text += ": %s" % note
-	var comment_result := target_db.add_comment(target_id, "agent", comment_text)
-
-	# Mirrored event
-	target_db.add_event(target_id, "mirrored", "agent", comment_text)
-
-	var result := {
-		"target_id": target_id,
-		"target_project": target_project if not target_project.is_empty() else source_proj_label,
-		"pushed_fields": Array(field_list),
-	}
-	if not transitioned_to.is_empty():
-		result["transitioned_to"] = transitioned_to
-	if comment_result.has("id"):
-		result["comment_id"] = comment_result.id
-	return result
+	if not target_db.has_item(target_id): return {"error":"Target item not found: %s" % target_id}
+	var target_registry: TypeRegistry = TypeRegistry.for_db(target_db, target_db.get_project_name())
+	var audit: String = "Mirrored from %s:%s [%s]" % [source_proj_label,source_id,", ".join(field_list)]
+	if not note.is_empty(): audit += ": %s" % note
+	var mirror_result: Dictionary = target_registry.mirror_item(target_id, {"fields":payload}, transition_to, "agent", note, audit, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")))
+	if mirror_result.has("error"): return mirror_result
+	return {"target_id":target_id,"target_project":target_db.get_project_name(),"pushed_fields":Array(field_list),"transitioned_to":transition_to,"comment_id":mirror_result.get("comment_id", 0)}
 
 
 func _resolve_project_db(name: String, primary_db: DocketDB, project_dbs: Dictionary) -> DocketDB:
@@ -131,7 +99,7 @@ func _resolve_project_db(name: String, primary_db: DocketDB, project_dbs: Dictio
 	for proj_name in project_dbs:
 		if proj_name.to_lower() == name.to_lower():
 			return project_dbs[proj_name]
-	return primary_db
+	return null
 
 
 func _primary_name(primary_db: DocketDB, project_dbs: Dictionary) -> String:

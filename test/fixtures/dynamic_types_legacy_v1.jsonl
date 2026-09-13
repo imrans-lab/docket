@@ -1,0 +1,7 @@
+{"_type":"meta","version":"1.0.0","counter":1,"id_prefix":"LEG","project":"legacy-fixture"}
+{"_type":"item","id":"LEG-0001","type":"discussion","status":"active","title":"Legacy discussion","created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-01T00:00:00Z"}
+{"_type":"event","item_id":"LEG-0001","seq":1,"event_type":"created","actor":"fixture","timestamp":"2026-09-01T00:00:00Z","note":"literal \\n and actual-safe text"}
+{"_type":"comment","id":1,"item_id":"LEG-0001","author":"fixture","text":"preserve me","created_at":"2026-09-01T00:01:00Z"}
+{"_type":"attachment","id":1,"item_id":"LEG-0001","filename":"tiny.bin","data":"AAEC/w==","created_at":"2026-09-01T00:02:00Z"}
+{"_type":"secret","handle":"future-handle","ciphertext":"AAEC","iv":"AwQF","mac":"BgcI","created_at":"2026-09-01T00:03:00Z","updated_at":"2026-09-01T00:03:00Z","future_vault_flag":{"kept":true}}
+{"_type":"saved_query","name":"fixture-query","query":{"filter":{"conditions":[{"field":"type","op":"eq","value":"discussion"}]}}}

@@ -21,7 +21,7 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, registry: TypeRegistry = null) -> Dictionary:
 	var action: String = args.get("action", "")
 
 	match action:
@@ -35,9 +35,16 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 			if args.has("sort"):
 				query["sort"] = args.sort
 			if args.has("columns"):
+				if not args.columns is Array: return {"error":"columns must be an array"}
+				for column in args.columns:
+					if not column is String or str(column).strip_edges().is_empty(): return {"error":"saved query columns must be non-empty strings"}
 				query["columns"] = args.columns
-			db.save_query(name, query)
-			return {"saved": name}
+			if registry == null: registry = TypeRegistry.for_db(db, db.get_project_name())
+			var validation: Dictionary = RegistryQuery.compile(query, registry, db.item_columns())
+			if validation.has("error"): return {"error":"saved query is invalid: %s" % validation.error}
+			var error: String = (db as DocketDBJsonl).save_query_checked(name, query) if db is DocketDBJsonl else ""
+			if not db is DocketDBJsonl: db.save_query(name, query)
+			return {"error":error} if not error.is_empty() else {"saved": name}
 		"load":
 			var name: String = args.get("name", "")
 			var query := db.load_query(name)

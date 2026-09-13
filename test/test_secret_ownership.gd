@@ -32,7 +32,7 @@ func after_each() -> void:
 
 
 func _cleanup() -> void:
-	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".lock"]:
+	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".lock"]:
 		var p := _path + suffix
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
@@ -121,7 +121,7 @@ func test_ownership_survives_cache_rebuild() -> Variant:
 	_db.close()
 	_db = null
 
-	for suffix: String in [".cache", ".cache-wal", ".cache-shm"]:
+	for suffix: String in [".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm"]:
 		if FileAccess.file_exists(_path + suffix):
 			DirAccess.remove_absolute(_path + suffix)
 

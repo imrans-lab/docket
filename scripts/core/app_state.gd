@@ -10,7 +10,7 @@ signal data_changed
 ## Carries the path and a human-readable reason.
 signal load_failed(path: String, reason: String)
 @warning_ignore("unused_signal")
-signal open_item_requested(id: String)
+signal open_item_requested(id: String, project: String)
 @warning_ignore("unused_signal")
 signal open_query_requested(filter: String, label: String)
 
@@ -21,6 +21,9 @@ var prefs: UserPrefs
 
 # Multi-project support: project_name → DocketDB
 var _project_dbs: Dictionary = {}
+var _type_registries: Dictionary = {}
+var registry_diagnostics: Dictionary = {}
+var last_cross_project_query_error: String = ""
 
 
 func load_dct(path: String) -> void:
@@ -29,6 +32,8 @@ func load_dct(path: String) -> void:
 		db.close()
 		db = null
 	_project_dbs.clear()
+	_type_registries.clear()
+	registry_diagnostics.clear()
 
 	if FileAccess.file_exists(path):
 		match JSONLMigration.detect_format(path):
@@ -65,6 +70,7 @@ func load_dct(path: String) -> void:
 		proj_name = path.get_file().get_basename()
 		db.set_project_name(proj_name)
 	_project_dbs[proj_name] = db
+	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
 
 	file_changed.emit()
 
@@ -142,6 +148,7 @@ func add_project(path: String) -> void:
 			new_db.set_id_prefix(new_prefix)
 
 	_project_dbs[proj_name] = new_db
+	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 
 	file_changed.emit()
 
@@ -149,9 +156,97 @@ func add_project(path: String) -> void:
 func get_project_dbs() -> Dictionary:
 	return _project_dbs
 
+func get_type_registry(project_name: String = "") -> TypeRegistry:
+	var key: String = project_name if not project_name.is_empty() else (db.get_project_name() if db != null else "")
+	var registry: TypeRegistry = _type_registries.get(key)
+	if registry == null and _project_dbs.has(key):
+		registry = TypeRegistry.for_db(_project_dbs[key], key)
+		_type_registries[key] = registry
+	if registry != null:
+		var error: String = registry.refresh_if_changed()
+		if error.is_empty(): registry_diagnostics.erase(key)
+		else: registry_diagnostics[key] = error
+	return registry
+
 
 func get_db_for_project(project_name: String) -> DocketDB:
 	return _project_dbs.get(project_name)
+
+func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: bool) -> Dictionary:
+	if not exclusive_writer_confirmed:
+		return {"success":false,"error":"confirm exclusive promotion workflow with incompatible writers stopped"}
+	if not _project_dbs.has(project_name):
+		return {"success":false,"error":"project is no longer open"}
+	var old_db: DocketDB = _project_dbs[project_name]
+	if old_db is DocketDBJsonl:
+		return {"success":false,"error":"project is already JSONL"}
+	var path: String = old_db.get_path()
+	var was_primary: bool = old_db == db
+	old_db.close()
+	var result: Dictionary = JSONLMigration.migrate_to_jsonl(path)
+	result["path"] = path
+	var reopened: DocketDB
+	if JSONLMigration.detect_format(path) == "jsonl":
+		reopened = DocketDBJsonl.open_jsonl(path)
+	elif JSONLMigration.detect_format(path) == "sqlite":
+		reopened = DocketDB.new()
+		if not reopened.open(path):
+			reopened = null
+	if reopened == null:
+		_project_dbs.erase(project_name)
+		_type_registries.erase(project_name)
+		if was_primary:
+			db = null
+		result["success"] = false
+		result["error"] = str(result.get("error", "")) + ("; " if not str(result.get("error", "")).is_empty() else "") + "project could not be reopened"
+		file_changed.emit()
+		result["actual_format"] = JSONLMigration.detect_format(path)
+		result["project_open"] = false
+		return result
+	_project_dbs[project_name] = reopened
+	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
+	if was_primary:
+		db = reopened
+		dct_path = path
+	file_changed.emit()
+	result["actual_format"] = JSONLMigration.detect_format(path)
+	result["project_open"] = true
+	result["active_path"] = reopened.get_path()
+	return result
+
+func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, exclusive_writer_confirmed: bool) -> Dictionary:
+	if not _project_dbs.has(project_name):
+		return {"ok":false,"error":"project is no longer open"}
+	var old_db: DocketDB = _project_dbs[project_name]
+	if not old_db is DocketDBJsonl:
+		return {"ok":false,"error":"legacy SQLite must be explicitly promoted to JSONL first"}
+	var path: String = old_db.get_path()
+	var was_primary: bool = old_db == db
+	old_db.close()
+	var result: Dictionary = JSONLTypeUpgrade.apply(path, preview, schema, exclusive_writer_confirmed)
+	var reopened: DocketDBJsonl = DocketDBJsonl.open_jsonl(path)
+	if reopened == null:
+		_project_dbs.erase(project_name)
+		_type_registries.erase(project_name)
+		if was_primary:
+			db = null
+		result.ok = false
+		result.error = str(result.get("error", "")) + ("; " if not str(result.get("error", "")).is_empty() else "") + "project could not be reopened"
+		file_changed.emit()
+		result["actual_format"] = JSONLMigration.detect_format(path)
+		result["project_open"] = false
+		return result
+	_project_dbs[project_name] = reopened
+	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
+	if was_primary:
+		db = reopened
+		dct_path = path
+	file_changed.emit()
+	result["actual_format"] = JSONLMigration.detect_format(path)
+	result["project_open"] = true
+	result["active_path"] = reopened.get_path()
+	result["registry_legacy"] = _type_registries[project_name].is_legacy()
+	return result
 
 
 func find_item_db(id: String) -> DocketDB:
@@ -180,6 +275,8 @@ func remove_project(project_name: String) -> Dictionary:
 	var closing_db: DocketDB = _project_dbs[project_name]
 	closing_db.close()
 	_project_dbs.erase(project_name)
+	_type_registries.erase(project_name)
+	registry_diagnostics.erase(project_name)
 
 	# If we just closed the primary, promote the next one or clear
 	if closing_db == db:
@@ -197,83 +294,26 @@ func remove_project(project_name: String) -> Dictionary:
 
 func find_children_across_projects(qualified_id: String) -> Array:
 	## Search ALL loaded projects for items whose parent matches the given qualified ref.
-	## Also matches bare ID form for backwards compatibility.
+	## Bare legacy parent IDs belong only to the project that owns the parent.
 	var parsed := DocketDB.parse_qualified_ref(qualified_id)
 	var bare_id: String = parsed.id
+	var owner_project: String = str(parsed.get("project", ""))
 	var results: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		# Match qualified form (project:ID) and bare ID
-		var rows := pdb.execute_query({"filter": {"$or": [
-			{"field": "parent", "op": "eq", "value": qualified_id},
-			{"field": "parent", "op": "eq", "value": bare_id},
-		]}})
+		var parent_filters: Array = [{"field":"parent", "op":"eq", "value":qualified_id}]
+		if owner_project.is_empty() or str(proj_name) == owner_project:
+			parent_filters.append({"field":"parent", "op":"eq", "value":bare_id})
+		var rows: Array = pdb.execute_query({"filter":{"$or":parent_filters}})
 		for item in rows:
 			item["project"] = proj_name
 		results.append_array(rows)
 	return results
 
 
-func move_item(item_id: String, target_project: String) -> Dictionary:
-	## Move an item between projects. Auto-updates all references.
-	# Find source
-	var source_db: DocketDB = null
-	var source_name: String = ""
-	for proj_name in _project_dbs:
-		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb.has_item(item_id):
-			source_db = pdb
-			source_name = proj_name
-			break
-	if source_db == null:
-		return {"error": "Item not found: %s" % item_id}
-
-	# Find target
-	var target_db: DocketDB = null
-	var canonical_target := target_project
-	for proj_name in _project_dbs:
-		if proj_name.to_lower() == target_project.to_lower():
-			target_db = _project_dbs[proj_name]
-			canonical_target = proj_name
-			break
-	if target_db == null:
-		return {"error": "Target project not found: %s" % target_project}
-	if source_db == target_db:
-		return {"error": "Item is already in project '%s'" % canonical_target}
-
-	# Export item data
-	var exported := source_db.export_item_full(item_id)
-	if exported.is_empty():
-		return {"error": "Failed to export item %s" % item_id}
-
-	var new_id: String
-	var refs_updated := 0
-
-	if DocketDB._is_uuid7(item_id):
-		# UUID7 items keep their ID — globally unique, no rewrite needed
-		new_id = item_id
-		target_db.import_item_full(new_id, exported)
-		source_db.delete_item(item_id)
-	else:
-		# Legacy items get upgraded to UUID7 on move
-		new_id = target_db.next_uuid7_id()
-		target_db.import_item_full(new_id, exported)
-		source_db.delete_item(item_id)
-		# Rewrite references across ALL projects (legacy-only)
-		var old_qualified := "%s:%s" % [source_name, item_id]
-		var new_qualified := "%s:%s" % [canonical_target, new_id]
-		for proj_name in _project_dbs:
-			var pdb: DocketDB = _project_dbs[proj_name]
-			refs_updated += pdb.rewrite_refs(old_qualified, new_qualified, item_id, new_qualified)
-
-	data_changed.emit()
-	return {
-		"old_id": item_id,
-		"new_id": new_id,
-		"old_project": source_name,
-		"new_project": canonical_target,
-		"refs_updated": refs_updated,
-	}
+func move_item(item_id: String, target_project: String, source_project: String = "") -> Dictionary:
+	## The shared transfer path enforces source identity, registry pins and durable write order.
+	return DocketMove.new().execute({"id":item_id,"target_project":target_project,"source_project":source_project}, schema, db, _project_dbs)
 
 
 func create_dct(path: String) -> void:
@@ -282,10 +322,13 @@ func create_dct(path: String) -> void:
 		db.close()
 		db = null
 	_project_dbs.clear()
+	_type_registries.clear()
+	registry_diagnostics.clear()
 	# Default new dockets to JSONL format
 	db = DocketDBJsonl.create_new_jsonl(path)
 	var proj_name := db.get_project_name()
 	_project_dbs[proj_name] = db
+	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
 	file_changed.emit()
 
 
@@ -308,6 +351,7 @@ func create_and_add_project(path: String) -> void:
 			push_warning("DocketDB: ID prefix '%s' in project '%s' collides with '%s'" % [new_prefix, proj_name, existing_name])
 
 	_project_dbs[proj_name] = new_db
+	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 	file_changed.emit()
 
 
@@ -349,16 +393,42 @@ func _extract_project_filter(query: Dictionary) -> Dictionary:
 	return {}
 
 
-func _project_matches(proj_name: String, pf: Dictionary) -> bool:
+func _project_match(proj_name: String, pf: Dictionary) -> Dictionary:
 	var op: String = pf.get("op", "eq")
-	var val: String = str(pf.get("value", ""))
+	var raw_value = pf.get("value", "")
+	var val: String = str(raw_value)
 	match op:
-		"eq": return proj_name == val
-		"neq": return proj_name != val
-		"contains": return proj_name.contains(val)
-		"not_contains": return not proj_name.contains(val)
-		"like": return proj_name.matchn(val)
-	return true
+		"eq": return {"matches": proj_name == val}
+		"neq": return {"matches": proj_name != val}
+		"contains": return {"matches": proj_name.contains(val)}
+		"not_contains": return {"matches": not proj_name.contains(val)}
+		"like": return {"matches": _project_like(proj_name, val)}
+		"is_empty": return {"matches": proj_name.is_empty()}
+		"is_not_empty": return {"matches": not proj_name.is_empty()}
+		"in":
+			if not raw_value is Array: return {"error": "project 'in' requires an array value"}
+			return {"matches": raw_value.has(proj_name)}
+	return {"error": "unsupported project query operator '%s'" % op}
+
+
+func _project_like(value: String, pattern: String) -> bool:
+	# Query wildcards use '*' for any run and '.' for one character. The small
+	# dynamic-programming matcher mirrors SQL LIKE without interpolating text.
+	var text := value.to_lower()
+	var wildcard := pattern.to_lower()
+	var previous: Array[bool] = []
+	previous.resize(text.length() + 1)
+	previous[0] = true
+	for pi in wildcard.length():
+		var current: Array[bool] = []
+		current.resize(text.length() + 1)
+		var token := wildcard[pi]
+		if token == "*": current[0] = previous[0]
+		for ti in range(1, text.length() + 1):
+			if token == "*": current[ti] = previous[ti] or current[ti - 1]
+			elif token == "." or token == text[ti - 1]: current[ti] = previous[ti - 1]
+		previous = current
+	return previous[text.length()]
 
 
 func execute_cross_project_query(query: Dictionary, detail: String = "full") -> Array:
@@ -366,43 +436,152 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 	# Strip sort/limit from per-DB queries — "project" is a pseudo-field that
 	# doesn't exist in SQL, and sort/limit must apply to the merged union.
 	var db_query := query.duplicate(true)
+	last_cross_project_query_error = ""
 	db_query.erase("sort")
 	db_query.erase("limit")
 
-	# Extract project filter from conditions — "project" is a pseudo-field
-	var project_filter := _extract_project_filter(db_query)
-
 	var all_results: Array = []
+	var sort_spec: Array = query.get("sort", [])
+	var query_detail: String = "full" if _sort_requires_registry_values(sort_spec) else detail
 	for proj_name in _project_dbs:
-		# Apply project filter: skip DBs that don't match
-		if not project_filter.is_empty() and not _project_matches(proj_name, project_filter):
-			continue
 		var pdb: DocketDB = _project_dbs[proj_name]
-		var results := pdb.execute_query(db_query, detail)
+		var project_query := _bind_project_conditions(db_query, proj_name)
+		if project_query.has("error"):
+			last_cross_project_query_error = str(project_query.error)
+			push_error(last_cross_project_query_error)
+			return []
+		if bool(project_query.get("excluded", false)):
+			continue
+		var registry: TypeRegistry = get_type_registry(str(proj_name))
+		if registry == null or not registry.get_diagnostic().is_empty():
+			last_cross_project_query_error = registry.get_diagnostic() if registry != null else "type registry unavailable for project '%s'" % proj_name
+			return []
+		var typed: bool = _query_has_typed_binding(project_query.query)
+		var results: Array = pdb.execute_registry_query(project_query.query, registry, query_detail) if typed or _sort_requires_registry_values(sort_spec) else pdb.execute_query(project_query.query, query_detail)
+		if not pdb.last_query_error.is_empty():
+			last_cross_project_query_error = "%s: %s" % [proj_name,pdb.last_query_error]
+			return []
+		if results.size() == 1 and results[0] is Dictionary and results[0].has("_error"):
+			last_cross_project_query_error = "%s: %s" % [proj_name,results[0]._error]
+			return []
 		for item in results:
 			item["project"] = proj_name
 		all_results.append_array(results)
 
 	# Apply sort across union
-	var sort_spec: Array = query.get("sort", [])
 	if sort_spec.size() > 0:
-		var field: String = str(sort_spec[0].get("field", ""))
-		var dir: String = str(sort_spec[0].get("dir", "asc")).to_lower()
-		if not field.is_empty():
-			all_results.sort_custom(func(a, b):
-				var va = a.get(field, "")
-				var vb = b.get(field, "")
-				if dir == "desc":
-					return va > vb
-				return va < vb
-			)
+		all_results.sort_custom(func(a, b): return _compare_query_rows(a, b, sort_spec))
 
 	# Apply limit across union
 	var limit: int = int(query.get("limit", 0))
 	if limit > 0 and all_results.size() > limit:
 		all_results.resize(limit)
+	if detail == "lean" and query_detail != "lean":
+		var lean: Array = []
+		for item in all_results: lean.append({"id":item.get("id", ""),"title":item.get("title", ""),"project":item.get("project", "")})
+		return lean
 
 	return all_results
+
+func _sort_requires_registry_values(specs: Array) -> bool:
+	for value in specs:
+		if value is Dictionary and (value.has("field_key") or str(value.get("field", "")) in RegistryQuery.DERIVED_FIELDS): return true
+	return false
+
+func _query_has_typed_binding(value) -> bool:
+	if value is Dictionary:
+		if value.has("conditions") or value.has("$and") or value.has("$or") or value.has("type_id") or value.has("field_key") or str(value.get("field", "")) in RegistryQuery.DERIVED_FIELDS: return true
+		for child in value.values():
+			if _query_has_typed_binding(child): return true
+	elif value is Array:
+		for child in value:
+			if _query_has_typed_binding(child): return true
+	return false
+
+func _compare_query_rows(a: Dictionary, b: Dictionary, specs: Array) -> bool:
+	for value in specs:
+		if not value is Dictionary: continue
+		var spec: Dictionary = value
+		var av = _query_sort_value(a, spec)
+		var bv = _query_sort_value(b, spec)
+		var a_null: bool = av == null
+		var b_null: bool = bv == null
+		if a_null != b_null: return b_null if str(spec.get("nulls", "last")) == "last" else a_null
+		if a_null: continue
+		if av == bv: continue
+		var less: bool = str(av) < str(bv) if typeof(av) != typeof(0) and typeof(av) != typeof(0.0) else float(av) < float(bv)
+		return not less if str(spec.get("dir", "asc")) == "desc" else less
+	var project_compare: int = str(a.get("project", "")).casecmp_to(str(b.get("project", "")))
+	if project_compare != 0: return project_compare < 0
+	return str(a.get("id", "")) < str(b.get("id", ""))
+
+func _query_sort_value(item: Dictionary, spec: Dictionary):
+	var type_id: String = str(spec.get("type_id", ""))
+	if not type_id.is_empty() and str(item.get("type_id", "")) != type_id: return null
+	var field: String = str(spec.get("field_key", spec.get("field", "")))
+	if field in RegistryQuery.DERIVED_FIELDS: return item.get(field)
+	if spec.has("field_key"):
+		var registry: TypeRegistry = get_type_registry(str(item.get("project", "")))
+		if registry == null: return null
+		var resolved: Dictionary = registry.resolve_item(item)
+		if resolved.has("error"): return null
+		var declared: bool = false
+		for descriptor in resolved.definition.fields:
+			if str(descriptor.key) == field: declared = true
+		if not declared: return null
+		var typed_fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+		return typed_fields.get(field)
+	if item.has(field): return item[field]
+	var custom: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+	return custom.get(field)
+
+
+func _bind_project_conditions(query: Dictionary, project_name: String) -> Dictionary:
+	## Project is evaluated outside each project's SQLite database. Replacing a
+	## project predicate with a per-database Boolean preserves AND/OR grouping;
+	## removing it would change sibling branches and could widen the query.
+	var bound := query.duplicate(true)
+	var filter = bound.get("filter")
+	if not filter is Dictionary:
+		return {"query": bound, "excluded": false}
+	if filter.has("conditions") or filter.has("$and") or filter.has("$or"):
+		var replaced := _replace_project_predicates(filter, project_name)
+		if replaced.has("error"): return replaced
+		bound["filter"] = replaced.value
+		return {"query": bound, "excluded": false}
+	var flat_filter: Dictionary = filter.duplicate(true)
+	var flat_query := {"filter": flat_filter}
+	var project_filter := _extract_project_filter(flat_query)
+	if not project_filter.is_empty():
+		var project_match := _project_match(project_name, project_filter)
+		if project_match.has("error"): return project_match
+		if not project_match.matches: return {"query": bound, "excluded": true}
+	bound["filter"] = flat_query.get("filter", {})
+	return {"query": bound, "excluded": false}
+
+
+func _replace_project_predicates(node: Variant, project_name: String) -> Dictionary:
+	if node is Array:
+		var replaced_array: Array = []
+		for child in node:
+			var replaced_child := _replace_project_predicates(child, project_name)
+			if replaced_child.has("error"): return replaced_child
+			replaced_array.append(replaced_child.value)
+		return {"value": replaced_array}
+	if not node is Dictionary: return {"value": node}
+	if str(node.get("field", "")) == "project":
+		var match_result := _project_match(project_name, node)
+		if match_result.has("error"): return match_result
+		var replacement := {"field": "id", "op": "is_not_empty", "value": ""} if match_result.matches else {"field": "id", "op": "in", "value": []}
+		if node.has("conj"): replacement["conj"] = node.conj
+		return {"value": replacement}
+	var replaced_dict: Dictionary = node.duplicate(true)
+	for key in ["conditions", "$and", "$or"]:
+		if replaced_dict.has(key):
+			var children := _replace_project_predicates(replaced_dict[key], project_name)
+			if children.has("error"): return children
+			replaced_dict[key] = children.value
+	return {"value": replaced_dict}
 
 
 func reload_stale() -> Array:
@@ -411,8 +590,15 @@ func reload_stale() -> Array:
 	var reloaded: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).ensure_fresh():
-			reloaded.append(proj_name)
+		if pdb is DocketDBJsonl:
+			var db_reloaded: bool = (pdb as DocketDBJsonl).ensure_fresh()
+			var registry: TypeRegistry = _type_registries[proj_name]
+			var previous_generation: String = registry.get_generation_token()
+			var error: String = registry.reload() if db_reloaded else registry.refresh_if_changed()
+			if not error.is_empty(): registry_diagnostics[proj_name] = error
+			else:
+				registry_diagnostics.erase(proj_name)
+				if db_reloaded or registry.get_generation_token() != previous_generation: reloaded.append(proj_name)
 	return reloaded
 
 
@@ -422,8 +608,17 @@ func reload_all() -> Array:
 	var reloaded: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).reload():
-			reloaded.append(proj_name)
+		if pdb is DocketDBJsonl:
+			var loaded: bool = (pdb as DocketDBJsonl).reload()
+			var registry: TypeRegistry = _type_registries[proj_name]
+			var error: String = registry.reload() if loaded else registry.refresh_if_changed()
+			if not loaded and error.is_empty():
+				error = (pdb as DocketDBJsonl).last_write_error
+				if error.is_empty(): error = "canonical project could not be reloaded"
+			if error.is_empty():
+				registry_diagnostics.erase(proj_name)
+				reloaded.append(proj_name)
+			else: registry_diagnostics[proj_name] = error
 	if not reloaded.is_empty():
 		data_changed.emit()
 	return reloaded

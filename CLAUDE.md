@@ -33,15 +33,19 @@ godot --headless --path . -- validate --file docket.dct
 ### Data Format
 - **Canonical format:** `.dct` files are **JSONL text** (committed to git)
   - Human-readable, diffable, mergeable per `data/jsonl_format.md` spec
-  - One JSON object per line, deterministic key order, omit empty fields
+  - One JSON object per line with deterministic recursive serialization
+  - Generic fields preserve absence, null, false, zero, empty values, and
+    unknown future payloads
   - Uses a best-effort advisory `.lock`; it reduces overlap but is not a
     correctness boundary
-- **Cache layer:** `.dct.cache` (SQLite, gitignored, auto-rebuilt)
+- **Cache layer:** `.v2.cache` for format 2.0 and `.cache` for format 1.0
+  (SQLite, gitignored, auto-rebuilt)
   - Fast query engine, concurrent read/write (WAL mode, 15s timeout)
   - Transitional logs and error logs (ephemeral, not serialized)
 - **Legacy formats:** SQLite and monolithic JSON remain readable; promotion to
   JSONL is currently explicit
-- **New files:** created in JSONL format by default
+- **New files:** created in JSONL 2.0 with project-local type definitions;
+  existing JSONL 1.0 files remain unchanged until an explicit upgrade
 
 ### Core Components
 - **SQLite cache backend:** `DocketDB` class wraps cache operations via godot-sqlite GDExtension (2shady4u, MIT) for fast queries
@@ -55,7 +59,9 @@ godot --headless --path . -- validate --file docket.dct
   and item movement between projects
 - **`.dcq` files:** standalone saved query files for sharing between projects
 - **Attachments:** Binary BLOB storage in SQLite (max 5 MB), transported as base64 over MCP
-- **Schema source of truth:** `data/schema.json`
+- **Type source of truth:** each project owns immutable definition revisions in
+  JSONL 2.0. `data/schema.json` remains the compatibility source for legacy
+  files and the input for protected built-in starter definitions.
 - **MCP transport:** HTTP server on 127.0.0.1:3010, JSON-RPC 2.0 over POST `/mcp`
 - **MCP tools:** the authoritative tool registry is
   `scripts/tools/tool_registry.gd`; do not maintain a second hardcoded list here
@@ -83,10 +89,9 @@ godot --headless --path . -- validate --file docket.dct
 - `scripts/core/jsonl_migration.gd` — SQLite → canonical JSONL converter
 - `scripts/core/jsonl_validator.gd` — Structural validation without opening a DB
 - `scripts/core/data_model.gd` — Item creation & validation
-- `scripts/core/state_machine.gd` — Type-specific state flows (advisory: any
-  state can transition to any other state of its type, but moves outside the
-  normal promotion flow require a note; `transition_rules` required fields
-  still apply)
+- `scripts/core/type_registry.gd` — project-local type definitions, pinned item
+  semantics, candidate validation, lifecycle enforcement, and evolution
+- `scripts/core/state_machine.gd` — legacy built-in lifecycle compatibility
 - `scripts/core/app_state.gd` — Centralized GUI state container
 - `scripts/tools/tool_registry.gd` — Tool dispatcher
 - `data/jsonl_format.md` — JSONL spec (line types, sort order, encoding rules)
@@ -107,7 +112,8 @@ godot --headless --path . -- migrate-jsonl --file legacy.dct
 - JSONL is written to the same filename (`legacy.dct`).
 - The intermediate/original SQLite file is backed up as
   `legacy.dct.sqlite.bak`.
-- New `.dct.cache` is built from JSONL on next access
+- A disposable cache is built on next access: `.v2.cache` for format 2.0 or
+  `.cache` for format 1.0.
 
 ### Cleaning Up Git Filters (per repo)
 If the repo previously used smudge/clean filters for SQLite storage:
@@ -118,8 +124,8 @@ git config diff.clean ""
 git config diff.smudge ""
 git config diff.textconv ""
 
-# Add .dct.cache to .gitignore if not already present
-echo ".dct.cache" >> .gitignore
+# Add disposable cache families to .gitignore if not already present
+printf '%s\n' '*.dct.cache' '*.dct.v2.cache' >> .gitignore
 
 # Remove any filter setup scripts (no longer needed)
 rm -f scripts/setup-git-filters.sh scripts/sqlite-clean.sh scripts/sqlite-smudge.sh
@@ -130,7 +136,8 @@ rm -f scripts/setup-git-filters.sh scripts/sqlite-clean.sh scripts/sqlite-smudge
 - Dictionary-based items (no custom classes for serialization)
 - Static methods on RefCounted where possible
 - Test methods return `true` (pass) or error `String` (fail)
-- All timestamps via `Time.get_datetime_string_from_system(true)` (UTC, ISO 8601 format)
+- New timestamps use UTC ISO 8601; callers must not assume every stored value
+  carries an explicit `Z` suffix.
 - IDs: UUID7 (32-char lowercase hex, time-ordered, globally unique). Displayed as git-style shortest unique prefix (min 7 chars). Legacy `PREFIX-NNNN` IDs still work. MCP tools accept short hex prefixes (min 4 chars).
 - Cross-project references: always-qualified `project:ID` format (e.g. `minerva:0196a3b4c5d6e7f`). UUID7 items keep their ID when moved between projects.
 - Writes are immediate: every mutation writes SQLite *and* rewrites the whole
@@ -138,8 +145,8 @@ rm -f scripts/setup-git-filters.sh scripts/sqlite-clean.sh scripts/sqlite-smudge
   `docket_flush` and **File > Save** are explicit "settle before `git commit`"
   steps.
 - Reads re-check the `.dct` fingerprint before each MCP call / GUI poll and rebuild the cache if it changed on disk, so `git pull` is safe while Docket is running
-- The `.lock` is advisory and best-effort. Its creation is not atomic, and the
-  writer currently proceeds after a lock timeout.
+- The `.lock` is advisory and not an atomic cross-process correctness boundary.
+  Lock acquisition failure fails closed rather than writing through it.
 
 ## Discussions
 

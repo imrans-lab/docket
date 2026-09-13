@@ -5,10 +5,11 @@ class_name DocketGetStateMachine
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_get_state_machine",
-		"description": "Return the full state machine definition for a given item type, including all states, the initial state, and the normal promotion flow from each state. The flow is advisory: any state can transition to any other state of the type, but off-flow transitions require a note. If 'type' is omitted, returns state machines for all types.",
+		"description": "Return the project registry's full pinned lifecycle definition. Enforcement may be strict, guided, or open; callers must follow the returned transitions and guards.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
+				"project": {"type":"string", "description":"Project whose pinned type semantics should be returned."},
 				"type": {"type": "string", "description": "Item type (e.g. 'bug', 'work_item'). Omit to get all types."},
 			},
 			"required": [],
@@ -16,7 +17,16 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, schema: Dictionary, _db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
+	if db is DocketDBJsonl and db.get_meta_value("jsonl_version", "1.0.0") == "2.0.0":
+		var registry := TypeRegistry.for_db(db, db.get_project_name())
+		if args.has("type") and not str(args.type).is_empty():
+			var descriptor: Dictionary = registry.resolve_type_ref(str(args.type))
+			if descriptor.has("error"): return descriptor
+			return {"type":descriptor.slug,"type_id":descriptor.id,"revision":descriptor.current_revision,"lifecycle":descriptor.definition.lifecycle}
+		var definitions: Array = registry.list_types(true)
+		if definitions.size() == 1 and definitions[0] is Dictionary and definitions[0].has("error"): return definitions[0]
+		return {"state_machines":definitions}
 	var types: Dictionary = schema.get("types", {})
 
 	if args.has("type") and not str(args.get("type", "")).is_empty():

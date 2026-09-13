@@ -1,0 +1,27 @@
+{
+  "slug": "code_review",
+  "label": "Code Review",
+  "description": "Tracks a review against a specific revision.",
+  "use_when": "Use when a change needs an explicit review decision.",
+  "fields": [
+    {"key":"title","type":"string","required":true,"nullable":false,"min_length":1,"help":"Short review title"},
+    {"key":"revision","type":"string","required":true,"nullable":false,"min_length":1,"help":"Commit or revision under review"},
+    {"key":"reviewer","type":"string","required":false,"nullable":true,"help":"Assigned reviewer"},
+    {"key":"findings_summary","type":"markdown","required":false,"nullable":true,"help":"Findings required before approval"}
+  ],
+  "lifecycle": {
+    "initial_state":"requested",
+    "states":[
+      {"key":"requested","label":"Requested","state_category":"queued","state_outcome":""},
+      {"key":"reviewing","label":"Reviewing","state_category":"active","state_outcome":""},
+      {"key":"approved","label":"Approved","state_category":"terminal","state_outcome":"success"},
+      {"key":"changes_requested","label":"Changes requested","state_category":"terminal","state_outcome":"action_required"}
+    ],
+    "terminal_states":["approved","changes_requested"],
+    "transitions":{"requested":["reviewing"],"reviewing":["approved","changes_requested"],"approved":[],"changes_requested":[]},
+    "guards":{"approved":{"required_fields":["findings_summary"]},"changes_requested":{"required_fields":["findings_summary"]}},
+    "enforcement":"strict"
+  },
+  "protected":false,
+  "protected_behavior":{"regular_creation_allowed":true}
+}

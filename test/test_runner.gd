@@ -27,6 +27,13 @@ func _ready() -> void:
 		preload("res://test/test_query_field_validation.gd"),
 		preload("res://test/test_meta_roundtrip.gd"),
 		preload("res://test/test_user_prefs.gd"),
+		preload("res://test/test_type_catalog.gd"),
+		preload("res://test/test_dynamic_type_storage.gd"),
+		preload("res://test/test_type_registry_runtime.gd"),
+		preload("res://test/test_dynamic_type_tools_query.gd"),
+		preload("res://test/test_project_types_panel.gd"),
+		preload("res://test/test_dynamic_item_gui.gd"),
+		preload("res://test/test_test_runner_async.gd"),
 		preload("res://test/test_jsonl_serializer.gd"),
 		preload("res://test/test_jsonl_parser.gd"),
 		preload("res://test/test_jsonl_migration.gd"),
@@ -47,6 +54,25 @@ func _ready() -> void:
 		preload("res://test/test_functional_lifecycle.gd"),
 		preload("res://test/test_functional_roundtrip.gd"),
 	]
+	var requested := _requested_test_class(OS.get_cmdline_user_args())
+	if not requested.is_empty():
+		var selected: Array = []
+		for test_script in _test_classes:
+			if test_script.resource_path.get_file().get_basename() == requested:
+				selected.append(test_script)
+		_test_classes = selected
+		if _test_classes.is_empty():
+			_fail_count = 1
+			push_error("Unknown --test-class: %s" % requested)
+
+
+func _requested_test_class(args: PackedStringArray) -> String:
+	for i in args.size():
+		if args[i].begins_with("--test-class="):
+			return args[i].trim_prefix("--test-class=").get_file().get_basename()
+		if args[i] == "--test-class" and i + 1 < args.size():
+			return args[i + 1].get_file().get_basename()
+	return ""
 
 
 func run_all() -> int:
@@ -59,9 +85,7 @@ func run_all() -> int:
 		print("=== %s ===" % script_name)
 
 		if test_instance.has_method("setup"):
-			var setup_result = test_instance.setup()
-			if setup_result is Signal:
-				await setup_result
+			await test_instance.call("setup")
 
 		var methods: Array[Dictionary] = test_instance.get_method_list()
 		for method in methods:
@@ -70,9 +94,7 @@ func run_all() -> int:
 				await _run_test(test_instance, name)
 
 		if test_instance.has_method("teardown"):
-			var td_result = test_instance.teardown()
-			if td_result is Signal:
-				await td_result
+			await test_instance.call("teardown")
 
 		test_instance.queue_free()
 		print("")
@@ -84,16 +106,9 @@ func run_all() -> int:
 func _run_test(instance: Node, method_name: String) -> void:
 	# Per-test setup
 	if instance.has_method("before_each"):
-		var be = instance.before_each()
-		if be is Signal:
-			await be
+		await instance.call("before_each")
 
-	var result: Variant = instance.call(method_name)
-
-	if result is Object and result.has_method("is_valid"):
-		result = await result
-	elif result is Signal:
-		result = await result
+	var result: Variant = await instance.call(method_name)
 
 	# Every test method is declared `-> Variant` and returns true (pass) or an
 	# error String (fail). null is therefore NEVER a legitimate result: GDScript
@@ -115,9 +130,7 @@ func _run_test(instance: Node, method_name: String) -> void:
 
 	# Per-test teardown
 	if instance.has_method("after_each"):
-		var ae = instance.after_each()
-		if ae is Signal:
-			await ae
+		await instance.call("after_each")
 
 
 func _print_summary() -> void:

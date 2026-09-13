@@ -20,7 +20,7 @@ func before_each() -> void:
 
 
 func _cleanup() -> void:
-	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".lock"]:
+	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".lock"]:
 		var p := _path + suffix
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
@@ -99,7 +99,7 @@ func test_iterations_survive_cache_rebuild() -> Variant:
 	db.close()
 
 	# Drop the cache entirely, forcing a rebuild from the JSONL text.
-	for suffix: String in [".cache", ".cache-wal", ".cache-shm"]:
+	for suffix: String in [".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm"]:
 		if FileAccess.file_exists(_path + suffix):
 			DirAccess.remove_absolute(_path + suffix)
 

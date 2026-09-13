@@ -295,7 +295,7 @@ func test_flush_creates_and_removes_lock() -> Variant:
 	# Cleanup
 	db._jsonl_path = ""
 	db.close()
-	for p: String in [jsonl_path, jsonl_path + ".cache", jsonl_path + ".cache-wal", jsonl_path + ".cache-shm"]:
+	for p: String in [jsonl_path, jsonl_path + ".cache", jsonl_path + ".cache-wal", jsonl_path + ".cache-shm", jsonl_path + ".v2.cache", jsonl_path + ".v2.cache-wal", jsonl_path + ".v2.cache-shm"]:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
 

@@ -36,7 +36,7 @@ func after_each() -> void:
 
 
 func _cleanup() -> void:
-	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".lock"]:
+	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".lock"]:
 		var p := _path + suffix
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
@@ -198,7 +198,7 @@ func test_version_history_survives_a_round_trip() -> Variant:
 	_db.rotate_secret("h", _b("CT2"), _b("IV"), _b("MAC"), "tester", true)
 	_db.close()
 	_db = null
-	for suffix: String in [".cache", ".cache-wal", ".cache-shm"]:
+	for suffix: String in [".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm"]:
 		if FileAccess.file_exists(_path + suffix):
 			DirAccess.remove_absolute(_path + suffix)
 	_db = DocketDBJsonl.open_jsonl(_path)

@@ -1,12 +1,17 @@
 # Docket JSONL Format Specification
 
-**Version:** 1.0.0
-**Status:** Draft
-**Date:** 2026-07-28
+**Current version:** 2.0.0
+**Legacy version:** 1.0.0
+
+New projects use the [2.0 storage contract](#docket-jsonl-20-storage-contract): project-owned immutable type revisions, pinned item meaning, and lossless JSON envelopes. Existing 1.0 projects remain 1.0 until an explicit previewed upgrade; opening a file never upgrades it.
+
+The sections before the 2.0 contract are the legacy compatibility reference. Their omit-empty rule, `.cache` name, and line-kind list apply only to 1.0 files.
 
 ---
 
-## 1. Overview
+## Legacy 1.0 compatibility reference
+
+### 1. Overview
 
 A `.dct` file is the canonical text representation of a JSONL-backed Docket
 project. Each line is a self-contained JSON object with a `_type` discriminator
@@ -18,7 +23,7 @@ The adjacent SQLite cache is disposable and rebuilt from the `.dct` source.
 ### 1.1 File Extension
 
 - Canonical file: `<project>.dct`
-- Cache file: `<project>.dct.cache` (SQLite, gitignored)
+- Cache file: `<project>.dct.cache` (SQLite, gitignored; 1.0 only)
 - Lock file: `<project>.dct.lock` (advisory; contains owner PID and timestamp)
 
 ### 1.2 Encoding
@@ -572,3 +577,92 @@ Conciseness (lines are shorter, diffs are cleaner) and merge-friendliness (fewer
 ### Why deterministic key order?
 
 Without deterministic key order, logically identical data can produce different byte sequences, causing spurious Git diffs. Deterministic ordering ensures that `serialize(parse(file)) == file` for a conforming writer.
+## Docket JSONL 2.0 storage contract
+
+Version `2.0.0` adds project-local type definitions and lossless item
+envelopes. A `1.0.0` file remains a compatibility file until an explicit
+previewed upgrade is applied. Opening or editing a 1.0 file does not upgrade
+it. Writers that do not understand `type_def` and `type_def_version` must be
+stopped before upgrade and must not subsequently write the upgraded file.
+
+The meta record announces the format before any canonical or cache mutation.
+Readers refuse unsupported versions, conflict markers, duplicate identities,
+and inconsistent registry pointers. Version 2 caches use `<file>.v2.cache`;
+version 1 caches retain `<file>.cache`. Applying an upgrade invalidates the
+old cache. Rollback restores the pre-upgrade canonical snapshot and removes
+the v2 cache.
+
+## Registry records
+
+Each type has exactly one stable record:
+
+```json
+{"_type":"type_def","id":"type:widget","slug":"widget","lifecycle":"active","current_revision":"type:widget@a14d4f6948c5086b31fd71df6e2c4e30b8864d4d3dc1614eb71fc99fc0ca427d","provenance":{"kind":"custom","protected":false}}
+```
+
+`id` is immutable and project-local. `slug` is immutable and unique within the
+project. `lifecycle` is `draft`, `active`, or `deprecated`.
+`current_revision` names one revision belonging to this type. `provenance` is
+an object recording origin and ratification data.
+
+Revisions are immutable, complete snapshots:
+
+```json
+{"_type":"type_def_version","id":"type:widget@a14d4f6948c5086b31fd71df6e2c4e30b8864d4d3dc1614eb71fc99fc0ca427d","type_id":"type:widget","definition":{"slug":"widget","label":"Widget","description":"Tracks a manufactured widget","fields":[{"key":"serial_number","type":"string","required":true,"nullable":false,"mutable":false}],"lifecycle":{"initial_state":"queued","states":[{"key":"queued","state_category":"queued","state_outcome":""}],"terminal_states":[],"transitions":{"queued":[]},"guards":{},"enforcement":"strict"},"protected":false,"protected_behavior":{"regular_creation_allowed":true}},"author":"alex","created_at":"2026-09-12T00:00:00Z","reason":"initial custom definition"}
+```
+
+Every revision ID is `<type_id>@<digest>`, where `<digest>` is the full
+lowercase SHA-256 digest of the deterministic canonical complete `definition`
+object. Readers reject missing, shortened, or content-mismatched identities.
+
+`parent_revision` is omitted only for the first revision. The `definition`
+object contains the complete meaning: presentation, typed field descriptors,
+initial state, ordered states with `state_category`, explicitly declared
+terminal membership and `state_outcome`, edges, guards, enforcement, and
+protected behavior. A reader never fills missing revision meaning from its
+currently shipped schema. Concurrent revision records may coexist, but there
+is one explicit current pointer and no timestamp winner.
+
+Items keep `type` and `status` for legacy APIs and additionally pin `type_id`
+and `type_revision`. A missing definition or revision makes the item readable
+with an unresolved-definition diagnostic, while destructive writes and close
+flush are blocked until repaired.
+
+## Item envelopes and field authority
+
+Internal identity and relation keys are reserved: `_type`, `id`, `type`, `type_id`, `type_revision`, `status`, `created_at`, `updated_at`, `events`, `links`, `fields`, `extras`, `fields_json`, `extras_json`, and `unset_fields`. Universal mutable keys (`title`, `description`, `assigned_to`, `directed_to`, `priority`, `severity`, `tags`, `parent`, and `blocked_by`) keep fixed top-level kinds.
+
+Protected built-ins may additionally use their historical flat columns. Custom definitions do not acquire those columns by reusing a name: a custom `research_cost:string` is stored in `fields.research_cost`, even though a built-in has an integer column of that name. Candidate validation, query, export/import, and repinning follow the pinned definition's authority.
+
+Definition-owned custom values live in `fields`. Unknown future payload lives in `extras` and is preserved read-only. Ambiguous flat/envelope or fields/extras authority is rejected. The cache uses a fixed generic schema; definitions never add tables or columns.
+
+Envelope membership distinguishes unset from explicit JSON `null`. It preserves `false`, `0`, empty strings and containers, Unicode, literal escapes, arrays, objects, and null. Updates replace only supplied keys. Objects serialize recursively with sorted keys; arrays retain order. Records sort as meta, definitions, revisions, then the legacy record families.
+
+The parser-tested [`dynamic_types_record_order_v2.jsonl`](../test/fixtures/dynamic_types_record_order_v2.jsonl) contains a valid full digest and representative lossless values. Definition resolution is independent of record order.
+
+Legacy SQLite must first be explicitly promoted to canonical JSONL. Custom
+type activation is allowed only after an explicit 2.0 preview and checked
+apply. The preview reports starter definitions, item bindings, unresolved
+slugs/statuses, cache changes, and snapshot paths without mutating either
+canonical source or cache.
+
+Starter state categories are part of each immutable snapshot. The published
+mapping is: bug `new/triaged:queued`, `active:active`,
+`resolved/verified:waiting`, `closed:terminal`; DCR
+`proposed/approved:queued`, `designing/implementing/reviewing:active`,
+`shipped:terminal`; RCA `detected:queued`,
+`investigating/root_caused/remediating:active`, `verified:waiting`,
+`closed:terminal`; chore `open:queued`, `in_progress:active`, `done:terminal`;
+hint `draft:queued`, `validated:active`, `promoted:terminal`; insight
+`draft:queued`, `confirmed:terminal`; question `asked:queued`,
+`researching:active`, `escalated:waiting`, `answered:terminal`; work item
+`backlog/open:queued`, `in_progress:active`, `blocked:waiting`, `done:terminal`;
+secret `active/rotated:active`, `revoked:terminal`; encrypted note
+`draft:queued`, `sealed:terminal`; test `draft/ready:queued`,
+`passing/failing:active`, `skipped:waiting`, `retired:terminal`; discussion
+`active:active`, `resolved:waiting`; skill, prompt, and KB `draft:queued`,
+`active:active`, `archived:waiting`; policy `draft/proposed:queued`,
+`active:active`, `suspended/archived:waiting`. This preserves the original
+schema: Discussion's `resolved` and skill/prompt/KB/policy `archived` states
+remain nonterminal. Terminal outcomes are `unspecified` unless a definition
+explicitly supplies stronger meaning.

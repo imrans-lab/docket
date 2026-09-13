@@ -24,6 +24,15 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 		return {"error": "Item not found: %s" % id}
 
 	var item := db.get_item(id)
+	if db is DocketDBJsonl and db.get_meta_value("jsonl_version", "1.0.0") == "2.0.0":
+		var registry := TypeRegistry.for_db(db, db.get_project_name())
+		var semantics: Dictionary = registry.resolve_item(item)
+		item["item_token"] = registry.item_token(item)
+		if semantics.has("error"): item["type_diagnostic"] = semantics.error
+		else:
+			item["state_category"] = semantics.state_category
+			item["state_outcome"] = semantics.state_outcome
+			item["is_terminal"] = semantics.is_terminal
 
 	# Strip excluded sections
 	var include: Array = args.get("include", ["events", "links"])

@@ -10,6 +10,10 @@ func get_definition() -> Dictionary:
 			"type": "object",
 			"properties": {
 				"id": {"type": "string", "description": "Full ID or short prefix (min 4 chars)"},
+				"fields": {"type":"object","description":"Typed custom field values"},
+				"unset_fields": {"type":"array","items":{"type":"string"}},
+				"expected_revision": {"type":"string","description":"Expected pinned type revision for stale-form refusal"},
+				"expected_item_token": {"type":"string","description":"Expected content token for stale-form refusal"},
 				"title": {"type": "string"},
 				"description": {"type": "string"},
 				"priority": {"type": "integer"},
@@ -79,7 +83,7 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var id: String = args.get("id", "")
 	if not db.has_item(id):
 		return {"error": "Item not found: %s" % id}
@@ -92,20 +96,13 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 			if not proj_name.is_empty():
 				args["parent"] = "%s:%s" % [proj_name, parent_str]
 
-	var item: Dictionary = db.get_item(id)
-	var changes := args.duplicate()
+	var changes: Dictionary = args.duplicate()
 	changes.erase("id")
 	changes.erase("project")
-
-	var result = DataModel.update_item(schema, item, changes)
-	if result.has("error"):
-		return result
-
-	var write_back := DataModel.build_write_back(item, changes)
-	db.update_item_fields(id, write_back)
-	var changed_keys := PackedStringArray(changes.keys())
-
-	if changed_keys.size() > 0:
-		db.add_event(id, "updated", "", "Updated: %s" % ", ".join(changed_keys))
-
-	return {"id": id, "status": "updated"}
+	var expected_revision: String = str(changes.get("expected_revision", ""))
+	changes.erase("expected_revision")
+	var expected_item_token: String = str(changes.get("expected_item_token", ""))
+	changes.erase("expected_item_token")
+	var update_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
+	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token)
+	return {"error":typed_error} if not typed_error.is_empty() else {"id":id,"status":"updated","type_revision":db.get_item(id).get("type_revision", ""),"item_token":update_registry.item_token(id)}

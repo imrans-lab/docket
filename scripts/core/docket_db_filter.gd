@@ -205,6 +205,7 @@ static func _condition_to_sql(cond: Dictionary) -> Dictionary:
 
 	# Pseudo-field: has_attachment
 	if field == "has_attachment":
+		if op != "eq": return {"sql":"","bindings":[],"error":"has_attachment supports only eq"}
 		var sub := "EXISTS (SELECT 1 FROM attachments WHERE attachments.item_id=items.id)"
 		var is_true: bool = (value is bool and value) or (value is int and value == 1) or (value is float and value == 1.0) or str(value).to_lower() == "true"
 		if is_true:
@@ -234,7 +235,7 @@ static func _condition_to_sql(cond: Dictionary) -> Dictionary:
 				"sql": "NOT EXISTS (SELECT 1 FROM item_tags WHERE item_tags.item_id=items.id AND item_tags.tag LIKE '%' || ? || '%')",
 				"bindings": [str(value)],
 			}
-		return {"sql": "", "bindings": []}
+		return {"sql":"","bindings":[],"error":"tags does not support operator '%s'" % op}
 
 	# Parent field: match both bare ID and qualified "project:ID" patterns
 	if field == "parent" and op == "eq" and value is String:
@@ -254,6 +255,13 @@ static func _condition_to_sql(cond: Dictionary) -> Dictionary:
 
 	# Standard operators
 	match op:
+		"in":
+			if not value is Array or value.is_empty():
+				return {"sql": "0", "bindings": []}
+			var placeholders := PackedStringArray()
+			for entry in value:
+				placeholders.append("?")
+			return {"sql": "%s IN (%s)" % [field, ",".join(placeholders)], "bindings": value.duplicate()}
 		"eq":
 			return {"sql": "%s=?" % field, "bindings": [value]}
 		"neq":
@@ -278,7 +286,7 @@ static func _condition_to_sql(cond: Dictionary) -> Dictionary:
 		"is_not_empty":
 			return {"sql": "(%s IS NOT NULL AND %s!='')" % [field, field], "bindings": []}
 
-	return {"sql": "", "bindings": []}
+	return {"sql":"","bindings":[],"error":"unsupported query operator '%s'" % op}
 
 
 ## Translate human-friendly wildcards to SQL LIKE pattern.

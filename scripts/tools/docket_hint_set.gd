@@ -25,7 +25,7 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var comp: String = args.get("component", "")
 	var key: String = args.get("key", "")
 	var value: String = args.get("value", "")
@@ -45,13 +45,8 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 			changes["confidence"] = args.confidence
 		if args.has("research_cost"):
 			changes["research_cost"] = int(args.research_cost)
-		# Validate via DataModel then write back
-		var result = DataModel.update_item(schema, existing, changes)
-		if result.has("error"):
-			return result
-		var write_back := DataModel.build_write_back(existing, changes)
-		db.update_item_fields(existing_id, write_back)
-		return db.get_item(existing_id)
+		var update_error: String = TypeRegistry.for_db(db, db.get_project_name()).update_item(existing_id, changes, "agent")
+		return {"error":update_error} if not update_error.is_empty() else db.get_item(existing_id)
 	else:
 		# Create new hint
 		var title: String = args.get("title", "%s/%s" % [comp, key])
@@ -67,9 +62,6 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 			fields["confidence"] = args.confidence
 		if args.has("research_cost"):
 			fields["research_cost"] = int(args.research_cost)
-		var item = DataModel.create_item(schema, "hint", fields)
-		if item.has("error"):
-			return item
-		var id := db.next_uuid7_id()
-		db.insert_item(id, item)
-		return db.get_item(id)
+		fields["type"] = "hint"
+		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(fields, "agent")
+		return created if created.has("error") else db.get_item(str(created.id))
