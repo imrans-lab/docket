@@ -136,8 +136,9 @@ func _gui_remove_project(proj_name: String) -> Dictionary:
 
 func _gui_open(request: Dictionary) -> Dictionary:
 	if request.has("id"):
-		external_state.open_item_requested.emit(str(request.id))
-		return {"opened": "item", "id": str(request.id)}
+		var project := str(request.get("project", ""))
+		external_state.open_item_requested.emit(str(request.id), project)
+		return {"opened": "item", "id": str(request.id), "project":project}
 	elif request.has("filter"):
 		var filter_str: String = str(request.get("filter", ""))
 		var label: String = str(request.get("label", "MCP Query"))

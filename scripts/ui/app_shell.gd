@@ -28,6 +28,11 @@ var _prefs_first: LineEdit
 var _prefs_last: LineEdit
 var _prefs_vault_pw: LineEdit
 var _prefs_vault_hint: LineEdit
+var _new_item_dialog: ConfirmationDialog
+var _new_item_project: OptionButton
+var _new_item_search: LineEdit
+var _new_item_list: ItemList
+var _new_item_catalog: Array = []
 
 # Zoom levels
 const _ZOOM_LEVELS := [0.75, 0.85, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0, 2.5]
@@ -48,6 +53,7 @@ var _recent_files: PackedStringArray = []
 # External change polling
 var _poll_timer: Timer
 var _last_poll_mtime: int = 0
+var _last_projects_token: String = ""
 
 
 func init(state: AppState) -> void:
@@ -78,6 +84,7 @@ func _ready() -> void:
 	add_child(_poll_timer)
 	_poll_timer.start()
 	_last_poll_mtime = _get_dct_mtime()
+	_last_projects_token = _get_projects_token()
 
 
 func _notification(what: int) -> void:
@@ -242,6 +249,7 @@ func _build_ui() -> void:
 	_confirm_reload_dialog.cancel_button_text = "Keep my edits"
 	_confirm_reload_dialog.confirmed.connect(_on_reload_open_item_confirmed)
 	add_child(_confirm_reload_dialog)
+	_build_new_item_dialog()
 
 	# A .dct that could not be opened (conflict markers, corruption)
 	_state.load_failed.connect(_on_load_failed)
@@ -251,7 +259,7 @@ func _build_ui() -> void:
 
 	# Listen for project changes to update menu and persist session
 	_state.file_changed.connect(_on_file_changed)
-	_state.open_item_requested.connect(func(id: String): _open_item_entry.call_deferred(id))
+	_state.open_item_requested.connect(func(id: String, project: String): _open_item_entry.call_deferred(id, project))
 	_state.open_query_requested.connect(_on_open_query_from_mcp)
 
 	# Preferences dialog
@@ -318,8 +326,8 @@ func _build_ui() -> void:
 
 # -- Work entries ----------------------------------------------------------
 
-func _add_work_entry(type: String, label: String, filter: String, item_id: String) -> int:
-	var entry := {"type": type, "label": label, "filter": filter, "item_id": item_id}
+func _add_work_entry(type: String, label: String, filter: String, item_id: String, project: String = "") -> int:
+	var entry := {"type": type, "label": label, "filter": filter, "item_id": item_id, "project":project}
 	_work_entries.append(entry)
 	_rebuild_work_menu()
 	return _work_entries.size() - 1
@@ -339,7 +347,7 @@ func _activate_work_entry(idx: int) -> void:
 		switch_view(ViewMode.QUERY)
 	elif entry.type == "item":
 		switch_view(ViewMode.DETAIL)
-		_record_form.load_item(entry.item_id)
+		_record_form.load_item(entry.item_id, str(entry.get("project", "")))
 	elif entry.type == "types":
 		_project_types.refresh()
 		switch_view(ViewMode.TYPES)
@@ -356,9 +364,9 @@ func _save_current_work_state() -> void:
 		entry.label = _query_grid.get_filter_summary()
 
 
-func _find_item_work_entry(item_id: String) -> int:
+func _find_item_work_entry(item_id: String, project: String = "") -> int:
 	for i in range(_work_entries.size()):
-		if _work_entries[i].type == "item" and _work_entries[i].item_id == item_id:
+		if _work_entries[i].type == "item" and _work_entries[i].item_id == item_id and str(_work_entries[i].get("project", "")) == project:
 			return i
 	return -1
 
@@ -416,6 +424,19 @@ func _get_dct_mtime() -> int:
 		return FileAccess.get_modified_time(path)
 	return 0
 
+func _get_projects_token() -> String:
+	var parts: Array[String] = []
+	var projects: Array = _state.get_project_dbs().keys()
+	projects.sort()
+	for project in projects:
+		var pdb: DocketDB = _state.get_db_for_project(str(project))
+		var path := pdb.get_path()
+		var canonical_hash := FileAccess.get_sha256(path) if FileAccess.file_exists(path) else "missing"
+		var wal := path + "-wal"
+		var wal_stamp := str(FileAccess.get_modified_time(wal)) if FileAccess.file_exists(wal) else ""
+		parts.append("%s:%s:%s" % [project, canonical_hash, wal_stamp])
+	return "|".join(parts)
+
 
 func _on_file_changed() -> void:
 	## Project list changed — update menus and persist session.
@@ -435,15 +456,16 @@ func _on_poll_external_changes() -> void:
 	## Pick up external edits to the .dct (git pull, MCP server, another
 	## instance). Re-querying alone is not enough: the grid reads the SQLite
 	## cache, so without an actual reload it would redisplay stale rows.
-	var current_mtime := _get_dct_mtime()
-	if current_mtime == _last_poll_mtime or current_mtime <= 0:
+	var current_token := _get_projects_token()
+	if current_token == _last_projects_token:
 		return
-	_last_poll_mtime = current_mtime
+	_last_projects_token = current_token
 
 	# Snapshot the open item before reloading so we can tell whether the reload
 	# affected what the user is looking at.
 	var open_id := _record_form.get_current_id() if _record_form else ""
-	var before := _item_revision(open_id)
+	var open_project := _record_form.get_current_project() if _record_form else ""
+	var before := _item_revision(open_id, open_project)
 
 	var reloaded := _state.reload_stale()
 	if reloaded.is_empty():
@@ -459,7 +481,7 @@ func _on_poll_external_changes() -> void:
 	# open form's business, so reload silently. Only a change to the item under
 	# edit is worth interrupting for — the user may have unsaved edits, and
 	# saving them would overwrite what just arrived.
-	var after := _item_revision(open_id)
+	var after := _item_revision(open_id, open_project)
 	if after == before:
 		return
 
@@ -476,32 +498,35 @@ func _on_poll_external_changes() -> void:
 	_confirm_reload_dialog.popup_centered()
 
 
-func _item_revision(item_id: String) -> String:
-	## Cheap change token for one item: its updated_at, or "" if it is gone.
+func _item_revision(item_id: String, project: String = "") -> String:
 	if item_id.is_empty():
 		return ""
-	var item_db: DocketDB = _state.find_item_db(item_id)
+	var item_db: DocketDB = _state.get_db_for_project(project)
 	if item_db == null:
 		return ""
 	var item: Dictionary = item_db.get_item(item_id)
 	if item.is_empty():
 		return ""
-	return str(item.get("updated_at", ""))
+	var registry := _state.get_type_registry(project)
+	return registry.item_token(item) if registry != null else ""
 
 
 func _on_reload_from_disk() -> void:
 	## File > Reload from Disk — unconditional re-read, discarding cache.
 	var open_id := _record_form.get_current_id() if _record_form else ""
+	var open_project := _record_form.get_current_project() if _record_form else ""
 	var reloaded := _state.reload_all()
 	_last_poll_mtime = _get_dct_mtime()
+	_last_projects_token = _get_projects_token()
 
 	if _query_grid and _query_grid.is_visible_in_tree():
 		_query_grid.refresh()
 	if not open_id.is_empty():
-		if _item_revision(open_id).is_empty():
+		if _item_revision(open_id, open_project).is_empty():
 			_on_back_pressed()  # the open item no longer exists on disk
 		else:
-			_record_form.load_item(open_id)
+			_confirm_reload_dialog.dialog_text = "Reloaded project data is available. Load it and discard the current form edits, or keep reviewing the unsaved form?"
+			_confirm_reload_dialog.popup_centered()
 
 	if reloaded.is_empty():
 		_info_dialog.title = "Reload from Disk"
@@ -512,12 +537,13 @@ func _on_reload_from_disk() -> void:
 func _on_reload_open_item_confirmed() -> void:
 	## User chose to take the on-disk version, discarding unsaved form edits.
 	var open_id := _record_form.get_current_id() if _record_form else ""
+	var open_project := _record_form.get_current_project() if _record_form else ""
 	if open_id.is_empty():
 		return
-	if _item_revision(open_id).is_empty():
+	if _item_revision(open_id, open_project).is_empty():
 		_on_back_pressed()  # item is gone — return to the list
 	else:
-		_record_form.load_item(open_id)
+		_record_form.load_item(open_id, open_project)
 
 
 # -- Menu actions ----------------------------------------------------------
@@ -526,6 +552,11 @@ func _on_menu_action(action: String) -> void:
 	if action.begins_with("new_item:"):
 		var type_name := action.substr("new_item:".length())
 		_create_and_edit_item(type_name)
+		return
+	if action.begins_with("new_protected:"):
+		var protected_type := action.substr("new_protected:".length())
+		var project := _state.db.get_project_name() if _state.db != null else ""
+		_create_and_edit_item(protected_type, project, true)
 		return
 	if action.begins_with("work:"):
 		var idx := int(action.substr("work:".length()))
@@ -561,6 +592,8 @@ func _on_menu_action(action: String) -> void:
 		_query_grid.refresh()
 		return
 	match action:
+		"new_item":
+			_show_new_item_dialog()
 		"new_query":
 			var idx := _add_work_entry("query", "All Items", "", "")
 			_activate_work_entry(idx)
@@ -577,8 +610,11 @@ func _on_menu_action(action: String) -> void:
 		"project_types":
 			var existing := -1
 			for i in range(_work_entries.size()):
-				if _work_entries[i].type == "types": existing = i; break
-			if existing < 0: existing = _add_work_entry("types", "Project Types", "", "")
+				if _work_entries[i].type == "types":
+					existing = i
+					break
+			if existing < 0:
+				existing = _add_work_entry("types", "Project Types", "", "")
 			_activate_work_entry(existing)
 		"save_as":
 			_save_dialog.popup_centered(Vector2i(600, 400))
@@ -683,44 +719,129 @@ func _save_session() -> void:
 
 # -- Grid/form callbacks ---------------------------------------------------
 
+func _build_new_item_dialog() -> void:
+	_new_item_dialog = ConfirmationDialog.new()
+	_new_item_dialog.title = "New item"
+	_new_item_dialog.ok_button_text = "Create draft"
+	_new_item_dialog.confirmed.connect(_on_new_item_confirmed)
+	var content := VBoxContainer.new()
+	_new_item_project = OptionButton.new()
+	_new_item_project.item_selected.connect(func(_index: int): _rebuild_new_item_catalog())
+	content.add_child(_new_item_project)
+	_new_item_search = LineEdit.new()
+	_new_item_search.placeholder_text = "Search type name, purpose, or slug"
+	_new_item_search.text_changed.connect(func(_value: String): _filter_new_item_catalog())
+	content.add_child(_new_item_search)
+	_new_item_list = ItemList.new()
+	_new_item_list.custom_minimum_size = Vector2(520, 320)
+	_new_item_list.item_activated.connect(func(_index: int):
+		_on_new_item_confirmed()
+		_new_item_dialog.hide()
+	)
+	content.add_child(_new_item_list)
+	_new_item_dialog.add_child(content)
+	add_child(_new_item_dialog)
+
+func _show_new_item_dialog() -> void:
+	_new_item_project.clear()
+	var projects: Array = _state.get_project_dbs().keys()
+	projects.sort_custom(func(a, b): return str(a).nocasecmp_to(str(b)) < 0)
+	for project in projects:
+		_new_item_project.add_item(str(project))
+	_new_item_search.text = ""
+	_rebuild_new_item_catalog()
+	_new_item_dialog.popup_centered(Vector2i(560, 430))
+
+func _rebuild_new_item_catalog() -> void:
+	_new_item_catalog.clear()
+	_new_item_dialog.get_ok_button().disabled = false
+	_new_item_dialog.dialog_text = ""
+	if _new_item_project.item_count == 0:
+		_filter_new_item_catalog()
+		return
+	var project := _new_item_project.get_item_text(_new_item_project.selected)
+	var registry := _state.get_type_registry(project)
+	if registry == null:
+		_new_item_dialog.dialog_text = "Type registry unavailable for %s." % project
+		_new_item_dialog.get_ok_button().disabled = true
+		_filter_new_item_catalog()
+		return
+	var catalog_result := registry.list_types_checked(false)
+	if not str(catalog_result.get("error", "")).is_empty():
+		_new_item_dialog.dialog_text = "Type registry error: %s" % catalog_result.error
+		_new_item_dialog.get_ok_button().disabled = true
+		_filter_new_item_catalog()
+		return
+	for type_value in catalog_result.records:
+		var type: Dictionary = type_value
+		if type.has("error") or type.lifecycle != "active":
+			continue
+		if not bool(type.definition.get("protected_behavior", {}).get("regular_creation_allowed", true)):
+			continue
+		_new_item_catalog.append(type)
+	_filter_new_item_catalog()
+
+func _filter_new_item_catalog() -> void:
+	_new_item_list.clear()
+	var needle := _new_item_search.text.to_lower()
+	for type_value in _new_item_catalog:
+		var type: Dictionary = type_value
+		var aliases: Array = type.definition.get("aliases", [])
+		var searchable := "%s %s %s %s %s" % [type.label, type.slug, type.description, type.use_when, str(aliases)]
+		if not needle.is_empty() and not searchable.to_lower().contains(needle):
+			continue
+		_new_item_list.add_item("%s — %s" % [type.label, type.description])
+		_new_item_list.set_item_metadata(_new_item_list.item_count - 1, {"project":project, "type_id":type.id, "slug":type.slug})
+	if _new_item_list.item_count > 0:
+		_new_item_list.select(0)
+
+func _on_new_item_confirmed() -> void:
+	if _new_item_list.get_selected_items().is_empty() or _new_item_project.item_count == 0:
+		return
+	var index := _new_item_list.get_selected_items()[0]
+	var selection: Dictionary = _new_item_list.get_item_metadata(index)
+	_create_and_edit_item(str(selection.slug), str(selection.project), false, str(selection.type_id))
+
 func _on_item_selected(id: String, project: String = "") -> void:
 	if _record_form.is_inside_tree():
 		_record_form.load_item(id, project)
 
 
-func _create_and_edit_item(type_name: String) -> void:
-	var fields := {"title": ""}
-	if type_name == "insight":
-		fields["assumed"] = ""
-		fields["corrected"] = ""
-	elif type_name == "hint":
-		fields["value"] = ""
-	var item = DataModel.create_item(_state.schema, type_name, fields)
-	if item.has("error"):
-		print("Create error: %s" % item.error)
+func _create_and_edit_item(type_name: String, project: String = "", protected_path: bool = false, expected_type_id: String = "") -> void:
+	var registry := _state.get_type_registry(project)
+	if registry == null:
 		return
-	# Don't insert into DB yet — open as draft for user to fill in
-	_record_form.load_draft(type_name, item)
+	var type: Dictionary = registry.get_type(type_name)
+	if type.has("error") or type.lifecycle != "active":
+		return
+	if not expected_type_id.is_empty() and str(type.id) != expected_type_id:
+		return
+	var regular_creation_allowed := bool(type.definition.get("protected_behavior", {}).get("regular_creation_allowed", true))
+	if not regular_creation_allowed and not protected_path:
+		return
+	var item := {"type":type_name, "status":type.definition.lifecycle.initial_state, "title":"", "fields":{}}
+	_record_form.load_draft(type_name, item, project)
 	switch_view(ViewMode.DETAIL)
 
 
 
 func _on_item_activated(id: String, project: String = "") -> void:
 	_on_item_selected(id, project)
-	_open_item_entry(id)
+	_open_item_entry(id, project)
 
 
-func _open_item_entry(id: String) -> void:
+func _open_item_entry(id: String, project: String = "") -> void:
 	# Reuse existing work entry for this item, or create one
-	var idx := _find_item_work_entry(id)
+	var idx := _find_item_work_entry(id, project)
 	if idx >= 0:
 		_activate_work_entry(idx)
 	else:
 		var label := id
-		if _state.db and _state.db.has_item(id):
-			var item: Dictionary = _state.db.get_item(id)
-			label = "%s: %s" % [id, str(item.get("title", ""))]
-		idx = _add_work_entry("item", label, "", id)
+		var item_db: DocketDB = _state.get_db_for_project(project)
+		if item_db != null and item_db.has_item(id):
+			var item: Dictionary = item_db.get_item(id)
+			label = "[%s] %s: %s" % [project, id, str(item.get("title", ""))]
+		idx = _add_work_entry("item", label, "", id, project)
 		_activate_work_entry(idx)
 
 
@@ -729,9 +850,10 @@ func _on_item_changed() -> void:
 	# Update the work entry label if the title changed
 	if _current_work_idx >= 0 and _current_work_idx < _work_entries.size():
 		var entry: Dictionary = _work_entries[_current_work_idx]
-		if entry.type == "item" and _state.db and _state.db.has_item(entry.item_id):
-			var item: Dictionary = _state.db.get_item(entry.item_id)
-			entry.label = "%s: %s" % [entry.item_id, str(item.get("title", ""))]
+		var item_db: DocketDB = _state.get_db_for_project(str(entry.get("project", "")))
+		if entry.type == "item" and item_db != null and item_db.has_item(entry.item_id):
+			var item: Dictionary = item_db.get_item(entry.item_id)
+			entry.label = "[%s] %s: %s" % [entry.project, entry.item_id, str(item.get("title", ""))]
 			_rebuild_work_menu()
 
 
@@ -746,7 +868,7 @@ func _on_back_pressed() -> void:
 			_query_grid.set_filter(entry.filter)
 			switch_view(ViewMode.QUERY)
 		elif entry.type == "item":
-			_record_form.load_item(entry.item_id)
+			_record_form.load_item(entry.item_id, str(entry.get("project", "")))
 			switch_view(ViewMode.DETAIL)
 		_rebuild_work_menu()
 	else:
@@ -762,9 +884,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			var focused := get_viewport().gui_get_focus_owner()
 			if focused is LineEdit or focused is TextEdit:
 				return
-			var sel_id := _query_grid.get_selected_id()
-			if not sel_id.is_empty():
-				_open_item_entry(sel_id)
+			var origin := _query_grid.get_selected_origin()
+			if not origin.is_empty():
+				_open_item_entry(str(origin.id), str(origin.project))
 				get_viewport().set_input_as_handled()
 
 

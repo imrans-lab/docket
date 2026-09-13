@@ -9,12 +9,16 @@ func setup() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 
 func before_each() -> void:
+	JSONLMigration.verification_failure_hook = Callable()
+	JSONLTypeUpgrade.cache_delete_failure_hook = Callable()
 	for filename in ["draft.dct", "lifecycle.dct", "stale.dct", "navigation.dct", "legacy-copy.dct", "legacy-copy.dct.pre-v2.bak", "promotion.dct", "promotion.dct.sqlite.bak", "origin-a.dct", "origin-b.dct", "invalid.dct"]:
 		var path := "%s/%s" % [DIR, filename]
 		if FileAccess.file_exists(path):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 func teardown() -> void:
+	JSONLMigration.verification_failure_hook = Callable()
+	JSONLTypeUpgrade.cache_delete_failure_hook = Callable()
 	for db in _open:
 		if db != null and db.is_open(): db.close()
 
@@ -132,4 +136,65 @@ func test_passive_refresh_preserves_editor_origin_and_project_switch_discards_it
 	if r is String:
 		return r
 	panel._on_project_selected(1)
-	return A.is_true(panel._editor_project.is_empty() and panel._slug.text.is_empty() and panel._status.text.contains("discarded"), "explicit project switch discards the old proposal instead of reinterpreting it")
+	return A.is_true(panel._editor_project == "origin-a" and panel._slug.text == "unsaved_type" and panel._active_project == "origin-a" and panel._status.text.contains("retained"), "project switching refuses to discard or reinterpret an unsaved proposal")
+
+func test_loaded_snapshot_preserves_aliases_and_unknown_presentation_data() -> Variant:
+	var state := _state("lifecycle")
+	var registry := state.get_type_registry("lifecycle")
+	var definition := _definition()
+	definition.aliases = ["cr", "review-change"]
+	definition["presentation"] = {"icon":"review", "accent":"blue"}
+	definition["future_extension"] = {"mode":"preserve"}
+	registry.define_type("code_review", definition, "tester", "complete snapshot")
+	var panel := _panel(state)
+	panel._load_type("code_review")
+	panel._description.text = "Updated description"
+	_author(panel)
+	panel._save_definition()
+	var current: Dictionary = registry.get_type("code_review")
+	var revision: Dictionary = registry.get_revision(str(current.current_revision))
+	return A.is_true(revision.definition.aliases == ["cr", "review-change"] and revision.definition.presentation.icon == "review" and revision.definition.future_extension.mode == "preserve", "load and evolve merge edited presentation fields into the complete immutable definition snapshot")
+
+func test_upgrade_acknowledgement_is_bound_to_preview_project_and_source() -> Variant:
+	var state := _state("origin-a")
+	var second_path := "%s/origin-b.dct" % DIR
+	var second := DocketDBJsonl.create_new_jsonl(second_path)
+	_open.append(second)
+	state._project_dbs["origin-b"] = second
+	state._type_registries["origin-b"] = TypeRegistry.for_db(second, "origin-b")
+	var panel := _panel(state)
+	panel._upgrade_preview = {"ok":true, "project":"origin-a", "path":state.dct_path, "source_hash":FileAccess.get_sha256(state.dct_path)}
+	panel._upgrade_ack.button_pressed = true
+	panel._on_project_selected(1)
+	return A.is_true(not panel._upgrade_ack.button_pressed and panel._upgrade_preview.is_empty() and panel._active_project == "origin-b", "writer acknowledgement and upgrade preview are cleared when the selected project changes")
+
+func test_promotion_post_write_failure_adopts_actual_jsonl_and_reports_recovery_state() -> Variant:
+	var state := _sqlite_state("promotion")
+	JSONLMigration.verification_failure_hook = func() -> String:
+		return "injected verification failure"
+	var result: Dictionary = state.promote_project_to_jsonl("promotion", true)
+	var active := state.get_db_for_project("promotion")
+	return A.is_true(not result.success and result.actual_format == "jsonl" and result.project_open and active is DocketDBJsonl and FileAccess.file_exists(str(result.backup_path)) and state.get_type_registry("promotion").is_legacy(), "post-write promotion failure reports and adopts the actual JSONL source with backup and refreshed registry")
+
+func test_upgrade_cache_failure_reopens_v2_and_invalidates_panel_preview() -> Variant:
+	var source := "res://test/fixtures/dynamic_types_legacy_v1.jsonl"
+	var target := "%s/legacy-copy.dct" % DIR
+	var copy_error := DirAccess.copy_absolute(ProjectSettings.globalize_path(source), ProjectSettings.globalize_path(target))
+	if copy_error != OK:
+		return "fixture copy failed"
+	var db := DocketDBJsonl.open_jsonl(target)
+	_open.append(db)
+	var state := AppState.new()
+	state.schema = TypeRegistryBootstrap.load_shipped_schema()
+	state.db = db
+	state.dct_path = target
+	state._project_dbs = {"legacy-copy":db}
+	state._type_registries = {"legacy-copy":TypeRegistry.for_db(db, "legacy-copy")}
+	var panel := _panel(state)
+	panel._preview_upgrade()
+	panel._upgrade_ack.button_pressed = true
+	JSONLTypeUpgrade.cache_delete_failure_hook = func() -> String:
+		return "injected cache deletion failure"
+	panel._apply_upgrade()
+	var active := state.get_db_for_project("legacy-copy")
+	return A.is_true(active is DocketDBJsonl and not state.get_type_registry("legacy-copy").is_legacy() and panel._upgrade_preview.is_empty() and not panel._upgrade_ack.button_pressed and panel._status.text.contains("Canonical format: jsonl") and FileAccess.file_exists(target + ".pre-v2.bak"), "post-write cache failure reopens the actual v2 source, reports its backup, and requires a fresh next action")

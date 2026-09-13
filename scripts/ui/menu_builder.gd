@@ -31,13 +31,14 @@ func _build_file_menu() -> void:
 	var popup := PopupMenu.new()
 	popup.name = "File"
 
-	# New > submenu: Query + one entry per item type
+	# New item discovery is registry-backed and searchable in AppShell.
 	var new_sub := PopupMenu.new()
 	new_sub.name = "NewSub"
 	new_sub.add_item("Query", 100)
+	new_sub.add_item("Item...", 101)
 	new_sub.add_separator()
-	for i in range(_type_names.size()):
-		new_sub.add_item(_type_names[i].capitalize(), i)
+	new_sub.add_item("Secret credential...", 102)
+	new_sub.add_item("Encrypted note...", 103)
 	new_sub.id_pressed.connect(_on_new_sub_pressed)
 	popup.add_child(new_sub)
 	popup.add_submenu_node_item("New...", new_sub)
@@ -160,6 +161,12 @@ func _on_file_id_pressed(id: int) -> void:
 func _on_new_sub_pressed(id: int) -> void:
 	if id == 100:
 		action_triggered.emit("new_query")
+	elif id == 101:
+		action_triggered.emit("new_item")
+	elif id == 102:
+		action_triggered.emit("new_protected:secret")
+	elif id == 103:
+		action_triggered.emit("new_protected:encrypted_note")
 	else:
 		action_triggered.emit("new_item:" + _type_names[id])
 

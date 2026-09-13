@@ -29,16 +29,23 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 		return {"error": "GUI not available (headless mode)"}
 
 	if not item_id.is_empty():
-		# Verify item exists
-		var found := false
-		for proj_name in project_dbs:
-			var pdb: DocketDB = project_dbs[proj_name]
-			if pdb.has_item(item_id):
-				found = true
-				break
-		if not found:
+		var requested_project := str(args.get("project", ""))
+		if requested_project.is_empty():
+			var matches: Array[String] = []
+			for project_value in project_dbs:
+				var candidate := str(project_value)
+				var candidate_db: DocketDB = project_dbs[candidate]
+				if candidate_db.has_item(item_id):
+					matches.append(candidate)
+			if matches.size() != 1:
+				return {"error":"project is required because the item origin is missing or ambiguous"}
+			requested_project = matches[0]
+		if not project_dbs.has(requested_project):
+			return {"error":"Project not found: %s" % requested_project}
+		var pdb: DocketDB = project_dbs[requested_project]
+		if not pdb.has_item(item_id):
 			return {"error": "Item not found: %s" % item_id}
-		return gui_open_fn.call({"id": item_id})
+		return gui_open_fn.call({"id":item_id, "project":requested_project})
 	else:
 		var label: String = str(args.get("label", "MCP Query"))
 		return gui_open_fn.call({"filter": filter_str, "label": label})

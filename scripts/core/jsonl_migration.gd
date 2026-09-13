@@ -4,6 +4,8 @@ class_name JSONLMigration
 ## Converts an existing SQLite .dct file to JSONL format in place,
 ## keeping a .sqlite.bak backup of the original.
 
+static var verification_failure_hook: Callable = Callable()
+
 
 # -- Format detection ---------------------------------------------------------
 
@@ -136,6 +138,9 @@ static func migrate_to_jsonl(sqlite_path: String) -> Dictionary:
 
 	f.store_string(jsonl_text)
 	f.close()
+	if verification_failure_hook.is_valid():
+		result["error"] = str(verification_failure_hook.call())
+		return result
 
 	# Step 7: Verify by reparsing the written file.
 	var parsed := JSONLParser.parse_file(sqlite_path)

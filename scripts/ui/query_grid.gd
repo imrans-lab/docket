@@ -98,6 +98,8 @@ var _sort_dir: String = "asc"
 var _sort_binding: Dictionary = {}
 var _dcq_columns: Array = []
 var _catalog_diagnostic: String = ""
+var _columns_menu: PopupMenu
+var _column_candidates: Array = []
 
 # Header drag state
 var _drag_col: int = -1   # index of column whose RIGHT edge is being dragged
@@ -143,7 +145,8 @@ func _rebuild_type_catalog() -> void:
 				counts[slug] = int(counts.get(slug, 0)) + 1
 		var registry: TypeRegistry = _state.get_type_registry(project)
 		var catalog_result: Dictionary = TypeCatalog.from_registry_checked(registry, counts) if registry != null else {"records":[],"error":"type registry is unavailable"}
-		if registry != null and registry.get_diagnostic().is_empty() and str(catalog_result.error).is_empty(): _type_catalog.append_array(catalog_result.records)
+		if registry != null and registry.get_diagnostic().is_empty() and str(catalog_result.error).is_empty():
+			_type_catalog.append_array(catalog_result.records)
 		else:
 			var reason: String = registry.get_diagnostic() if registry != null and not registry.get_diagnostic().is_empty() else str(catalog_result.error)
 			_catalog_diagnostic = "Type catalog unavailable for %s: %s" % [project, reason]
@@ -175,6 +178,13 @@ func _build_ui() -> void:
 	_run_btn.text = "Run"
 	_run_btn.pressed.connect(_run_query)
 	btn_bar.add_child(_run_btn)
+	var columns_button := Button.new()
+	columns_button.text = "Columns..."
+	columns_button.pressed.connect(_show_columns_menu.bind(columns_button))
+	btn_bar.add_child(columns_button)
+	_columns_menu = PopupMenu.new()
+	_columns_menu.id_pressed.connect(_toggle_result_column)
+	add_child(_columns_menu)
 
 	add_child(btn_bar)
 
@@ -227,11 +237,13 @@ func _build_ui() -> void:
 func _rebuild_columns() -> void:
 	## Rebuild column arrays for current multi-project state.
 	var is_multi := _state._project_dbs.size() > 1
-	if is_multi == _multi_project and _tree != null and _tree.columns == _col_titles.size():
-		return  # No change needed
 	_multi_project = is_multi
-
-	if _multi_project:
+	if not _dcq_columns.is_empty():
+		_col_fields = []
+		_col_titles = []
+		_col_min_widths = []
+		_col_widths = []
+	elif _multi_project:
 		_col_fields = ["id", "project", "type", "status", "priority", "title"]
 		_col_titles = ["ID", "Project", "Type", "Status", "Pri", "Title"]
 		_col_min_widths = [50, 50, 40, 50, 30, 80]
@@ -241,6 +253,25 @@ func _rebuild_columns() -> void:
 		_col_titles = ["ID", "Type", "Status", "Pri", "Title"]
 		_col_min_widths = [50, 40, 50, 30, 80]
 		_col_widths = [90, 70, 100, 40, 0]
+	for binding_value in _dcq_columns:
+		if binding_value is String:
+			var field_key := str(binding_value)
+			_col_fields.append(field_key)
+			_col_titles.append({"id":"ID", "project":"Project", "type":"Type", "status":"Status", "priority":"Pri", "title":"Title"}.get(field_key, field_key.capitalize()))
+			_col_min_widths.append(50)
+			_col_widths.append(120)
+			continue
+		if not binding_value is Dictionary:
+			continue
+		var binding: Dictionary = binding_value
+		if str(binding.get("field_key", "")).is_empty():
+			continue
+		_col_fields.append(binding.duplicate(true))
+		_col_titles.append(str(binding.get("label", binding.field_key)))
+		_col_min_widths.append(60)
+		_col_widths.append(120)
+	if not _col_widths.is_empty():
+		_col_widths[_col_widths.size() - 1] = 0
 
 	if _tree:
 		_tree.columns = _col_titles.size()
@@ -308,7 +339,9 @@ func _draw_header() -> void:
 
 		# Title text
 		var title: String = _col_titles[i]
-		if _col_fields[i] == _sort_field:
+		var header_field := str(_col_fields[i].get("field_key", "")) if _col_fields[i] is Dictionary else str(_col_fields[i])
+		var header_binding: Dictionary = _col_fields[i] if _col_fields[i] is Dictionary else {}
+		if header_field == _sort_field and (header_binding.is_empty() or _same_binding(header_binding, _sort_binding)):
 			title += "  v" if _sort_dir == "asc" else "  ^"
 		var font := _header.get_theme_default_font()
 		var font_size := _header.get_theme_default_font_size()
@@ -392,8 +425,10 @@ func _hit_column(mx: float) -> int:
 
 
 func _toggle_sort(col: int) -> void:
-	var field: String = _col_fields[col]
-	if _sort_field == field:
+	var column: Variant = _col_fields[col]
+	var field := str(column.get("field_key", "")) if column is Dictionary else str(column)
+	var binding: Dictionary = column if column is Dictionary else {}
+	if _sort_field == field and (binding.is_empty() or _same_binding(binding, _sort_binding)):
 		if _sort_dir == "asc":
 			_sort_dir = "desc"
 		else:
@@ -404,8 +439,13 @@ func _toggle_sort(col: int) -> void:
 		_sort_field = field
 		_sort_dir = "asc"
 		_sort_binding.clear()
+		if column is Dictionary:
+			_sort_binding = binding.duplicate(true)
 	_header.queue_redraw()
 	_run_query()
+
+func _same_binding(left: Dictionary, right: Dictionary) -> bool:
+	return str(left.get("project", "")) == str(right.get("project", "")) and str(left.get("type_id", "")) == str(right.get("type_id", "")) and str(left.get("field_key", "")) == str(right.get("field_key", ""))
 
 
 # -- Header resize on parent resize ----------------------------------------
@@ -534,13 +574,15 @@ func _add_condition_row(is_first: bool) -> void:
 	# event arrives so a surviving control never acts on its former position.
 	remove_btn.pressed.connect(func():
 		var current_idx := _find_condition_row(row_data)
-		if current_idx >= 0: _remove_condition_row(current_idx)
+		if current_idx >= 0:
+			_remove_condition_row(current_idx)
 	)
 
 	# Wire field change to update operators
 	field_option.item_selected.connect(func(_idx):
 		var current_idx := _find_condition_row(row_data)
-		if current_idx < 0: return
+		if current_idx < 0:
+			return
 		_user_has_modified = true
 		_update_ops_for_row(current_idx)
 		_refresh_scoped_controls()
@@ -548,7 +590,8 @@ func _add_condition_row(is_first: bool) -> void:
 
 	# Wire conjunction change to update group visuals
 	conj_option.item_selected.connect(func(_idx):
-		if _find_condition_row(row_data) < 0: return
+		if _find_condition_row(row_data) < 0:
+			return
 		_user_has_modified = true
 		_update_group_visuals()
 		_refresh_scoped_controls()
@@ -701,7 +744,8 @@ func _condition_snapshots() -> Array:
 		else:
 			value = row.value.text
 		var op := _op_label_to_key(row.op.get_item_text(row.op.selected))
-		if field == "type" and row.type_chooser.visible: op = "catalog_in"
+		if field == "type" and row.type_chooser.visible:
+			op = "catalog_in"
 		var condition := {"field": field, "op": op, "value": value}
 		if i > 0:
 			condition.conj = "or" if row.conj.selected == 1 else "and"
@@ -814,7 +858,9 @@ func _run_query() -> void:
 		var registry: TypeRegistry = _state.get_type_registry()
 		_current_results = _state.db.execute_registry_query(query, registry) if registry != null else _state.db.execute_query(query)
 		if not _state.db.last_query_error.is_empty():
-			_tree.clear(); _count_label.text = _state.db.last_query_error; return
+			_tree.clear()
+			_count_label.text = _state.db.last_query_error
+			return
 	else:
 		_current_results = []
 	_populate_tree()
@@ -968,7 +1014,8 @@ func _populate_tree() -> void:
 		var full_id: String = str(item.get("id", ""))
 		var item_status: String = str(item.get("status", ""))
 		for col_idx in range(_col_fields.size()):
-			var field: String = _col_fields[col_idx]
+			var column: Variant = _col_fields[col_idx]
+			var field := str(column.get("field_key", "")) if column is Dictionary else str(column)
 			if field == "priority":
 				var pri = item.get("priority", 0)
 				row.set_text(col_idx, str(int(pri)) if pri else "")
@@ -981,14 +1028,126 @@ func _populate_tree() -> void:
 				row.set_tooltip_text(col_idx, full_id)
 			elif field == "status":
 				row.set_text(col_idx, item_status)
-				if _STATUS_COLORS.has(item_status):
-					row.set_custom_color(col_idx, _STATUS_COLORS[item_status])
+				var state_color := _pinned_state_color(item)
+				if state_color.a > 0.0:
+					row.set_custom_color(col_idx, state_color)
+			elif column is Dictionary:
+				row.set_text(col_idx, _render_bound_column(item, column))
 			else:
 				row.set_text(col_idx, str(item.get(field, "")))
 		# Metadata always stores full ID for selection signals
-		row.set_metadata(0, {"id":full_id,"project":str(item.get("project", ""))})
+		row.set_metadata(0, {"id":full_id,"project":_item_project(item)})
 
 	_count_label.text = "%d items" % _current_results.size()
+
+func _pinned_state_color(item: Dictionary) -> Color:
+	var project := _item_project(item)
+	var registry := _state.get_type_registry(project)
+	if registry == null:
+		return Color.TRANSPARENT
+	var resolved: Dictionary = registry.resolve_item(item)
+	if resolved.has("error"):
+		return Color.TRANSPARENT
+	match str(resolved.state_category):
+		"active":
+			return Color(0.4, 0.85, 0.45)
+		"waiting":
+			return Color(1.0, 0.75, 0.2)
+		"terminal":
+			return Color(0.55, 0.55, 0.6)
+		_:
+			return Color(0.65, 0.7, 0.85)
+
+func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
+	var project := _item_project(item)
+	if not str(binding.get("project", "")).is_empty() and binding.project != project:
+		return ""
+	var registry := _state.get_type_registry(project)
+	if registry == null:
+		return ""
+	var resolved: Dictionary = registry.resolve_item(item)
+	if resolved.has("error") or str(resolved.revision.type_id) != str(binding.get("type_id", "")):
+		return ""
+	if binding.field_key == "state_category":
+		return str(resolved.state_category)
+	if binding.field_key == "state_outcome":
+		return str(resolved.state_outcome)
+	if binding.field_key == "is_terminal":
+		return str(resolved.is_terminal)
+	var declared := false
+	for descriptor_value in resolved.definition.fields:
+		var descriptor: Dictionary = descriptor_value
+		if descriptor.key == binding.field_key:
+			declared = true
+			break
+	if not declared:
+		return ""
+	var fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+	if bool(resolved.definition.get("protected", false)) or binding.field_key in TypeRegistry.UNIVERSAL_MUTABLE:
+		return str(item[binding.field_key]) if item.has(binding.field_key) else ""
+	if not fields.has(binding.field_key):
+		return ""
+	if fields[binding.field_key] is Array or fields[binding.field_key] is Dictionary:
+		return JSON.stringify(fields[binding.field_key])
+	return str(fields[binding.field_key])
+
+func _item_project(item: Dictionary) -> String:
+	var project := str(item.get("project", ""))
+	if project.is_empty() and _state.get_project_dbs().size() == 1:
+		project = str(_state.get_project_dbs().keys()[0])
+	return project
+
+func set_result_columns(bindings: Array) -> void:
+	_dcq_columns = bindings.duplicate(true)
+	_rebuild_columns()
+	_populate_tree()
+
+func _show_columns_menu(anchor: Button) -> void:
+	_columns_menu.clear()
+	_column_candidates.clear()
+	for record_value in _type_catalog:
+		var record: Dictionary = record_value
+		var registry := _state.get_type_registry(str(record.project))
+		if registry == null:
+			continue
+		var type: Dictionary = registry.resolve_type_ref(str(record.id))
+		if type.has("error"):
+			continue
+		for descriptor_value in type.definition.fields:
+			var descriptor: Dictionary = descriptor_value
+			if descriptor.key in TypeRegistry.UNIVERSAL_MUTABLE:
+				continue
+			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":descriptor.key, "label":"%s — %s" % [record.label, descriptor.get("label", descriptor.key)], "kind":descriptor.type})
+	for derived in ["state_category", "state_outcome", "is_terminal"]:
+		for record_value in _type_catalog:
+			var record: Dictionary = record_value
+			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":derived, "label":"%s — %s" % [record.label, derived], "kind":"string"})
+	for i in _column_candidates.size():
+		var binding: Dictionary = _column_candidates[i]
+		_columns_menu.add_check_item(str(binding.label), i)
+		_columns_menu.set_item_checked(i, _has_result_column(binding))
+	_columns_menu.popup(Rect2i(Vector2i(anchor.global_position.x, anchor.global_position.y + anchor.size.y), Vector2i(360, 0)))
+
+func _has_result_column(binding: Dictionary) -> bool:
+	for selected_value in _dcq_columns:
+		if selected_value is Dictionary:
+			var selected: Dictionary = selected_value
+			if selected.get("project") == binding.project and selected.get("type_id") == binding.type_id and selected.get("field_key") == binding.field_key:
+				return true
+	return false
+
+func _toggle_result_column(index: int) -> void:
+	var binding: Dictionary = _column_candidates[index]
+	for i in range(_dcq_columns.size() - 1, -1, -1):
+		var selected: Variant = _dcq_columns[i]
+		if selected is Dictionary and selected.get("project") == binding.project and selected.get("type_id") == binding.type_id and selected.get("field_key") == binding.field_key:
+			_dcq_columns.remove_at(i)
+			_rebuild_columns()
+			_populate_tree()
+			return
+	_dcq_columns.append(binding.duplicate(true))
+	_rebuild_columns()
+	_populate_tree()
 
 
 func _on_item_selected() -> void:
@@ -1021,8 +1180,15 @@ func _on_context_menu_id_pressed(id: int) -> void:
 func get_selected_id() -> String:
 	var selected := _tree.get_selected()
 	if selected:
-		return selected.get_metadata(0)
+		var origin: Dictionary = selected.get_metadata(0)
+		return str(origin.get("id", ""))
 	return ""
+
+func get_selected_origin() -> Dictionary:
+	var selected := _tree.get_selected()
+	if selected:
+		return (selected.get_metadata(0) as Dictionary).duplicate()
+	return {}
 
 
 func get_filter() -> String:
@@ -1071,7 +1237,8 @@ func set_filter(text: String) -> void:
 			# Set op
 			var op_key: String = str(cond.get("op", "eq"))
 			var catalog_status_choice: Dictionary = cond.get("value", {}) if op_key == "catalog_status" else {}
-			if op_key == "catalog_status": op_key = "eq"
+			if op_key == "catalog_status":
+				op_key = "eq"
 			var op_label: String = _OP_LABELS.get(op_key, op_key)
 			var op_opt: OptionButton = row["op"]
 			for oi in op_opt.item_count:
@@ -1204,12 +1371,14 @@ func load_dcq(path: String) -> void:
 		set_filter(JSON.stringify(parsed.ui_filter))
 	elif parsed.has("filter") and parsed.filter is Dictionary and parsed.filter.has("conditions"):
 		set_filter(JSON.stringify(parsed.filter))
+	_dcq_columns = parsed.get("columns", []).duplicate(true) if parsed.get("columns", []) is Array else []
 	if parsed.get("sort") is Array and not parsed.sort.is_empty() and parsed.sort[0] is Dictionary:
 		_sort_field = str(parsed.sort[0].get("field_key", parsed.sort[0].get("field", "")))
 		_sort_dir = str(parsed.sort[0].get("dir", "asc"))
 		_sort_binding = parsed.sort[0].duplicate(true)
 		_run_query()
-	_dcq_columns = parsed.get("columns", []).duplicate(true) if parsed.get("columns", []) is Array else []
+	else:
+		_rebuild_columns()
 
 
 func save_dcq(path: String) -> void:

@@ -3,6 +3,8 @@ class_name JSONLTypeUpgrade
 ## Explicit 1.0 -> 2.0 upgrade with a byte-for-byte rollback snapshot. Preview
 ## performs every semantic check used by apply and never mutates source/cache.
 
+static var cache_delete_failure_hook: Callable = Callable()
+
 static func preview(path: String, schema: Dictionary = {}) -> Dictionary:
 	var result := {"ok": false, "error": "", "from_version": "", "to_version": "2.0.0", "definitions": 0, "items": 0, "bindings": [], "unresolved": [], "source_hash": "", "backup_path": path + ".pre-v2.bak", "cache_path": path + ".v2.cache"}
 	if JSONLMigration.detect_format(path) != "jsonl": result.error = "custom types require explicit SQLite-to-JSONL promotion first"; return result
@@ -62,7 +64,7 @@ static func apply(path: String, expected_preview: Dictionary, schema: Dictionary
 	lock.release()
 	if not write_error.is_empty(): return {"ok": false, "error": write_error, "backup_path": backup_path}
 	var upgraded_hash := FileAccess.get_sha256(path)
-	var cache_error := JSONLCache.delete_cache_family(path)
+	var cache_error := str(cache_delete_failure_hook.call()) if cache_delete_failure_hook.is_valid() else JSONLCache.delete_cache_family(path)
 	if not cache_error.is_empty(): return {"ok": false, "error": cache_error, "backup_path": backup_path, "upgraded_hash": upgraded_hash}
 	return {"ok": true, "backup_path": backup_path, "cache_path": checked.cache_path, "items": checked.items, "definitions": checked.definitions, "upgraded_hash": upgraded_hash}
 

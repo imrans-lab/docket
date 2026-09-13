@@ -17,7 +17,7 @@ var _definition: TextEdit
 var _author: LineEdit
 var _reason: LineEdit
 var _selected_items: LineEdit
-var _status: RichTextLabel
+var _status: Label
 var _history: ItemList
 var _upgrade_box: VBoxContainer
 var _upgrade_ack: CheckBox
@@ -28,6 +28,8 @@ var _active_project: String = ""
 var _editor_project: String = ""
 var _selected_slug: String = ""
 var _expected_revision: String = ""
+var _loaded_definition: Dictionary = {}
+var _editor_baseline: String = ""
 
 func init(state: AppState) -> void:
 	_state = state
@@ -96,8 +98,8 @@ func _build_ui() -> void:
 	_button(actions, "Save draft / evolve", _save_definition)
 	_button(actions, "Activate", func(): _set_lifecycle("active"))
 	_button(actions, "Deprecate", func(): _set_lifecycle("deprecated"))
-	_status = RichTextLabel.new()
-	_status.fit_content = true
+	_status = Label.new()
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_status.custom_minimum_size.y = 70
 	editor.add_child(_status)
 	var history_label := Label.new()
@@ -181,15 +183,27 @@ func _on_project_selected(index: int) -> void:
 	var next_project := _project.get_item_text(index)
 	if next_project == _active_project:
 		return
+	if _has_unsaved_editor():
+		_select_project(_active_project)
+		_message("Unsaved type proposal retained. Save it or restore its loaded values before switching projects.", true)
+		return
 	_active_project = next_project
-	_clear_editor("Project changed. The previous editor proposal was discarded so it cannot be applied to another project.")
 	_upgrade_preview = {}
+	_upgrade_ack.button_pressed = false
+	_clear_editor("Project changed. Select a type or start a new draft.")
 	_refresh_list()
+
+func _select_project(project_name: String) -> void:
+	for i in _project.item_count:
+		if _project.get_item_text(i) == project_name:
+			_project.select(i)
+			return
 
 func _clear_editor(message: String = "Select a type or start a new draft.") -> void:
 	_editor_project = ""
 	_selected_slug = ""
 	_expected_revision = ""
+	_loaded_definition = {}
 	_slug.text = ""
 	_slug.editable = true
 	_label.text = ""
@@ -198,6 +212,7 @@ func _clear_editor(message: String = "Select a type or start a new draft.") -> v
 	_definition.text = ""
 	_selected_items.text = ""
 	_history.clear()
+	_editor_baseline = _editor_snapshot()
 	_message(message, false)
 
 func _set_editor_enabled(enabled: bool) -> void:
@@ -255,6 +270,9 @@ func _registry() -> TypeRegistry:
 	return _state.get_type_registry(_project_name())
 
 func _type_selected(index: int) -> void:
+	if _has_unsaved_editor():
+		_message("Unsaved type proposal retained. Save it or restore its loaded values before selecting another type.", true)
+		return
 	_load_type(str(_types.get_item_metadata(index)))
 
 func _load_type(slug: String) -> void:
@@ -274,13 +292,15 @@ func _load_type(slug: String) -> void:
 	_label.text = str(type.label)
 	_description.text = str(type.description)
 	_use_when.text = str(type.use_when)
-	_definition.text = JSON.stringify({"fields":type.definition.fields, "lifecycle":type.definition.lifecycle}, "  ", false, true)
+	_loaded_definition = type.definition.duplicate(true)
+	_definition.text = JSON.stringify(_loaded_definition, "  ", false, true)
 	_history.clear()
 	for revision_value in registry.revisions_for_type(type.id):
 		var revision: Dictionary = revision_value
 		_history.add_item("%s — %s — %s — %s" % [revision.created_at, revision.author, revision.reason, revision.id])
 		_history.set_item_metadata(_history.item_count - 1, revision.id)
 	_message("Current revision: %s\nLifecycle: %s\nProvenance: %s" % [type.current_revision, type.lifecycle, JSON.stringify(type.provenance)], false)
+	_editor_baseline = _editor_snapshot()
 
 func _history_selected(index: int) -> void:
 	var registry := _registry()
@@ -291,11 +311,13 @@ func _history_selected(index: int) -> void:
 	if revision.has("error"):
 		_message(str(revision.error), true)
 		return
-	_definition.text = JSON.stringify({"fields":revision.definition.fields, "lifecycle":revision.definition.lifecycle}, "  ", false, true)
+	_loaded_definition = revision.definition.duplicate(true)
+	_definition.text = JSON.stringify(_loaded_definition, "  ", false, true)
 	_label.text = str(revision.definition.label)
 	_description.text = str(revision.definition.description)
 	_use_when.text = str(revision.definition.get("use_when", ""))
 	_message("Viewing immutable revision %s. Saving proposes evolution from current revision %s." % [revision.id, _expected_revision], false)
+	_editor_baseline = _editor_snapshot()
 
 func _new_draft() -> void:
 	var registry := _registry()
@@ -316,6 +338,8 @@ func _new_draft() -> void:
 	_definition.text = JSON.stringify({"fields":[], "lifecycle":{"initial_state":"new", "states":[{"key":"new", "label":"New", "state_category":"queued", "state_outcome":""}], "terminal_states":[], "transitions":{"new":[]}, "guards":{}, "enforcement":"strict"}}, "  ", false, true)
 	_history.clear()
 	_message("New definitions are saved as drafts and require explicit activation.", false)
+	_loaded_definition = {}
+	_editor_baseline = _editor_snapshot()
 
 func _candidate() -> Dictionary:
 	if _editor_project.is_empty() or _editor_project != _project_name():
@@ -323,14 +347,23 @@ func _candidate() -> Dictionary:
 	var parsed: Variant = JSON.parse_string(_definition.text)
 	if not parsed is Dictionary:
 		return {"error":"Fields and lifecycle must be a JSON object."}
-	var candidate: Dictionary = parsed.duplicate(true)
+	var candidate: Dictionary = _loaded_definition.duplicate(true)
+	for key in parsed:
+		candidate[key] = parsed[key]
 	candidate.slug = _slug.text.strip_edges()
 	candidate.label = _label.text.strip_edges()
 	candidate.description = _description.text
 	candidate.use_when = _use_when.text
-	candidate.protected = false
-	candidate.protected_behavior = {"regular_creation_allowed":true}
+	if _selected_slug.is_empty():
+		candidate.protected = false
+		candidate.protected_behavior = {"regular_creation_allowed":true}
 	return candidate
+
+func _editor_snapshot() -> String:
+	return JSON.stringify([_editor_project, _selected_slug, _slug.text, _label.text, _description.text, _use_when.text, _definition.text, _selected_items.text])
+
+func _has_unsaved_editor() -> bool:
+	return not _editor_project.is_empty() and not _editor_baseline.is_empty() and _editor_snapshot() != _editor_baseline
 
 func _item_ids() -> Array:
 	var result: Array = []
@@ -424,7 +457,10 @@ func _promote_sqlite() -> void:
 		return
 	var result: Dictionary = _state.promote_project_to_jsonl(_project_name(), true)
 	if not bool(result.get("success", false)):
-		_message(str(result.get("error", "promotion failed")), true)
+		_upgrade_preview = {}
+		_upgrade_ack.button_pressed = false
+		_message("%s Canonical format: %s. Project open: %s. Backup: %s. Review this state, then preview JSONL 2.0 if the active format is JSONL." % [result.get("error", "promotion failed"), result.get("actual_format", "unknown"), result.get("project_open", false), result.get("backup_path", "none")], true)
+		refresh()
 		return
 	_upgrade_preview = {}
 	_message("SQLite promotion complete at %s with %d items. Original backup: %s. Preview the separate JSONL 2.0 upgrade next." % [result.path, result.item_count, result.backup_path], false)
@@ -443,6 +479,9 @@ func _preview_upgrade() -> void:
 	if not bool(_upgrade_preview.get("ok", false)):
 		_message(str(_upgrade_preview.get("error", "upgrade preview failed")), true)
 		return
+	_upgrade_preview["project"] = _project_name()
+	_upgrade_preview["path"] = db.get_path()
+	_upgrade_ack.button_pressed = false
 	_message("Preview only; the source was not changed. %d items will be bound to %d starter definitions. Rollback snapshot: %s. v2 cache: %s." % [_upgrade_preview.items, _upgrade_preview.definitions, _upgrade_preview.backup_path, _upgrade_preview.cache_path], false)
 
 func _apply_upgrade() -> void:
@@ -452,9 +491,18 @@ func _apply_upgrade() -> void:
 	if not _upgrade_ack.button_pressed:
 		_message("Confirm that incompatible writers are stopped before applying the upgrade.", true)
 		return
+	var db: DocketDB = _state.get_db_for_project(_project_name())
+	if _upgrade_preview.get("project") != _project_name() or db == null or _upgrade_preview.get("path") != db.get_path() or _upgrade_preview.get("source_hash") != FileAccess.get_sha256(db.get_path()):
+		_upgrade_preview = {}
+		_upgrade_ack.button_pressed = false
+		_message("The project or canonical source changed. Preview this project again before applying.", true)
+		return
 	var result: Dictionary = _state.upgrade_project_to_jsonl_v2(_project_name(), _upgrade_preview, true)
 	if not bool(result.get("ok", false)):
-		_message(str(result.get("error", "upgrade failed")), true)
+		_upgrade_preview = {}
+		_upgrade_ack.button_pressed = false
+		_message("%s Canonical format: %s. Project open: %s. Backup: %s. Refresh the project state, then preview again only if it remains legacy JSONL." % [result.get("error", "upgrade failed"), result.get("actual_format", "unknown"), result.get("project_open", false), result.get("backup_path", "none")], true)
+		refresh()
 		return
 	_upgrade_preview = {}
 	_message("Upgrade complete. Rollback snapshot: %s. The project registry and cache were reopened from v2." % result.backup_path, false)
@@ -462,4 +510,5 @@ func _apply_upgrade() -> void:
 	refresh()
 
 func _message(text: String, failure: bool) -> void:
-	_status.text = ("[color=#d65c5c]" if failure else "[color=#6bbf7b]") + text + "[/color]"
+	_status.text = text
+	_status.add_theme_color_override("font_color", Color.html("d65c5c") if failure else Color.html("6bbf7b"))

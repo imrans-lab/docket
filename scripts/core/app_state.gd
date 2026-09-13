@@ -10,7 +10,7 @@ signal data_changed
 ## Carries the path and a human-readable reason.
 signal load_failed(path: String, reason: String)
 @warning_ignore("unused_signal")
-signal open_item_requested(id: String)
+signal open_item_requested(id: String, project: String)
 @warning_ignore("unused_signal")
 signal open_query_requested(filter: String, label: String)
 
@@ -200,6 +200,8 @@ func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: 
 		result["success"] = false
 		result["error"] = str(result.get("error", "")) + ("; " if not str(result.get("error", "")).is_empty() else "") + "project could not be reopened"
 		file_changed.emit()
+		result["actual_format"] = JSONLMigration.detect_format(path)
+		result["project_open"] = false
 		return result
 	_project_dbs[project_name] = reopened
 	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
@@ -207,6 +209,9 @@ func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: 
 		db = reopened
 		dct_path = path
 	file_changed.emit()
+	result["actual_format"] = JSONLMigration.detect_format(path)
+	result["project_open"] = true
+	result["active_path"] = reopened.get_path()
 	return result
 
 func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, exclusive_writer_confirmed: bool) -> Dictionary:
@@ -228,6 +233,8 @@ func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, excl
 		result.ok = false
 		result.error = str(result.get("error", "")) + ("; " if not str(result.get("error", "")).is_empty() else "") + "project could not be reopened"
 		file_changed.emit()
+		result["actual_format"] = JSONLMigration.detect_format(path)
+		result["project_open"] = false
 		return result
 	_project_dbs[project_name] = reopened
 	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
@@ -235,6 +242,10 @@ func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, excl
 		db = reopened
 		dct_path = path
 	file_changed.emit()
+	result["actual_format"] = JSONLMigration.detect_format(path)
+	result["project_open"] = true
+	result["active_path"] = reopened.get_path()
+	result["registry_legacy"] = _type_registries[project_name].is_legacy()
 	return result
 
 
@@ -300,9 +311,9 @@ func find_children_across_projects(qualified_id: String) -> Array:
 	return results
 
 
-func move_item(item_id: String, target_project: String) -> Dictionary:
+func move_item(item_id: String, target_project: String, source_project: String = "") -> Dictionary:
 	## The shared transfer path enforces source identity, registry pins and durable write order.
-	return DocketMove.new().execute({"id":item_id,"target_project":target_project}, schema, db, _project_dbs)
+	return DocketMove.new().execute({"id":item_id,"target_project":target_project,"source_project":source_project}, schema, db, _project_dbs)
 
 
 func create_dct(path: String) -> void:
