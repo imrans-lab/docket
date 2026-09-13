@@ -976,13 +976,14 @@ func _rebuild_project_options() -> void:
 
 
 func _get_selected_project_db() -> DocketDB:
+	if not _current_project.is_empty():
+		return _state.get_db_for_project(_current_project)
 	if _state._project_dbs.size() <= 1:
 		return _state.db
 	if _project_option.item_count == 0:
-		return _state.db
+		return null
 	var proj_name: String = _project_option.get_item_text(_project_option.selected)
-	var pdb: DocketDB = _state.get_db_for_project(proj_name)
-	return pdb if pdb else _state.db
+	return _state.get_db_for_project(proj_name)
 
 
 # -- Type / status helpers -------------------------------------------------
@@ -1015,6 +1016,7 @@ func _on_draft_project_changed(_index: int) -> void:
 	if _type_option.item_count == 0 or _get_type_name(_type_option.selected) != previous:
 		_id_label.text = "(new — unsaved) Draft retained, but type '%s' is unavailable in %s. Choose a compatible project or type before saving." % [previous, project]
 		return
+	_current_project = project
 	_on_type_changed(_type_option.selected)
 
 
@@ -1286,6 +1288,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 				_project_option.select(i)
 				break
 	var initial_project := _project_option.get_item_text(_project_option.selected) if _project_option.item_count > 0 else (_state.db.get_project_name() if _state.db != null else "")
+	_current_project = project if not project.is_empty() else initial_project
 	_rebuild_type_options(initial_project, type_name)
 
 	_title_edit.text = str(item.get("title", ""))
@@ -1493,6 +1496,9 @@ func _after_shared_save(item_db: DocketDB) -> void:
 func _save_draft() -> Variant:
 	var type_name := _get_type_name(_type_option.selected)
 	var target_db: DocketDB = _get_selected_project_db()
+	if target_db == null:
+		_id_label.text = "(new) Save refused: the originating project is closed. Draft edits were retained."
+		return "the originating project is closed"
 	var project := target_db.get_project_name()
 	_current_project = project
 	var registry := _state.get_type_registry(project)
@@ -1502,33 +1508,33 @@ func _save_draft() -> Variant:
 		return str(fields.error)
 	fields.type = type_name
 	var type_record: Dictionary = registry.get_type(type_name)
-	var protected := not type_record.has("error") and bool(type_record.definition.get("protected", false))
+	var definition_protected := not type_record.has("error") and bool(type_record.definition.get("protected", false))
+	var protected_payload := type_name in ["secret", "encrypted_note"]
 	var regular_allowed := bool(type_record.get("definition", {}).get("protected_behavior", {}).get("regular_creation_allowed", true))
 	var prepared_payload: Dictionary = {"operations":[]}
-	if protected:
+	if protected_payload:
 		prepared_payload = await _prepare_protected_payload(target_db, "", type_name)
 	if prepared_payload.has("error"):
 		_id_label.text = "(new) Error: %s" % prepared_payload.error
 		return str(prepared_payload.error)
-	var transaction_error := registry._begin_item_mutation() if protected else ""
+	var transaction_error := registry._begin_item_mutation() if protected_payload else ""
 	if not transaction_error.is_empty():
 		_id_label.text = "(new) Error: %s" % transaction_error
 		return transaction_error
 	var created := registry.create_item(fields, "user")
-	if created.has("error") and protected and not regular_allowed and type_name in ["secret", "encrypted_note"]:
+	if created.has("error") and definition_protected and not regular_allowed and protected_payload:
 		created = _create_protected_draft(target_db, type_name, fields)
 	if created.has("error"):
-		if protected:
+		if protected_payload:
 			registry._complete_item_mutation(str(created.error))
 		_id_label.text = "(new) Error: %s" % created.error
 		return str(created.error)
 	var id := str(created.id)
-	if protected:
+	if protected_payload:
 		for operation_value in prepared_payload.operations:
 			var operation: Dictionary = operation_value
-			if str(operation.handle).is_empty():
-				operation.handle = id + str(operation.get("suffix", ""))
-				operation.owner = id
+			operation.handle = id + str(operation.get("suffix", ""))
+			operation.owner = id
 		transaction_error = _apply_prepared_payload(target_db, prepared_payload.operations)
 		transaction_error = registry._complete_item_mutation(transaction_error)
 	if not transaction_error.is_empty():

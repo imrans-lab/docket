@@ -123,6 +123,59 @@ func test_record_form_creation_keeps_required_immutable_field_editable_and_saves
 	var stored := state.db.get_item(form._current_id)
 	return A.is_true(not stored.is_empty() and stored.fields.source == "origin", "creation persists a required immutable field before existing-item controls become read-only")
 
+func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Variant:
+	var state := _state("form")
+	var registry := state.get_type_registry("form")
+	var definition := _definition()
+	definition.fields.append({"key":"resolution", "label":"Custom resolution", "type":"string", "required":false, "nullable":true, "mutable":true})
+	var made := registry.define_type("review", definition, "tester", "durable controls")
+	if made.has("error"):
+		return str(made.error)
+	var activate_error := registry.activate_type("review", made.type.current_revision, "tester", "ready")
+	if not activate_error.is_empty():
+		return activate_error
+	var form := RecordForm.new()
+	add_child(form)
+	form.init(state)
+	form.load_draft("review", {"type":"review", "status":"requested", "title":"", "fields":{}}, "form")
+	form._title_edit.text = "Durable values"
+	_set_dynamic_text(form, "revision", "abc")
+	_set_dynamic_text(form, "source", "immutable-origin")
+	_set_dynamic_text(form, "attempts", "3")
+	_set_dynamic_text(form, "labels", "[\"one\",\"two\"]")
+	_set_dynamic_text(form, "metadata", "{\"depth\":2}")
+	_set_dynamic_text(form, "related", "[]")
+	_set_dynamic_text(form, "resolution", "custom-value")
+	var findings_row: Dictionary = form._dynamic_fields._rows.findings
+	(findings_row.mode as OptionButton).select((findings_row.mode as OptionButton).get_item_index(1))
+	var approved_row: Dictionary = form._dynamic_fields._rows.approved
+	(approved_row.mode as OptionButton).select((approved_row.mode as OptionButton).get_item_index(0))
+	(approved_row.editor as CheckBox).button_pressed = false
+	var create_error = await form._save_changes()
+	if create_error is String and not str(create_error).is_empty():
+		return create_error
+	var id := form._current_id
+	var created := state.db.get_item(id)
+	var fields: Dictionary = created.fields.duplicate(true)
+	fields["opaque_future"] = {"keep":true}
+	var storage_error := state.db.update_item_fields_checked(id, {"fields":fields, "resolution":"legacy-flat"})
+	if not storage_error.is_empty():
+		return storage_error
+	form.load_item(id, "form")
+	form._title_edit.text = "Updated without loss"
+	var update_error = await form._save_changes()
+	if update_error is String and not str(update_error).is_empty():
+		return update_error
+	var path := state.dct_path
+	state.db.close()
+	JSONLCache.delete_cache_family(path)
+	var reopened := DocketDBJsonl.open_jsonl(path)
+	if reopened == null:
+		return "failed to reopen durable form fixture"
+	_dbs.append(reopened)
+	var stored := reopened.get_item(id)
+	return A.is_true(stored.title == "Updated without loss" and stored.fields.revision == "abc" and stored.fields.source == "immutable-origin" and stored.fields.attempts == 3 and stored.fields.labels == ["one", "two"] and stored.fields.metadata == {"depth":2} and stored.fields.related == [] and stored.fields.findings == null and stored.fields.approved == false and not stored.fields.has("score") and stored.fields.opaque_future == {"keep":true} and stored.fields.resolution == "custom-value" and stored.resolution == "legacy-flat", "form value modes, containers, immutable creation value, opaque fields, and custom/flat collision survive canonical reopen")
+
 func test_duplicate_ids_route_form_and_comments_to_explicit_project() -> Variant:
 	var alpha := _state("alpha")
 	var beta_path := "%s/beta.dct" % DIR
@@ -178,6 +231,40 @@ func test_duplicate_id_activation_and_back_navigation_retain_project_origin() ->
 	shell._on_back_pressed()
 	var entry: Dictionary = shell._work_entries[shell._current_work_idx]
 	return A.is_true(entry.item_id == duplicate_id and entry.project == "alpha" and shell._record_form._current_project == "alpha" and shell._record_form._title_edit.text == "Alpha", "activation and Back distinguish duplicate item IDs by their project origin")
+
+func test_context_copy_extracts_id_from_selected_origin_metadata() -> Variant:
+	var state := _state("fields")
+	var grid := QueryGrid.new()
+	add_child(grid)
+	grid.init(state)
+	grid._tree.clear()
+	var root := grid._tree.create_item()
+	var row := grid._tree.create_item(root)
+	row.set_metadata(0, {"id":"DUPLICATE-ID", "project":"fields"})
+	row.select(0)
+	grid._on_context_menu_id_pressed(0)
+	return A.eq(grid._last_context_copy_id, "DUPLICATE-ID", "Copy ID callback extracts the identifier from project-scoped selected-row metadata")
+
+func test_draft_save_refuses_closed_origin_without_falling_back_or_losing_edits() -> Variant:
+	var state := _state("alpha")
+	var beta_path := "%s/beta.dct" % DIR
+	var beta_db := DocketDBJsonl.create_new_jsonl(beta_path)
+	_dbs.append(beta_db)
+	state._project_dbs.beta = beta_db
+	state._type_registries.beta = TypeRegistry.for_db(beta_db, "beta")
+	_active_registry(state, "alpha")
+	_active_registry(state, "beta")
+	var form := RecordForm.new()
+	add_child(form)
+	form.init(state)
+	form.load_draft("review", {"type":"review", "status":"requested", "title":"", "fields":{}}, "beta")
+	form._title_edit.text = "Retained draft"
+	_set_dynamic_text(form, "revision", "abc")
+	_set_dynamic_text(form, "source", "origin")
+	state._project_dbs.erase("beta")
+	state._type_registries.erase("beta")
+	var save_error = await form._save_changes()
+	return A.is_true(save_error is String and str(save_error).contains("originating project is closed") and state.db.list_items().is_empty() and form._title_edit.text == "Retained draft" and form._is_draft, "closed draft origin refuses save without fallback writes and retains local edits")
 
 func test_result_columns_require_pinned_type_identity() -> Variant:
 	var state := _state("fields")
@@ -283,6 +370,47 @@ func test_creation_chooser_opens_ordinary_builtin_and_custom_drafts() -> Variant
 	var custom: Dictionary = shell._new_item_list.get_item_metadata(0)
 	shell._create_and_edit_item(str(custom.slug), str(custom.project), false, str(custom.type_id))
 	return A.is_true(shell._record_form._is_draft and shell._record_form._get_type_name(shell._record_form._type_option.selected) == "review", "chooser opens an active custom type through its stable registry identity")
+
+func test_ordinary_builtin_draft_saves_without_creating_or_unlocking_a_vault() -> Variant:
+	var state := _state("fields")
+	var previous_password := UserPrefs.load_vault_password()
+	UserPrefs.clear_vault_password()
+	var form := RecordForm.new()
+	add_child(form)
+	form.init(state)
+	form.load_draft("bug", {"type":"bug", "status":"new", "title":"", "fields":{}}, "fields")
+	form._title_edit.text = "Ordinary bug"
+	var save_error = await form._save_changes()
+	UserPrefs.save_vault_password(previous_password)
+	if save_error is String and not str(save_error).is_empty():
+		return save_error
+	var stored := state.db.get_item(form._current_id)
+	return A.is_true(stored.type == "bug" and stored.title == "Ordinary bug" and state.db.get_vault_salt().is_empty() and state.db.list_secrets().is_empty(), "ordinary builtin save follows registry creation without requiring credentials or initializing protected payload storage")
+
+func test_secret_draft_binds_value_and_notes_handles_to_created_item() -> Variant:
+	var state := _state("fields")
+	var password := "fixture-secret-create"
+	var salt := VaultCrypto.generate_salt()
+	state.db.init_vault(VaultCrypto.derive_key(password, salt), salt)
+	var previous_password := UserPrefs.load_vault_password()
+	UserPrefs.save_vault_password(password)
+	var form := RecordForm.new()
+	add_child(form)
+	form.init(state)
+	form.load_draft("secret", {"type":"secret", "status":"active", "title":"", "fields":{}}, "fields")
+	form._title_edit.text = "Credential"
+	form._secret_value_edit.text = "secret-value"
+	form._encrypted_notes_edit.text = "secret-notes"
+	var save_error = await form._save_changes()
+	UserPrefs.save_vault_password(previous_password)
+	if save_error is String and not str(save_error).is_empty():
+		return save_error
+	var id := form._current_id
+	var owners: Dictionary = {}
+	for entry_value in state.db.list_secrets():
+		var entry: Dictionary = entry_value
+		owners[str(entry.handle)] = str(entry.owner_item_id)
+	return A.is_true(owners.get(id) == id and owners.get(id + ":notes") == id and not owners.has(":notes"), "secret creation binds both prepared payload handles and ownership to the generated item ID")
 
 func test_protected_types_stay_out_of_ordinary_creation_and_keep_specialized_path() -> Variant:
 	var state := _state("fields")

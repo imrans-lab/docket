@@ -97,6 +97,7 @@ var _sort_field: String = ""
 var _sort_dir: String = "asc"
 var _sort_binding: Dictionary = {}
 var _dcq_columns: Array = []
+var _last_context_copy_id: String = ""
 var _catalog_diagnostic: String = ""
 var _columns_menu: PopupMenu
 var _column_candidates: Array = []
@@ -1173,7 +1174,9 @@ func _on_context_menu_id_pressed(id: int) -> void:
 	if id == 0:  # Copy ID
 		var selected := _tree.get_selected()
 		if selected:
-			var full_id: String = selected.get_metadata(0)
+			var origin: Dictionary = selected.get_metadata(0)
+			var full_id := str(origin.get("id", ""))
+			_last_context_copy_id = full_id
 			DisplayServer.clipboard_set(full_id)
 
 
