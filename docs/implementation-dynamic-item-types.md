@@ -40,7 +40,7 @@ legacy cache is outside the supported upgrade workflow.
 | B: Storage | `8fe623a` | Terra cleared | Storage 45/45, freshness 14/14; broader failures resolved; old-reader checks pass |
 | C: Registry and validation | `59b3e1c` | Terra cleared | Registry 27/27 and 174 related regressions pass |
 | D: MCP and queries | `c9ef61c` | Terra cleared | 263 targeted and related tests pass |
-| E: GUI and integration | In progress | Pending | Not run |
+| E: GUI and integration | `ff6d9ab`; final GUI delta under review | Terra cleared through `ff6d9ab` | 786/786 full-suite pass; final GUI corrections pending |
 
 Specific revisions, findings and command results are recorded here and in the
 corresponding Docket review/verification tasks as each gate is completed.
@@ -315,3 +315,32 @@ GUI/application/test batch is frozen at `d3c5e62`, and all writers are stopped.
 Terra is reviewing the remaining GUI delta and confirming E1 corrections.
 Implementation artifacts are done; the overall E review and verification gates
 remain pending. No E code has been imported or executed.
+
+
+### E: integrated review and runtime corrections
+
+Terra cleared the combined implementation at `abd1e0e` and each subsequent
+correction before execution. Initial imports exposed incorrect registry API use
+and GDScript inference errors; `6c9ae39` imports cleanly. Runtime checks then
+exposed test preload/fixture isolation defects and an outdated creation-event
+expectation. The first full run aborted and is not counted as a successful gate.
+After reviewed corrections, Project Types passes 12/12 targeted checks.
+
+The next complete run reported 786 tests, 785 passing. Reopening an integral
+JSON number rendered `3.0` in an integer editor and blocked an unrelated save.
+The corrected editor uses an exact finite-integer check, preserving invalid
+fractional values for validation rather than rounding them. Reviewed `ff6d9ab`
+imports cleanly and passes **786/786** tests with no script exceptions.
+Evidence: `e-import-4.log` and `e-full-3.log`. Headless UI fixtures report object
+and resource cleanup warnings; these are not script exceptions or test failures.
+
+Actual GUI and HTTP MCP acceptance on a disposable project exercised draft
+definition, activation, generated creation, strict transition refusal, required
+field and kind validation, guarded approval with unsaved fields, typed queries,
+selected-item additive evolution, historical revision retention, and the new
+field editor. Comment and attachment payloads were captured for a cache-deletion
+reopen check. Two additional GUI findings remain under review at `ebc7cf8`:
+qualified child navigation in single/multiple projects and preserving default
+columns while offering query-scoped custom columns. Final acceptance requires
+rerunning checks on the corrected source and completing the disposable upgrade
+and cache-rebuild walkthrough. No live file was upgraded.
