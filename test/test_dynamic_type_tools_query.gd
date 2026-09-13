@@ -12,7 +12,12 @@ func teardown() -> void:
 	DirAccess.remove_absolute(DIR)
 
 func _db(name: String) -> DocketDBJsonl:
-	var db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl(DIR + "/" + name + ".dct")
+	var path := DIR + "/" + name + ".dct"
+	JSONLCache.delete_cache_family(path)
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	var db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl(path)
+	assert(db != null, "failed to create isolated JSONL fixture %s" % path)
 	db.set_project_name_checked(name)
 	return db
 
@@ -473,15 +478,15 @@ func test_invalid_registry_is_public_error_and_visible_empty_query_catalog() -> 
 	grid.queue_free(); db.close(); return r
 
 func test_public_flat_project_filter_must_match_routed_project() -> Variant:
-	var alpha: DocketDBJsonl = _db("alpha"); var beta: DocketDBJsonl = _db("beta")
-	var tools: ToolRegistry = ToolRegistry.new(); tools.init({}, alpha, {"alpha":alpha,"beta":beta})
-	var created: Dictionary = tools.call_tool("docket_create", {"project":"alpha","type":"discussion","title":"Alpha"})
+	var alpha: DocketDBJsonl = _db("RoutedAlpha"); var beta: DocketDBJsonl = _db("RoutedBeta")
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init({}, alpha, {"RoutedAlpha":alpha,"RoutedBeta":beta})
+	var created: Dictionary = tools.call_tool("docket_create", {"project":"RoutedAlpha","type":"discussion","title":"Alpha"})
 	if created.has("error"): alpha.close(); beta.close(); return "project query setup failed: %s" % created.error
-	var matching: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"ALPHA","type":"discussion"}})
-	var mismatch: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"beta","type":"discussion"}})
-	var invalid_shape: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":{"op":"eq","value":"alpha"},"type":"discussion"}})
-	var mixed_tree: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"alpha","$and":[{"field":"type","op":"eq","value":"discussion"}]}})
-	var mixed_conditions: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"alpha","conditions":[{"field":"type","op":"eq","value":"discussion"}]}})
-	var mixed_leaf: Dictionary = tools.call_tool("docket_query", {"project":"alpha","filter":{"project":"alpha","field":"type","op":"eq","value":"discussion"}})
+	var matching: Dictionary = tools.call_tool("docket_query", {"project":"RoutedAlpha","filter":{"project":"ROUTEDALPHA","type":"discussion"}})
+	var mismatch: Dictionary = tools.call_tool("docket_query", {"project":"RoutedAlpha","filter":{"project":"RoutedBeta","type":"discussion"}})
+	var invalid_shape: Dictionary = tools.call_tool("docket_query", {"project":"RoutedAlpha","filter":{"project":{"op":"eq","value":"RoutedAlpha"},"type":"discussion"}})
+	var mixed_tree: Dictionary = tools.call_tool("docket_query", {"project":"RoutedAlpha","filter":{"project":"RoutedAlpha","$and":[{"field":"type","op":"eq","value":"discussion"}]}})
+	var mixed_conditions: Dictionary = tools.call_tool("docket_query", {"project":"RoutedAlpha","filter":{"project":"RoutedAlpha","conditions":[{"field":"type","op":"eq","value":"discussion"}]}})
+	var mixed_leaf: Dictionary = tools.call_tool("docket_query", {"project":"RoutedAlpha","filter":{"project":"RoutedAlpha","field":"type","op":"eq","value":"discussion"}})
 	var r = A.is_true(not matching.has("error") and matching.count == 1 and matching.items[0].id == created.id and mismatch.has("error") and invalid_shape.has("error") and mixed_tree.has("error") and mixed_conditions.has("error") and mixed_leaf.has("error"), "only a matching genuinely flat project filter is normalized; mixed structured filters are refused intact")
 	alpha.close(); beta.close(); return r
