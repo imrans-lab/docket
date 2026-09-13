@@ -181,7 +181,28 @@ func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Va
 		return "failed to reopen durable form fixture"
 	_dbs.append(reopened)
 	var stored := reopened.get_item(id)
-	return A.is_true(stored.title == "Updated without loss" and stored.fields.revision == "abc" and stored.fields.source == "immutable-origin" and stored.fields.attempts == 3 and stored.fields.labels == ["one", "two"] and stored.fields.metadata == {"depth":2} and stored.fields.related == [] and stored.fields.findings == null and stored.fields.approved == false and not stored.fields.has("score") and stored.fields.opaque_future == {"keep":true} and stored.fields.resolution == "custom-value" and str(stored.get("resolution", "")).is_empty(), "form value modes, containers, immutable creation value, opaque fields, and a custom field colliding with an unused legacy flat column survive canonical reopen")
+	var r = A.is_true(stored.title == "Updated without loss" and stored.fields.revision == "abc" and stored.fields.source == "immutable-origin", "reopen preserves universal edits plus mutable and immutable creation strings: %s" % JSON.stringify(stored))
+	if r is String:
+		return r
+	r = A.is_true(int(stored.fields.attempts) == 3 and stored.fields.labels == ["one", "two"] and stored.fields.related == [], "reopen preserves integer, array, and reference-list controls: %s" % JSON.stringify(stored.fields))
+	if r is String:
+		return r
+	var metadata: Dictionary = stored.fields.get("metadata", {})
+	r = A.is_true(int(metadata.get("depth", -1)) == 2, "reopen preserves object JSON with numeric value semantics: %s" % JSON.stringify(metadata))
+	if r is String:
+		return r
+	r = A.is_true(stored.fields.has("findings") and stored.fields.findings == null and stored.fields.has("approved") and stored.fields.approved == false and not stored.fields.has("score"), "reopen distinguishes explicit null and false from unset: %s" % JSON.stringify(stored.fields))
+	if r is String:
+		return r
+	r = A.is_true(stored.fields.get("opaque_future") == {"keep":true}, "form update preserves unknown opaque fields: %s" % JSON.stringify(stored.fields.get("opaque_future")))
+	if r is String:
+		return r
+	r = A.eq(stored.fields.get("resolution"), "custom-value", "custom collision value remains under fields after reopen")
+	if r is String:
+		return r
+	var flat_resolution: Variant = stored.get("resolution", null)
+	var flat_unused: bool = flat_resolution == null or (flat_resolution is String and (flat_resolution as String).is_empty())
+	return A.is_true(flat_unused and flat_resolution != "custom-value", "unused legacy flat resolution stays absent/null/empty and never receives the custom value; actual=%s" % str(flat_resolution))
 
 func test_duplicate_ids_route_form_and_comments_to_explicit_project() -> Variant:
 	var alpha := _state("alpha")
