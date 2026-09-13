@@ -496,3 +496,16 @@ func test_evolution_validates_new_descriptors_against_preserved_opaque_values() 
 	var stored: Dictionary = db.get_item(valid_item.id).fields
 	r = A.is_true(error.is_empty() and stored.later_count == 0 and stored.later_flag == false and stored.later_note == "" and stored.has("later_null") and stored.later_null == null, "explicit upgrade preserves false, zero, null, and empty opaque values instead of applying defaults")
 	db.close(); return r
+
+func test_creation_event_is_atomic_with_registry_item() -> Variant:
+	var db: DocketDBJsonl = _db("creation-audit")
+	var registry: TypeRegistry = TypeRegistry.new(db)
+	_define(registry)
+	var made: Dictionary = registry.create_item({"type":"widget","title":"Audited"}, "creator")
+	var r = A.is_true(not made.has("error") and db.get_events(made.id).size() == 1 and db.get_events(made.id)[0].event_type == "created", "typed creation durably records its creation event")
+	if r is String: db.close(); return r
+	var before: String = FileAccess.get_file_as_string(db.get_path())
+	db._exec("CREATE TRIGGER reject_created BEFORE INSERT ON item_events WHEN NEW.event_type='created' BEGIN SELECT RAISE(FAIL, 'creation audit rejected'); END;")
+	var refused: Dictionary = registry.create_item({"type":"widget","title":"Refused"}, "creator")
+	r = A.is_true(refused.has("error") and db.execute_query({"filter":{"title":"Refused"}}).is_empty() and FileAccess.get_file_as_string(db.get_path()) == before, "creation audit failure rolls back the item and canonical publication")
+	db.close(); return r

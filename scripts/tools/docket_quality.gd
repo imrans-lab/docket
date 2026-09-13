@@ -38,15 +38,24 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if score_int < -5 or score_int > 5:
 		return {"error": "Score must be between -5 and +5, got %s" % str(score_int)}
 
-	var now := Time.get_datetime_string_from_system(true)
+	var now: String = Time.get_datetime_string_from_system(true)
+	if not now.ends_with("Z"): now += "Z"
 	var old_quality := int(item.get("quality", 0))
-
-	db.update_item_fields(id, {"quality": score_int, "last_reviewed": now, "updated_at": now})
 
 	var reason: String = args.get("reason", "")
 	var event_note := "Quality: %d -> %d" % [old_quality, score_int]
 	if not reason.is_empty():
 		event_note += " (%s)" % reason
-	db.add_event(id, "quality_scored", "", event_note)
+	var registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
+	var error: String = registry._begin_item_mutation()
+	if not error.is_empty(): return {"error":error}
+	error = registry.update_item(id, {"quality":score_int,"last_reviewed":now}, "")
+	if error.is_empty():
+		if db is DocketDBJsonl: error = (db as DocketDBJsonl).add_event_checked(id, "quality_scored", "", event_note)
+		else:
+			db.add_event(id, "quality_scored", "", event_note)
+			error = db._last_sql_error
+	error = registry._complete_item_mutation(error)
+	if not error.is_empty(): return {"error":error}
 
 	return {"id": id, "quality": score_int, "last_reviewed": now, "previous_quality": old_quality}

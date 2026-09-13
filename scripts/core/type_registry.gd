@@ -439,7 +439,7 @@ func validate_candidate(definition: Dictionary, candidate: Dictionary, creation:
 		if key not in descriptors and key not in UNIVERSAL_MUTABLE: return "field '%s' is unsupported by pinned revision" % key
 		if descriptors.has(key):
 			var error := _validate_value(descriptors[key], candidate[key], false)
-			if not error.is_empty() and bool(definition.get("protected", false)) and str(descriptors[key].get("type", "")) in ["date", "timestamp"] and candidate[key] is String and candidate[key].is_empty(): error = ""
+			if not error.is_empty() and bool(definition.get("protected", false)) and _legacy_builtin_time_value(descriptors[key], candidate[key]): error = ""
 			if not error.is_empty(): return "field '%s': %s" % [key, error]
 		elif key in UNIVERSAL_MUTABLE:
 			var universal_error := _validate_value(_universal_descriptor(key), candidate[key], false)
@@ -473,8 +473,18 @@ func create_item(fields: Dictionary, actor: String = "") -> Dictionary:
 		if key in UNIVERSAL_MUTABLE: item[key] = candidate[key]
 		elif bool(definition.get("protected", false)) and key in DocketDB._ITEM_COLS: item[key] = candidate[key]
 		elif key != "type": item.fields[key] = candidate[key]
+	error = _begin_item_mutation()
+	if not error.is_empty(): return {"error":error}
 	var id := _db.next_uuid7_id()
-	error = _db.insert_item(id, item)
+	if id.is_empty(): error = "failed to allocate item ID"
+	if error.is_empty(): error = _db.insert_item(id, item)
+	if error.is_empty():
+		if _db is DocketDBJsonl:
+			error = (_db as DocketDBJsonl).add_event_checked(id, "created", actor, "Item created")
+		else:
+			_db.add_event(id, "created", actor, "Item created")
+			error = _db._last_sql_error
+	error = _complete_item_mutation(error)
 	return {"error":error} if not error.is_empty() else {"id":id,"item":_db.get_item(id)}
 
 func item_token(item_or_id) -> String:
@@ -869,6 +879,13 @@ func _validate_value(field: Dictionary, value, default_value: bool) -> String:
 		if field.has("minimum") and value < field.minimum: return "below minimum"
 		if field.has("maximum") and value > field.maximum: return "above maximum"
 	return ""
+
+func _legacy_builtin_time_value(field: Dictionary, value: Variant) -> bool:
+	if not value is String: return false
+	var kind: String = str(field.get("type", ""))
+	if value.is_empty(): return kind in ["date", "timestamp"]
+	if kind != "timestamp" or value.length() != 19: return false
+	return _looks_like_timestamp(value + "Z")
 
 func _json_durable(value) -> bool:
 	if value == null or value is bool or value is String or value is int: return true

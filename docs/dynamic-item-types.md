@@ -20,7 +20,7 @@ Typed queries bind `field_key` with `type_id`. Status and derived `state_categor
 
 ## Upgrade safely
 
-New files use 2.0 and `.v2.cache`; existing JSONL files remain 1.0 with `.cache`. SQLite projects must first be explicitly promoted with `docket --migrate-jsonl path/to/project.dct`. Promotion and the later JSONL 1.0-to-2.0 type upgrade are separate operations.
+New files use 2.0 and `.v2.cache`; existing JSONL files remain 1.0 with `.cache`. SQLite projects must first be explicitly promoted with `docket --migrate-jsonl --file path/to/project.dct`. Promotion and the later JSONL 1.0-to-2.0 type upgrade are separate operations.
 
 Use Project Types to preview before applying a JSONL upgrade. Preview reports starter definitions, item/status bindings, unresolved data, cache changes, and backup path. Apply requires acknowledgement that incompatible writers are stopped. Minerva's independent writer is incompatible and must be excluded from upgraded files. Verified older Docket readers refuse 2.0 through cold and warm cache paths.
 

@@ -32,7 +32,7 @@ func test_quality_score_hint() -> Variant:
 	if r is String: return r
 	r = A.eq(result.quality, 3, "quality is 3")
 	if r is String: return r
-	return A.is_true(not result.get("last_reviewed", "").is_empty(), "last_reviewed is set")
+	return A.is_true(str(result.get("last_reviewed", "")).ends_with("Z"), "new quality timestamps are explicit UTC")
 
 
 func test_quality_score_insight() -> Variant:

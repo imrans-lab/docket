@@ -71,7 +71,7 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 
 
 static func create_new_jsonl(path: String) -> DocketDBJsonl:
-	## Create a brand-new JSONL-backed docket. `path` is the .dct.jsonl file.
+	## Create a brand-new JSONL-backed docket at the canonical `.dct` path.
 	## Writes a 2.0 file with complete starter definitions and creates its cache.
 	var wrapper := DocketDBJsonl.new()
 	wrapper._jsonl_path = path
@@ -87,6 +87,15 @@ static func create_new_jsonl(path: String) -> DocketDBJsonl:
 
 	# Transfer ownership
 	wrapper._adopt(cache_db)
+	var canonical_name: String = path.get_file().get_basename()
+	var naming_error: String = ""
+	if not canonical_name.is_empty():
+		naming_error = wrapper._exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('project',?);", [canonical_name])
+		if naming_error.is_empty(): naming_error = wrapper._exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('id_prefix',?);", [DocketDB._derive_prefix(canonical_name)])
+	if not naming_error.is_empty():
+		wrapper.last_write_error = naming_error
+		wrapper.close()
+		return null
 	var seed_error := TypeRegistryBootstrap.seed_cache(wrapper)
 	if not seed_error.is_empty():
 		wrapper.last_write_error = seed_error

@@ -560,3 +560,10 @@ func test_hint_query_through_the_tool_costs_one_rewrite() -> Variant:
 	if r is String:
 		return r
 	return true
+
+func test_new_project_defaults_derive_from_canonical_stem() -> Variant:
+	var path: String = _test_dir + "/aei.dct"
+	var db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl(path)
+	var r = A.is_true(db != null and db.get_project_name() == "aei" and db.get_id_prefix() == "AEI", "new project defaults use canonical .dct stem instead of versioned cache basename")
+	if db != null: db.close()
+	return r

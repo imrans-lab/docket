@@ -155,8 +155,9 @@ func _print_help() -> void:
 	if not type_line.is_empty():
 		print("ITEM TYPES: %s" % type_line)
 	print("MCP ENDPOINT: POST http://127.0.0.1:<port>/mcp (JSON-RPC 2.0)")
-	print("DATA FORMAT: .dct is JSONL text (canonical, commit it); .dct.cache is a")
-	print("             disposable SQLite cache. Legacy JSON/SQLite auto-migrate.")
+	print("DATA FORMAT: New .dct files use JSONL 2.0 with a disposable .dct.v2.cache.")
+	print("             Existing JSONL 1.0 files keep .dct.cache until explicit upgrade.")
+	print("             SQLite promotion uses --migrate-jsonl; registry upgrade is separate.")
 	print("")
 	get_tree().quit(0)
 

@@ -4,19 +4,19 @@ This is a post-review manual check. It describes expected results; it is not an 
 
 ## Setup and MCP helper
 
-Create two new projects in the GUI with **File > New Docket**, for example `/tmp/docket-accept/alpha.dct` and `beta.dct`, then add both to the same window. New files should report format `2.0.0` and use adjacent `.v2.cache` files.
-
-Start a separate disposable server:
+Create `/tmp/docket-accept/alpha.dct`, then launch one GUI with its embedded MCP endpoint on an isolated port:
 
 ```bash
-docket --headless -- serve --port 3010 --file /tmp/docket-accept/alpha.dct
+docket --file /tmp/docket-accept/alpha.dct --port 33176
 ```
+
+Create or add `beta.dct` from that same window. New files should report format `2.0.0` and use adjacent `.v2.cache` files.
 
 Use this helper for the exact JSON-RPC envelope:
 
 ```bash
 mcp () {
-  curl --fail-with-body -sS http://127.0.0.1:3010/mcp \
+  curl --fail-with-body -sS http://127.0.0.1:33176/mcp \
     -H 'Content-Type: application/json' \
     --data "$(jq -cn --arg n "$1" --argjson a "$2" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$n,arguments:$a}}')"
 }
