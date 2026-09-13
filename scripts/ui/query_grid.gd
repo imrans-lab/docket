@@ -1106,7 +1106,8 @@ func set_result_columns(bindings: Array) -> void:
 func _show_columns_menu(anchor: Button) -> void:
 	_columns_menu.clear()
 	_column_candidates.clear()
-	for record_value in _type_catalog:
+	var scoped_records: Array = _column_scope_records()
+	for record_value in scoped_records:
 		var record: Dictionary = record_value
 		var registry := _state.get_type_registry(str(record.project))
 		if registry == null:
@@ -1118,16 +1119,51 @@ func _show_columns_menu(anchor: Button) -> void:
 			var descriptor: Dictionary = descriptor_value
 			if descriptor.key in TypeRegistry.UNIVERSAL_MUTABLE:
 				continue
-			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":descriptor.key, "label":"%s — %s" % [record.label, descriptor.get("label", descriptor.key)], "kind":descriptor.type})
+			var owner_label := "%s [%s]" % [record.label, record.project] if _state.get_project_dbs().size() > 1 else str(record.label)
+			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":descriptor.key, "label":"%s — %s" % [owner_label, descriptor.get("label", descriptor.key)], "kind":descriptor.type})
 	for derived in ["state_category", "state_outcome", "is_terminal"]:
-		for record_value in _type_catalog:
+		for record_value in scoped_records:
 			var record: Dictionary = record_value
-			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":derived, "label":"%s — %s" % [record.label, derived], "kind":"string"})
+			var owner_label := "%s [%s]" % [record.label, record.project] if _state.get_project_dbs().size() > 1 else str(record.label)
+			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":derived, "label":"%s — %s" % [owner_label, derived], "kind":"string"})
+	for selected_value in _dcq_columns:
+		if selected_value is Dictionary and not _candidate_has_binding(selected_value):
+			_column_candidates.append((selected_value as Dictionary).duplicate(true))
 	for i in _column_candidates.size():
 		var binding: Dictionary = _column_candidates[i]
 		_columns_menu.add_check_item(str(binding.label), i)
 		_columns_menu.set_item_checked(i, _has_result_column(binding))
 	_columns_menu.popup(Rect2i(Vector2i(anchor.global_position.x, anchor.global_position.y + anchor.size.y), Vector2i(360, 0)))
+
+func _column_scope_records() -> Array:
+	var conditions: Array = _condition_snapshots()
+	if conditions.is_empty():
+		return _type_catalog.duplicate()
+	var branch_scopes: Dictionary = {}
+	for i in conditions.size():
+		var branch := QueryTypeScope.branch_index(conditions, i)
+		branch_scopes[branch] = QueryTypeScope.branch_scope(conditions, i, _type_catalog)
+	var allowed: Dictionary = {}
+	for scope_value in branch_scopes.values():
+		var scope: Dictionary = scope_value
+		if not bool(scope.known):
+			return _type_catalog.duplicate()
+		for record_value in _type_catalog:
+			var record: Dictionary = record_value
+			if (not scope.identities.is_empty() and scope.identities.has(record.key)) or (scope.identities.is_empty() and scope.types.has(record.slug)):
+				allowed[str(record.key)] = true
+	var records: Array = []
+	for record_value in _type_catalog:
+		if allowed.has(str(record_value.key)):
+			records.append(record_value)
+	return records
+
+func _candidate_has_binding(binding: Dictionary) -> bool:
+	for candidate_value in _column_candidates:
+		var candidate: Dictionary = candidate_value
+		if _same_binding(candidate, binding):
+			return true
+	return false
 
 func _has_result_column(binding: Dictionary) -> bool:
 	for selected_value in _dcq_columns:
@@ -1146,6 +1182,8 @@ func _toggle_result_column(index: int) -> void:
 			_rebuild_columns()
 			_populate_tree()
 			return
+	if _dcq_columns.is_empty():
+		_dcq_columns = _col_fields.duplicate(true)
 	_dcq_columns.append(binding.duplicate(true))
 	_rebuild_columns()
 	_populate_tree()

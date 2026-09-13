@@ -285,6 +285,47 @@ func test_context_copy_extracts_id_from_selected_origin_metadata() -> Variant:
 	grid._on_context_menu_id_pressed(0)
 	return A.eq(grid._last_context_copy_id, "DUPLICATE-ID", "Copy ID callback extracts the identifier from project-scoped selected-row metadata")
 
+func test_children_use_qualified_origin_and_isolate_bare_refs_by_project() -> Variant:
+	var state := _state("alpha")
+	var alpha_registry := _active_registry(state, "alpha")
+	var parent := alpha_registry.create_item({"type":"review", "title":"Parent", "revision":"p", "source":"origin"}, "tester")
+	if parent.has("error"):
+		return str(parent.error)
+	var parent_id := str(parent.id)
+	var alpha_child := alpha_registry.create_item({"type":"review", "title":"Alpha qualified", "revision":"a", "source":"origin", "parent":"alpha:%s" % parent_id}, "tester")
+	if alpha_child.has("error"):
+		return str(alpha_child.error)
+	var form := RecordForm.new()
+	add_child(form)
+	form.init(state)
+	form.load_item(parent_id, "alpha")
+	var r = A.eq(form._children_list.item_count, 1, "single-project form resolves one qualified child reference")
+	if r is String:
+		return r
+	var single_origin: Dictionary = form._children_list.get_item_metadata(0)
+	r = A.eq(single_origin.project, "alpha", "single-project child metadata retains its origin")
+	if r is String:
+		return r
+	var beta_path := "%s/beta.dct" % DIR
+	var beta_db := DocketDBJsonl.create_new_jsonl(beta_path)
+	_dbs.append(beta_db)
+	state._project_dbs.beta = beta_db
+	state._type_registries.beta = TypeRegistry.for_db(beta_db, "beta")
+	var beta_registry := _active_registry(state, "beta")
+	var beta_qualified := beta_registry.create_item({"type":"review", "title":"Beta qualified", "revision":"bq", "source":"origin", "parent":"alpha:%s" % parent_id}, "tester")
+	var beta_bare := beta_registry.create_item({"type":"review", "title":"Beta bare", "revision":"bb", "source":"origin", "parent":parent_id}, "tester")
+	if beta_qualified.has("error") or beta_bare.has("error"):
+		return "child fixture creation failed"
+	form._populate_children()
+	var origins: Dictionary = {}
+	for i in form._children_list.item_count:
+		var origin: Dictionary = form._children_list.get_item_metadata(i)
+		origins["%s:%s" % [origin.project, origin.id]] = true
+	var navigated: Dictionary = {}
+	form.child_opened.connect(func(id: String, project: String): navigated = {"id":id, "project":project})
+	form._on_child_activated(0)
+	return A.is_true(form._children_list.item_count == 2 and origins.has("alpha:%s" % alpha_child.id) and origins.has("beta:%s" % beta_qualified.id) and not origins.has("beta:%s" % beta_bare.id) and not navigated.is_empty() and origins.has("%s:%s" % [navigated.project, navigated.id]), "multi-project qualified children resolve across projects while bare references stay in the parent owning project and navigation retains origin")
+
 func test_draft_save_refuses_closed_origin_without_falling_back_or_losing_edits() -> Variant:
 	var state := _state("alpha")
 	var beta_path := "%s/beta.dct" % DIR
@@ -365,7 +406,63 @@ func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Var
 	grid._toggle_result_column(findings_candidates[1])
 	var custom_column := grid._col_fields.size() - 1
 	grid._toggle_sort(custom_column)
-	return A.is_true(grid._dcq_columns.size() == 2 and grid._dcq_columns[0].type_id != grid._dcq_columns[1].type_id and grid._sort_binding.project == "fields" and not str(grid._sort_binding.type_id).is_empty() and grid._sort_binding.field_key == "findings", "column selection and sort persist complete project/type/field identity")
+	var typed: Array = grid._dcq_columns.filter(func(value): return value is Dictionary)
+	return A.is_true(typed.size() == 2 and typed[0].type_id != typed[1].type_id and grid._dcq_columns.has("id") and grid._dcq_columns.has("status") and grid._dcq_columns.has("title") and grid._sort_binding.project == "fields" and not str(grid._sort_binding.type_id).is_empty() and grid._sort_binding.field_key == "findings", "first custom selections preserve displayed defaults while typed columns and sort retain complete project/type/field identity")
+
+func test_column_menu_uses_query_branch_scope_and_project_labels() -> Variant:
+	var state := _state("alpha")
+	var beta_path := "%s/beta.dct" % DIR
+	var beta_db := DocketDBJsonl.create_new_jsonl(beta_path)
+	_dbs.append(beta_db)
+	state._project_dbs.beta = beta_db
+	state._type_registries.beta = TypeRegistry.for_db(beta_db, "beta")
+	_active_registry(state, "alpha")
+	_active_registry(state, "beta")
+	var grid := QueryGrid.new()
+	add_child(grid)
+	grid.init(state)
+	grid._rebuild_type_catalog()
+	var alpha_review: Dictionary = {}
+	var beta_review: Dictionary = {}
+	for record_value in grid._type_catalog:
+		var record: Dictionary = record_value
+		if record.project == "alpha" and record.slug == "review":
+			alpha_review = record
+		elif record.project == "beta" and record.slug == "review":
+			beta_review = record
+	if alpha_review.is_empty() or beta_review.is_empty():
+		return "review catalog records missing"
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"catalog_in", "value":[alpha_review.key]}]}))
+	var anchor := Button.new()
+	grid.add_child(anchor)
+	grid._show_columns_menu(anchor)
+	var scoped_projects: Dictionary = {}
+	for candidate_value in grid._column_candidates:
+		var candidate: Dictionary = candidate_value
+		scoped_projects[str(candidate.project)] = true
+	var r = A.is_true(scoped_projects.keys() == ["alpha"] and str(grid._column_candidates[0].label).contains("[alpha]"), "known type scope limits column candidates and disambiguates project labels")
+	if r is String:
+		return r
+	var selected_alpha: Dictionary = grid._column_candidates[0]
+	grid._toggle_result_column(0)
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"catalog_in", "value":[beta_review.key]}]}))
+	grid._show_columns_menu(anchor)
+	var retained := false
+	for candidate_value in grid._column_candidates:
+		var candidate: Dictionary = candidate_value
+		if candidate.project == selected_alpha.project and candidate.type_id == selected_alpha.type_id and candidate.field_key == selected_alpha.field_key:
+			retained = true
+			break
+	r = A.is_true(retained, "selected typed columns remain available when the current query scope changes")
+	if r is String:
+		return r
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"catalog_in", "value":[alpha_review.key]}, {"field":"title", "op":"contains", "value":"open branch", "conj":"or"}]}))
+	grid._show_columns_menu(anchor)
+	var unconstrained_projects: Dictionary = {}
+	for candidate_value in grid._column_candidates:
+		var candidate: Dictionary = candidate_value
+		unconstrained_projects[str(candidate.project)] = true
+	return A.is_true(unconstrained_projects.has("alpha") and unconstrained_projects.has("beta"), "an unconstrained OR branch expands the column menu to every possible type scope")
 
 func test_dcq_string_columns_round_trip_in_explicit_order() -> Variant:
 	var state := _state("fields")

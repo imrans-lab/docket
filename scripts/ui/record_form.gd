@@ -1615,14 +1615,7 @@ func _populate_children() -> void:
 	if not _current_project.is_empty():
 		qualified_id = "%s:%s" % [_current_project, _current_id]
 
-	# Search across ALL loaded projects for children
-	var children: Array
-	if _state._project_dbs.size() > 1:
-		children = _state.find_children_across_projects(qualified_id)
-	elif _state.db:
-		children = _state.db.execute_query({"filter": {"parent": _current_id}})
-	else:
-		children = []
+	var children: Array = _state.find_children_across_projects(qualified_id)
 
 	var toggle_prefix := "v" if _children_container.visible else ">"
 	if children.size() > 0:

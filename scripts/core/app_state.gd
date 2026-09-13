@@ -294,17 +294,17 @@ func remove_project(project_name: String) -> Dictionary:
 
 func find_children_across_projects(qualified_id: String) -> Array:
 	## Search ALL loaded projects for items whose parent matches the given qualified ref.
-	## Also matches bare ID form for backwards compatibility.
+	## Bare legacy parent IDs belong only to the project that owns the parent.
 	var parsed := DocketDB.parse_qualified_ref(qualified_id)
 	var bare_id: String = parsed.id
+	var owner_project: String = str(parsed.get("project", ""))
 	var results: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		# Match qualified form (project:ID) and bare ID
-		var rows := pdb.execute_query({"filter": {"$or": [
-			{"field": "parent", "op": "eq", "value": qualified_id},
-			{"field": "parent", "op": "eq", "value": bare_id},
-		]}})
+		var parent_filters: Array = [{"field":"parent", "op":"eq", "value":qualified_id}]
+		if owner_project.is_empty() or str(proj_name) == owner_project:
+			parent_filters.append({"field":"parent", "op":"eq", "value":bare_id})
+		var rows: Array = pdb.execute_query({"filter":{"$or":parent_filters}})
 		for item in rows:
 			item["project"] = proj_name
 		results.append_array(rows)
