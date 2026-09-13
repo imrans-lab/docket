@@ -142,7 +142,7 @@ func _rebuild_type_catalog() -> void:
 		var project_db = _state.get_db_for_project(project)
 		if project_db != null:
 			for item in project_db.execute_query({"filter": {}}):
-				var slug := str(item.get("type", ""))
+				var slug: String = str(item.get("type", ""))
 				counts[slug] = int(counts.get(slug, 0)) + 1
 		var registry: TypeRegistry = _state.get_type_registry(project)
 		var catalog_result: Dictionary = TypeCatalog.from_registry_checked(registry, counts) if registry != null else {"records":[],"error":"type registry is unavailable"}
@@ -340,7 +340,7 @@ func _draw_header() -> void:
 
 		# Title text
 		var title: String = _col_titles[i]
-		var header_field := str(_col_fields[i].get("field_key", "")) if _col_fields[i] is Dictionary else str(_col_fields[i])
+		var header_field: String = str(_col_fields[i].get("field_key", "")) if _col_fields[i] is Dictionary else str(_col_fields[i])
 		var header_binding: Dictionary = _col_fields[i] if _col_fields[i] is Dictionary else {}
 		if header_field == _sort_field and (header_binding.is_empty() or _same_binding(header_binding, _sort_binding)):
 			title += "  v" if _sort_dir == "asc" else "  ^"
@@ -427,7 +427,7 @@ func _hit_column(mx: float) -> int:
 
 func _toggle_sort(col: int) -> void:
 	var column: Variant = _col_fields[col]
-	var field := str(column.get("field_key", "")) if column is Dictionary else str(column)
+	var field: String = str(column.get("field_key", "")) if column is Dictionary else str(column)
 	var binding: Dictionary = column if column is Dictionary else {}
 	if _sort_field == field and (binding.is_empty() or _same_binding(binding, _sort_binding)):
 		if _sort_dir == "asc":
@@ -1016,7 +1016,7 @@ func _populate_tree() -> void:
 		var item_status: String = str(item.get("status", ""))
 		for col_idx in range(_col_fields.size()):
 			var column: Variant = _col_fields[col_idx]
-			var field := str(column.get("field_key", "")) if column is Dictionary else str(column)
+			var field: String = str(column.get("field_key", "")) if column is Dictionary else str(column)
 			if field == "priority":
 				var pri = item.get("priority", 0)
 				row.set_text(col_idx, str(int(pri)) if pri else "")
@@ -1093,7 +1093,7 @@ func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
 	return str(fields[binding.field_key])
 
 func _item_project(item: Dictionary) -> String:
-	var project := str(item.get("project", ""))
+	var project: String = str(item.get("project", ""))
 	if project.is_empty() and _state.get_project_dbs().size() == 1:
 		project = str(_state.get_project_dbs().keys()[0])
 	return project
@@ -1175,7 +1175,7 @@ func _on_context_menu_id_pressed(id: int) -> void:
 		var selected := _tree.get_selected()
 		if selected:
 			var origin: Dictionary = selected.get_metadata(0)
-			var full_id := str(origin.get("id", ""))
+			var full_id: String = str(origin.get("id", ""))
 			_last_context_copy_id = full_id
 			DisplayServer.clipboard_set(full_id)
 

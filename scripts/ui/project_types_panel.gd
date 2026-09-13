@@ -256,7 +256,7 @@ func _refresh_list() -> void:
 		var haystack := "%s %s %s %s" % [type.label, type.slug, type.description, type.use_when]
 		if not needle.is_empty() and not haystack.to_lower().contains(needle):
 			continue
-		var text := "%s  [%s]  — %d items" % [type.label, type.lifecycle, int(counts.get(type.slug, 0))]
+		var text: String = "%s  [%s]  — %d items" % [type.label, type.lifecycle, int(counts.get(type.slug, 0))]
 		_types.add_item(text)
 		_types.set_item_metadata(_types.item_count - 1, type.slug)
 		shown += 1

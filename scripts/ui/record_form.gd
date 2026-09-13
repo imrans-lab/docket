@@ -1422,8 +1422,8 @@ func _save_changes() -> Variant:
 		_id_label.text = "Save refused: item no longer exists in %s." % _current_project
 		return
 	var old_status: String = str(item.get("status", ""))
-	var type_name := str(item.get("type", ""))
-	var protected := type_name in ["secret", "encrypted_note"]
+	var type_name: String = str(item.get("type", ""))
+	var protected: bool = type_name in ["secret", "encrypted_note"]
 	var prepared_payload: Dictionary = {"operations":[]}
 	if protected:
 		prepared_payload = await _prepare_protected_payload(item_db, _current_id, type_name)
@@ -1441,7 +1441,7 @@ func _save_changes() -> Variant:
 		if resolved.has("error"):
 			_id_label.text = "Save refused: %s" % resolved.error
 			return
-		var normal := resolved.definition.lifecycle.transitions.get(old_status, []).has(new_status)
+		var normal: bool = resolved.definition.lifecycle.transitions.get(old_status, []).has(new_status)
 		if normal or resolved.definition.lifecycle.enforcement != "guided":
 			await _do_status_transition(new_status, "", changes)
 		else:
@@ -1508,9 +1508,9 @@ func _save_draft() -> Variant:
 		return str(fields.error)
 	fields.type = type_name
 	var type_record: Dictionary = registry.get_type(type_name)
-	var definition_protected := not type_record.has("error") and bool(type_record.definition.get("protected", false))
-	var protected_payload := type_name in ["secret", "encrypted_note"]
-	var regular_allowed := bool(type_record.get("definition", {}).get("protected_behavior", {}).get("regular_creation_allowed", true))
+	var definition_protected: bool = not type_record.has("error") and bool(type_record.definition.get("protected", false))
+	var protected_payload: bool = type_name in ["secret", "encrypted_note"]
+	var regular_allowed: bool = bool(type_record.get("definition", {}).get("protected_behavior", {}).get("regular_creation_allowed", true))
 	var prepared_payload: Dictionary = {"operations":[]}
 	if protected_payload:
 		prepared_payload = await _prepare_protected_payload(target_db, "", type_name)
@@ -1873,8 +1873,8 @@ func _do_status_transition(target: String, note: String, changes: Dictionary = {
 		return false
 	var registry := _state.get_type_registry(_current_project)
 	var item: Dictionary = trans_db.get_item(_current_id)
-	var type_name := str(item.get("type", ""))
-	var protected := type_name in ["secret", "encrypted_note"]
+	var type_name: String = str(item.get("type", ""))
+	var protected: bool = type_name in ["secret", "encrypted_note"]
 	var prepared_payload: Dictionary = {"operations":[]}
 	if protected:
 		prepared_payload = await _prepare_protected_payload(trans_db, _current_id, type_name)

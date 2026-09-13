@@ -59,7 +59,7 @@ func _add_descriptor(descriptor: Dictionary, present: bool, value: Variant, exis
 
 func _descriptor_help(descriptor: Dictionary) -> String:
 	var parts: Array[String] = []
-	var help := str(descriptor.get("help", descriptor.get("description", "")))
+	var help: String = str(descriptor.get("help", descriptor.get("description", "")))
 	if not help.is_empty():
 		parts.append(help)
 	parts.append("Type: %s" % descriptor.type)
@@ -142,7 +142,7 @@ func _read_value(editor: Control, descriptor: Dictionary) -> Dictionary:
 		return {"value":editor.button_pressed}
 	if editor is OptionButton:
 		return {"value":editor.get_item_text(editor.selected)}
-	var text := str(editor.get("text"))
+	var text: String = str(editor.get("text"))
 	if kind == "integer":
 		if not text.is_valid_int():
 			return {"error":"expected integer"}

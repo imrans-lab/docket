@@ -800,7 +800,7 @@ func _filter_new_item_catalog() -> void:
 func _on_new_item_confirmed() -> void:
 	if _new_item_list.get_selected_items().is_empty() or _new_item_project.item_count == 0:
 		return
-	var index := _new_item_list.get_selected_items()[0]
+	var index: int = _new_item_list.get_selected_items()[0]
 	var selection: Dictionary = _new_item_list.get_item_metadata(index)
 	_create_and_edit_item(str(selection.slug), str(selection.project), false, str(selection.type_id))
 
@@ -818,7 +818,7 @@ func _create_and_edit_item(type_name: String, project: String = "", protected_pa
 		return
 	if not expected_type_id.is_empty() and str(type.id) != expected_type_id:
 		return
-	var regular_creation_allowed := bool(type.definition.get("protected_behavior", {}).get("regular_creation_allowed", true))
+	var regular_creation_allowed: bool = bool(type.definition.get("protected_behavior", {}).get("regular_creation_allowed", true))
 	if not regular_creation_allowed and not protected_path:
 		return
 	var item := {"type":type_name, "status":type.definition.lifecycle.initial_state, "title":"", "fields":{}}
@@ -917,7 +917,7 @@ func _on_open_query_selected(path: String) -> void:
 	if not parsed is Dictionary:
 		return
 	var label: String = str(parsed.get("name", path.get_file().get_basename()))
-	var filter_json := JSON.stringify(parsed.get("filter", {}))
+	var filter_json: String = JSON.stringify(parsed.get("filter", {}))
 	var idx := _add_work_entry("query", label, filter_json, "")
 	_activate_work_entry(idx)
 
