@@ -40,7 +40,7 @@ legacy cache is outside the supported upgrade workflow.
 | B: Storage | `8fe623a` | Terra cleared | Storage 45/45, freshness 14/14; broader failures resolved; old-reader checks pass |
 | C: Registry and validation | `59b3e1c` | Terra cleared | Registry 27/27 and 174 related regressions pass |
 | D: MCP and queries | `c9ef61c` | Terra cleared | 263 targeted and related tests pass |
-| E: GUI and integration | Pending | Pending | Not run |
+| E: GUI and integration | In progress | Pending | Not run |
 
 Specific revisions, findings and command results are recorded here and in the
 corresponding Docket review/verification tasks as each gate is completed.
@@ -277,3 +277,41 @@ occur. No live file was upgraded.
 
 Evidence: `d-import-3.log`, `d-test_*-3.log`, and `d-test_*-final.log` in
 `/tmp/docket-dynamic-verification/logs/`. All D findings and gates are complete.
+
+### E: implementation in progress
+
+Baseline: `40872273a04bcce73da2cd270de6afb3ae72806b`.
+Sol is implementing Project Types, generated forms, registry-aware creation and
+query presentation, explicit legacy upgrade controls, and integration guidance.
+Complete saves must remain atomic, preserve unsaved edits on stale conflicts,
+and retain the originating project for item operations. Terra reviews the whole
+batch before the coordinator runs the full suite and actual GUI acceptance.
+
+E1 artifacts are checkpointed at `358152f`, with Project Types management and
+explicit SQLite promotion / JSONL v2 upgrade controls. E2 form and interface
+integration is underway; the combined E review remains pending.
+
+An isolated full-suite preflight on accepted D source `c9ef61c` completed 745
+tests, with 741 passing and four failures. E3 tracks missing creation audit
+events and built-in quality timestamps rejected during later transitions.
+Evidence: `pre-e-full.log`. This ran only reviewed D code; no E code has run.
+
+E3 documentation is checkpointed at `208fe80` and the prospective GUI/MCP
+walkthrough at `844c92c`. Terra began the combined E review with immutable E1
+`358152f` while independent E2/E3 source work continues. Required corrections
+cover project-aware row/navigation consumers, full definition fidelity,
+source-scoped upgrade acknowledgement, unsaved proposal navigation, literal
+diagnostic rendering, and explicit recovery state after post-write upgrade
+failures. These are tracked under E-R. Overall E review remains pending.
+
+Coordinator preflight also found that protected payload writes followed the
+metadata commit. E2 must use the existing checked nested transaction and prove
+rollback through a real storage failure after metadata staging. Ordinary built-in
+creation and saved string-column ordering also require explicit regressions.
+No E import, application run, or test execution has occurred.
+
+E3 core and documentation are statically cleared at `7d5cebe`. The complete
+GUI/application/test batch is frozen at `d3c5e62`, and all writers are stopped.
+Terra is reviewing the remaining GUI delta and confirming E1 corrections.
+Implementation artifacts are done; the overall E review and verification gates
+remain pending. No E code has been imported or executed.
