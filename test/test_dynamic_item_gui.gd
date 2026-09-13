@@ -61,13 +61,13 @@ func _set_dynamic_text(form: RecordForm, key: String, value: String) -> void:
 func test_dynamic_editor_preserves_value_modes_and_rejects_invalid_kinds() -> Variant:
 	var editor := DynamicFieldEditor.new()
 	add_child(editor)
-	editor.load_definition(_definition(), {"fields":{"revision":"abc", "source":"origin", "approved":false, "score":0.0, "labels":[], "metadata":{}, "unknown":{"keep":true}}}, true)
+	editor.load_definition(_definition(), {"fields":{"revision":"abc", "source":"origin", "approved":false, "attempts":3.0, "score":0.0, "labels":[], "metadata":{}, "unknown":{"keep":true}}}, true)
 	var immutable_mode: OptionButton = editor._rows.source.mode
 	var r = A.is_true(editor._rows.revision.editor is LineEdit and editor._rows.findings.editor is TextEdit and editor._rows.attempts.editor is LineEdit and editor._rows.score.editor is LineEdit and editor._rows.approved.editor is CheckBox and editor._rows.decision.editor is OptionButton and editor._rows.due_date.editor is LineEdit and editor._rows.reviewed_at.editor is LineEdit and editor._rows.subject.editor is LineEdit and editor._rows.related.editor is TextEdit and editor._rows.labels.editor is TextEdit and editor._rows.metadata.editor is TextEdit, "all supported descriptor kinds receive an ordinary typed or per-field JSON control")
 	if r is String:
 		return r
 	var patch := editor.collect_patch()
-	r = A.is_true(immutable_mode.disabled and patch.fields.approved == false and patch.fields.score == 0.0 and patch.fields.labels == [] and patch.fields.metadata == {}, "existing immutable fields are read-only while false, zero, and empty containers remain explicit values")
+	r = A.is_true(immutable_mode.disabled and patch.fields.approved == false and patch.fields.attempts == 3 and (editor._rows.attempts.editor as LineEdit).text == "3" and patch.fields.score == 0.0 and patch.fields.labels == [] and patch.fields.metadata == {}, "existing immutable fields are read-only while integral JSON numbers, false, zero, and empty containers remain valid explicit values")
 	if r is String:
 		return r
 	r = A.is_true(not patch.fields.has("unknown") and editor._rows.unknown.unknown, "unknown stored fields remain visible and read-only")
@@ -81,6 +81,10 @@ func test_dynamic_editor_preserves_value_modes_and_rejects_invalid_kinds() -> Va
 		return r
 	(editor._rows.score.editor as LineEdit).text = "not-a-number"
 	r = A.is_true(editor.collect_patch().has("error"), "invalid numeric control content reports a field error")
+	if r is String:
+		return r
+	editor.load_definition(_definition(), {"fields":{"revision":"abc", "source":"origin", "attempts":3.5}}, true)
+	r = A.is_true((editor._rows.attempts.editor as LineEdit).text == "3.5" and editor.collect_patch().has("error"), "fractional stored values remain visible and invalid for integer descriptors")
 	if r is String:
 		return r
 	editor.load_definition(_definition(), {})
@@ -159,7 +163,9 @@ func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Va
 	(approved_row.mode as OptionButton).select((approved_row.mode as OptionButton).get_item_index(0))
 	(approved_row.editor as CheckBox).button_pressed = false
 	var create_error = await form._save_changes()
-	if create_error is String and not str(create_error).is_empty():
+	if not create_error is String:
+		return "creation save returned no explicit result"
+	if not str(create_error).is_empty():
 		return create_error
 	var id := form._current_id
 	var created := state.db.get_item(id)
@@ -171,7 +177,9 @@ func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Va
 	form.load_item(id, "form")
 	form._title_edit.text = "Updated without loss"
 	var update_error = await form._save_changes()
-	if update_error is String and not str(update_error).is_empty():
+	if not update_error is String:
+		return "unrelated update save returned no explicit result"
+	if not str(update_error).is_empty():
 		return update_error
 	var path := state.dct_path
 	state.db.close()

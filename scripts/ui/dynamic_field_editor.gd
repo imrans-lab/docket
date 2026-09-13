@@ -105,7 +105,11 @@ func _set_value(editor: Control, descriptor: Dictionary, value: Variant) -> void
 	elif editor is TextEdit:
 		editor.text = JSON.stringify(value, "  ") if str(descriptor.type) in ["array", "object", "reference_list"] else str(value)
 	elif editor is LineEdit:
-		editor.text = str(value)
+		if str(descriptor.type) == "integer" and (value is int or value is float):
+			var numeric := float(value)
+			editor.text = str(int(numeric)) if is_equal_approx(numeric, round(numeric)) else str(value)
+		else:
+			editor.text = str(value)
 
 func _add_unknown(key: String, value: Variant) -> void:
 	var label := Label.new()

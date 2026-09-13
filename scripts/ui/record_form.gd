@@ -1408,19 +1408,19 @@ func _save_changes() -> Variant:
 	var item_db: DocketDB = _state.get_db_for_project(_current_project)
 	if _current_id.is_empty() or item_db == null:
 		_id_label.text = "Save refused: the originating project is closed."
-		return
+		return "the originating project is closed"
 	var registry := _state.get_type_registry(_current_project)
 	if registry == null:
 		_id_label.text = "Save refused: type registry unavailable."
-		return
+		return "type registry unavailable"
 	var refresh_error := registry.refresh_if_changed()
 	if not refresh_error.is_empty():
 		_id_label.text = "Save refused: %s" % refresh_error
-		return
+		return refresh_error
 	var item: Dictionary = item_db.get_item(_current_id)
 	if item.is_empty():
 		_id_label.text = "Save refused: item no longer exists in %s." % _current_project
-		return
+		return "item no longer exists in %s" % _current_project
 	var old_status: String = str(item.get("status", ""))
 	var type_name: String = str(item.get("type", ""))
 	var protected: bool = type_name in ["secret", "encrypted_note"]
@@ -1435,18 +1435,19 @@ func _save_changes() -> Variant:
 	var changes := _collect_changes()
 	if changes.has("error"):
 		_id_label.text = "Save refused: %s" % changes.error
-		return
+		return str(changes.error)
 	if new_status != old_status:
 		var resolved := registry.resolve_item(item)
 		if resolved.has("error"):
 			_id_label.text = "Save refused: %s" % resolved.error
-			return
+			return str(resolved.error)
 		var normal: bool = resolved.definition.lifecycle.transitions.get(old_status, []).has(new_status)
 		if normal or resolved.definition.lifecycle.enforcement != "guided":
-			await _do_status_transition(new_status, "", changes)
+			var transitioned: bool = await _do_status_transition(new_status, "", changes)
+			return "" if transitioned else "transition failed"
 		else:
 			_prompt_transition_note(new_status, changes)
-		return
+		return ""
 	var error := registry._begin_item_mutation() if protected else ""
 	if error.is_empty():
 		error = registry.update_item(_current_id, changes, "user", _loaded_revision, _loaded_item_token)
