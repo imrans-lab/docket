@@ -87,6 +87,10 @@ func test_dynamic_editor_preserves_value_modes_and_rejects_invalid_kinds() -> Va
 	r = A.is_true((editor._rows.attempts.editor as LineEdit).text == "3.5" and editor.collect_patch().has("error"), "fractional stored values remain visible and invalid for integer descriptors")
 	if r is String:
 		return r
+	editor.load_definition(_definition(), {"fields":{"revision":"abc", "source":"origin", "attempts":3.000001}}, true)
+	r = A.is_true((editor._rows.attempts.editor as LineEdit).text == "3.000001" and editor.collect_patch().has("error"), "near-integer fractional values are not rounded into valid integer edits")
+	if r is String:
+		return r
 	editor.load_definition(_definition(), {})
 	return A.is_false((editor._rows.source.mode as OptionButton).disabled, "required immutable fields remain editable during creation")
 

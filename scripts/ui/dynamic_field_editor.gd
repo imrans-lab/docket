@@ -107,7 +107,7 @@ func _set_value(editor: Control, descriptor: Dictionary, value: Variant) -> void
 	elif editor is LineEdit:
 		if str(descriptor.type) == "integer" and (value is int or value is float):
 			var numeric := float(value)
-			editor.text = str(int(numeric)) if is_equal_approx(numeric, round(numeric)) else str(value)
+			editor.text = str(int(numeric)) if is_finite(numeric) and numeric == floor(numeric) else str(value)
 		else:
 			editor.text = str(value)
 
