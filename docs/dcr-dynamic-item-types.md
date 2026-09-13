@@ -1,6 +1,6 @@
 # DCR: Project-local dynamic item types across storage, MCP, and GUI
 
-Status: Implementing — approved for autonomous execution on 2026-09-12.
+Status: Complete on the local `feature/dynamic-item-types` branch — approved and accepted on 2026-09-12 (America/Los_Angeles). No release published.
 
 Docket item: `01a096e77f2f778781b03d0aeb8384e3` (project `docket`).
 
@@ -396,7 +396,10 @@ proposals and failed canonical writes.
 
 ## Review basis
 
-This proposal is based on reading the full discussion and thought paper and
-tracing the current source and test coverage. No application code was changed,
-and the proposed implementation has not been exercised. The acceptance criteria
-above are requirements for implementation, not reported test results.
+The design began with the full discussion, thought paper and baseline source
+audit. Implementation is complete through reviewed snapshot `38062eb`, with
+788/788 tests passing and actual GUI/HTTP acceptance on disposable files.
+See the [implementation and verification record](implementation-dynamic-item-types.md)
+for batch reviews, corrections, compatibility evidence and remaining operational
+limits. Existing live files were not upgraded; Minerva compatibility remains a
+prerequisite for upgrading files shared with its independent writer.

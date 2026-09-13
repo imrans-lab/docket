@@ -16,6 +16,8 @@ Use `docket_type_list`, `docket_type_get`, `docket_type_validate`, `docket_type_
 
 Custom values use `fields`; `unset_fields` removes a value, while JSON null remains explicitly stored. Updates and transitions accept `expected_revision` for the pinned type revision and `expected_item_token` for full backend item content. Unknown `extras` remain visible and preserved but read-only through typed operations.
 
+The query type chooser supports search and alphabetical browsing, including active types with no items. Fields and statuses follow the selected type scope. The Columns menu offers fields from possible types across query branches, labels them by project when multiple projects are open, and preserves default columns when adding custom fields. Selected columns remain available when the filter changes.
+
 Typed queries bind `field_key` with `type_id`. Status and derived `state_category`, `state_outcome`, and `is_terminal` use pinned meaning. Saved queries and `.dcq` retain IDs, keys, states, columns, sort direction, and null ordering. A missing identity requires an explicit destination binding; labels and equal slugs never substitute automatically.
 
 ## Upgrade safely

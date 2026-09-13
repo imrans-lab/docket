@@ -40,7 +40,7 @@ legacy cache is outside the supported upgrade workflow.
 | B: Storage | `8fe623a` | Terra cleared | Storage 45/45, freshness 14/14; broader failures resolved; old-reader checks pass |
 | C: Registry and validation | `59b3e1c` | Terra cleared | Registry 27/27 and 174 related regressions pass |
 | D: MCP and queries | `c9ef61c` | Terra cleared | 263 targeted and related tests pass |
-| E: GUI and integration | `ff6d9ab`; final GUI delta under review | Terra cleared through `ff6d9ab` | 786/786 full-suite pass; final GUI corrections pending |
+| E: GUI and integration | `38062eb` | Terra cleared | 788/788 full-suite pass; GUI and HTTP acceptance complete |
 
 Specific revisions, findings and command results are recorded here and in the
 corresponding Docket review/verification tasks as each gate is completed.
@@ -344,3 +344,50 @@ qualified child navigation in single/multiple projects and preserving default
 columns while offering query-scoped custom columns. Final acceptance requires
 rerunning checks on the corrected source and completing the disposable upgrade
 and cache-rebuild walkthrough. No live file was upgraded.
+
+
+### E: accepted and DCR complete
+
+Final reviewed application/test snapshot:
+`38062ebd26cec1bf1a01ba1062d7a9b4dc46c280`.
+Terra cleared the hierarchy/column correction and a captured-Dictionary test
+fix before execution. Godot 4.7.1 imports are clean in both the main and isolated
+GUI checkouts. The final full suite passes **788/788**, with no script exceptions.
+The deliberate nested async-failure fixture and injected negative-case errors
+are expected. Headless UI fixture cleanup warnings remain a diagnostic limitation.
+Evidence: `e-import-5.log`, `e-isolated-import-2.log`, and `e-full-4.log`.
+
+Final hands-on checks on the reviewed isolated checkout confirm:
+
+- Deleting the disposable v2 cache and reopening leaves every canonical byte
+  unchanged (SHA-256 `f13e6697a75ebce0cd6415ec6ff07b423f6abfa8cd3dbb87ff08730342e33b15`).
+  HTTP reads confirm distinct current/historical pins, the newly added URL,
+  qualified parent reference and Unicode comment. Canonical attachment bytes
+  match exactly, as do all captured records and audit events.
+- The qualified child appears in the real form and double-click opens the
+  correct historical item. Cross-project bare-ID isolation and navigation
+  origin are also covered by the final regression suite.
+- With two projects loaded and Code Review selected, Columns offers only that
+  type's fields and derived values with project labels. Adding Review URL
+  preserves ID, Project, Type, Status, Priority and Title, and shows the stored
+  URL; the historical item remains blank for the field it never acquired.
+- Opening and previewing a copied legacy fixture leaves its bytes unchanged.
+  Explicit GUI acknowledgement and Apply create format 2.0, an exact `.pre-v2.bak`
+  and the new cache. Original item values, events, comment, attachment, saved
+  query and opaque vault metadata are preserved. The upgraded project and the
+  other open project remain accessible through HTTP MCP.
+
+Screenshots under `/tmp/docket-dynamic-verification/logs/` include
+`e-evolution-preview.png`, `e-evolved-form.png`, `e-children-final.png`,
+`e-child-navigation-final.png`, `e-columns-scoped-final.png`,
+`e-columns-preserved-final.png`, `e-legacy-preview-final.png` and
+`e-legacy-upgraded-final.png`. Disposable data and captured HTTP responses are
+under `/tmp/docket-dynamic-verification/e-acceptance/`.
+
+All five implementation, independent review and coordinator verification batches
+are complete. Docket findings and gates are closed with this evidence. Delivery
+is the local `feature/dynamic-item-types` branch; no release or push was performed,
+no live file was upgraded, and no other repository's source was changed. Minerva
+remains incompatible with format 2.0; leave shared files at 1.0 until its writer
+is compatible. The user-approved role split and decision rubric were retained
+throughout implementation and correction reviews.

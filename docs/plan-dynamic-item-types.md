@@ -9,9 +9,9 @@ Five batches cover twelve implementation tasks, five independent review gates an
 
 ## Assignment and execution policy
 
-The main Codex thread coordinates all batches, resolves cross-cutting design questions, owns review/test gates, and reports to the user. Implementation and test authoring: gpt-5.6-sol. Independent code review: gpt-5.6-terra. These are user-selected role assignments, not runtime routing enforced by Docket. The coordinator must explicitly spawn the assigned model when execution is later requested. No implementation task needs a planned switch to Terra.
+The main Codex thread coordinates all batches, resolves cross-cutting design questions, owns review/test gates, and reports to the user. Implementation and test authoring: gpt-5.6-sol. Independent code review: gpt-5.6-terra. These are user-selected role assignments, not runtime routing enforced by Docket. The coordinator must explicitly spawn the assigned model for each implementation/review assignment. No implementation task needs a planned switch to Terra.
 
-The user approved this plan and autonomous implementation on 2026-09-12. Work is in progress. Implementation and post-review verification are authorized; live-file upgrades and publishing remain outside this implementation run. The approval supersedes the planning-time approval placeholders in task descriptions.
+The user approved this plan and autonomous implementation on 2026-09-12. All five batches are complete; the final reviewed source passes 788/788 tests and GUI/HTTP acceptance. See the [verification record](implementation-dynamic-item-types.md). Implementation and post-review verification are authorized; live-file upgrades and publishing remain outside this implementation run. The approval supersedes the planning-time approval placeholders in task descriptions.
 
 ## Decision rubric
 
@@ -44,11 +44,11 @@ Prefer bounded task packets and reuse the batch reviewer for follow-up. Keep mod
 
 ## DCR tree
 
-All listed work items are direct children of this plan; batch letters group related tasks without introducing additional task types.
+All listed work items are done and are direct children of this plan; batch letters group related tasks without introducing additional task types.
 
 ```text
-DCR 01a096e77f2f778781b03d0aeb8384e3 — Dynamic item types [implementing]
-└── Plan 01a096fa277f7683bc6d1fd8a18e3053 — Query UX and dynamic types [in progress]
+DCR 01a096e77f2f778781b03d0aeb8384e3 — Dynamic item types [complete locally; no release published]
+└── Plan 01a096fa277f7683bc6d1fd8a18e3053 — Query UX and dynamic types [done]
     ├── A1: Build searchable alphabetical type chooser [gpt-5.6-sol]
     ├── A2: Scope query fields and statuses to selected types [gpt-5.6-sol]
     ├── A-R: Review — Query-builder usability [gpt-5.6-terra]
