@@ -322,7 +322,10 @@ func test_children_use_qualified_origin_and_isolate_bare_refs_by_project() -> Va
 		var origin: Dictionary = form._children_list.get_item_metadata(i)
 		origins["%s:%s" % [origin.project, origin.id]] = true
 	var navigated: Dictionary = {}
-	form.child_opened.connect(func(id: String, project: String): navigated = {"id":id, "project":project})
+	form.child_opened.connect(func(id: String, project: String):
+		navigated["id"] = id
+		navigated["project"] = project
+	)
 	form._on_child_activated(0)
 	return A.is_true(form._children_list.item_count == 2 and origins.has("alpha:%s" % alpha_child.id) and origins.has("beta:%s" % beta_qualified.id) and not origins.has("beta:%s" % beta_bare.id) and not navigated.is_empty() and origins.has("%s:%s" % [navigated.project, navigated.id]), "multi-project qualified children resolve across projects while bare references stay in the parent owning project and navigation retains origin")
 
