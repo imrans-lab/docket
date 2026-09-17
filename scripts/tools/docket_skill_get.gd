@@ -78,6 +78,10 @@ func _format_skill(item: Dictionary) -> Dictionary:
 	# Include all non-empty skill fields
 	for field in ["description", "steps", "preconditions", "outcome",
 				   "component", "topic", "tags", "quality", "tool_deps",
+				   # The long-form instruction body. A caller that composes
+				   # agent instructions from this response falls back to steps
+				   # alone when it is missing.
+				   "prompt_text",
 				   # Plugin-shipped skills metadata (Minerva DCR 019df57b).
 				   # source: plugin badge; deprecated: hide rule;
 				   # unsatisfied_deps: picker hides when non-empty (T5).
