@@ -103,6 +103,18 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	changes.erase("expected_revision")
 	var expected_item_token: String = str(changes.get("expected_item_token", ""))
 	changes.erase("expected_item_token")
+	var update_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
+	# Compare against current disk state, not the cache as it stands. Another
+	# writer may already hold the value this call is sending, and until the cache
+	# is reloaded the item still reads as the older one — filtering against that
+	# would discard a real write and report it as "unchanged". This is the same
+	# reload update_item performs before it validates, pulled ahead of the
+	# comparison so both see the same item; running it twice is a no-op once the
+	# source and the cache agree.
+	var refresh_error: String = update_registry.refresh_if_changed()
+	if not refresh_error.is_empty():
+		return {"error":refresh_error}
+
 	changes = _without_no_ops(changes, db.get_item(id))
 	# A write that changes nothing still appends an update event, so a caller
 	# that re-applies the same values on a loop (a reconcile pass, a scheduler)
@@ -111,7 +123,6 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	# the early return only applies when the caller asked for none.
 	if changes.is_empty() and expected_revision.is_empty() and expected_item_token.is_empty():
 		return {"id":id,"status":"unchanged"}
-	var update_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
 	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token)
 	return {"error":typed_error} if not typed_error.is_empty() else {"id":id,"status":"updated","type_revision":db.get_item(id).get("type_revision", ""),"item_token":update_registry.item_token(id)}
 
