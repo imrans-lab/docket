@@ -1669,10 +1669,20 @@ func _build_item_dict(row: Dictionary) -> Dictionary:
 	else:
 		item["tool_deps"] = []
 
+	# JSON.parse_string returns every number as a float, so a count written as 4
+	# reads back as 4.0 and serializes back to the file that way. Coerce the keys
+	# that are counts so the stored form is stable across a read/write cycle and
+	# consumers do not each have to int()-cast at the point of use.
 	var optimization_raw = row.get("optimization")
 	if optimization_raw != null and not str(optimization_raw).is_empty():
 		var parsed_optimization = JSON.parse_string(str(optimization_raw))
-		item["optimization"] = parsed_optimization if parsed_optimization is Dictionary else {}
+		if parsed_optimization is Dictionary:
+			for count_key in ["context_window", "tool_budget", "tool_idle_turns", "max_tool_call_rounds"]:
+				if parsed_optimization.has(count_key):
+					parsed_optimization[count_key] = int(parsed_optimization[count_key])
+			item["optimization"] = parsed_optimization
+		else:
+			item["optimization"] = {}
 	else:
 		item["optimization"] = {}
 
