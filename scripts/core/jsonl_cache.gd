@@ -242,6 +242,14 @@ static func _insert_events(db: DocketDB, events: Array) -> void:
 	for r in rows:
 		valid_ids[str(r.get("id", ""))] = true
 
+	# Drop byte-identical repeats. A writer that re-applies an unchanged update
+	# appends an event each time, so a file can carry the same
+	# item/type/actor/timestamp/note line millions of times. Such a line adds no
+	# audit information, and loading every copy is what makes an affected file
+	# slow to open. The first occurrence is kept, so ordering is unaffected.
+	var seen := {}
+	var dropped := 0
+
 	for ev in events:
 		var item_id: String = str(ev.get("item_id", ""))
 		var event_type: String = str(ev.get("event_type", ""))
@@ -254,10 +262,17 @@ static func _insert_events(db: DocketDB, events: Array) -> void:
 		if not valid_ids.has(item_id):
 			db._last_sql_error = "invalid canonical record: orphaned event for missing item %s" % item_id
 			continue
+		var key := "%s\n%s\n%s\n%s\n%s" % [item_id, event_type, actor, timestamp, note]
+		if seen.has(key):
+			dropped += 1
+			continue
+		seen[key] = true
 		db._exec(
 			"INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 			[item_id, event_type, actor, timestamp, note]
 		)
+	if dropped > 0:
+		push_warning("JSONLCache: dropped %d duplicate event line(s); the next write compacts them out" % dropped)
 
 
 # -- Comments -----------------------------------------------------------------
