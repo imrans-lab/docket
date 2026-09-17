@@ -103,6 +103,42 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	changes.erase("expected_revision")
 	var expected_item_token: String = str(changes.get("expected_item_token", ""))
 	changes.erase("expected_item_token")
+	changes = _without_no_ops(changes, db.get_item(id))
+	# A write that changes nothing still appends an update event, so a caller
+	# that re-applies the same values on a loop (a reconcile pass, a scheduler)
+	# grows the file by one event per call forever. Nothing left to apply means
+	# there is nothing to record either. Staleness checks still have to run, so
+	# the early return only applies when the caller asked for none.
+	if changes.is_empty() and expected_revision.is_empty() and expected_item_token.is_empty():
+		return {"id":id,"status":"unchanged"}
 	var update_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
 	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token)
 	return {"error":typed_error} if not typed_error.is_empty() else {"id":id,"status":"updated","type_revision":db.get_item(id).get("type_revision", ""),"item_token":update_registry.item_token(id)}
+
+
+static func _without_no_ops(changes: Dictionary, item: Dictionary) -> Dictionary:
+	## Drop the entries whose value the item already holds. Unset requests are
+	## left alone: absence is not a value this can compare against.
+	var effective: Dictionary = {}
+	var stored_fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+	for key in changes:
+		if key in ["unset_fields", "unset_extras"]:
+			effective[key] = changes[key]
+		elif key == "fields" and changes[key] is Dictionary:
+			var effective_fields: Dictionary = {}
+			for field_key in changes[key]:
+				if not _values_equal(changes[key][field_key], stored_fields.get(field_key)):
+					effective_fields[field_key] = changes[key][field_key]
+			if not effective_fields.is_empty():
+				effective[key] = effective_fields
+		elif not _values_equal(changes[key], item.get(key)):
+			effective[key] = changes[key]
+	return effective
+
+
+static func _values_equal(a, b) -> bool:
+	## JSON-shaped equality. MCP arguments arrive parsed, so a count the caller
+	## sent as 4 reaches here as 4.0 and has to compare equal to a stored 4.
+	if (a is int or a is float) and (b is int or b is float):
+		return is_equal_approx(float(a), float(b))
+	return JSON.stringify(a) == JSON.stringify(b)
