@@ -89,9 +89,11 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: x86_64
+            rust_targets: x86_64-unknown-linux-gnu
           - os: macos-latest
             platform: macos
             arch: arm64
+            rust_targets: x86_64-apple-darwin,aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v7
@@ -118,9 +120,18 @@ jobs:
       - name: Build GDExtension from source
         run: ./scripts/build/build_gdextension.sh ${{ matrix.platform }} ${{ matrix.arch }} all
 
-      # Docket's own Rust extension, with the runner's stable Rust toolchain;
-      # Cargo.lock pins every dependency (--locked).
+      # The exact Rust named in rust-toolchain.toml, with the targets
+      # native/build.sh builds on this runner.
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel = "\(.*\)"$/\1/p')"
+          [ -n "$RUST" ] || { echo "rust-toolchain.toml names no channel"; exit 1; }
+          rustup toolchain install "$RUST" --profile minimal --target "${{ matrix.rust_targets }}"
+
       - name: Build Rust extension from source
+        shell: bash
         run: ./native/build.sh
 
       # Secret scan, machine-path leakage, FCIB, version skew, dead links.

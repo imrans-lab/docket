@@ -24,7 +24,7 @@ signing, code you never built and cannot audit.
 - **SCons** — `pipx install scons` (or `pip install scons`)
 - **A C++ toolchain** — Xcode CLT on macOS, gcc/clang on Linux, MSVC on Windows
 - **Python 3** — required by SCons
-- **Rust 1.89+** — for `native/docket_native` (`rustup` or your platform's package)
+- **Rust 1.93.0 via rustup** — exactly the version in `rust-toolchain.toml`, for `native/docket_native`
 
 ## First build
 
@@ -76,16 +76,28 @@ that look like unrelated SQLite bugs.
 
 `native/docket_native` is Docket's own native extension, written in Rust with
 [godot-rust](https://godot-rust.github.io). It provides `DocketCoordLock`, the
-cross-process lock Docket processes on one machine coordinate through. It needs
-a Rust toolchain (1.89 or newer; `rustup` is the usual source):
+cross-process lock Docket processes of one OS account coordinate through. It
+builds with the exact Rust named in `rust-toolchain.toml`, installed with
+[rustup](https://rustup.rs), plus the target for your machine (both Apple
+targets on macOS, where the library is universal):
 
 ```bash
+rustup toolchain install 1.93.0 --profile minimal \
+    --target x86_64-apple-darwin,aarch64-apple-darwin   # macOS; else your own target
 native/build.sh            # debug and release, for this machine
 ```
 
-Output lands in `addons/docket_native/bin/`, which is gitignored. Dependencies
-are pinned exactly in `Cargo.toml`, and `Cargo.lock` is committed; the script
-builds with `--locked`, so a build never picks up versions nobody reviewed.
+Output lands in `addons/docket_native/bin/`, which is gitignored. The script
+stops if another compiler is active. Dependencies are pinned exactly in
+`Cargo.toml`, and `Cargo.lock` is committed; the script builds with
+`--locked`, so a build never picks up versions nobody reviewed. CI and the
+release workflow build it the same way, and a release fails if the exported
+app does not contain it.
+
+The extension is built against Godot's 4.5 API (godot-rust 0.4). Later Godot
+versions are meant to load such a library, so one build should serve the
+Docket app on 4.7 and hosts on 4.6; that is not yet confirmed by a load check
+on each. The API floor is only the extension's; Docket itself still needs 4.7.
 
 ## Running
 

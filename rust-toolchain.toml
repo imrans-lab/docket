@@ -1,0 +1,5 @@
+# The exact compiler native/ builds with, on every machine and in CI. Install
+# it with `rustup toolchain install` (see docs/BUILDING.md).
+[toolchain]
+channel = "1.93.0"
+profile = "minimal"

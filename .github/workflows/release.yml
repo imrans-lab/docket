@@ -28,16 +28,19 @@ jobs:
             platform: macos
             arch: universal
             preset: macOS
+            rust_targets: x86_64-apple-darwin,aarch64-apple-darwin
           - name: Linux (x86_64)
             os: ubuntu-latest
             platform: linux
             arch: x86_64
             preset: Linux
+            rust_targets: x86_64-unknown-linux-gnu
           - name: Windows (x86_64)
             os: windows-latest
             platform: windows
             arch: x86_64
             preset: Windows
+            rust_targets: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v7
@@ -63,6 +66,20 @@ jobs:
       - name: Build GDExtension from source
         shell: bash
         run: ./scripts/build/build_gdextension.sh ${{ matrix.platform }} ${{ matrix.arch }} all
+
+      # The exact Rust named in rust-toolchain.toml, with the targets
+      # native/build.sh builds on this runner.
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel = "\(.*\)"$/\1/p')"
+          [ -n "$RUST" ] || { echo "rust-toolchain.toml names no channel"; exit 1; }
+          rustup toolchain install "$RUST" --profile minimal --target "${{ matrix.rust_targets }}"
+
+      - name: Build Rust extension from source
+        shell: bash
+        run: ./native/build.sh
 
       - name: Preflight checks
         shell: bash
@@ -126,6 +143,19 @@ jobs:
           # it non-interactive. The preset name must match export_presets.cfg.
           "$GODOT_BIN" --headless --path . --export-release "${{ matrix.preset }}" 2>&1 | tail -30
 
+      # A GDExtension library missing at export time is only logged, so check
+      # that the app really contains Docket's native library.
+      - name: Check the native extension was exported
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform }}" in
+            macos)   LIB="build/macos/Docket.app/Contents/Frameworks/docket_native.macos.template_release.universal.dylib" ;;
+            linux)   LIB="build/linux/docket_native.linux.template_release.x86_64.so" ;;
+            windows) LIB="build/windows/docket_native.windows.template_release.x86_64.dll" ;;
+          esac
+          test -s "$LIB" || { echo "the export has no native library at $LIB"; exit 1; }
+
       # macOS: Godot invokes Apple's native codesign tool with an empty identity,
       # which selects ad-hoc signing (codesign/codesign=3). Godot's built-in
       # signer produces an invalid outer resource seal for the nested SQLite
@@ -184,6 +214,10 @@ jobs:
             echo "vendored at $(git -C third_party/godot-sqlite/godot-cpp rev-parse HEAD)"
             echo "================================================================"
             cat third_party/godot-sqlite/godot-cpp/LICENSE.md
+            echo
+            # Windows runners name it python, not python3.
+            PYTHON="$(command -v python3 || command -v python)"
+            "$PYTHON" native/third_party_licenses.py "${{ matrix.rust_targets }}"
           } > "$OUT"
           echo "wrote $OUT ($(wc -l < "$OUT") lines)"
 
