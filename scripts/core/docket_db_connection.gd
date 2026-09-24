@@ -35,7 +35,9 @@ signal items_changed(changes: Array)
 # prechecks (_writing), and passes that step to every write it makes
 # (_write, _write_checked, _write_rows, _begin_transaction). A write without
 # a live step, from another thread, or into a transaction another operation
-# owns is refused and executes nothing. A failed or refused write inside a
+# owns is refused and executes nothing. The step is checked by the native
+# extension (a live operation of this process's coordination domain), never
+# by asking the object itself. A failed or refused write inside a
 # transaction is that transaction's failure, unless it came from another
 # operation; outside one it is kept in _last_sql_error.
 
@@ -59,30 +61,44 @@ func _writing_text(parent: RefCounted, work: Callable) -> String:
 	return result if result is String else _last_sql_error
 
 
-static func _live(operation: RefCounted) -> bool:
-	return operation != null and operation.is_open()
+var _guard := CoordGuard.new()
 
 
-# "" when `step` may write now, or why not.
-func _write_refusal(step: RefCounted, sql: String) -> String:
-	var refusal := _thread_refusal()
-	if not refusal.is_empty(): return refusal
-	if not _live(step):
-		refusal = "a write to %s was attempted outside a coordination operation" % _path
-	elif _txn_depth > 0 and not _txn_owner.same_operation(step):
-		refusal = "a write to %s was attempted into another operation's change" % _path
-	if refusal.is_empty(): return ""
-	push_error("DocketDB: %s — %s" % [refusal, sql.left(120)])
+# {step} for a new step of `step`, which the native extension has checked to
+# be a live operation of this process's coordination domain, or {error}.
+# The caller closes the step it gets.
+func _joined(step: RefCounted) -> Dictionary:
+	if step == null:
+		return {"error": "a write to %s was attempted outside a coordination operation" % _path}
+	var joined := _guard.open_within(step, CoordGuard.SHARED)
+	if joined.has("error"):
+		return {"error": "a write to %s was attempted outside a coordination operation: %s" % [_path, joined.error]}
+	return {"step": joined.operation}
+
+
+# From the owning thread: {} when `step` may write now, else {error, foreign},
+# `foreign` when it is a genuine step of an operation other than the one
+# owning the open transaction (its failure is its own, not the transaction's).
+func _write_admission(step: RefCounted, sql: String) -> Dictionary:
+	var joined := _joined(step)
+	var refusal := {}
+	if joined.has("error"):
+		refusal = {"error": joined.error, "foreign": false}
+	else:
+		joined.step.close()
+		if _txn_depth > 0 and not _txn_owner.same_operation(step):
+			refusal = {"error": "a write to %s was attempted into another operation's change" % _path, "foreign": true}
+	if not refusal.is_empty():
+		push_error("DocketDB: %s — %s" % [refusal.error, sql.left(120)])
 	return refusal
 
 
-# Records the failure of a write by `step`, made on the owning thread: in
-# the open transaction, unless `step` is a live step of another operation
-# (whose failure is its own), or else in _last_sql_error.
-func _note_write_failure(step: RefCounted, error: String) -> void:
+# Records the failure of a write made on the owning thread by the open
+# transaction's operation (or by no genuine operation): in that transaction,
+# or else in _last_sql_error.
+func _note_write_failure(error: String) -> void:
 	if _txn_depth > 0:
-		if (not _live(step) or _txn_owner.same_operation(step)) and _txn_error.is_empty():
-			_txn_error = error
+		if _txn_error.is_empty(): _txn_error = error
 	elif _last_sql_error.is_empty():
 		_last_sql_error = error
 
@@ -94,9 +110,11 @@ func _write(step: RefCounted, sql: String, bindings: Array = []) -> void:
 func _write_checked(step: RefCounted, sql: String, bindings: Array = []) -> String:
 	var refusal := _thread_refusal()
 	if not refusal.is_empty(): return refusal
-	var error := _write_refusal(step, sql)
+	var admission := _write_admission(step, sql)
+	if admission.get("foreign", false): return admission.error
+	var error: String = admission.get("error", "")
 	if error.is_empty(): error = _exec_checked(sql, bindings)
-	if not error.is_empty(): _note_write_failure(step, error)
+	if not error.is_empty(): _note_write_failure(error)
 	return error
 
 
@@ -104,9 +122,9 @@ func _write_checked(step: RefCounted, sql: String, bindings: Array = []) -> Stri
 ## with the reason in _last_sql_error. Not for use inside a transaction.
 func _write_rows(step: RefCounted, sql: String, bindings: Array = []) -> Array:
 	if not _thread_refusal().is_empty(): return []
-	var refusal := _write_refusal(step, sql)
-	if refusal.is_empty(): return _exec_select(sql, bindings)
-	_note_write_failure(step, refusal)
+	var admission := _write_admission(step, sql)
+	if admission.is_empty(): return _exec_select(sql, bindings)
+	if not admission.foreign: _note_write_failure(admission.error)
 	return []
 
 
@@ -129,18 +147,20 @@ var _txn_next_ticket := 1
 ## or begins one (BEGIN IMMEDIATE) owned by `step`'s operation. Refused,
 ## changing nothing, while a change begun some other way is in progress.
 func _begin_transaction(step: RefCounted) -> Dictionary:
-	var refusal := _write_refusal(step, "BEGIN")
+	var refusal := _thread_refusal()
 	if not refusal.is_empty(): return {"error": refusal}
+	var admission := _write_admission(step, "BEGIN")
+	if not admission.is_empty(): return {"error": admission.error}
 	if _txn_depth == 0:
 		if _change_in_progress(): return {"error": "%s already has a change in progress" % _path}
-		var hold: Dictionary = step.nested(CoordGuard.SHARED)
-		if hold.has("error"): return {"error": str(hold.error)}
+		var hold := _joined(step)
+		if hold.has("error"): return {"error": hold.error}
 		_pending_changes = []
 		var error := _exec_checked("BEGIN IMMEDIATE TRANSACTION;")
 		if not error.is_empty():
-			hold.operation.close()
+			hold.step.close()
 			return {"error": error}
-		_txn_owner = hold.operation
+		_txn_owner = hold.step
 		_txn_error = ""
 	elif not _txn_error.is_empty():
 		return {"error": _txn_error}
@@ -160,7 +180,10 @@ func _complete_transaction(step: RefCounted, ticket: int, error: String = "") ->
 	if not refusal.is_empty(): return refusal
 	if not _txn_tickets.has(ticket):
 		return "that change was not admitted or has already completed"
-	if not _live(step) or not _txn_owner.same_operation(step):
+	# The native same_operation also refuses anything but a live operation.
+	# Not a join: a coordination-directory mismatch arising meanwhile must not
+	# leave the transaction impossible to settle.
+	if not _txn_owner.same_operation(step):
 		return "only the operation that owns a change on %s can complete it" % _path
 	_txn_tickets.erase(ticket)
 	if not error.is_empty() and _txn_error.is_empty(): _txn_error = error
@@ -199,13 +222,11 @@ func _thread_refusal() -> String:
 	return message
 
 
-## _thread_refusal for the older helpers (_exec, _exec_select), whose callers
-## learn of a failure only from _last_sql_error, so the refusal is kept there.
+## _thread_refusal for the older helpers (_exec, _exec_select). The refusal
+## is only reported (push_error): _last_sql_error belongs to the owning
+## thread, whose change in progress it would otherwise fail.
 func _on_owner_thread() -> bool:
-	var refusal := _thread_refusal()
-	if refusal.is_empty(): return true
-	if _last_sql_error.is_empty(): _last_sql_error = refusal
-	return false
+	return _thread_refusal().is_empty()
 
 
 func _exec(sql: String, bindings: Array = []) -> void:

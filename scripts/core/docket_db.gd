@@ -43,6 +43,8 @@ func _open(step: RefCounted, path: String) -> bool:
 # A new connection to `path`, owned by this thread: false (reported) when it
 # cannot be opened.
 func _connect(path: String, verb: String) -> bool:
+	if _db != null and _is_open: _db.close_db()
+	_is_open = false
 	_path = path
 	_last_sql_error = ""
 	_db = SQLite.new()
