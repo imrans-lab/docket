@@ -33,6 +33,9 @@ func _ready() -> void:
 			_run_jsonl_migration(opts)
 		"validate":
 			_run_validate(opts)
+		"invalid":
+			printerr("Docket: %s" % opts.error)
+			get_tree().quit(1)
 		_:
 			_start_gui(opts)
 
@@ -47,7 +50,11 @@ func _parse_args() -> Dictionary:
 
 func _parse_arg_values(args: Array) -> Dictionary:
 	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false,
-		"host_events": false}
+		"host_events": false, "host_managed": false}
+	# What a host-managed run refuses: a bare .dct (it opens only --file
+	# projects), and an option given no value (the first such option).
+	var bare_file := false
+	var without_value := ""
 
 	var i := 0
 	while i < args.size():
@@ -64,27 +71,36 @@ func _parse_arg_values(args: Array) -> Dictionary:
 				opts.mode = "migrate_jsonl"
 			"--validate", "validate":
 				opts.mode = "validate"
-			"--file":
-				if i + 1 < args.size():
+			"--file", "--query", "--port":
+				# An argument starting with "-" after the option is the next
+				# option, not its value; an empty one is no value.
+				var value := str(args[i + 1]) if i + 1 < args.size() else ""
+				if value.is_empty() or value.begins_with("-"):
+					if without_value.is_empty():
+						without_value = str(args[i])
+					if i + 1 < args.size() and value.is_empty():
+						i += 1
+				else:
 					i += 1
-					opts.files.append(args[i])
-					if opts.file.is_empty():
-						opts.file = args[i]
-			"--query":
-				if i + 1 < args.size():
-					i += 1
-					opts.query = args[i]
-			"--port":
-				if i + 1 < args.size():
-					i += 1
-					opts.port = int(args[i])
+					match str(args[i - 1]):
+						"--file":
+							opts.files.append(value)
+							if opts.file.is_empty():
+								opts.file = value
+						"--query":
+							opts.query = value
+						"--port":
+							opts.port = int(value)
 			"--stdio":
 				opts.stdio = true
 			"--host-events":
 				opts.host_events = true
+			"--host-managed":
+				opts.host_managed = true
 			_:
 				# Bare .dct path (backward compat)
 				if str(args[i]).ends_with(".dct"):
+					bare_file = true
 					opts.files.append(args[i])
 					if opts.file.is_empty():
 						opts.file = args[i]
@@ -92,8 +108,20 @@ func _parse_arg_values(args: Array) -> Dictionary:
 					opts.query = args[i]
 		i += 1
 
-	# If no file specified, find one in cwd (only for non-GUI modes)
-	if opts.file.is_empty() and opts.mode != "gui":
+	# A host-managed process is a host's child over stdio and opens only what
+	# it is given.
+	if opts.host_managed and (opts.mode != "serve" or not opts.stdio):
+		opts.mode = "invalid"
+		opts.error = "--host-managed needs --serve --stdio"
+	elif opts.host_managed and bare_file:
+		opts.mode = "invalid"
+		opts.error = "--host-managed opens only projects named with --file"
+	elif opts.host_managed and not without_value.is_empty():
+		opts.mode = "invalid"
+		opts.error = "%s needs a value" % without_value
+	# If no file specified, find one in cwd (only for non-GUI modes, and not
+	# for a host-managed server)
+	if opts.file.is_empty() and opts.mode not in ["gui", "invalid"] and not opts.host_managed:
 		opts.file = _find_dct_in_cwd()
 	if not opts.file.is_empty() and opts.files.is_empty():
 		opts.files.append(opts.file)
@@ -150,6 +178,9 @@ func _print_help() -> void:
 	print("                      start Godot with --no-header, not --quiet)")
 	print("  --host-events       With --stdio: notify the host of every item change")
 	print("                      (minerva/plugin_event item_changed)")
+	print("  --host-managed      With --serve --stdio: open only the --file projects")
+	print("                      (none is fine), never one found in the working")
+	print("                      directory, and neither restore nor save the session")
 	print("  --test              Run tests and exit")
 	print("  --migrate           Migrate a legacy JSON .dct to SQLite and exit")
 	print("  --migrate-jsonl     Migrate a legacy SQLite .dct to JSONL and exit")
@@ -190,10 +221,13 @@ func _start_server(opts: Dictionary) -> void:
 	_http_server.port = opts.port
 	_http_server.transport = "stdio" if opts.stdio else "http"
 	_http_server.host_events = opts.host_events
+	_http_server.host_managed = opts.host_managed
 	_http_server.dct_path = opts.file
 	_http_server.dct_paths = opts.get("files", [opts.file])
 	add_child(_http_server)
 	var file_list := ", ".join(PackedStringArray(opts.get("files", [opts.file])))
+	if file_list.is_empty():
+		file_list = "(none)"
 	if opts.stdio:
 		printerr("Docket MCP server on stdio — files: %s" % file_list)  # stdout carries the protocol
 	else:

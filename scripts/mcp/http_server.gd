@@ -25,6 +25,10 @@ var transport: String = "http"
 ## With the stdio transport: send a HOST_EVENT_METHOD notification for every
 ## item change a project commits (ITEM_CHANGED_EVENT, see _on_items_changed).
 var host_events: bool = false
+## Run by a host that decides which projects are open: only dct_paths are
+## opened at start (none is a healthy empty server), and the standalone
+## session (UserPrefs) is neither restored nor saved.
+var host_managed: bool = false
 var port: int = 3010
 var dct_path: String = "docket.dct"
 var dct_paths: Array = []  # Multiple --file paths
@@ -68,7 +72,11 @@ func _ready() -> void:
 		if err != OK:
 			push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
 			return
+	_open_projects()
 
+
+## The projects to serve, the tool registry over them, and the handler.
+func _open_projects() -> void:
 	if external_state != null:
 		# GUI mode — track AppState, stay in sync on file changes
 		_db = external_state.db
@@ -84,13 +92,20 @@ func _ready() -> void:
 		var schema_file := FileAccess.open("res://data/schema.json", FileAccess.READ)
 		_schema = JSON.parse_string(schema_file.get_as_text())
 
-		# Merge CLI --file args with any previously persisted session paths
-		var paths_to_load: Array = dct_paths.duplicate() if dct_paths.size() > 0 else [dct_path]
-		var saved_paths := UserPrefs.load_session()
-		for sp in saved_paths:
-			if sp not in paths_to_load:
-				paths_to_load.append(sp)
+		var paths_to_load: Array = dct_paths.duplicate()
+		if not host_managed:
+			# Merge CLI --file args with any previously persisted session paths
+			if paths_to_load.is_empty():
+				paths_to_load.append(dct_path)
+			for sp in UserPrefs.load_session():
+				if sp not in paths_to_load:
+					paths_to_load.append(sp)
 		for path in paths_to_load:
+			# A host names files that exist; a missing one is its mistake to
+			# see, not a new project to create.
+			if host_managed and not FileAccess.file_exists(str(path)):
+				printerr("Docket: FAILED to load %s — no such file" % path)
+				continue
 			var loaded_db := _open_or_create_db(str(path))
 			if loaded_db:
 				var proj_name := loaded_db.get_project_name()
@@ -110,6 +125,7 @@ func _ready() -> void:
 
 	_registry = ToolRegistry.new()
 	_registry.init(_schema, _db, _project_dbs)
+	_registry.allow_no_project = host_managed
 
 	# Project management callables
 	if external_state != null:
@@ -239,7 +255,10 @@ func _headless_remove_project(proj_name: String) -> Dictionary:
 
 
 func _persist_headless_session() -> void:
-	## Persist current project paths so they survive server restarts.
+	## Persist current project paths so they survive server restarts; a
+	## host-managed server leaves that to its host.
+	if host_managed:
+		return
 	var paths := PackedStringArray()
 	for db: DocketDB in _project_dbs.values():
 		paths.append(db.get_path())

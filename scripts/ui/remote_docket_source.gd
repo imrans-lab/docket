@@ -475,7 +475,8 @@ func schema() -> Dictionary:
 
 
 ## Replace the open projects with the one at `path` (kept if already open):
-## it is opened first, as the process refuses to close its last project.
+## it is opened first, as a process not run host-managed refuses to close its
+## last project.
 func open_project(path: String) -> void:
 	var keep := ""
 	var paths := project_paths()
@@ -515,8 +516,9 @@ func create_project(path: String) -> void:
 	await _projects_changed(path)
 
 
-## Unlike the standalone app, the process refuses to close its last project;
-## the refusal is reported as a load_failed for its path.
+## A process not run host-managed refuses to close its last project (a
+## host-managed one is left with none); a refusal is reported as a
+## load_failed for its path.
 func remove_project(project: String) -> void:
 	var path := str(project_paths().get(project, project))
 	var removed := await _call("docket_project_remove", {"name": project})

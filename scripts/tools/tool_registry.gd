@@ -121,6 +121,14 @@ func list_tools() -> Array:
 const _ID_FIELDS := ["id", "item_id", "from", "to", "source_id", "target_id"]
 
 
+## The tools that work with no project open; any other then answers
+## {error, kind: "no_project"}.
+const _WITHOUT_PROJECT := ["docket_project_list", "docket_project_add", "docket_project_remove",
+	"docket_reload", "docket_flush"]
+## Whether the last project may be closed, leaving none (a host-managed server).
+var allow_no_project := false
+
+
 ## The tools that can run within a caller's coordination operation (`op` of
 ## call_tool); any other opens its own.
 const _WITHIN_OPERATION := ["docket_comment", "docket_move", "docket_type_evolve"]
@@ -138,6 +146,11 @@ func call_tool(name: String, arguments: Dictionary, op: RefCounted = null) -> Di
 	# anything. Serving from a stale cache is not just a stale read: the next
 	# write rewrites the entire JSONL from cache and would discard them.
 	refresh_stale_dbs()
+
+	if _db == null and _project_dbs.is_empty() and not name in _WITHOUT_PROJECT:
+		var nerr := {"error": "no project is open", "kind": "no_project"}
+		_log_error(name, arguments, nerr)
+		return nerr
 
 	# An unrecognised project name used to fall through to the primary project,
 	# silently answering from the wrong data.
@@ -171,6 +184,8 @@ func call_tool(name: String, arguments: Dictionary, op: RefCounted = null) -> Di
 		execute_args = [arguments, _schema, _resolve_db(arguments)]
 	if name in _WITHIN_OPERATION:
 		execute_args.append(op)
+	elif name == "docket_project_remove":
+		execute_args.append(allow_no_project)
 	var result: Dictionary = _tools[name].callv("execute", execute_args)
 	if result.has("error"):
 		_log_error(name, arguments, result)

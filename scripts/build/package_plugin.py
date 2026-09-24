@@ -41,8 +41,9 @@ MANIFEST_TEMPLATE = "scripts/panel/plugin_manifest.json"
 REMOTE_SOURCE = "scripts/ui/remote_docket_source.gd"
 # Read by the UI at run time by a path built from its own (not a preload).
 RUNTIME_FILES = ["data/schema.json"]
-# The Docket process, as the host starts it: stdio MCP with item events.
-BACKEND_ARGS = ["--headless", "--no-header", "--", "--serve", "--stdio", "--host-events"]
+# The Docket process, as the host starts it: stdio MCP with item events,
+# serving only the projects the host opens (no session of its own).
+BACKEND_ARGS = ["--headless", "--no-header", "--", "--serve", "--stdio", "--host-events", "--host-managed"]
 
 # What a script loads by a literal path, and a scene's ext_resource paths.
 SCRIPT_LOADS = re.compile(r"""(?:\bpreload|\bload)\(\s*["']([^"']+)["']\s*\)|^extends\s+["']([^"']+)["']""", re.M)

@@ -16,7 +16,8 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: Dictionary, _add_fn: Callable = Callable(), remove_fn: Callable = Callable()) -> Dictionary:
+## `allow_last`: the server can run with no project (a host-managed one).
+func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: Dictionary, _add_fn: Callable = Callable(), remove_fn: Callable = Callable(), allow_last: bool = false) -> Dictionary:
 	var proj_name: String = str(args.get("name", ""))
 
 	if proj_name.is_empty():
@@ -25,7 +26,7 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	if not project_dbs.has(proj_name):
 		return {"error": "Project not found: %s" % proj_name}
 
-	if project_dbs.size() <= 1:
+	if project_dbs.size() <= 1 and not allow_last:
 		return {"error": "Cannot remove the last project"}
 
 	if not remove_fn.is_valid():
