@@ -28,10 +28,9 @@ var _lock_timeout_ms: int = 5000
 var _atomic_write_hook: Callable
 var _mutation_depth: int = 0
 var _mutation_error: String = ""
-# The coordination operation (CoordLease) the outermost mutation holds, and
-# the thread running it: only that thread's nested calls may join it.
+# The coordination operation (CoordLease) the outermost mutation holds. Only
+# the connection's own thread can join it (DocketDBConnection).
 var _mutation_operation: RefCounted = null
-var _mutation_thread: int = 0
 # True from a mutation's admission until it has released its operation. A
 # change started meanwhile by something the mutation itself triggers (an
 # items_changed listener during a reload, say) is refused rather than let it
@@ -167,8 +166,9 @@ func get_path() -> String:
 
 
 func close() -> void:
-	# Refused (DocketDB.close_checked) while a mutation is in progress. Durable mutations already replace canonical JSONL before reporting success.
-	# Close only releases the disposable cache, so read-only sessions and rejected
+	# Refused (DocketDB.close_checked) while a mutation is in progress. Durable
+	# mutations already replace canonical JSONL before reporting success, so
+	# close only releases the disposable cache: read-only sessions and rejected
 	# operations cannot normalize or rewrite source bytes as a side effect.
 	super.close()
 
@@ -300,8 +300,6 @@ func _change_in_progress() -> bool:
 func _begin_canonical_mutation() -> String:
 	var refusal := _thread_refusal()
 	if not refusal.is_empty(): return refusal
-	if _mutation_depth > 0 and OS.get_thread_caller_id() != _mutation_thread:
-		return "another change to this project is in progress"
 	if _mutation_depth > 0 and (not _mutation_error.is_empty() or not _last_sql_error.is_empty()):
 		return _mutation_error if not _mutation_error.is_empty() else _last_sql_error
 	if _mutation_depth == 0:
@@ -311,7 +309,6 @@ func _begin_canonical_mutation() -> String:
 		if lease.has("error"): return lease.error
 		_mutation_busy = true
 		_mutation_operation = lease.operation
-		_mutation_thread = OS.get_thread_caller_id()
 		var precheck := _mutation_precheck()
 		if not precheck.is_empty():
 			_close_mutation_operation()

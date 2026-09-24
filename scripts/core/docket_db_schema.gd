@@ -363,7 +363,8 @@ static func migrate_schema(db: DocketDB, op: RefCounted) -> void:
 		if str(fk.get("from", "")) == "to_id":
 			to_id_has_fk = true
 			break
-	if to_id_has_fk:
+	# Only on a schema migrated so far without error.
+	if to_id_has_fk and db._last_sql_error.is_empty():
 		db._write(op, "PRAGMA foreign_keys=OFF;")
 		var txn := db._begin_transaction(op)
 		if txn.has("ticket"):
@@ -377,7 +378,8 @@ static func migrate_schema(db: DocketDB, op: RefCounted) -> void:
 			db._write(op, "DROP TABLE item_links;")
 			db._write(op, "ALTER TABLE item_links_new RENAME TO item_links;")
 			db._write(op, "CREATE INDEX IF NOT EXISTS idx_links_from ON item_links(from_id);")
-			db._complete_transaction(op, txn.ticket)
+			var error := db._complete_transaction(op, txn.ticket)
+			if not error.is_empty() and db._last_sql_error.is_empty(): db._last_sql_error = error
 		elif db._last_sql_error.is_empty():
 			db._last_sql_error = txn.error
 		db._write(op, "PRAGMA foreign_keys=ON;")
