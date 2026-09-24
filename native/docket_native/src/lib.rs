@@ -4,6 +4,7 @@ use godot::prelude::*;
 
 mod coord_dir;
 mod coord_lock;
+mod store;
 
 struct DocketNative;
 

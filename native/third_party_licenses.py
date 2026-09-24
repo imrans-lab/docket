@@ -48,7 +48,10 @@ def main():
     for (name, version), package in sorted(packages.items()):
         print("=" * 64)
         print(f"{name} {version} (Rust crate, {package.get('license') or 'no license expression'})")
-        print(f"source: https://crates.io/crates/{name}/{version}")
+        if package.get("source"):
+            print(f"source: https://crates.io/crates/{name}/{version}")
+        else:
+            print(f"source: Docket's source, native/vendor/{name} (the crates.io release, patched)")
         print("=" * 64)
         directory = pathlib.Path(package["manifest_path"]).parent
         texts = sorted(p for p in directory.iterdir()

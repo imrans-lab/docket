@@ -18,8 +18,26 @@ godot = { version = "=0.4.5", default-features = false, features = ["api-4-5"] }
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"
 
+# The system credential stores. Each is reached only when the vault asks for
+# it, so loading the extension and taking the lock never need one. Secret
+# Service goes over D-Bus in pure Rust (no libdbus to be missing at load),
+# in encrypted sessions only, through a copy patched never to show a prompt
+# (native/vendor/secret-service/DOCKET-PATCH.md).
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "=5.2.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "net", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "=3.7.0", default-features = false }
+security-framework-sys = { version = "=2.17.0", default-features = false }
+core-foundation = { version = "=0.10.1", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Com", "Win32_UI_Shell"] }
 
 [profile.release]
 strip = "debuginfo"
+
+[patch.crates-io]
+secret-service = { path = "../vendor/secret-service" }

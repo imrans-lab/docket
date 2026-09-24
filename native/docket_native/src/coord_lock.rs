@@ -38,8 +38,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-const SHARED: i64 = 0;
-const EXCLUSIVE: i64 = 1;
+pub(crate) const SHARED: i64 = 0;
+pub(crate) const EXCLUSIVE: i64 = 1;
 const LOCK_FILE: &str = "docket_coord.lock";
 const DEADLINE: Duration = Duration::from_secs(8);
 const POLL: Duration = Duration::from_millis(25);
@@ -110,16 +110,16 @@ impl DocketCoordLock {
     }
 }
 
-struct Failure {
-    kind: &'static str,
-    message: String,
+pub(crate) struct Failure {
+    pub(crate) kind: &'static str,
+    pub(crate) message: String,
 }
 
-fn failure(kind: &'static str, message: impl Into<String>) -> Failure {
+pub(crate) fn failure(kind: &'static str, message: impl Into<String>) -> Failure {
     Failure { kind, message: message.into() }
 }
 
-fn begin(mode: i64, within: i64) -> Result<i64, Failure> {
+pub(crate) fn begin(mode: i64, within: i64) -> Result<i64, Failure> {
     if mode != SHARED && mode != EXCLUSIVE {
         return Err(failure("refused", format!("unknown lock mode {mode}")));
     }
@@ -179,7 +179,7 @@ fn begin(mode: i64, within: i64) -> Result<i64, Failure> {
     }
 }
 
-fn end(op: i64) -> Result<(), String> {
+pub(crate) fn end(op: i64) -> Result<(), String> {
     let mut state = state();
     let operation = state.operations.get_mut(&op).ok_or_else(|| format!("operation {op} is not running"))?;
     operation.depth -= 1;
