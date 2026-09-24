@@ -41,37 +41,38 @@ static func is_epoch(text: String) -> bool:
 
 
 ## The state, creating it if it does not exist: {ok, state, epoch, generation,
-## next_tag, rotation_intent} or {error, kind}. Takes EXCLUSIVE, so it must not
-## be called from within a SHARED operation.
-func ensure(within: int = 0) -> Dictionary:
-	return _locked(CoordGuard.EXCLUSIVE, within, _ensure)
+## next_tag, rotation_intent} or {error, kind}. Within `parent` (an operation
+## from CoordGuard) when given, else in an operation of its own; either way it
+## takes EXCLUSIVE, so it is refused within a SHARED operation.
+func ensure(parent: RefCounted = null) -> Dictionary:
+	return _locked(CoordGuard.EXCLUSIVE, parent, _ensure)
 
 
 ## The state as it is: the same as ensure(), or kind "missing" when coord.db
 ## does not exist yet.
-func read(within: int = 0) -> Dictionary:
-	return _locked(CoordGuard.SHARED, within, _read)
+func read(parent: RefCounted = null) -> Dictionary:
+	return _locked(CoordGuard.SHARED, parent, _read)
 
 
-## Reserves the next administration tag, for administration `within` (an
+## Reserves the next administration tag, for administration `parent` (an
 ## EXCLUSIVE operation): {ok, tag} or {error, kind}. The tag is committed as
 ## used before this returns.
-func reserve_tag(within: int) -> Dictionary:
-	if within == 0:
+func reserve_tag(parent: RefCounted) -> Dictionary:
+	if parent == null:
 		return {"error": "a tag is reserved only by a running administration", "kind": "refused"}
-	return _locked(CoordGuard.EXCLUSIVE, within, _reserve_tag)
+	return _locked(CoordGuard.EXCLUSIVE, parent, _reserve_tag)
 
 
 ## Makes reserved `tag` the committed generation, in `state`, for
-## administration `within`: the new state {ok, ...} or {error, kind}. Any tag
+## administration `parent`: the new state {ok, ...} or {error, kind}. Any tag
 ## reserved after the committed generation is accepted, so the caller must
 ## pass the one its own administration reserved.
-func commit_generation(within: int, tag: int, state: String) -> Dictionary:
-	if within == 0:
+func commit_generation(parent: RefCounted, tag: int, state: String) -> Dictionary:
+	if parent == null:
 		return {"error": "a generation is committed only by a running administration", "kind": "refused"}
 	if not state in _STATES:
 		return {"error": "unknown coordination state '%s'" % state, "kind": "refused"}
-	return _locked(CoordGuard.EXCLUSIVE, within, _commit_generation.bind(tag, state))
+	return _locked(CoordGuard.EXCLUSIVE, parent, _commit_generation.bind(tag, state))
 
 
 static func _completed(returned: Variant) -> Dictionary:
@@ -80,13 +81,13 @@ static func _completed(returned: Variant) -> Dictionary:
 	return {"error": "coordination state work stopped unexpectedly", "kind": "io"}
 
 
-func _locked(mode: int, within: int, work: Callable) -> Dictionary:
-	var begun := _guard.begin(mode, within)
+func _locked(mode: int, parent: RefCounted, work: Callable) -> Dictionary:
+	var begun := _guard.open_within(parent, mode)
 	if begun.has("error"):
 		return begun
-	# Checked only after end(): the lock is given back whatever `work` did.
+	# Checked only after close(): the hold is given back whatever `work` did.
 	var returned: Variant = work.call()
-	var end_error := _guard.end(int(begun.op))
+	var end_error := str(begun.operation.close())
 	var result := _completed(returned)
 	if not end_error.is_empty() and not result.has("error"):
 		return {"error": end_error, "kind": "io"}

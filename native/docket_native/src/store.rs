@@ -19,7 +19,7 @@
 //! "not_found" (it answered, and has no such entry), "refused" (a request
 //! that can never succeed) or "other". Values never appear in messages.
 
-use crate::coord_lock::{begin, end, failure, Failure, EXCLUSIVE, SHARED};
+use crate::coord_lock::{begin, end, failure, DocketCoordOperation, Failure, EXCLUSIVE, SHARED};
 use godot::prelude::*;
 
 const SERVICE: &str = "Docket";
@@ -33,37 +33,38 @@ pub struct DocketCredentialStore;
 
 #[godot_api]
 impl DocketCredentialStore {
-    /// {ok, value}: the value stored under `account`, within operation `op`.
+    /// {ok, value}: the value stored under `account`, within `operation` (a
+    /// DocketCoordOperation).
     #[func]
-    fn read(&self, account: GString, op: i64) -> VarDictionary {
+    fn read(&self, account: GString, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
         let account = account.to_string();
-        reply(within(op, SHARED, &account, || platform::read(&account)).map(Some))
+        reply(within(operation, SHARED, &account, || platform::read(&account)).map(Some))
     }
 
     /// Stores `value` under `account`, replacing what was there, within
-    /// EXCLUSIVE operation `op`. A failure marked indeterminate may still have
+    /// EXCLUSIVE `operation`. A failure marked indeterminate may still have
     /// stored it.
     #[func]
-    fn write(&self, account: GString, value: GString, op: i64) -> VarDictionary {
+    fn write(&self, account: GString, value: GString, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
         let account = account.to_string();
         let value = value.to_string();
-        changed(within(op, EXCLUSIVE, &account, || platform::write(&account, &value)))
+        changed(within(operation, EXCLUSIVE, &account, || platform::write(&account, &value)))
     }
 
-    /// Removes `account`'s entry, within EXCLUSIVE operation `op`; an entry
+    /// Removes `account`'s entry, within EXCLUSIVE `operation`; an entry
     /// that is already absent is kind "not_found". A failure marked
     /// indeterminate may still have removed it.
     #[func]
-    fn remove(&self, account: GString, op: i64) -> VarDictionary {
+    fn remove(&self, account: GString, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
         let account = account.to_string();
-        changed(within(op, EXCLUSIVE, &account, || platform::remove(&account)))
+        changed(within(operation, EXCLUSIVE, &account, || platform::remove(&account)))
     }
 
-    /// Whether the store can be used now, within operation `op`: {ok} or the
+    /// Whether the store can be used now, within `operation`: {ok} or the
     /// failure that stops it. A diagnostic only; the next call may still fail.
     #[func]
-    fn status(&self, op: i64) -> VarDictionary {
-        let probe = within(op, SHARED, ACCOUNTS[0], || match platform::read(ACCOUNTS[0]) {
+    fn status(&self, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
+        let probe = within(operation, SHARED, ACCOUNTS[0], || match platform::read(ACCOUNTS[0]) {
             Ok(_) => Ok(()),
             Err(f) if f.kind == "not_found" => Ok(()),
             Err(f) => Err(f),
@@ -110,16 +111,22 @@ impl Drop for Step {
     }
 }
 
-// Runs `work` as a nested step of operation `op`, so the operation stays held
-// until the store has answered even if its owner ends it meanwhile.
-fn within<T>(op: i64, mode: i64, account: &str, work: impl FnOnce() -> Result<T, Failure>) -> Result<T, Failure> {
+// Runs `work` as a nested step of `operation`, so the operation stays held
+// until the store has answered even if its owner closes it meanwhile.
+fn within<T>(
+    operation: Option<Gd<DocketCoordOperation>>,
+    mode: i64,
+    account: &str,
+    work: impl FnOnce() -> Result<T, Failure>,
+) -> Result<T, Failure> {
     if !ACCOUNTS.contains(&account) {
         return Err(failure("refused", format!("'{account}' is not a Docket credential account")));
     }
-    if op == 0 {
+    let Some(operation) = operation else {
         return Err(failure("refused", "the credential store is used only within a coordination operation"));
-    }
-    let _step = Step(begin(mode, op)?);
+    };
+    let id = operation.bind().live_id()?;
+    let _step = Step(begin(mode, id)?);
     work()
 }
 

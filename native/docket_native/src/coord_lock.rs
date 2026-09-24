@@ -9,21 +9,25 @@
 //! process's lock when it exits, however it exits (on Windows possibly a
 //! moment later, which the polling absorbs).
 //!
-//! Within a process, the lock is held for logical operations. `begin` starts
-//! one and returns its id; a nested step of the same operation passes that id
-//! and reuses its hold, and `end` gives it back. A caller that does not pass
-//! the id is a different operation: it shares a SHARED hold, but waits for
-//! an EXCLUSIVE one like any other process, so no unrelated callback or thread
-//! ever acts under another operation's administration. Asking for EXCLUSIVE
-//! within a SHARED operation is refused at once rather than upgraded. The
-//! file is locked once per process and unlocked when the last operation ends;
-//! an operation's hold lasts until `end`, whatever its caller stopped waiting
-//! for.
+//! Within a process, the lock is held for logical operations. GDScript gets
+//! each one as a DocketCoordOperation object: DocketCoordLock.open() starts
+//! an operation, `nested()` on it starts a step of the same operation that
+//! reuses its hold, and `close()` gives either back (as does freeing the
+//! object, as a safety net). The operation's id never leaves Rust. Code that
+//! is not handed an operation starts its own: it shares a SHARED hold, but
+//! waits for an EXCLUSIVE one like any other process, so no unrelated callback
+//! or thread ever acts under another operation's administration. Asking for
+//! EXCLUSIVE within a SHARED operation is refused at once rather than
+//! upgraded. The file is locked once per process and unlocked when the last
+//! operation ends; a hold lasts until it is closed, whatever its caller
+//! stopped waiting for.
 //!
-//! An operation id is a bearer token: whoever holds it acts as that operation,
-//! and nothing checks who they are. Its owner passes it only to the steps and
-//! workers of that same operation, never to unrelated code, and a worker it is
-//! handed to keeps the operation until that worker's own step has ended.
+//! An operation object acts as its operation for whoever holds it, and nothing
+//! checks who they are. Its owner passes it only to the steps of that same
+//! operation, never to unrelated code. Operation objects are Godot objects,
+//! and this build of godot-rust supports them only on Godot's main thread: they
+//! are opened, used, closed and freed there, and never handed to a worker
+//! thread. (The lock state itself is thread-safe; the objects are not.)
 //!
 //! Waiting is not fair: a stream of SHARED operations can keep an EXCLUSIVE
 //! one waiting until it reports busy. A wait blocks its thread for up to the
@@ -78,28 +82,13 @@ impl DocketCoordLock {
     #[constant]
     const EXCLUSIVE: i64 = EXCLUSIVE;
 
-    /// Starts a logical operation holding the lock in `mode`, or, with
-    /// `within` set to a live operation's id, a nested step of that one.
-    /// Returns {op} or {error, kind}: kind "busy" when another holder kept it
-    /// past the eight-second deadline, "io" when the lock file could not be
-    /// used, "refused" for a request that can never succeed.
+    /// Starts an operation holding the lock in `mode`: {operation} (a
+    /// DocketCoordOperation) or {error, kind}: kind "busy" when another holder
+    /// kept it past the eight-second deadline, "io" when the lock file could
+    /// not be used, "refused" for a request that can never succeed.
     #[func]
-    fn begin(&self, mode: i64, within: i64) -> VarDictionary {
-        let mut result = VarDictionary::new();
-        match begin(mode, within) {
-            Ok(op) => result.set("op", op),
-            Err(Failure { kind, message }) => {
-                result.set("error", message.as_str());
-                result.set("kind", kind);
-            }
-        }
-        result
-    }
-
-    /// Ends one `begin` of operation `op`; "" or why not.
-    #[func]
-    fn end(&self, op: i64) -> GString {
-        GString::from(end(op).err().unwrap_or_default().as_str())
+    fn open(&self, mode: i64) -> VarDictionary {
+        opened(begin(mode, 0), mode)
     }
 
     /// Checks that the coordination directory is `expected` (an absolute
@@ -117,6 +106,84 @@ impl DocketCoordLock {
         let path = coordination_dir().map(|dir| dir.join(LOCK_FILE).display().to_string());
         GString::from(path.unwrap_or_default().as_str())
     }
+}
+
+/// One hold of a logical operation, owned by whoever holds this object.
+/// `close()` gives it back; freeing an unclosed one does too.
+#[derive(GodotClass)]
+#[class(no_init, base = RefCounted)]
+pub struct DocketCoordOperation {
+    id: i64,
+    mode: i64,
+    open: bool,
+}
+
+#[godot_api]
+impl DocketCoordOperation {
+    /// A step of this same operation, reusing its hold: {operation} or
+    /// {error, kind}. EXCLUSIVE within a SHARED operation is refused.
+    #[func]
+    fn nested(&self, mode: i64) -> VarDictionary {
+        if !self.open {
+            return failed(failure("refused", "the operation has been closed"));
+        }
+        opened(begin(mode, self.id), mode)
+    }
+
+    /// Gives this hold back; "" or why not. Closing twice does nothing.
+    #[func]
+    fn close(&mut self) -> GString {
+        if !self.open {
+            return GString::new();
+        }
+        self.open = false;
+        GString::from(end(self.id).err().unwrap_or_default().as_str())
+    }
+
+    #[func]
+    fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// SHARED or EXCLUSIVE, as requested for this hold; a SHARED step of an
+    /// EXCLUSIVE operation reports SHARED.
+    #[func]
+    fn mode(&self) -> i64 {
+        self.mode
+    }
+}
+
+impl DocketCoordOperation {
+    /// The live operation id, for native work done within it.
+    pub(crate) fn live_id(&self) -> Result<i64, Failure> {
+        if self.open { Ok(self.id) } else { Err(failure("refused", "the operation has been closed")) }
+    }
+}
+
+impl Drop for DocketCoordOperation {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = end(self.id);
+        }
+    }
+}
+
+fn opened(result: Result<i64, Failure>, mode: i64) -> VarDictionary {
+    match result {
+        Ok(id) => {
+            let mut dictionary = VarDictionary::new();
+            dictionary.set("operation", Gd::from_object(DocketCoordOperation { id, mode, open: true }));
+            dictionary
+        }
+        Err(f) => failed(f),
+    }
+}
+
+fn failed(f: Failure) -> VarDictionary {
+    let mut dictionary = VarDictionary::new();
+    dictionary.set("error", f.message.as_str());
+    dictionary.set("kind", f.kind);
+    dictionary
 }
 
 pub(crate) struct Failure {
@@ -142,7 +209,7 @@ pub(crate) fn begin(mode: i64, within: i64) -> Result<i64, Failure> {
         let operation = state
             .operations
             .get_mut(&within)
-            .ok_or_else(|| failure("refused", format!("operation {within} is not running")))?;
+            .ok_or_else(|| failure("refused", "the operation is not running"))?;
         if mode == EXCLUSIVE && operation.mode == SHARED {
             return Err(failure("refused", "vault administration cannot start inside ordinary work"));
         }
@@ -200,7 +267,7 @@ pub(crate) fn begin(mode: i64, within: i64) -> Result<i64, Failure> {
 
 pub(crate) fn end(op: i64) -> Result<(), String> {
     let mut state = state();
-    let operation = state.operations.get_mut(&op).ok_or_else(|| format!("operation {op} is not running"))?;
+    let operation = state.operations.get_mut(&op).ok_or_else(|| "the operation is not running".to_string())?;
     operation.depth -= 1;
     if operation.depth == 0 {
         state.operations.remove(&op);

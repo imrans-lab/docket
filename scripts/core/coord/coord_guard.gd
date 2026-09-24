@@ -1,36 +1,40 @@
 class_name CoordGuard
 extends RefCounted
 ## GDScript's way into the native coordination lock (DocketCoordLock in
-## native/docket_native). Every call is a logical operation: begin() starts
-## one, or a nested step of `within`, and end() gives it back.
+## native/docket_native). open() starts an operation and returns it as an
+## object (DocketCoordOperation) that its owner passes explicitly to the work
+## done within it; `nested(mode)` on it starts a step of the same operation and
+## `close()` gives a hold back. There is no current operation to borrow.
 ##
 ## The extension is looked up at run time, so scripts that use this still
-## load when it is missing; every begin() then fails with kind "no_extension".
+## load when it is missing; every open() then fails with kind "no_extension".
 
 const SHARED := 0
 const EXCLUSIVE := 1
+const NO_EXTENSION := "Docket's native extension is not loaded, so projects cannot be coordinated."
 
 var _lock: Object = ClassDB.instantiate("DocketCoordLock") if ClassDB.class_exists("DocketCoordLock") else null
 
 
-## {op} or {error, kind}: kind "busy", "io", "refused" (from the extension) or
-## "no_extension".
-func begin(mode: int, within: int = 0) -> Dictionary:
+## {operation} or {error, kind}: kind "busy", "io", "refused" (from the
+## extension) or "no_extension".
+func open(mode: int) -> Dictionary:
 	if _lock == null:
-		return {"error": "Docket's native extension is not loaded, so projects cannot be coordinated.", "kind": "no_extension"}
-	return _lock.begin(mode, within)
+		return {"error": NO_EXTENSION, "kind": "no_extension"}
+	return _lock.open(mode)
 
 
-## "" or why operation `op` could not be ended.
-func end(op: int) -> String:
-	return "" if _lock == null else str(_lock.end(op))
+## A step of `parent` (an operation from open()) when there is one, else a new
+## operation: {operation} or {error, kind}.
+func open_within(parent: RefCounted, mode: int) -> Dictionary:
+	return parent.nested(mode) if parent != null else open(mode)
 
 
 ## "" when the coordination directory is `expected`, as this host resolved
 ## it; otherwise why not, and coordination stays off in this process.
 func expect_directory(expected: String) -> String:
 	if _lock == null:
-		return "Docket's native extension is not loaded, so projects cannot be coordinated."
+		return NO_EXTENSION
 	return str(_lock.expect_directory(expected))
 
 
