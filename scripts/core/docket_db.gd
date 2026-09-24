@@ -43,21 +43,50 @@ func open(path: String, op: RefCounted = null) -> bool:
 
 
 func _open(step: RefCounted, path: String) -> bool:
+	if not _connect(path, "open"): return false
+	var error := _configure(step)
+	if error.is_empty():
+		_is_open = true
+		DocketDBSchema.migrate_schema(self, step)
+		_default_naming(step, path, true)
+		error = _last_sql_error
+	return _settle_open(error, "open")
+
+
+# A new connection to `path`, owned by this thread: false (reported) when it
+# cannot be opened.
+func _connect(path: String, verb: String) -> bool:
 	_path = path
+	_last_sql_error = ""
 	_db = SQLite.new()
 	_db.path = path
 	_db.verbosity_level = SQLite.QUIET
 	_owner_thread = OS.get_thread_caller_id()
-	if not _db.open_db():
-		push_error("DocketDB: failed to open %s" % path)
-		return false
-	_write(step, "PRAGMA journal_mode=WAL;")
-	_write(step, "PRAGMA foreign_keys=ON;")
-	_write(step, "PRAGMA busy_timeout=15000;")
-	_is_open = true
-	DocketDBSchema.migrate_schema(self, step)
-	_default_naming(step, path, true)
-	return true
+	if _db.open_db(): return true
+	push_error("DocketDB: failed to %s %s" % [verb, path])
+	_db = null
+	_owner_thread = 0
+	return false
+
+
+# WAL, foreign keys and the busy timeout for the new connection: "" or why not.
+func _configure(step: RefCounted) -> String:
+	for pragma: String in ["PRAGMA journal_mode=WAL;", "PRAGMA foreign_keys=ON;", "PRAGMA busy_timeout=15000;"]:
+		var error := _write_checked(step, pragma)
+		if not error.is_empty(): return error
+	return ""
+
+
+# Keeps the new connection when opening or creating it succeeded (`error`
+# empty); otherwise closes it, leaving nothing half open. Whether it succeeded.
+func _settle_open(error: String, verb: String) -> bool:
+	if error.is_empty(): return true
+	push_error("DocketDB: could not %s %s: %s" % [verb, _path, error])
+	_db.close_db()
+	_db = null
+	_is_open = false
+	_owner_thread = 0
+	return false
 
 
 # Project name and ID prefix from the file name, where still the defaults.
@@ -72,15 +101,16 @@ func _default_naming(step: RefCounted, path: String, keep_docket_prefix: bool) -
 
 
 ## Checkpoints the WAL into the database file and closes the connection:
-## "" or why not. Refused, leaving the connection open, inside a transaction
-## or without a coordination operation; a checkpoint that could not finish
-## is reported, and the connection is closed all the same.
+## "" or why not; closing a closed connection does nothing. Refused, leaving
+## the connection open, while a change is in progress or without a
+## coordination operation; a checkpoint that could not finish is reported,
+## and the connection is closed all the same.
 func close_checked(op: RefCounted = null) -> String:
-	if not _on_owner_thread(): return _last_sql_error
-	if _db == null:
-		_is_open = false
+	var refusal := _thread_refusal()
+	if not refusal.is_empty(): return refusal
+	if _db == null or not _is_open:
 		return ""
-	if _txn_depth > 0: return "%s cannot close while a change is in progress" % _path
+	if _change_in_progress(): return "%s cannot close while a change is in progress" % _path
 	return _writing_text(op, func(step: RefCounted) -> String:
 		var error := _checkpoint(step, "TRUNCATE")
 		_db.close_db()
@@ -98,7 +128,8 @@ func close() -> void:
 ## "" or why not.
 func checkpoint_checked(op: RefCounted = null) -> String:
 	if _db == null or not _is_open: return ""
-	if not _on_owner_thread(): return _last_sql_error
+	var refusal := _thread_refusal()
+	if not refusal.is_empty(): return refusal
 	return _writing_text(op, func(step: RefCounted) -> String: return _checkpoint(step, "PASSIVE"))
 
 
@@ -135,21 +166,14 @@ static func create_new(path: String, op: RefCounted = null) -> DocketDB:
 
 
 func _create(step: RefCounted, path: String) -> bool:
-	_path = path
-	_db = SQLite.new()
-	_db.path = path
-	_db.verbosity_level = SQLite.QUIET
-	_owner_thread = OS.get_thread_caller_id()
-	if not _db.open_db():
-		push_error("DocketDB: failed to create %s" % path)
-		return false
-	_write(step, "PRAGMA journal_mode=WAL;")
-	_write(step, "PRAGMA foreign_keys=ON;")
-	_write(step, "PRAGMA busy_timeout=15000;")
-	DocketDBSchema.init_schema(self, step)
-	_is_open = true
-	_default_naming(step, path, false)
-	return true
+	if not _connect(path, "create"): return false
+	var error := _configure(step)
+	if error.is_empty():
+		DocketDBSchema.init_schema(self, step)
+		_is_open = true
+		_default_naming(step, path, false)
+		error = _last_sql_error
+	return _settle_open(error, "create")
 
 
 func get_path() -> String:
@@ -1646,7 +1670,9 @@ static func _has_column(col_rows: Array, col_name: String) -> bool:
 # prechecks (_writing), and passes that step to every write it makes
 # (_write, _write_checked, _write_rows, _begin_transaction). A write without
 # a live step, from another thread, or into a transaction another operation
-# owns is refused and executes nothing.
+# owns is refused and executes nothing. A refusal is kept in _last_sql_error
+# only while no change is in progress, so it never becomes the failure of a
+# transaction that belongs to someone else.
 
 ## `work` called with the step it must pass to every write (first argument,
 ## before any bound ones), within a step of `parent` or, when that is null, a
@@ -1672,18 +1698,18 @@ static func _live(operation: RefCounted) -> bool:
 	return operation != null and operation.is_open()
 
 
-# "" when `step` may write now, or why not (also in _last_sql_error).
+# "" when `step` may write now, or why not.
 func _write_refusal(step: RefCounted, sql: String) -> String:
-	if not _on_owner_thread(): return _last_sql_error
-	var reason := ""
+	var refusal := _thread_refusal()
+	if not refusal.is_empty(): return refusal
 	if not _live(step):
-		reason = "a write to %s was attempted outside a coordination operation" % _path
+		refusal = "a write to %s was attempted outside a coordination operation" % _path
 	elif _txn_depth > 0 and not _txn_owner.same_operation(step):
-		reason = "a write to %s was attempted into another operation's change" % _path
-	if reason.is_empty(): return ""
-	if _last_sql_error.is_empty(): _last_sql_error = reason
-	push_error("DocketDB: %s — %s" % [reason, sql.left(120)])
-	return reason
+		refusal = "a write to %s was attempted into another operation's change" % _path
+	if refusal.is_empty(): return ""
+	if not _change_in_progress() and _last_sql_error.is_empty(): _last_sql_error = refusal
+	push_error("DocketDB: %s — %s" % [refusal, sql.left(120)])
+	return refusal
 
 
 func _write(step: RefCounted, sql: String, bindings: Array = []) -> void:
@@ -1705,11 +1731,11 @@ func _write_rows(step: RefCounted, sql: String, bindings: Array = []) -> Array:
 
 # -- Transactions ------------------------------------------------------------
 #
-# A transaction belongs to the operation step that began it. Each scope
-# admitted into it gets a single-use ticket, consumed by its completion;
-# only a step of the owning operation is admitted, and only the outermost
-# completion commits (or rolls back after any failure, which is sticky).
-# Changes are reported once the transaction is settled.
+# A transaction belongs to the operation that began it, and holds a step of
+# that operation of its own until it is settled. Each scope admitted into it
+# gets a single-use ticket, which only a step of the owning operation can
+# complete; only the outermost completion commits (or rolls back after any
+# failure, which is sticky). Changes are reported once it is settled.
 
 var _txn_owner: RefCounted = null
 var _txn_depth := 0
@@ -1719,16 +1745,22 @@ var _txn_next_ticket := 1
 
 
 ## {ticket} or {error}: admits a scope of `step` into the open transaction,
-## or begins one (BEGIN IMMEDIATE) owned by `step`.
+## or begins one (BEGIN IMMEDIATE) owned by `step`'s operation. Refused,
+## changing nothing, while a change begun some other way is in progress.
 func _begin_transaction(step: RefCounted) -> Dictionary:
 	var refusal := _write_refusal(step, "BEGIN")
 	if not refusal.is_empty(): return {"error": refusal}
 	if _txn_depth == 0:
+		if _change_in_progress(): return {"error": "%s already has a change in progress" % _path}
+		var hold: Dictionary = step.nested(CoordGuard.SHARED)
+		if hold.has("error"): return {"error": str(hold.error)}
 		_last_sql_error = ""
 		_pending_changes = []
 		var error := _exec_checked("BEGIN IMMEDIATE TRANSACTION;")
-		if not error.is_empty(): return {"error": error}
-		_txn_owner = step
+		if not error.is_empty():
+			hold.operation.close()
+			return {"error": error}
+		_txn_owner = hold.operation
 		_txn_error = ""
 	elif not _txn_error.is_empty():
 		return {"error": _txn_error}
@@ -1740,11 +1772,16 @@ func _begin_transaction(step: RefCounted) -> Dictionary:
 
 
 ## Completes the scope admitted with `ticket`, recording `error` if it
-## failed: "" or the transaction's error. A ticket completes once; an unknown
-## one changes nothing.
-func _complete_transaction(ticket: int, error: String = "") -> String:
+## failed: "" or the transaction's error. `step` is a live step of the
+## operation that owns the transaction. A ticket completes once; an unknown
+## ticket, or a step of another operation or thread, changes nothing.
+func _complete_transaction(step: RefCounted, ticket: int, error: String = "") -> String:
+	var refusal := _thread_refusal()
+	if not refusal.is_empty(): return refusal
 	if not _txn_tickets.has(ticket):
 		return "that change was not admitted or has already completed"
+	if not _live(step) or not _txn_owner.same_operation(step):
+		return "only the operation that owns a change on %s can complete it" % _path
 	_txn_tickets.erase(ticket)
 	if not error.is_empty() and _txn_error.is_empty(): _txn_error = error
 	if not _last_sql_error.is_empty() and _txn_error.is_empty(): _txn_error = _last_sql_error
@@ -1755,7 +1792,10 @@ func _complete_transaction(ticket: int, error: String = "") -> String:
 	_pending_changes = []
 	var outcome := _txn_error
 	if outcome.is_empty(): outcome = _exec_checked("COMMIT;")
-	if not outcome.is_empty(): _exec("ROLLBACK;")
+	if not outcome.is_empty():
+		var rollback := _exec_checked("ROLLBACK;")
+		if not rollback.is_empty(): outcome += "; rolling back failed too: %s" % rollback
+	_txn_owner.close()
 	_txn_owner = null
 	_txn_error = ""
 	if outcome.is_empty():
@@ -1764,13 +1804,24 @@ func _complete_transaction(ticket: int, error: String = "") -> String:
 	return outcome
 
 
-func _on_owner_thread() -> bool:
+## Whether a change is in progress on this connection: a transaction,
+## however it was begun.
+func _change_in_progress() -> bool:
+	return _txn_depth > 0 or _transaction_open
+
+
+# "" on the thread that opened the connection; otherwise why not, touching
+# nothing that thread uses.
+func _thread_refusal() -> String:
 	if _owner_thread == 0 or OS.get_thread_caller_id() == _owner_thread:
-		return true
+		return ""
 	var message := "%s is used only from the thread that opened it" % _path
-	if _last_sql_error.is_empty(): _last_sql_error = message
 	push_error("DocketDB: %s" % message)
-	return false
+	return message
+
+
+func _on_owner_thread() -> bool:
+	return _thread_refusal().is_empty()
 
 
 func _exec(sql: String, bindings: Array = []) -> void:
@@ -1787,7 +1838,8 @@ func _exec(sql: String, bindings: Array = []) -> void:
 
 func _exec_checked(sql: String, bindings: Array = []) -> String:
 	## Like _exec but returns "" on success, error message on failure.
-	if not _on_owner_thread(): return "%s is used only from the thread that opened it" % _path
+	var refusal := _thread_refusal()
+	if not refusal.is_empty(): return refusal
 	var ok: bool
 	if bindings.is_empty():
 		ok = _db.query(sql)

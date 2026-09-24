@@ -167,8 +167,7 @@ func get_path() -> String:
 
 
 func close() -> void:
-	if _mutation_depth > 0: return
-	# Durable mutations already replace canonical JSONL before reporting success.
+	# Refused (DocketDB.close_checked) while a mutation is in progress. Durable mutations already replace canonical JSONL before reporting success.
 	# Close only releases the disposable cache, so read-only sessions and rejected
 	# operations cannot normalize or rewrite source bytes as a side effect.
 	super.close()
@@ -293,7 +292,14 @@ func _mutation_precheck() -> String:
 	return ""
 
 
+## A canonical mutation is a change in progress too (DocketDB).
+func _change_in_progress() -> bool:
+	return super() or _mutation_depth > 0
+
+
 func _begin_canonical_mutation() -> String:
+	var refusal := _thread_refusal()
+	if not refusal.is_empty(): return refusal
 	if _mutation_depth > 0 and OS.get_thread_caller_id() != _mutation_thread:
 		return "another change to this project is in progress"
 	if _mutation_depth > 0 and (not _mutation_error.is_empty() or not _last_sql_error.is_empty()):

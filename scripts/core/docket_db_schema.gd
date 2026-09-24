@@ -365,16 +365,19 @@ static func migrate_schema(db: DocketDB, op: RefCounted) -> void:
 			break
 	if to_id_has_fk:
 		db._write(op, "PRAGMA foreign_keys=OFF;")
-		db._write(op, "BEGIN TRANSACTION;")
-		db._write(op, """CREATE TABLE item_links_new (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			from_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-			to_id TEXT NOT NULL,
-			relation TEXT NOT NULL
-		);""")
-		db._write(op, "INSERT INTO item_links_new SELECT * FROM item_links;")
-		db._write(op, "DROP TABLE item_links;")
-		db._write(op, "ALTER TABLE item_links_new RENAME TO item_links;")
-		db._write(op, "CREATE INDEX IF NOT EXISTS idx_links_from ON item_links(from_id);")
-		db._write(op, "COMMIT;")
+		var txn := db._begin_transaction(op)
+		if txn.has("ticket"):
+			db._write(op, """CREATE TABLE item_links_new (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				from_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+				to_id TEXT NOT NULL,
+				relation TEXT NOT NULL
+			);""")
+			db._write(op, "INSERT INTO item_links_new SELECT * FROM item_links;")
+			db._write(op, "DROP TABLE item_links;")
+			db._write(op, "ALTER TABLE item_links_new RENAME TO item_links;")
+			db._write(op, "CREATE INDEX IF NOT EXISTS idx_links_from ON item_links(from_id);")
+			db._complete_transaction(op, txn.ticket)
+		elif db._last_sql_error.is_empty():
+			db._last_sql_error = txn.error
 		db._write(op, "PRAGMA foreign_keys=ON;")
