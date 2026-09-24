@@ -35,7 +35,20 @@ static func is_sqlite_dct(path: String) -> bool:
 	return header_str.begins_with("SQLite format 3")
 
 
+## Replaces the file, within a SHARED coordination operation; null when
+## there is none to be had.
 static func migrate(json_path: String) -> DocketDB:
+	var lease := CoordLease.shared()
+	if lease.has("error"):
+		# Callers report DocketDBJsonl.last_open_error when opening fails.
+		DocketDBJsonl.last_open_error = lease.error
+		push_error("DocketMigration: %s" % lease.error)
+		return null
+	var result := _migrate(json_path)
+	lease.operation.close()
+	return result
+
+static func _migrate(json_path: String) -> DocketDB:
 	## Migrate a JSON .dct to SQLite .dct. Returns the opened DocketDB.
 	## Creates a .json.bak backup of the original file.
 	printerr("DocketMigration: migrating %s from JSON to SQLite..." % json_path)

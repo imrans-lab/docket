@@ -62,7 +62,16 @@ static func detect_format(path: String) -> String:
 
 # -- Migration ----------------------------------------------------------------
 
+## Replaces the file, within a SHARED coordination operation; see
+## _migrate_to_jsonl for the steps.
 static func migrate_to_jsonl(sqlite_path: String) -> Dictionary:
+	var lease := CoordLease.shared()
+	if lease.has("error"): return {"success": false, "error": lease.error}
+	var result := _migrate_to_jsonl(sqlite_path)
+	lease.operation.close()
+	return result
+
+static func _migrate_to_jsonl(sqlite_path: String) -> Dictionary:
 	## Convert a SQLite .dct file to JSONL format.
 	##
 	## Steps:

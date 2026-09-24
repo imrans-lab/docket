@@ -6,6 +6,15 @@ class_name DocketDBJsonl
 ## Mutations pass a source-freshness gate, update the disposable SQLite cache,
 ## then rewrite the entire JSONL file atomically.
 ##
+## Writes to the file or the cache run within a SHARED coordination operation
+## (CoordLease) that they own, from the freshness check through the commit,
+## the file write and any cleanup after a failure; a mutation's operation
+## belongs to its outermost level. When there is no operation to be had the
+## write is refused, and so is opening, which may rebuild or migrate the cache.
+## (Still without one: checkpointing a cache, also when closing it, setting
+## its fingerprint directly, and the diagnostic logs log_transition and
+## log_mcp_error write to it.)
+##
 ## Opening flow:
 ##   1. If JSONL exists and cache is fresh → open cache via DocketDB.open()
 ##   2. If cache is stale or missing → rebuild from JSONL via JSONLCache
@@ -19,6 +28,15 @@ var _lock_timeout_ms: int = 5000
 var _atomic_write_hook: Callable
 var _mutation_depth: int = 0
 var _mutation_error: String = ""
+# The coordination operation (CoordLease) the outermost mutation holds, and
+# the thread running it: only that thread's nested calls may join it.
+var _mutation_operation: RefCounted = null
+var _mutation_thread: int = 0
+# True from a mutation's admission until it has released its operation. A
+# change started meanwhile by something the mutation itself triggers (an
+# items_changed listener during a reload, say) is refused rather than let it
+# take over or drop the outer mutation's operation.
+var _mutation_busy := false
 # items_changed (DocketDB) is reported once a mutation is committed AND
 # saved to the file; a rollback or failed save reports nothing. A reload from
 # the file (a change made outside this process, or docket_reload) is reported
@@ -44,18 +62,14 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 		push_error("DocketDBJsonl: %s" % last_open_error)
 		return null
 
-	# Rebuild or reuse cache
-	var cache_db: DocketDB
-	if JSONLCache.is_cache_valid(path, cache_path):
-		# Open cache directly — faster than rebuilding
-		var temp_db := DocketDB.new()
-		if temp_db.open(cache_path):
-			cache_db = temp_db
-		else:
-			push_warning("DocketDBJsonl: stale cache, rebuilding from %s" % path)
-			cache_db = JSONLCache.rebuild_cache(path, cache_path)
-	else:
-		cache_db = JSONLCache.rebuild_cache(path, cache_path)
+	# Opening may rebuild or migrate the cache, so it needs an operation too.
+	var lease := CoordLease.shared()
+	if lease.has("error"):
+		last_open_error = lease.error
+		push_error("DocketDBJsonl: %s" % last_open_error)
+		return null
+	var cache_db := _open_cache(path, cache_path)
+	lease.operation.close()
 
 	if cache_db == null:
 		# Carry the specific reason (e.g. conflict markers) up to the caller so
@@ -74,9 +88,35 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 	return wrapper
 
 
+static func _open_cache(path: String, cache_path: String) -> DocketDB:
+	var cache_db: DocketDB
+	if JSONLCache.is_cache_valid(path, cache_path):
+		# Open cache directly — faster than rebuilding
+		var temp_db := DocketDB.new()
+		if temp_db.open(cache_path):
+			cache_db = temp_db
+		else:
+			push_warning("DocketDBJsonl: stale cache, rebuilding from %s" % path)
+			cache_db = JSONLCache.rebuild_cache(path, cache_path)
+	else:
+		cache_db = JSONLCache.rebuild_cache(path, cache_path)
+	return cache_db
+
+
 static func create_new_jsonl(path: String) -> DocketDBJsonl:
 	## Create a brand-new JSONL-backed docket at the canonical `.dct` path.
 	## Writes a 2.0 file with complete starter definitions and creates its cache.
+	var lease := CoordLease.shared()
+	if lease.has("error"):
+		last_open_error = lease.error
+		push_error("DocketDBJsonl: %s" % lease.error)
+		return null
+	var created := _create_new_jsonl(path)
+	lease.operation.close()
+	return created
+
+
+static func _create_new_jsonl(path: String) -> DocketDBJsonl:
 	var wrapper := DocketDBJsonl.new()
 	wrapper._jsonl_path = path
 	wrapper._allow_initial_write = true
@@ -162,12 +202,22 @@ func ensure_fresh() -> bool:
 	return reload()
 
 
-func reload(report_change: bool = true) -> bool:
+func reload(report_change: bool = true, parent: RefCounted = null) -> bool:
 	## Force a rebuild of the SQLite cache from the canonical JSONL file,
-	## discarding cached state. Returns true on success.
+	## discarding cached state. Returns true on success. Within `parent` (a
+	## coordination operation) when given, else in an operation of its own.
 	if _mutation_depth > 0 or _jsonl_path.is_empty():
 		return false
+	var lease := CoordLease.shared(parent)
+	if lease.has("error"):
+		last_write_error = lease.error
+		return false
+	var reloaded := _reload(report_change)
+	lease.operation.close()
+	return reloaded
 
+
+func _reload(report_change: bool) -> bool:
 	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 
 	# Release our connection first so the rebuild can replace the cache file
@@ -205,7 +255,9 @@ func flush() -> void:
 func flush_checked() -> String:
 	## An empty result inside a nested mutation means the flush is deferred; the
 	## outermost completion remains responsible for durable commit and errors.
-	return _flush_jsonl()
+	var error := CoordLease.run(_flush_jsonl)
+	if not error.is_empty(): last_write_error = error
+	return error
 
 
 func _adopt(source: DocketDB) -> void:
@@ -233,7 +285,7 @@ func _mutation_precheck() -> String:
 		_write_blocked = true
 		last_write_error = "canonical source is missing; project is read-only"
 		return last_write_error
-	if is_stale() and not reload():
+	if is_stale() and not reload(true, _mutation_operation):
 		_write_blocked = true
 		if last_write_error.is_empty(): last_write_error = "canonical source could not be reloaded"
 		return last_write_error
@@ -241,15 +293,28 @@ func _mutation_precheck() -> String:
 
 
 func _begin_canonical_mutation() -> String:
+	if _mutation_depth > 0 and OS.get_thread_caller_id() != _mutation_thread:
+		return "another change to this project is in progress"
 	if _mutation_depth > 0 and (not _mutation_error.is_empty() or not _last_sql_error.is_empty()):
 		return _mutation_error if not _mutation_error.is_empty() else _last_sql_error
 	if _mutation_depth == 0:
+		if _mutation_busy: return "another change to this project is in progress"
+		# Held from before the freshness check until the outermost completion.
+		var lease := CoordLease.shared()
+		if lease.has("error"): return lease.error
+		_mutation_busy = true
+		_mutation_operation = lease.operation
+		_mutation_thread = OS.get_thread_caller_id()
 		var precheck := _mutation_precheck()
-		if not precheck.is_empty(): return precheck
+		if not precheck.is_empty():
+			_close_mutation_operation()
+			return precheck
 		_last_sql_error = ""
 		_pending_changes = []
 		_mutation_error = _exec_checked("BEGIN TRANSACTION;")
-		if not _mutation_error.is_empty(): return _mutation_error
+		if not _mutation_error.is_empty():
+			_close_mutation_operation()
+			return _mutation_error
 	_mutation_depth += 1
 	return ""
 
@@ -263,17 +328,28 @@ func _complete_canonical_mutation(error: String = "") -> String:
 	if not _mutation_error.is_empty():
 		var failed := _mutation_error
 		_rollback()
-		reload(is_stale())  # reports another writer's change it adopts, not ours
+		reload(is_stale(), _mutation_operation)  # reports another writer's change it adopts, not ours
 		last_write_error = failed
 		_mutation_error = ""
+		_close_mutation_operation()
 		return failed
 	var flush_error := _flush_jsonl()
 	_mutation_error = ""
+	# Listeners hear of the change only once the operation is given back, so
+	# one that makes a change of its own starts it as a separate operation.
+	_close_mutation_operation()
 	if flush_error.is_empty():
 		super._report_changes()
 	else:
 		_pending_changes = []
 	return flush_error
+
+
+func _close_mutation_operation() -> void:
+	if _mutation_operation != null:
+		_mutation_operation.close()
+		_mutation_operation = null
+	_mutation_busy = false
 
 
 ## Held until _complete_canonical_mutation has saved the file.
@@ -284,6 +360,10 @@ func _report_changes() -> void:
 func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
 	## One checked cache transaction stages the immutable snapshot, current
 	## pointer, item pins, and audit events before one canonical replacement.
+	return CoordLease.run(_apply_registry_change.bind(type_def, revision, item_bindings, events, expected_current_revision))
+
+
+func _apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
 	var error := _mutation_precheck()
 	if not error.is_empty(): return error
 	_last_sql_error = ""
@@ -390,7 +470,7 @@ func _fail_flush(message: String) -> String:
 		# SQLite is disposable. Rebuilding it restores the last canonical state so
 		# a failed compound write cannot leak into a later successful flush. The
 		# failed change is not reported; another writer's change it adopts is.
-		reload(is_stale())
+		reload(is_stale(), _mutation_operation)
 		last_write_error = message
 	else:
 		_write_blocked = true
@@ -436,6 +516,10 @@ static func _atomic_write(path: String, content: String) -> String:
 
 
 func insert_item(id: String, item: Dictionary) -> String:
+	return CoordLease.run(_insert_item.bind(id, item))
+
+
+func _insert_item(id: String, item: Dictionary) -> String:
 	var source_error := _mutation_precheck()
 	if not source_error.is_empty(): return source_error
 	var candidate := item.duplicate(true)

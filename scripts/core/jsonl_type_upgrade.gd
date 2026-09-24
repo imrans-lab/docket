@@ -36,7 +36,15 @@ static func preview(path: String, schema: Dictionary = {}) -> Dictionary:
 	if not result.ok: result.error = "unresolved item definitions must be repaired before upgrade"
 	return result
 
+## Rewrites the file in place, within a SHARED coordination operation.
 static func apply(path: String, expected_preview: Dictionary, schema: Dictionary = {}, exclusive_writer_confirmed: bool = false) -> Dictionary:
+	var lease := CoordLease.shared()
+	if lease.has("error"): return {"ok": false, "error": lease.error}
+	var result := _apply(path, expected_preview, schema, exclusive_writer_confirmed)
+	lease.operation.close()
+	return result
+
+static func _apply(path: String, expected_preview: Dictionary, schema: Dictionary, exclusive_writer_confirmed: bool) -> Dictionary:
 	if not exclusive_writer_confirmed: return {"ok": false, "error": "confirm exclusive upgrade workflow with incompatible writers stopped"}
 	var checked := preview(path, schema)
 	if not checked.ok: return checked
@@ -68,7 +76,15 @@ static func apply(path: String, expected_preview: Dictionary, schema: Dictionary
 	if not cache_error.is_empty(): return {"ok": false, "error": cache_error, "backup_path": backup_path, "upgraded_hash": upgraded_hash}
 	return {"ok": true, "backup_path": backup_path, "cache_path": checked.cache_path, "items": checked.items, "definitions": checked.definitions, "upgraded_hash": upgraded_hash}
 
+## Restores the file in place, within a SHARED coordination operation.
 static func rollback(path: String, expected_upgraded_hash: String) -> Dictionary:
+	var lease := CoordLease.shared()
+	if lease.has("error"): return {"ok": false, "error": lease.error}
+	var result := _rollback(path, expected_upgraded_hash)
+	lease.operation.close()
+	return result
+
+static func _rollback(path: String, expected_upgraded_hash: String) -> Dictionary:
 	var backup_path := path + ".pre-v2.bak"
 	if not FileAccess.file_exists(backup_path): return {"ok": false, "error": "rollback snapshot is missing"}
 	if expected_upgraded_hash.is_empty() or FileAccess.get_sha256(path) != expected_upgraded_hash: return {"ok": false, "error": "upgraded source changed; refusing destructive rollback"}
