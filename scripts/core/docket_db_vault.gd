@@ -228,8 +228,9 @@ func delete_secret(handle: String) -> bool:
 ## of `op` (or an operation of its own): {deleted, error}, `deleted` false
 ## when there was none or the deletion failed.
 func delete_secret_checked(handle: String, op: RefCounted = null) -> Dictionary:
-	var result: Variant = _writing(op, _delete_secret.bind(handle))
-	return result if result is Dictionary else {"deleted": false, "error": _last_sql_error}
+	var result := _refused(_writing(op, _delete_secret.bind(handle)))
+	if not result.has("deleted"): result["deleted"] = false
+	return result
 
 
 func _delete_secret(step: RefCounted, handle: String) -> Dictionary:

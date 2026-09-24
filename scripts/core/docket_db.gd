@@ -26,7 +26,8 @@ func open(path: String, op: RefCounted = null) -> bool:
 		if _last_sql_error.is_empty(): _last_sql_error = refusal
 		push_error("DocketDB: %s" % refusal)
 		return false
-	return _writing(op, _open.bind(path)) == true
+	var opened: Variant = _writing(op, _open.bind(path))
+	return opened is bool and opened
 
 
 func _open(step: RefCounted, path: String) -> bool:
@@ -187,8 +188,9 @@ func next_id() -> String:
 ## is read and advanced in one transaction, begun IMMEDIATE, so two writers
 ## cannot take the same number.
 func next_id_checked(op: RefCounted = null) -> Dictionary:
-	var result: Variant = _writing(op, _next_id)
-	return result if result is Dictionary else {"id": "", "error": _last_sql_error}
+	var result := _refused(_writing(op, _next_id))
+	if not result.has("id"): result["id"] = ""
+	return result
 
 
 func _next_id(step: RefCounted) -> Dictionary:
@@ -1259,8 +1261,7 @@ func attach_file(item_id: String, filename: String, data: PackedByteArray, mime:
 	if size_bytes > MAX_ATTACHMENT_BYTES:
 		push_error("DocketDB: attachment too large: %d bytes (max %d)" % [size_bytes, MAX_ATTACHMENT_BYTES])
 		return {"error": "File too large: %d bytes (max 5 MB)" % size_bytes}
-	var result: Variant = _writing(op, _attach_file.bind(item_id, filename, data, mime, desc))
-	return result if result is Dictionary else {"error": _last_sql_error}
+	return _refused(_writing(op, _attach_file.bind(item_id, filename, data, mime, desc)))
 
 
 # The row and the id SQLite gives it are read in one transaction.

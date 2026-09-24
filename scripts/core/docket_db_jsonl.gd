@@ -11,9 +11,7 @@ class_name DocketDBJsonl
 ## the file write and any cleanup after a failure; a mutation's operation
 ## belongs to its outermost level. When there is no operation to be had the
 ## write is refused, and so is opening, which may rebuild or migrate the cache.
-## (Still without one: checkpointing a cache, also when closing it, setting
-## its fingerprint directly, and the diagnostic logs log_transition and
-## log_mcp_error write to it.)
+## (A cache rebuild's writes take operations of their own.)
 ##
 ## Opening flow:
 ##   1. If JSONL exists and cache is fresh → open cache via DocketDB.open()
@@ -381,7 +379,7 @@ func _complete_canonical_mutation(error: String = "") -> String:
 
 func _canonical(op: RefCounted, work: Callable) -> Dictionary:
 	var result: Variant = _writing(op, _canonical_step.bind(work))
-	if not result is Dictionary: return {"error": _last_sql_error}
+	if not result is Dictionary: return _refused(result)
 	if not _change_in_progress():
 		if str(result.error).is_empty(): super._report_changes()
 		else: _pending_changes = []

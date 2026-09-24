@@ -46,15 +46,21 @@ signal items_changed(changes: Array)
 
 ## `work` called with the step it must pass to every write (first argument,
 ## before any bound ones), within a step of `parent` or, when that is null, a
-## SHARED operation of its own. Returns what `work` returns, or null after a
-## refusal (the reason in _last_sql_error). `work` must not await. Changes a
+## SHARED operation of its own. Returns what `work` returns, or the reason
+## it was refused (a String; see _refused), which for a failed coordination
+## step is also kept in _last_sql_error. `work` must not await. Changes a
 ## settled transaction left to report are reported once the step is given
 ## back, so a listener that makes a change starts it separately.
+##
+## From another thread nothing is touched, not even the coordination objects
+## (which are for the main thread only); the refusal is only returned.
 func _writing(parent: RefCounted, work: Callable) -> Variant:
+	var refusal := _thread_refusal()
+	if not refusal.is_empty(): return refusal
 	var opened := CoordLease.shared(parent)
 	if opened.has("error"):
 		_last_sql_error = opened.error
-		return null
+		return str(opened.error)
 	var result: Variant = work.call(opened.operation)
 	opened.operation.close()
 	if not _change_in_progress(): _report_changes()
@@ -65,6 +71,12 @@ func _writing(parent: RefCounted, work: Callable) -> Variant:
 func _writing_text(parent: RefCounted, work: Callable) -> String:
 	var result: Variant = _writing(parent, work)
 	return result if result is String else _last_sql_error
+
+
+## For work returning a Dictionary with an "error" entry: `result` of
+## _writing as such, a refusal included.
+static func _refused(result: Variant) -> Dictionary:
+	return result if result is Dictionary else {"error": str(result)}
 
 
 var _guard := CoordGuard.new()

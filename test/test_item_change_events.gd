@@ -201,3 +201,27 @@ func test_sqlite_deletion_failing_at_its_last_step_changes_and_reports_nothing()
 	return A.is_true(error.is_empty() and changes == [{"id": id, "event": "deleted"}] and not db.has_item(id)
 		and db.get_secret_raw(id).is_empty() and db.get_secret_raw("owned-elsewhere").is_empty() and db.get_secret_versions(id).is_empty(),
 		"retried, it deletes all of them and reports the deletion once: %s %s" % [error, changes])
+
+
+func test_a_checked_change_from_another_thread_is_refused_and_changes_nothing() -> Variant:
+	var dir := OS.get_cache_dir().path_join("docket_changes_%d" % Time.get_ticks_usec())
+	DirAccess.make_dir_recursive_absolute(dir)
+	_dirs.append(dir)
+	var path := dir.path_join("threads.dct")
+	_paths.append(path)
+	var db := DocketDBJsonl.create_new_jsonl(path)
+	_open.append(db)
+	db.set_project_name("threads")
+	var saved := FileAccess.get_file_as_string(path)
+	var owner := db._owner_thread
+	var changes: Array = []
+	db.items_changed.connect(func(batch: Array): changes.append_array(batch))
+
+	# Refused before any coordination or file work: those belong to the
+	# connection's own thread.
+	var worker := Thread.new()
+	worker.start(func() -> String: return db.set_project_name_checked("changed elsewhere"))
+	var error: String = worker.wait_to_finish()
+	return A.is_true(error.contains("thread") and db._owner_thread == owner and FileAccess.get_file_as_string(path) == saved
+		and changes.is_empty() and db.get_project_name() == "threads",
+		"the change is refused with the thread as the reason, and nothing changed: %s" % error)
