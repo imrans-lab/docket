@@ -5,7 +5,8 @@ class_name DocketHttpServer
 ##   - "http": TCPServer-based MCP Streamable HTTP (POST /mcp on 127.0.0.1);
 ##   - "stdio": newline-delimited JSON-RPC on stdin/stdout, for a host that
 ##     runs Docket as its child process. Only responses and notifications
-##     reach stdout then (run Godot with --quiet to keep its banner off it;
+##     reach stdout then (run Godot with --no-header to keep its banner off
+##     it; --quiet would silence every reply, so stdio refuses it;
 ##     project.godot flushes stdout on every print, so each line is sent);
 ##     the process exits when the host closes stdin.
 ## Supports multiple .dct files loaded simultaneously.
@@ -45,6 +46,11 @@ var _next_stale_check := 0
 
 func _ready() -> void:
 	if transport == "stdio":
+		if "--quiet" in OS.get_cmdline_args():
+			printerr("Docket: --stdio cannot run with --quiet, which silences its replies; use --no-header")
+			set_process(false)
+			get_tree().quit(1)
+			return
 		_stdin_thread = Thread.new()
 		_stdin_thread.start(_read_stdin)
 	else:
