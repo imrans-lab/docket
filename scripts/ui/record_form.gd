@@ -8,20 +8,20 @@ signal back_pressed
 signal child_opened(id: String, project: String)
 
 const Vault := preload("res://scripts/ui/record_form_vault.gd")
+const Comments := preload("res://scripts/ui/record_form_comments.gd")
 ## What a write returns when the form moved to another item while it waited,
 ## so nothing was written.
 const MOVED_ON := "the form moved to another item before saving"
 
 var _src  # DocketSource
 var _vault  # Vault: this form's vault controls' behaviour
+var _comments  # Comments: this form's comment controls' behaviour
 # Bumped whenever the form starts showing another item or draft; an async
 # step that finds it changed drops its result (see _still_showing).
 var _load_generation := 0
 # True while a save or transition is in flight, so a second click cannot
 # submit the same edits twice.
 var _writing := false
-# True while a comment is being added, for the same reason.
-var _commenting := false
 var _current_id: String = ""
 var _fields_grid: GridContainer
 var _title_edit: LineEdit
@@ -187,6 +187,7 @@ var _move_btn: Button  # "Move to..." button (visible when 2+ projects, item sav
 func init(source) -> void:
 	_src = source
 	_vault = Vault.new(self)
+	_comments = Comments.new(self)
 	_src.file_changed.connect(_on_file_changed)
 	_build_ui()
 
@@ -862,7 +863,7 @@ func _build_ui() -> void:
 	_comments_toggle.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_comments_toggle.flat = true
 	_comments_toggle.add_theme_font_size_override("font_size", 14)
-	_comments_toggle.pressed.connect(_on_comments_toggle)
+	_comments_toggle.pressed.connect(_comments.toggle)
 	_body_vbox.add_child(_comments_toggle)
 
 	_comments_container = VBoxContainer.new()
@@ -882,7 +883,7 @@ func _build_ui() -> void:
 	comment_input_row.add_child(_comment_input)
 	_comment_add_btn = Button.new()
 	_comment_add_btn.text = "Add"
-	_comment_add_btn.pressed.connect(_on_add_comment)
+	_comment_add_btn.pressed.connect(_comments.submit)
 	comment_input_row.add_child(_comment_add_btn)
 	_comments_container.add_child(comment_input_row)
 
@@ -1292,7 +1293,7 @@ func load_item(id: String, project: String = "") -> void:
 	if type_name == "discussion":
 		_comments_container.visible = true
 		_comments_toggle.text = "v Comments"
-	_populate_comments()
+	_comments.populate()
 	_loading = false
 
 
@@ -1704,192 +1705,6 @@ func _on_events_toggle() -> void:
 		_events_toggle.text = "v Transitions & Events"
 	else:
 		_events_toggle.text = "> Transitions & Events"
-
-
-func _on_comments_toggle() -> void:
-	_comments_container.visible = not _comments_container.visible
-	if _comments_container.visible:
-		_comments_toggle.text = "v Comments"
-	else:
-		_comments_toggle.text = "> Comments"
-
-
-func _on_add_comment() -> void:
-	if _current_id.is_empty():
-		return
-	var text := _comment_input.text.strip_edges()
-	if text.is_empty():
-		return
-	if _commenting:
-		return
-	_commenting = true
-	var generation := _load_generation
-	var added: Dictionary = await _src.add_comment(_current_project, _current_id, _src.prefs().get_display_name(), text)
-	_commenting = false
-	if added.has("error"):
-		_show_error("Comment not added", str(added.error))  # the typed text stays
-		return
-	if _comment_input.text.strip_edges() == text:
-		_comment_input.text = ""
-	if _still_showing(generation):
-		_refresh_comments_and_events()
-
-
-func _on_accept_comment(comment_id: int) -> void:
-	var resolved: Dictionary = await _src.resolve_comment(_current_project, comment_id, "accepted", _src.prefs().get_display_name())
-	if resolved.has("error"):
-		_show_error("Comment not resolved", str(resolved.error))
-		return
-	_refresh_comments_and_events()
-
-
-func _on_reject_comment(comment_id: int) -> void:
-	var resolved: Dictionary = await _src.resolve_comment(_current_project, comment_id, "rejected", _src.prefs().get_display_name())
-	if resolved.has("error"):
-		_show_error("Comment not resolved", str(resolved.error))
-		return
-	_refresh_comments_and_events()
-
-
-func _on_reply_comment(comment_id: int) -> void:
-	if _current_id.is_empty():
-		return
-	var text := _comment_input.text.strip_edges()
-	if text.is_empty():
-		return
-	if _commenting:
-		return
-	_commenting = true
-	var generation := _load_generation
-	var added: Dictionary = await _src.add_comment(_current_project, _current_id, _src.prefs().get_display_name(), text, comment_id)
-	_commenting = false
-	if added.has("error"):
-		_show_error("Comment not added", str(added.error))  # the typed text stays
-		return
-	if _comment_input.text.strip_edges() == text:
-		_comment_input.text = ""
-	if _still_showing(generation):
-		_refresh_comments_and_events()
-
-
-func _refresh_comments_and_events() -> void:
-	var generation := _load_generation
-	await _populate_comments()
-	var events: Array = await _src.item_events(_current_project, _current_id)
-	if not _still_showing(generation):
-		return
-	if not events.is_empty():
-		_populate_events({"events": events})
-	item_changed.emit()
-
-
-func _populate_comments() -> void:
-	# Cleared before and after the reply, as in _populate_children.
-	for child in _comments_list.get_children():
-		child.queue_free()
-	if _current_id.is_empty():
-		return
-	var generation := _load_generation
-	var comments: Array = await _src.list_comments(_current_project, _current_id)
-	if not _still_showing(generation):
-		return
-	for child in _comments_list.get_children():
-		child.queue_free()
-
-	# Update toggle label with count
-	var prefix := "v" if _comments_container.visible else ">"
-	if comments.size() > 0:
-		_comments_toggle.text = "%s Comments (%d)" % [prefix, comments.size()]
-	else:
-		_comments_toggle.text = "%s Comments" % prefix
-
-	for c in comments:
-		var cid: int = int(c.get("id", 0))
-		var parent_id: int = int(c.get("parent_id", 0))
-		var status_str: String = str(c.get("status", "open"))
-		var author_str: String = str(c.get("author", ""))
-		var text_str: String = str(c.get("text", ""))
-
-		var comment_vbox := VBoxContainer.new()
-		comment_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-		# Indent replies
-		if parent_id > 0:
-			var margin := MarginContainer.new()
-			margin.add_theme_constant_override("margin_left", 24)
-			margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			margin.add_child(comment_vbox)
-			_comments_list.add_child(margin)
-		else:
-			_comments_list.add_child(comment_vbox)
-
-		# Header row: indicator + initials + status badge
-		var header := HBoxContainer.new()
-		var indicator := Label.new()
-		match status_str:
-			"open":
-				indicator.text = "o"
-				indicator.add_theme_color_override("font_color", Color(1.0, 0.7, 0.2))
-			"accepted":
-				indicator.text = "+"
-				indicator.add_theme_color_override("font_color", Color(0.4, 0.8, 0.4))
-			"rejected":
-				indicator.text = "-"
-				indicator.add_theme_color_override("font_color", Color(0.8, 0.4, 0.4))
-		header.add_child(indicator)
-
-		var initials_label := Label.new()
-		var parts := author_str.split(" ")
-		var initials := ""
-		for p in parts:
-			if not p.is_empty():
-				initials += p[0].to_upper()
-		if initials.is_empty():
-			initials = "?"
-		initials_label.text = "[%s]" % initials
-		initials_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.7))
-		header.add_child(initials_label)
-
-		if parent_id > 0:
-			var reply_tag := Label.new()
-			reply_tag.text = "reply"
-			reply_tag.add_theme_color_override("font_color", Color(0.5, 0.5, 0.6))
-			reply_tag.add_theme_font_size_override("font_size", 11)
-			header.add_child(reply_tag)
-
-		comment_vbox.add_child(header)
-
-		# Comment text
-		var text_label := Label.new()
-		text_label.text = text_str
-		text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		comment_vbox.add_child(text_label)
-
-		# Action buttons (small, inline) for open comments
-		if status_str == "open":
-			var btn_row := HBoxContainer.new()
-			btn_row.add_theme_constant_override("separation", 4)
-
-			var accept_btn := Button.new()
-			accept_btn.text = "Accept"
-			accept_btn.add_theme_font_size_override("font_size", 11)
-			accept_btn.pressed.connect(_on_accept_comment.bind(cid))
-			btn_row.add_child(accept_btn)
-
-			var reject_btn := Button.new()
-			reject_btn.text = "Reject"
-			reject_btn.add_theme_font_size_override("font_size", 11)
-			reject_btn.pressed.connect(_on_reject_comment.bind(cid))
-			btn_row.add_child(reject_btn)
-
-			var reply_btn := Button.new()
-			reply_btn.text = "Reply"
-			reply_btn.add_theme_font_size_override("font_size", 11)
-			reply_btn.pressed.connect(_on_reply_comment.bind(cid))
-			btn_row.add_child(reply_btn)
-
-			comment_vbox.add_child(btn_row)
 
 
 func _on_transition(target: String) -> void:

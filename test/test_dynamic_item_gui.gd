@@ -241,7 +241,7 @@ func test_duplicate_ids_route_form_and_comments_to_explicit_project() -> Variant
 	if r is String:
 		return r
 	form._comment_input.text = "Beta comment"
-	form._on_add_comment()
+	form._comments.submit()
 	r = A.is_true(alpha.db.list_comments(duplicate_id).is_empty() and beta_db.list_comments(duplicate_id).size() == 1, "comment service routing retains the explicit project origin")
 	if r is String:
 		return r
