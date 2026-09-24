@@ -640,7 +640,26 @@ func export_item_full_checked(id: String) -> Dictionary:
 
 
 func import_item_full(new_id: String, exported: Dictionary) -> void:
-	## Import a full item export under a new ID. Adds a "moved" event.
+	var error := import_item_full_checked(new_id, exported)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Imports a full item export (export_item_full) under `new_id`, adding a
+## "moved" event, all or nothing, within a step of `op` (or an operation of
+## its own): "" or why not.
+func import_item_full_checked(new_id: String, exported: Dictionary, op: RefCounted = null) -> String:
+	return _writing_text(op, _import_item_full.bind(new_id, exported))
+
+
+func _import_item_full(step: RefCounted, new_id: String, exported: Dictionary) -> String:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return txn.error
+	return _complete_transaction(step, txn.ticket, _import_item_rows(step, new_id, exported))
+
+
+# A failed write fails the transaction (see _write); a malformed comment
+# thread is returned as the failure.
+func _import_item_rows(step: RefCounted, new_id: String, exported: Dictionary) -> String:
 	var item_data: Dictionary = exported.get("item", {})
 	item_data["id"] = new_id
 	for envelope in ["fields", "extras"]:
@@ -662,23 +681,23 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 		placeholders.append("?")
 		bindings.append(title)
 	var sql := "INSERT INTO items (%s) VALUES (%s);" % [",".join(cols), ",".join(placeholders)]
-	if _exec_checked(sql, bindings).is_empty():
+	if _write_checked(step, sql, bindings).is_empty():
 		_record_change(new_id, "created")
 
 	# Tags
 	var tags: Array = exported.get("tags", [])
 	for tag in tags:
-		_exec("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [new_id, str(tag)])
+		_write(step, "INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [new_id, str(tag)])
 
 	# Events (preserve existing + add moved event)
 	var events: Array = exported.get("events", [])
 	for ev in events:
-		_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
+		_write(step, "INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 			[new_id, str(ev.get("event_type", "")), str(ev.get("actor", "")),
 			 str(ev.get("timestamp", "")), str(ev.get("note", ""))])
 	# Add "moved" event
 	var ts := Time.get_datetime_string_from_system(true)
-	_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
+	_write(step, "INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 		[new_id, "moved", "", ts, "Moved to this project as %s" % new_id])
 
 	# Links
@@ -687,10 +706,10 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 		var to_id: String = str(link.get("to", ""))
 		var relation: String = str(link.get("relation", ""))
 		if not to_id.is_empty() and not relation.is_empty():
-			_exec("INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);",
+			_write(step, "INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);",
 				[new_id, to_id, relation])
 
-	# Comments
+	# Comments, parents before replies (new ids are mapped as they are made)
 	var comments: Array = exported.get("comments", [])
 	var comment_ids := {}
 	var pending_comments: Array = comments.duplicate(true)
@@ -701,28 +720,28 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 			var old_id: int = int(c.get("id", 0)); var old_parent: int = int(c.get("parent_id", 0))
 			if old_parent != 0 and not comment_ids.has(old_parent): continue
 			var mapped_parent: int = int(comment_ids.get(old_parent, 0))
-			var comment_error := _exec_checked("INSERT INTO comments (item_id, parent_id, author, text, status, created_at, resolved_at, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?);", [new_id,mapped_parent,str(c.get("author", "")),str(c.get("text", "")),str(c.get("status", "open")),str(c.get("created_at", "")),str(c.get("resolved_at", "")),str(c.get("resolved_by", ""))])
-			if not comment_error.is_empty(): return
+			var comment_error := _write_checked(step, "INSERT INTO comments (item_id, parent_id, author, text, status, created_at, resolved_at, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?);", [new_id,mapped_parent,str(c.get("author", "")),str(c.get("text", "")),str(c.get("status", "open")),str(c.get("created_at", "")),str(c.get("resolved_at", "")),str(c.get("resolved_by", ""))])
+			if not comment_error.is_empty(): return comment_error
 			var inserted: Array = _exec_select("SELECT last_insert_rowid() AS id;")
 			if old_id > 0 and not inserted.is_empty(): comment_ids[old_id] = int(inserted[0].id)
 			pending_comments.remove_at(index); progressed = true
 		if not progressed:
-			if _last_sql_error.is_empty(): _last_sql_error = "comment thread contains an unresolved parent"
-			return
+			return "comment thread contains an unresolved parent"
 
 	# Attachments
 	var attachments: Array = exported.get("attachments", [])
 	for att in attachments:
 		var att_data = att.get("data", PackedByteArray())
 		var size_bytes: int = att_data.size() if att_data is PackedByteArray else 0
-		_exec_checked(
+		_write(step,
 			"INSERT INTO attachments (item_id, filename, mime_type, size_bytes, data, created_at, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
 			[new_id, str(att.get("filename", "")), str(att.get("mime_type", "")),
 			 size_bytes, att_data, str(att.get("created_at", "")),
 			 str(att.get("description", ""))])
 
 	# Update timestamp
-	_exec("UPDATE items SET updated_at=? WHERE id=?;", [ts, new_id])
+	_write(step, "UPDATE items SET updated_at=? WHERE id=?;", [ts, new_id])
+	return ""
 
 
 func delete_item(id: String) -> void:

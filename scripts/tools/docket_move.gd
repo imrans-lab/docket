@@ -170,13 +170,7 @@ func _transfer_ref(reference: String, source_project: String, target_project: St
 
 func _import_checked(db: DocketDB, id: String, exported: Dictionary, registry: TypeRegistry, type_record: Dictionary, revisions: Array, args: Dictionary) -> String:
 	if db is DocketDBJsonl: return registry.import_revisions_and_item(type_record, revisions, id, exported, str(args.get("author", "")), str(args.get("reason", "")))
-	db._last_sql_error = ""
-	db._exec_checked("BEGIN TRANSACTION;")
-	db.import_item_full(id, exported)
-	var error: String = db._last_sql_error
-	if error.is_empty(): error = db._exec_checked("COMMIT;")
-	else: db._rollback()
-	return error
+	return db.import_item_full_checked(id, exported)
 
 func _delete_checked(db: DocketDB, id: String) -> String:
 	return db.delete_item_checked(id)

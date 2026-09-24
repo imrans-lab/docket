@@ -208,8 +208,9 @@ func is_stale() -> bool:
 
 func ensure_fresh() -> bool:
 	## Reload from JSONL if it changed underneath us. Returns true if reloaded.
-	## No-op mid-mutation: a compound write is not a safe point to swap the DB.
-	if _mutation_depth > 0:
+	## No-op mid-mutation: a compound write is not a safe point to swap the DB,
+	## nor is another thread than the connection's.
+	if not _thread_refusal().is_empty() or _change_in_progress():
 		return false
 	if not is_stale():
 		return false
@@ -220,7 +221,7 @@ func reload(report_change: bool = true, parent: RefCounted = null) -> bool:
 	## Force a rebuild of the SQLite cache from the canonical JSONL file,
 	## discarding cached state. Returns true on success. Within `parent` (a
 	## coordination operation) when given, else in an operation of its own.
-	if _mutation_depth > 0 or _jsonl_path.is_empty():
+	if not _thread_refusal().is_empty() or _change_in_progress() or _jsonl_path.is_empty():
 		return false
 	var lease := CoordLease.shared(parent)
 	if lease.has("error"):
@@ -479,8 +480,8 @@ func _flush_jsonl() -> String:
 	## canonical content again after acquisition.
 	if _jsonl_path.is_empty():
 		return "canonical path is empty"
-	if _mutation_depth > 0:
-		return ""  # We're inside a compound mutation — will flush when outermost returns
+	if _change_in_progress():
+		return ""  # Inside a change: the outermost writes the file once it has committed
 	if _write_blocked:
 		return last_write_error
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
@@ -633,21 +634,18 @@ func _delete_item_in_cache(step: RefCounted, id: String) -> Dictionary:
 	return {"error": super.delete_item_checked(id, step)}
 
 
-func import_item_full(new_id: String, exported: Dictionary) -> void:
-	import_item_full_checked(new_id, exported)
-
-
-func import_item_full_checked(new_id: String, exported: Dictionary) -> String:
+func import_item_full_checked(new_id: String, exported: Dictionary, op: RefCounted = null) -> String:
 	var comments: Variant = exported.get("comments", [])
 	if not comments is Array: return "import comments must be an array"
 	for value in comments:
 		if not value is Dictionary: return "import comments must be objects"
 		var comment: Dictionary = value
 		if int(comment.get("id", 0)) <= 0 or str(comment.get("created_at", "")).is_empty(): return "import comment is missing id or created_at"
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	super.import_item_full(new_id, exported)
-	return _complete_canonical_mutation()
+	return str(_canonical(op, _import_item_full_in_cache.bind(new_id, exported)).error)
+
+
+func _import_item_full_in_cache(step: RefCounted, new_id: String, exported: Dictionary) -> Dictionary:
+	return {"error": super.import_item_full_checked(new_id, exported, step)}
 
 
 func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:

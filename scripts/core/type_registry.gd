@@ -20,14 +20,21 @@ var _sqlite_mutation_depth: int = 0
 static var _shared_by_db: Dictionary = {}
 
 # Every public change below runs within a SHARED coordination operation of
-# its own (CoordLease), taken before its freshness check and closed after its
-# mutation, reload and cleanup; refused, with the reason, when there is none.
-# The implementation receives that operation as its first argument.
-func _coordinated_text(work: Callable) -> String:
-	return CoordLease.run(work)
+# its own (CoordLease), or a step of `parent` when it is given, taken before
+# its freshness check and closed after its mutation, reload and cleanup;
+# refused, with the reason, when there is none. The implementation receives
+# that step as its first argument.
+# From another thread than the project's own, a change is refused before any
+# coordination object (main thread only) or freshness check is touched.
+func _coordinated_text(work: Callable, parent: RefCounted = null) -> String:
+	var refusal := _db._thread_refusal() if _db != null else ""
+	if not refusal.is_empty(): return refusal
+	return CoordLease.run(work, parent)
 
 
 func _coordinated_dict(work: Callable) -> Dictionary:
+	var refusal := _db._thread_refusal() if _db != null else ""
+	if not refusal.is_empty(): return {"error": refusal}
 	var lease := CoordLease.shared()
 	if lease.has("error"): return {"error": lease.error}
 	var result: Variant = work.call(lease.operation)
@@ -219,11 +226,12 @@ func revision_ancestry(revision_id: String) -> Dictionary:
 		current = "" if parent == null else str(parent)
 	return {"revisions":chain}
 
-func import_historical_revision(type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool = true) -> String:
-	return _coordinated_text(_import_historical_revision.bind(type_record, revision, author, reason, reload_after))
+## Within a step of `op` when given (import_revisions_and_item passes its own).
+func import_historical_revision(type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool = true, op: RefCounted = null) -> String:
+	return _coordinated_text(_import_historical_revision.bind(type_record, revision, author, reason, reload_after), op)
 
 
-func _import_historical_revision(_step: RefCounted, type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool) -> String:
+func _import_historical_revision(step: RefCounted, type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool) -> String:
 	## Transfers install exact historical meaning without activating it or
 	## replacing an existing current pointer.
 	var refresh_error := refresh_if_changed()
@@ -254,28 +262,38 @@ func _import_historical_revision(_step: RefCounted, type_record: Dictionary, rev
 		var trust_error: String = _validate_definition_trust(type_record, definition)
 		if not trust_error.is_empty(): return trust_error
 	var json_db := _db as DocketDBJsonl
-	var error := json_db._begin_canonical_mutation()
-	if not error.is_empty(): return error
+	var error := str(json_db._canonical(step, _install_historical_revision.bind(type_record, revision, author, reason)).error)
+	if error.is_empty() and reload_after: error = reload()
+	return error
+
+
+# The type's record (new, or its provenance extended with this import) and the
+# revision, within the change _import_historical_revision runs; a failed write
+# fails it (DocketDB._write_checked). Whether the type exists is read from the
+# database, inside the change: an earlier revision of the same import chain
+# may just have created it.
+func _install_historical_revision(step: RefCounted, type_record: Dictionary, revision: Dictionary, author: String, reason: String) -> Dictionary:
+	var definition: Dictionary = revision.definition
+	var type_id: String = str(revision.get("type_id", ""))
+	var revision_id: String = str(revision.get("id", ""))
 	var import_entry := {"revision_id":revision_id,"imported_by":author,"import_reason":reason,"imported_at":Time.get_datetime_string_from_system(true)}
-	if existing.is_empty():
+	var error := ""
+	var stored: Array = _db._exec_select("SELECT provenance_json FROM type_defs WHERE id=?;", [type_id])
+	if stored.is_empty():
 		var provenance: Dictionary = type_record.get("provenance", {}).duplicate(true) if type_record.get("provenance", {}) is Dictionary else {}
 		provenance["imports"] = [import_entry]
 		provenance["protected"] = false
-		error = _db._exec_checked("INSERT INTO type_defs(id,slug,lifecycle,current_revision,provenance_json) VALUES(?,?,?,?,?);", [type_id,definition.slug,"draft",revision_id,JSON.stringify(provenance,"",true,true)])
+		error = _db._write_checked(step, "INSERT INTO type_defs(id,slug,lifecycle,current_revision,provenance_json) VALUES(?,?,?,?,?);", [type_id,definition.slug,"draft",revision_id,JSON.stringify(provenance,"",true,true)])
 	else:
-		var provenance: Dictionary = existing.get("provenance", {}).duplicate(true)
-		var stored: Array = _db._exec_select("SELECT provenance_json FROM type_defs WHERE id=?;", [type_id])
-		if not stored.is_empty():
-			var decoded = JSON.parse_string(str(stored[0].get("provenance_json", "{}")))
-			if decoded is Dictionary: provenance = decoded
+		var provenance: Dictionary = {}
+		var decoded = JSON.parse_string(str(stored[0].get("provenance_json", "{}")))
+		if decoded is Dictionary: provenance = decoded
 		var imports: Array = provenance.get("imports", []).duplicate(true) if provenance.get("imports", []) is Array else []
 		imports.append(import_entry); provenance["imports"] = imports
-		error = _db._exec_checked("UPDATE type_defs SET provenance_json=? WHERE id=?;", [JSON.stringify(provenance,"",true,true),type_id])
+		error = _db._write_checked(step, "UPDATE type_defs SET provenance_json=? WHERE id=?;", [JSON.stringify(provenance,"",true,true),type_id])
 	var parent = revision.get("parent_revision")
-	if error.is_empty(): error = _db._exec_checked("INSERT INTO type_def_versions(id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES(?,?,?,?,?,?,?);", [revision_id,type_id,parent if parent != null and not str(parent).is_empty() else null,JSON.stringify(definition,"",true,true),str(revision.get("author", "")),str(revision.get("created_at", "")),str(revision.get("reason", ""))])
-	error = json_db._complete_canonical_mutation(error)
-	if error.is_empty() and reload_after: error = reload()
-	return error
+	if error.is_empty(): error = _db._write_checked(step, "INSERT INTO type_def_versions(id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES(?,?,?,?,?,?,?);", [revision_id,type_id,parent if parent != null and not str(parent).is_empty() else null,JSON.stringify(definition,"",true,true),str(revision.get("author", "")),str(revision.get("created_at", "")),str(revision.get("reason", ""))])
+	return {"error": error}
 
 func import_revision_and_item(type_record: Dictionary, revision: Dictionary, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
 	return import_revisions_and_item(type_record, [revision] if not revision.is_empty() else [], new_id, exported, author, reason)
@@ -284,20 +302,26 @@ func import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id
 	return _coordinated_text(_import_revisions_and_item.bind(type_record, revisions, new_id, exported, author, reason))
 
 
-func _import_revisions_and_item(_step: RefCounted, type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
+# The revisions and the item in one change (one transaction, one file
+# rewrite): each nested import joins it with the same step.
+func _import_revisions_and_item(step: RefCounted, type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
 	var json_db := _db as DocketDBJsonl
-	var error := json_db._begin_canonical_mutation()
-	if not error.is_empty(): return error
+	var error := str(json_db._canonical(step, _import_revisions_and_item_in_change.bind(type_record, revisions, new_id, exported, author, reason)).error)
+	var reload_error: String = reload()
+	return error if not error.is_empty() else reload_error
+
+
+func _import_revisions_and_item_in_change(step: RefCounted, type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> Dictionary:
+	var json_db := _db as DocketDBJsonl
+	var error := ""
 	for revision in revisions:
 		if not error.is_empty(): break
 		if not revision is Dictionary: error = "revision import chain is malformed"
 		else:
 			var revision_record: Dictionary = revision
-			error = import_historical_revision(type_record, revision_record, author, reason, false)
-	if error.is_empty(): error = json_db.import_item_full_checked(new_id, exported)
-	error = json_db._complete_canonical_mutation(error)
-	var reload_error: String = reload()
-	return error if not error.is_empty() else reload_error
+			error = import_historical_revision(type_record, revision_record, author, reason, false, step)
+	if error.is_empty(): error = json_db.import_item_full_checked(new_id, exported, step)
+	return {"error": error}
 
 func resolve_item(item: Dictionary) -> Dictionary:
 	var read_error := _read_error()
