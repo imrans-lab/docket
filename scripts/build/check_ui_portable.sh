@@ -48,8 +48,8 @@ config/name="DocketUIPortability"
 EOF
 
 # Keeps the import from reading or writing the user's own Godot data.
-export HOME="$WORK/home" XDG_DATA_HOME="$WORK/home"
-mkdir -p "$HOME"
+export HOME="$WORK/home" XDG_DATA_HOME="$WORK/home/data" XDG_CONFIG_HOME="$WORK/home/config" XDG_CACHE_HOME="$WORK/home/cache"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 
 if ! "$GODOT" --headless --path "$WORK" --import > "$WORK/import.log" 2>&1; then
 	echo "Import failed:"; cat "$WORK/import.log"; failed=1
