@@ -2,8 +2,9 @@ extends RefCounted
 class_name DocketDBConnection
 ## A Docket project's SQLite connection, used from the thread that opened it:
 ## the SQL helpers its writes go through, within an explicit coordination
-## operation, the transactions they run in, and the item changes reported
-## once those are durable. DocketDB builds the project storage on it.
+## operation, the transactions they run in, the item changes reported once
+## those are durable, and the project's metadata (docket_meta). DocketDBVault
+## and DocketDB build the project storage on it.
 
 
 const READ_ONLY_QUERY := &"query_read_only"
@@ -341,3 +342,65 @@ func _commit() -> void:
 
 func _rollback() -> void:
 	_exec("ROLLBACK;")
+
+
+# -- Meta helpers -------------------------------------------------------------
+
+func get_meta_value(meta_key: String, default: String = "") -> String:
+	var rows := _exec_select("SELECT value FROM docket_meta WHERE key=?;", [meta_key])
+	return str(rows[0].value) if rows.size() > 0 else default
+
+
+func set_meta_value(meta_key: String, val: String) -> void:
+	_exec("INSERT OR REPLACE INTO docket_meta (key, value) VALUES (?, ?);", [meta_key, val])
+
+
+func get_all_meta() -> Dictionary:
+	## Every docket_meta key/value. Exists so serialization can persist whatever
+	## is actually stored rather than a hardcoded list — that list silently
+	## dropped project lifecycle fields, and nearly stranded every vault when the
+	## KDF iteration count was added.
+	var out := {}
+	for row in _exec_select("SELECT key, value FROM docket_meta;"):
+		var k := str(row.get("key", ""))
+		if not k.is_empty():
+			out[k] = str(row.get("value", ""))
+	return out
+
+
+func get_project_name() -> String:
+	return get_meta_value("project", "")
+
+
+func set_project_name(name: String) -> void:
+	set_meta_value("project", name)
+
+
+func get_project_meta() -> Dictionary:
+	## Return all project lifecycle metadata as a dict.
+	var d := {}
+	var stage := get_meta_value("project_stage", "")
+	if not stage.is_empty():
+		d["stage"] = stage
+	var hyp := get_meta_value("project_hypothesis", "")
+	if not hyp.is_empty():
+		d["hypothesis"] = hyp
+	var sc := get_meta_value("project_success_criteria", "")
+	if not sc.is_empty():
+		d["success_criteria"] = sc
+	var pt := get_meta_value("project_promoted_to", "")
+	if not pt.is_empty():
+		d["promoted_to"] = pt
+	return d
+
+
+func set_project_meta(meta: Dictionary) -> void:
+	## Update project lifecycle metadata. Only writes non-empty values.
+	if meta.has("stage"):
+		set_meta_value("project_stage", str(meta["stage"]))
+	if meta.has("hypothesis"):
+		set_meta_value("project_hypothesis", str(meta["hypothesis"]))
+	if meta.has("success_criteria"):
+		set_meta_value("project_success_criteria", str(meta["success_criteria"]))
+	if meta.has("promoted_to"):
+		set_meta_value("project_promoted_to", str(meta["promoted_to"]))
