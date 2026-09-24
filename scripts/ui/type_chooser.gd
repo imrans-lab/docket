@@ -1,8 +1,9 @@
 extends VBoxContainer
-class_name TypeChooser
 ## Searchable multi-select control for query type predicates. The list owns no
 ## query semantics; stable catalog IDs are retained while search changes what
 ## is visible, and ItemList supplies native keyboard navigation.
+
+const TypeCatalog := preload("../core/type_catalog.gd")
 
 signal selection_changed(values: Array)
 signal shortcuts_changed(pinned: Array, recent: Array)

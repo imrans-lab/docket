@@ -1,5 +1,6 @@
 extends VBoxContainer
-class_name DynamicFieldEditor
+
+const DocketFields := preload("../core/docket_fields.gd")
 
 var _rows: Dictionary = {}
 var _definition: Dictionary = {}

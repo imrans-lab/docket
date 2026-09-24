@@ -1,5 +1,4 @@
 extends RefCounted
-class_name DocketFields
 ## Facts about items that need no project open: shared by the storage classes
 ## and the UI, which must run where they are not loaded (a host embedding it).
 

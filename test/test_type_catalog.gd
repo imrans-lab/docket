@@ -3,6 +3,11 @@ extends Node
 ## records so the same expectations apply when project registries replace the
 ## built-in schema adapter.
 
+const QueryGrid := preload("res://scripts/ui/query_grid.gd")
+const QueryTypeScope := preload("res://scripts/core/query_type_scope.gd")
+const TypeCatalog := preload("res://scripts/core/type_catalog.gd")
+const TypeChooser := preload("res://scripts/ui/type_chooser.gd")
+
 var A := AssertHelpers
 var _db_dir := "user://test_type_catalog"
 var _dbs: Array = []

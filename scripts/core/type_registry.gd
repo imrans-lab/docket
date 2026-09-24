@@ -2,6 +2,8 @@ extends RefCounted
 class_name TypeRegistry
 ## Project-scoped resolution and validation for immutable type revisions.
 
+const DocketFields := preload("res://scripts/core/docket_fields.gd")
+
 const FIELD_TYPES := ["string", "markdown", "integer", "number", "boolean", "enum", "date", "timestamp", "item_ref", "reference_list", "array", "object"]
 const UNIVERSAL_MUTABLE := DocketFields.UNIVERSAL_MUTABLE
 const STATE_CATEGORIES := ["queued", "active", "waiting", "terminal"]

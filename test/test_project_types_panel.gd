@@ -1,6 +1,9 @@
 extends Node
 class_name TestProjectTypesPanel
 
+const AppShell := preload("res://scripts/ui/app_shell.gd")
+const ProjectTypesPanel := preload("res://scripts/ui/project_types_panel.gd")
+
 const A = preload("res://test/assert_helpers.gd")
 const DIR := "user://fixtures/project_types_panel"
 var _open: Array[DocketDB] = []

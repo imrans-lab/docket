@@ -1,5 +1,4 @@
 extends RefCounted
-class_name TypeCatalog
 ## Builds presentation records from the current schema-shaped registry adapter.
 ## Records carry stable identity separately from labels so sorting and saved
 ## preferences remain deterministic when labels collide or change.

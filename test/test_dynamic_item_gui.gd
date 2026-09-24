@@ -1,6 +1,11 @@
 extends Node
 class_name TestDynamicItemGUI
 
+const AppShell := preload("res://scripts/ui/app_shell.gd")
+const DynamicFieldEditor := preload("res://scripts/ui/dynamic_field_editor.gd")
+const QueryGrid := preload("res://scripts/ui/query_grid.gd")
+const RecordForm := preload("res://scripts/ui/record_form.gd")
+
 const A = preload("res://test/assert_helpers.gd")
 const DIR := "user://fixtures/dynamic_item_gui"
 var _dbs: Array[DocketDB] = []

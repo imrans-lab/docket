@@ -1,5 +1,4 @@
 extends VBoxContainer
-class_name ProjectTypesPanel
 
 signal registry_changed(project: String)
 

@@ -4,6 +4,8 @@ extends Node
 ## back: a reply for an item the form has since moved away from must leave
 ## nothing of that item on screen — not its fields, and not its children.
 
+const RecordForm := preload("res://scripts/ui/record_form.gd")
+
 const A = preload("res://test/assert_helpers.gd")
 const Remote = preload("res://scripts/ui/remote_docket_source.gd")
 const DIR := "user://fixtures/remote_source"

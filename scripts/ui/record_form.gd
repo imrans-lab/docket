@@ -1,5 +1,4 @@
 extends VBoxContainer
-class_name RecordForm
 ## Item detail form with editable type/status, type-adaptive fields,
 ## transition buttons, and event log.
 
@@ -7,8 +6,10 @@ signal item_changed
 signal back_pressed
 signal child_opened(id: String, project: String)
 
-const Vault := preload("res://scripts/ui/record_form_vault.gd")
-const Comments := preload("res://scripts/ui/record_form_comments.gd")
+const Vault := preload("record_form_vault.gd")
+const Comments := preload("record_form_comments.gd")
+const DocketFields := preload("../core/docket_fields.gd")
+const DynamicFieldEditor := preload("dynamic_field_editor.gd")
 ## What a write returns when the form moved to another item while it waited,
 ## so nothing was written.
 const MOVED_ON := "the form moved to another item before saving"

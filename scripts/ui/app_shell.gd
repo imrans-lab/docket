@@ -1,7 +1,11 @@
 extends VBoxContainer
-class_name AppShell
 ## Top-level VBoxContainer: MenuBar + content area with work-entry switching.
 ## Each open query or item is a "work entry" listed in the Work menu.
+
+const MenuBuilder := preload("menu_builder.gd")
+const ProjectTypesPanel := preload("project_types_panel.gd")
+const QueryGrid := preload("query_grid.gd")
+const RecordForm := preload("record_form.gd")
 
 enum ViewMode { QUERY, DETAIL, SPLIT, TYPES }
 

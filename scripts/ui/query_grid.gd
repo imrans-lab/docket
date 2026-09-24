@@ -1,7 +1,10 @@
 extends VBoxContainer
-class_name QueryGrid
 ## Query panel: visual condition builder + spreadsheet-style results with resizable columns.
 ## Custom header row supports drag-to-resize and click-to-sort.
+
+const DocketFields := preload("../core/docket_fields.gd")
+const QueryTypeScope := preload("../core/query_type_scope.gd")
+const TypeChooser := preload("type_chooser.gd")
 
 signal item_selected(id: String, project: String)
 signal item_activated(id: String, project: String)

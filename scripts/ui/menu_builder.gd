@@ -1,5 +1,4 @@
 extends RefCounted
-class_name MenuBuilder
 ## Builds MenuBar with File, View, Work PopupMenus and keyboard shortcuts.
 ## Emits action_triggered(action_name) for AppShell to handle.
 

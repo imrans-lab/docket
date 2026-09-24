@@ -3,6 +3,9 @@ class_name LocalDocketSource
 ## The DocketSource of the standalone app: the projects AppState holds open in
 ## this process, read and changed directly.
 
+const DocketFields := preload("res://scripts/core/docket_fields.gd")
+const TypeCatalog := preload("res://scripts/core/type_catalog.gd")
+
 var _state: AppState
 # The last vault key verified against the stored password, so the checks and
 # the read or write that follows them derive it (600k PBKDF2 rounds) only

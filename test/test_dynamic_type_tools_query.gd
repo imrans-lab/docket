@@ -1,6 +1,10 @@
 extends Node
 ## End-to-end registry tools, typed SQL bindings, and transfer behavior.
 
+const QueryGrid := preload("res://scripts/ui/query_grid.gd")
+const QueryTypeScope := preload("res://scripts/core/query_type_scope.gd")
+const TypeCatalog := preload("res://scripts/core/type_catalog.gd")
+
 var A := AssertHelpers
 const DIR := "user://test_dynamic_type_tools_query"
 

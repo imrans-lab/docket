@@ -1,8 +1,9 @@
 extends RefCounted
-class_name QueryTypeScope
 ## Resolves catalog identities and query choices per OR branch. Project/type
 ## pairs stay coupled until compilation, preventing duplicate slugs in separate
 ## projects from collapsing into one predicate.
+
+const TypeCatalog := preload("type_catalog.gd")
 
 const UNIVERSAL_FIELDS := ["type", "status", "priority", "severity", "title", "description", "assigned_to", "directed_to", "tags", "has_attachment", "id", "created_at", "updated_at", "project", "blocked_by", "parent"]
 

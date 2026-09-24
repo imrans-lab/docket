@@ -5,6 +5,8 @@ class_name DocketDB
 ## connection, its coordinated writes, transactions and project metadata are
 ## DocketDBConnection's; the vault's storage is DocketDBVault's.
 
+const DocketFields := preload("res://scripts/core/docket_fields.gd")
+
 func item_columns() -> Array:
 	var result: Array = []
 	for value in _ITEM_COLS: result.append(str(value))

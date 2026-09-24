@@ -1,4 +1,4 @@
-extends "res://scripts/ui/docket_source.gd"
+extends "docket_source.gd"
 ## The DocketSource of a host that embeds the Docket UI (such as Minerva):
 ## the projects live in a separate Docket process that the host reaches over
 ## MCP, and every call here is one or more of that process's tools.
@@ -13,6 +13,8 @@ extends "res://scripts/ui/docket_source.gd"
 ##
 ## Methods with no exact tool yet answer UNSUPPORTED (see DocketSource),
 ## including every item write, attachments and the vault.
+
+const TypeCatalog := preload("../core/type_catalog.gd")
 
 var _connection
 var _prefs

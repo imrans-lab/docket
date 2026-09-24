@@ -11,6 +11,8 @@ extends Node
 ##   docket --headless --serve --file my.dct --port 3010
 ##   docket --file my.dct
 
+const AppShell := preload("res://scripts/ui/app_shell.gd")
+
 var _test_runner: Node
 var _http_server: Node
 
