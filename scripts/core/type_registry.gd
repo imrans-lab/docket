@@ -19,6 +19,21 @@ var _sqlite_mutation_depth: int = 0
 
 static var _shared_by_db: Dictionary = {}
 
+# Every public change below runs within a SHARED coordination operation of
+# its own (CoordLease), taken before its freshness check and closed after its
+# mutation, reload and cleanup; refused, with the reason, when there is none.
+func _coordinated_text(work: Callable) -> String:
+	return CoordLease.run(work)
+
+
+func _coordinated_dict(work: Callable) -> Dictionary:
+	var lease := CoordLease.shared()
+	if lease.has("error"): return {"error": lease.error}
+	var result: Variant = work.call()
+	lease.operation.close()
+	return result if result is Dictionary else {"error": "project change stopped unexpectedly"}
+
+
 func _begin_item_mutation() -> String:
 	if _db is DocketDBJsonl: return (_db as DocketDBJsonl)._begin_canonical_mutation()
 	if _sqlite_mutation_depth == 0:
@@ -204,6 +219,10 @@ func revision_ancestry(revision_id: String) -> Dictionary:
 	return {"revisions":chain}
 
 func import_historical_revision(type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool = true) -> String:
+	return _coordinated_text(_import_historical_revision.bind(type_record, revision, author, reason, reload_after))
+
+
+func _import_historical_revision(type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool) -> String:
 	## Transfers install exact historical meaning without activating it or
 	## replacing an existing current pointer.
 	var refresh_error := refresh_if_changed()
@@ -261,6 +280,10 @@ func import_revision_and_item(type_record: Dictionary, revision: Dictionary, new
 	return import_revisions_and_item(type_record, [revision] if not revision.is_empty() else [], new_id, exported, author, reason)
 
 func import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
+	return _coordinated_text(_import_revisions_and_item.bind(type_record, revisions, new_id, exported, author, reason))
+
+
+func _import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
 	var json_db := _db as DocketDBJsonl
 	var error := json_db._begin_canonical_mutation()
 	if not error.is_empty(): return error
@@ -291,6 +314,10 @@ func resolve_item(item: Dictionary) -> Dictionary:
 	return {"project":_project,"revision":revision.duplicate(true),"definition":definition.duplicate(true),"state_category":state.state_category,"state_outcome":state.get("state_outcome", ""),"is_terminal":definition.lifecycle.terminal_states.has(item.status),"read_only":false}
 
 func define_type(slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary = {}) -> Dictionary:
+	return _coordinated_dict(_define_type.bind(slug, definition, author, reason, provenance))
+
+
+func _define_type(slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}
 	if _legacy: return {"error":"type definitions are read-only until explicit JSONL 2.0 upgrade"}
@@ -325,6 +352,10 @@ func activate_type(slug: String, expected_current: String, author: String, reaso
 	return _set_type_lifecycle(slug, "active", expected_current, author, reason)
 
 func _set_type_lifecycle(slug: String, lifecycle: String, expected_current: String, author: String, reason: String) -> String:
+	return _coordinated_text(_set_type_lifecycle_coordinated.bind(slug, lifecycle, expected_current, author, reason))
+
+
+func _set_type_lifecycle_coordinated(slug: String, lifecycle: String, expected_current: String, author: String, reason: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	if _legacy: return "type definitions are read-only until explicit JSONL 2.0 upgrade"
@@ -450,6 +481,10 @@ func validate_candidate(definition: Dictionary, candidate: Dictionary, creation:
 	return ""
 
 func create_item(fields: Dictionary, actor: String = "") -> Dictionary:
+	return _coordinated_dict(_create_item.bind(fields, actor))
+
+
+func _create_item(fields: Dictionary, actor: String) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}
 	var slug: String = str(fields.get("type", ""))
@@ -493,6 +528,10 @@ func item_token(item_or_id) -> String:
 	return TypeRegistryBootstrap._definition_hash(_normalize_json_numbers(item))
 
 func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "") -> String:
+	return _coordinated_text(_update_item.bind(id, changes, actor, expected_revision, expected_item_token))
+
+
+func _update_item(id: String, changes: Dictionary, actor: String, expected_revision: String, expected_item_token: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item := _db.get_item(id)
@@ -524,6 +563,10 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 	return _complete_item_mutation(error)
 
 func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "") -> String:
+	return _coordinated_text(_transition_item.bind(id, target, actor, note, extra, expected_revision, expected_item_token))
+
+
+func _transition_item(id: String, target: String, actor: String, note: String, extra: Dictionary, expected_revision: String, expected_item_token: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item: Dictionary = _db.get_item(id)
@@ -572,6 +615,10 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 	return _complete_item_mutation(error)
 
 func mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String = "", expected_item_token: String = "") -> Dictionary:
+	return _coordinated_dict(_mirror_item.bind(id, changes, target, actor, note, audit_text, expected_revision, expected_item_token))
+
+
+func _mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String, expected_item_token: String) -> Dictionary:
 	## The outer mutation makes the candidate patch, transition and audit records
 	## one canonical unit while the ordinary typed operations retain validation.
 	var error := _begin_item_mutation()
@@ -592,6 +639,12 @@ func mirror_item(id: String, changes: Dictionary, target: String, actor: String,
 	return {"error":error} if not error.is_empty() else {"comment_id":comment.get("id", 0)}
 
 func rewrite_move_references(old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
+	var result := _coordinated_dict(_rewrite_move_references.bind(old_qualified, new_qualified, old_bare, new_for_bare, rewrite_bare))
+	if not result.has("count"): result["count"] = 0
+	return result
+
+
+func _rewrite_move_references(old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
 	## Only descriptors in each item's pinned revision authorize inspection of
 	## JSON values. Opaque future fields are preserved byte-for-value.
 	var refresh_error: String = refresh_if_changed()
@@ -646,6 +699,10 @@ func _rewrite_reference(value: String, old_qualified: String, new_qualified: Str
 	return value
 
 func repair_item_status(id: String, target: String, actor: String, reason: String, fields: Dictionary = {}) -> String:
+	return _coordinated_text(_repair_item_status.bind(id, target, actor, reason, fields))
+
+
+func _repair_item_status(id: String, target: String, actor: String, reason: String, fields: Dictionary) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	if actor.strip_edges().is_empty() or reason.strip_edges().is_empty(): return "actor and repair reason are required"
@@ -729,6 +786,10 @@ func _project_candidate(item: Dictionary, definition: Dictionary) -> Dictionary:
 	return result
 
 func apply_evolution(preview: Dictionary, author: String, reason: String) -> String:
+	return _coordinated_text(_apply_evolution.bind(preview, author, reason))
+
+
+func _apply_evolution(preview: Dictionary, author: String, reason: String) -> String:
 	if preview.has("error") or author.strip_edges().is_empty() or reason.strip_edges().is_empty(): return str(preview.get("error", "author and reason are required"))
 	var reload_error := refresh_if_changed()
 	if reload_error.is_empty(): reload_error = reload()
