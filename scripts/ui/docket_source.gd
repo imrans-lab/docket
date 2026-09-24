@@ -252,9 +252,12 @@ func secret_versions(_project: String, _handle: String) -> Array:
 	return []
 
 
-## Decrypt archived `version` of `handle`: {value} or {error, kind}. A version
-## stored with a secondary password needs `secondary_password`; without it,
-## kind is "needs_secondary". kind "no_key" means the vault is not unlocked.
+## Decrypt archived `version` of `handle`: {value, possibly_2fa} or {error,
+## kind}. A version stored with a secondary password needs
+## `secondary_password`; without it, kind is "needs_secondary". possibly_2fa
+## means an unflagged value looks like an encrypted inner layer, which the
+## same call with a secondary password can open; a wrong one then fails
+## (kind "failed"). kind "no_key" means the vault is not unlocked.
 func read_secret_version(_project: String, _handle: String, _version: int,
 		_secondary_password: String = "") -> Dictionary:
 	return _unsupported()

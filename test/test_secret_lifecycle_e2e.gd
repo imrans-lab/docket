@@ -30,6 +30,7 @@ func before_each() -> void:
 
 
 func after_each() -> void:
+	UserPrefs.clear_vault_password()
 	if _db:
 		_db.close()
 		_db = null
@@ -208,3 +209,37 @@ func test_version_history_survives_a_round_trip() -> Variant:
 		return r
 	return A.is_true(bool(versions[0].get("requires_2fa", false)),
 		"the archived version is still marked double-encrypted after the file is read back")
+
+
+func test_unflagged_2fa_version_opens_with_its_secondary_password() -> Variant:
+	## Files written before versions kept their flag hold archived 2FA values
+	## unflagged. The GUI source and the agent tool both mark them as possibly
+	## 2FA, open them with the secondary password, and fail with a wrong one;
+	## an ordinary value is neither marked nor changed by a secondary password.
+	UserPrefs.save_vault_password("vault-pw")
+	var salt := VaultCrypto.generate_salt()
+	var key := VaultCrypto.derive_key("vault-pw", salt, 1000)
+	_db.init_vault(key, salt, 1000)
+	var dual := VaultCrypto.encrypt_2fa("first", key, VaultCrypto.derive_key("second-pw", salt, 1000))
+	_db.set_secret("h", dual.ciphertext, dual.iv, dual.mac, false)
+	var plain := VaultCrypto.encrypt("second", key)
+	_db.rotate_secret("h", plain.ciphertext, plain.iv, plain.mac, "tester", false)
+	var current := VaultCrypto.encrypt("third", key)
+	_db.rotate_secret("h", current.ciphertext, current.iv, current.mac, "tester", false)
+
+	var state := AppState.new()
+	state._project_dbs = {"life": _db}
+	var source := LocalDocketSource.new(state)
+	var read := [
+		source.read_secret_version("life", "h", 1).get("possibly_2fa", false),
+		source.read_secret_version("life", "h", 1, "second-pw").get("value", ""),
+		source.read_secret_version("life", "h", 1, "wrong-pw").has("error"),
+		_reg.call_tool("docket_secret_get", {"handle": "h", "version": 1}).get("possibly_2fa", false),
+		_reg.call_tool("docket_secret_get", {"handle": "h", "version": 1, "secondary_password": "second-pw"}).get("value", ""),
+		_reg.call_tool("docket_secret_get", {"handle": "h", "version": 1, "secondary_password": "wrong-pw"}).has("error"),
+		source.read_secret_version("life", "h", 2).get("possibly_2fa", true),
+		source.read_secret_version("life", "h", 2, "second-pw").get("value", ""),
+		_reg.call_tool("docket_secret_get", {"handle": "h", "version": 2, "secondary_password": "second-pw"}).get("value", ""),
+	]
+	return A.eq(read, [true, "first", true, true, "first", true, false, "second", "second"],
+		"only the 2FA-shaped version is marked, opened with its secondary password and refused with a wrong one")

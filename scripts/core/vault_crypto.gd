@@ -83,6 +83,17 @@ static func encrypt_2fa(plaintext: String, primary_key: PackedByteArray, seconda
 	return encrypt(inner_b64, primary_key)
 
 
+## Whether `outer_plain`, a value's outer layer decrypted, has the form of a
+## 2FA inner layer: base64 of iv, mac and whole AES blocks. Ordinary values
+## can have it too, so it says only that a secondary password may be needed.
+static func has_2fa_shape(outer_plain: String) -> bool:
+	# Checked before decoding, which reports an engine error on non-base64.
+	if outer_plain.length() % 4 != 0 or RegEx.create_from_string("^[A-Za-z0-9+/]+={0,2}\\z").search(outer_plain) == null:
+		return false
+	var inner := Marshalls.base64_to_raw(outer_plain)
+	return inner.size() >= IV_LENGTH + 32 + BLOCK_SIZE and (inner.size() - IV_LENGTH - 32) % BLOCK_SIZE == 0
+
+
 static func decrypt_2fa(ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, primary_key: PackedByteArray, secondary_key: PackedByteArray) -> String:
 	## Double-decrypt: outer with primary key, unpack blob, inner with secondary key.
 	## Returns plaintext on success, "" on failure.

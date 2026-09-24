@@ -502,11 +502,18 @@ func read_secret_version(project: String, handle: String, version: int, secondar
 	for row in db.get_secret_versions(handle):
 		if int(row.version) != version:
 			continue
+		if bool(row.requires_2fa) and secondary_password.is_empty():
+			return {"error": "This version needs its secondary password.", "kind": "needs_secondary"}
 		if not bool(row.requires_2fa):
 			var plaintext := VaultCrypto.decrypt(row.ciphertext, row.iv, row.mac, key)
-			return {"value": plaintext} if not plaintext.is_empty() else {"error": "decryption failed", "kind": "failed"}
-		if secondary_password.is_empty():
-			return {"error": "This version needs its secondary password.", "kind": "needs_secondary"}
+			if plaintext.is_empty():
+				return {"error": "decryption failed", "kind": "failed"}
+			# Files written before versions kept their flag can hold an unflagged
+			# 2FA value, whose outer layer is only the inner encrypted blob.
+			# Only such a value is opened with a secondary password.
+			var possibly_2fa := VaultCrypto.has_2fa_shape(plaintext)
+			if secondary_password.is_empty() or not possibly_2fa:
+				return {"value": plaintext, "possibly_2fa": possibly_2fa}
 		var secondary_key := VaultCrypto.derive_key(secondary_password, db.get_vault_salt(), db.get_vault_iterations())
 		var inner := VaultCrypto.decrypt_2fa(row.ciphertext, row.iv, row.mac, key, secondary_key)
 		return {"value": inner} if not inner.is_empty() else {"error": "Wrong secondary password or corrupted data.", "kind": "failed"}

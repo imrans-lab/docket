@@ -11,7 +11,7 @@ func get_definition() -> Dictionary:
 			"type": "object",
 			"properties": {
 				"handle": {"type": "string", "description": "Name of the secret to retrieve"},
-				"version": {"type": "integer", "description": "Retrieve a specific archived version (optional)"},
+				"version": {"type": "integer", "description": "Retrieve a specific archived version (optional). A result marked possibly_2fa may be a secondary-password value stored without its flag; retry with secondary_password to open it."},
 				"secondary_password": {"type": "string", "description": "Secondary password for 2FA-protected secrets"},
 				"project": {"type": "string", "description": "Project name (optional, defaults to primary)"},
 			},
@@ -56,8 +56,8 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 				# decryption "succeeds" and returns the inner encrypted blob,
 				# which looks like a secret but is not one.
 				var ver_plaintext: String
+				var ver_secondary: String = str(args.get("secondary_password", ""))
 				if bool(ver.get("requires_2fa", false)):
-					var ver_secondary: String = str(args.get("secondary_password", ""))
 					if ver_secondary.is_empty():
 						return {
 							"error": "Version %d of '%s' requires a secondary password" % [version, handle],
@@ -67,6 +67,15 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 					ver_plaintext = VaultCrypto.decrypt_2fa(ver.ciphertext, ver.iv, ver.mac, key, ver_key)
 				else:
 					ver_plaintext = VaultCrypto.decrypt(ver.ciphertext, ver.iv, ver.mac, key)
+					# Files written before versions kept their flag can hold an
+					# unflagged 2FA value, whose outer layer is only the inner
+					# encrypted blob. Such a value comes back marked, and a
+					# secondary password given for it must open it.
+					if VaultCrypto.has_2fa_shape(ver_plaintext):
+						if ver_secondary.is_empty():
+							return {"handle": handle, "version": version, "value": ver_plaintext, "possibly_2fa": true}
+						var probe_key := VaultCrypto.derive_key(ver_secondary, salt, db.get_vault_iterations())
+						ver_plaintext = VaultCrypto.decrypt_2fa(ver.ciphertext, ver.iv, ver.mac, key, probe_key)
 				if ver_plaintext.is_empty():
 					return {"error": "Decryption failed for '%s' version %d." % [handle, version]}
 				return {"handle": handle, "version": version, "value": ver_plaintext}

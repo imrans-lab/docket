@@ -174,7 +174,7 @@ func _on_history_show(ver: Dictionary, btn: Button) -> void:
 	if btn.text != "Show":
 		btn.text = "Show"
 		return
-	var read: Dictionary = await _read_version(ver)
+	var read: Dictionary = await _read_version(ver, "Show as stored")
 	if not is_instance_valid(btn):
 		return  # the history was rebuilt while the read waited
 	if str(read.get("kind", "")) in ["no_key", "cancelled"]:
@@ -183,22 +183,26 @@ func _on_history_show(ver: Dictionary, btn: Button) -> void:
 
 
 func _on_history_copy(ver: Dictionary) -> void:
-	var read: Dictionary = await _read_version(ver)
+	var read: Dictionary = await _read_version(ver, "Copy as stored")
 	if read.has("value"):
 		DisplayServer.clipboard_set(str(read.value))
 
 
 ## Archived version `ver` of the current item, asking for its secondary
-## password when it was stored with one: {value} or {error, kind}.
-func _read_version(ver: Dictionary) -> Dictionary:
+## password when it was stored with one: {value, possibly_2fa} or {error,
+## kind}. When the version only may have one, the prompt's `as_stored`
+## button takes the value as stored.
+func _read_version(ver: Dictionary, as_stored: String) -> Dictionary:
 	var project: String = _form._current_project
 	var id: String = _form._current_id
 	var read: Dictionary = await _form._src.read_secret_version(project, id, int(ver.version))
-	if str(read.get("kind", "")) != "needs_secondary":
+	var possibly_2fa := bool(read.get("possibly_2fa", false))
+	if str(read.get("kind", "")) != "needs_secondary" and not possibly_2fa:
 		return read
-	var secondary_password := await _prompt_secondary_password()
+	var secondary_password := await _prompt_secondary_password(as_stored if possibly_2fa else "Cancel",
+		"Secondary Password?" if possibly_2fa else "Secondary Password Required")
 	if secondary_password.is_empty():
-		return {"error": "cancelled", "kind": "cancelled"}
+		return read if possibly_2fa else {"error": "cancelled", "kind": "cancelled"}
 	return await _form._src.read_secret_version(project, id, int(ver.version), secondary_password)
 
 
@@ -235,9 +239,11 @@ func _secret_input(item_id: String, type_name: String) -> Dictionary:
 	return secret
 
 
-func _prompt_secondary_password() -> String:
+func _prompt_secondary_password(cancel_text: String = "Cancel", title: String = "Secondary Password Required") -> String:
 	## Show a blocking dialog for secondary password input. Returns empty on cancel.
 	_form._secret_2fa_input.text = ""
+	_form._secret_2fa_dialog.cancel_button_text = cancel_text
+	_form._secret_2fa_dialog.title = title
 	if not _form._secret_2fa_dialog.is_inside_tree():
 		_form.add_child(_form._secret_2fa_dialog)
 	_form._secret_2fa_dialog.popup_centered(Vector2i(300, 150))
