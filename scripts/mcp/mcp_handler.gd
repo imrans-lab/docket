@@ -6,8 +6,12 @@ const PROTOCOL_VERSION := "2025-03-26"
 ## The _meta key under which a failed tools/call keeps the tool's whole
 ## error result.
 const ERROR_RESULT_META := "docket/result"
+const PanelAuthority := preload("res://scripts/mcp/panel_authority.gd")
 
 var _registry: ToolRegistry
+## The private channel for a host's panel (PanelAuthority), when this
+## process has one; without it the panel methods do not exist.
+var panel_authority = null
 
 
 func init_with_registry(registry: ToolRegistry) -> void:
@@ -41,8 +45,12 @@ func handle(request: Dictionary) -> Variant:
 			return _make_result(id, {"tools": _registry.list_tools()})
 		"tools/call":
 			return _handle_tool_call(id, params)
-		_:
-			return _make_error(id, -32601, "Method not found: %s" % method)
+	if method.begins_with(PanelAuthority.PREFIX) and panel_authority != null:
+		var answered: Dictionary = panel_authority.handle(method, params)
+		if answered.has("error"):
+			return _make_error(id, answered.error.code, answered.error.message)
+		return _make_result(id, answered.result)
+	return _make_error(id, -32601, "Method not found: %s" % method)
 
 
 func _handle_tool_call(id: Variant, params: Dictionary) -> Dictionary:
@@ -51,6 +59,10 @@ func _handle_tool_call(id: Variant, params: Dictionary) -> Dictionary:
 
 	if not _registry.has_tool(tool_name):
 		return _make_error(id, -32602, "Unknown tool: %s" % tool_name)
+	# The panel channel's own names are never a tool's arguments.
+	for reserved in PanelAuthority.RESERVED_ARGUMENTS:
+		if arguments.has(reserved):
+			return _make_error(id, -32602, "%s is not a tool argument" % reserved)
 
 	var result = _registry.call_tool(tool_name, arguments)
 

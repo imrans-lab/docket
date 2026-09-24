@@ -90,6 +90,11 @@ func _rebuild_type_registries() -> void:
 		var project_name := _db.get_project_name()
 		_type_registries[project_name] = TypeRegistry.for_db(_db, project_name)
 
+## The open project named `project_name`, or null.
+func project_db(project_name: String) -> DocketDB:
+	return _project_dbs.get(project_name)
+
+
 func get_type_registry(project_name: String) -> TypeRegistry:
 	var registry: TypeRegistry = _type_registries.get(project_name)
 	if registry != null:

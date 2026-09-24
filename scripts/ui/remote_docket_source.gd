@@ -11,8 +11,13 @@ extends "docket_source.gd"
 ## item_changed notification the process sends to handle_host_event, and
 ## awaits start() before showing the UI.
 ##
-## Methods with no exact tool yet answer UNSUPPORTED (see DocketSource),
-## including every item write, attachments and the vault.
+## A person's edits do not go through the tools agents use: the host's
+## connection may offer panel_call(method, params) -> Dictionary, awaited,
+## for its private channel to the process (the docket/panel/ methods), adding
+## the grant that names the person itself and answering the method's result
+## or {error}. Methods with no tool or panel method
+## yet answer UNSUPPORTED (see DocketSource), including creating and
+## transitioning items, attachments and the vault.
 
 const TypeCatalog := preload("../core/type_catalog.gd")
 
@@ -308,6 +313,19 @@ func reload_all() -> Array:
 
 
 # -- Items --------------------------------------------------------------------------
+
+## Through the host's private panel channel, as the person the host names.
+func save_item(project: String, id: String, changes: Dictionary, revision: String, token: String,
+		secret: Dictionary = {}) -> String:
+	if not secret.is_empty():
+		return UNSUPPORTED
+	if not _connection.has_method("panel_call"):
+		return "Editing here needs the host's trusted panel channel, which this host does not provide."
+	var reply: Dictionary = await _connection.panel_call("update_item", {"project": project, "id": id,
+		"changes": changes, "expected_revision": revision, "expected_item_token": token})
+	var error = reply.get("error", "")
+	return str(error.get("message", error)) if error is Dictionary else str(error)
+
 
 func _get_item(project: String, id: String, include: Array) -> Dictionary:
 	return await _call("docket_get", {"id": id, "project": project, "include": include})

@@ -123,6 +123,12 @@ func _ready() -> void:
 
 	_handler = McpHandler.new()
 	_handler.init_with_registry(_registry)
+	# Only a host running this process as its child can have given it the
+	# panel secret; any other run just drops it from the environment.
+	if transport == "stdio":
+		_handler.panel_authority = McpHandler.PanelAuthority.from_environment(_registry)
+	else:
+		OS.unset_environment(McpHandler.PanelAuthority.SECRET_VARIABLE)
 	for proj_name in _project_dbs:
 		_watch_project(proj_name, _project_dbs[proj_name])
 
@@ -201,6 +207,10 @@ func _headless_add_project(path: String) -> Dictionary:
 	if proj_name.is_empty():
 		proj_name = path.get_file().get_basename()
 		loaded_db.set_project_name(proj_name)
+	# A project of the same name replaced: grants for the old one end, as its
+	# items are no longer what they named.
+	if _project_dbs.has(proj_name) and _handler.panel_authority != null:
+		_handler.panel_authority.revoke_project(proj_name)
 	_project_dbs[proj_name] = loaded_db
 	if _db == null:
 		_db = loaded_db
@@ -216,6 +226,8 @@ func _headless_remove_project(proj_name: String) -> Dictionary:
 	var closing_db: DocketDB = _project_dbs[proj_name]
 	closing_db.close()
 	_project_dbs.erase(proj_name)
+	if _handler.panel_authority != null:
+		_handler.panel_authority.revoke_project(proj_name)
 	if closing_db == _db:
 		if _project_dbs.size() > 0:
 			_db = _project_dbs.values()[0]

@@ -83,18 +83,22 @@ func get_definition() -> Dictionary:
 	}
 
 
+## A bare parent id in `changes` becomes `db`'s project-qualified one.
+static func qualify_parent(changes: Dictionary, db: DocketDB) -> void:
+	if changes.has("parent") and not str(changes.parent).is_empty():
+		var parent_str: String = str(changes.parent)
+		if not parent_str.contains(":"):
+			var proj_name := db.get_project_name()
+			if not proj_name.is_empty():
+				changes["parent"] = "%s:%s" % [proj_name, parent_str]
+
+
 func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var id: String = args.get("id", "")
 	if not db.has_item(id):
 		return {"error": "Item not found: %s" % id}
 
-	# Auto-qualify parent if bare ID
-	if args.has("parent") and not str(args.parent).is_empty():
-		var parent_str: String = str(args.parent)
-		if not parent_str.contains(":"):
-			var proj_name := db.get_project_name()
-			if not proj_name.is_empty():
-				args["parent"] = "%s:%s" % [proj_name, parent_str]
+	qualify_parent(args, db)
 
 	var changes: Dictionary = args.duplicate()
 	changes.erase("id")
