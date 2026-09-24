@@ -1,32 +1,22 @@
 #!/usr/bin/env python3
 """
 Docket MCP Server — Python FastMCP fallback for when Godot isn't running.
-Operates on the same .dct files as the Godot app.
+
+Read-only: it reads obsolete monolithic-JSON .dct files and changes nothing.
+Changes to a project go through Docket itself, which coordinates its writes
+with its other processes of the account; this server takes no part in that,
+so it makes no changes. Its write tools say so.
 """
 
 import json
 import os
 import glob
 import fnmatch
-from datetime import datetime, timezone
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("docket")
-
-# Schema loaded at startup
-_schema: dict = {}
-_schema_path = os.path.join(os.path.dirname(__file__), "..", "data", "schema.json")
-
-
-def _load_schema() -> dict:
-    global _schema
-    if not _schema:
-        with open(_schema_path) as f:
-            _schema = json.load(f)
-    return _schema
-
 
 def _find_dct_file(file: Optional[str] = None) -> str:
     if file:
@@ -57,9 +47,8 @@ def _is_jsonl_dct(path: str) -> bool:
 
 
 _JSONL_REFUSAL = (
-    "{path} is a JSONL .dct, which this fallback server cannot read or write.\n"
-    "It would rewrite the file as a single JSON object and destroy it.\n"
-    "Use the Godot server instead:\n"
+    "{path} is a JSONL .dct; this fallback server reads only the older\n"
+    "monolithic-JSON format. Use the Godot server instead:\n"
     "    godot --headless --path <docket-repo> -- serve --port 3010 --file {path}"
 )
 
@@ -76,39 +65,15 @@ def _load_dct(path: str) -> dict:
         return json.load(f)
 
 
-def _save_dct(path: str, data: dict) -> None:
-    if os.path.exists(path) and _is_jsonl_dct(path):
-        raise UnsupportedFormatError(_JSONL_REFUSAL.format(path=path))
-    with open(path, "w") as f:
-        json.dump(data, f, indent="\t")
+_READ_ONLY = (
+    "This fallback server is read-only. Make changes through Docket itself, "
+    "which coordinates them with its other processes:\n"
+    "    godot --headless --path <docket-repo> -- serve --port 3010 --file <project.dct>"
+)
 
 
-def _ensure_dct(path: str) -> dict:
-    if os.path.exists(path):
-        return _load_dct(path)
-    data = {"version": "1.0.0", "counter": 0, "items": {}, "queries": {}}
-    _save_dct(path, data)
-    return data
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _add_event(item: dict, event_type: str, actor: str, note: str = "") -> None:
-    item.setdefault("events", []).append({
-        "event_type": event_type,
-        "actor": actor,
-        "timestamp": _now(),
-        "note": note,
-    })
-    item["updated_at"] = _now()
-
-
-def _next_id(data: dict) -> str:
-    data["counter"] = data.get("counter", 0) + 1
-    c = data["counter"]
-    return f"DKT-{c:04d}" if c <= 9999 else f"DKT-{c}"
+def _read_only() -> dict:
+    return {"error": _READ_ONLY}
 
 
 # =============================================================================
@@ -129,41 +94,8 @@ def docket_create(
     corrected: str = "",
     file: Optional[str] = None,
 ) -> dict:
-    """Create a new work item. Types: bug, dcr, rca, chore, hint, insight, question, work_item."""
-    schema = _load_schema()
-    if type not in schema["types"]:
-        return {"error": f"Unknown type: {type}"}
-
-    type_def = schema["types"][type]
-
-    # Check required fields
-    fields = {"title": title, "description": description, "assumed": assumed, "corrected": corrected}
-    for req in type_def["required_fields"]:
-        if not fields.get(req, ""):
-            return {"error": f"Missing required field '{req}' for type '{type}'"}
-
-    path = _find_dct_file(file)
-    data = _ensure_dct(path)
-
-    now = _now()
-    item = {
-        "type": type, "status": type_def["initial_state"],
-        "title": title, "description": description,
-        "created_at": now, "updated_at": now,
-        "created_by": "", "assigned_to": assigned_to, "directed_to": directed_to,
-        "priority": priority, "severity": severity,
-        "tags": tags or [], "links": [], "events": [],
-    }
-    # Type-specific fields
-    for f in type_def.get("optional_fields", []) + type_def.get("required_fields", []):
-        if f not in item and fields.get(f):
-            item[f] = fields[f]
-
-    _add_event(item, "created", "", "Item created")
-    item_id = _next_id(data)
-    data["items"][item_id] = item
-    _save_dct(path, data)
-    return {**item, "id": item_id}
+    """Create a new work item. Types: bug, dcr, rca, chore, hint, insight, question, work_item. Refused here: this server is read-only."""
+    return _read_only()
 
 
 @mcp.tool()
@@ -180,33 +112,8 @@ def docket_get(id: str, file: Optional[str] = None) -> dict:
 
 @mcp.tool()
 def docket_update(id: str, file: Optional[str] = None, **kwargs) -> dict:
-    """Update fields on an existing item. Not for state transitions."""
-    schema = _load_schema()
-    path = _find_dct_file(file)
-    data = _load_dct(path)
-    if "error" in data:
-        return data
-    if id not in data["items"]:
-        return {"error": f"Item not found: {id}"}
-
-    item = data["items"][id]
-    type_def = schema["types"][item["type"]]
-    allowed = set(type_def["required_fields"] + type_def.get("optional_fields", []))
-    allowed |= {"title", "description", "assigned_to", "directed_to", "priority", "severity", "tags"}
-    protected = {"type", "status", "id", "events", "links", "created_at", "updated_at"}
-
-    for key, val in kwargs.items():
-        if key in ("file",):
-            continue
-        if key in protected:
-            continue
-        if key not in allowed:
-            return {"error": f"Field '{key}' not valid for type '{item['type']}'"}
-        item[key] = val
-
-    item["updated_at"] = _now()
-    _save_dct(path, data)
-    return {"id": id, "status": "updated"}
+    """Update fields on an existing item. Not for state transitions. Refused here: this server is read-only."""
+    return _read_only()
 
 
 @mcp.tool()
@@ -214,54 +121,8 @@ def docket_transition(
     id: str, to: str, resolution: str = "", note: str = "",
     blocked_by: str = "", file: Optional[str] = None
 ) -> dict:
-    """Transition an item to a new state. When transitioning to 'blocked', supply blocked_by."""
-    schema = _load_schema()
-    path = _find_dct_file(file)
-    data = _load_dct(path)
-    if "error" in data:
-        return data
-    if id not in data["items"]:
-        return {"error": f"Item not found: {id}"}
-
-    item = data["items"][id]
-    type_def = schema["types"][item["type"]]
-    transitions = type_def["transitions"]
-    current = item["status"]
-
-    if current not in transitions or to not in transitions[current]:
-        valid = transitions.get(current, [])
-        return {"error": f"Cannot transition from '{current}' to '{to}'. Valid: {valid}"}
-
-    # Check transition rules
-    rules = type_def.get("transition_rules", {}).get(to, {})
-    for field in rules.get("required_fields", []):
-        if field == "resolution" and not resolution:
-            return {"error": f"Transition to '{to}' requires field '{field}'"}
-        if field == "blocked_by" and not blocked_by:
-            return {"error": f"Transition to '{to}' requires field '{field}'"}
-
-    if resolution:
-        item["resolution"] = resolution
-    if blocked_by:
-        item["blocked_by"] = blocked_by
-
-    old = item["status"]
-    item["status"] = to
-    event_note = f"{old} → {to}"
-    if note:
-        event_note += f". {note}"
-    _add_event(item, "transition", "agent", event_note)
-
-    # Auto-create blocks link when transitioning to blocked
-    if to == "blocked" and blocked_by:
-        blocker_id = blocked_by.split(":")[-1] if ":" in blocked_by else blocked_by
-        if blocker_id in data["items"]:
-            data["items"][blocker_id].setdefault("links", []).append(
-                {"to": id, "relation": "blocks"}
-            )
-
-    _save_dct(path, data)
-    return {"id": id, "status": to}
+    """Transition an item to a new state. When transitioning to 'blocked', supply blocked_by. Refused here: this server is read-only."""
+    return _read_only()
 
 
 @mcp.tool()
@@ -421,26 +282,8 @@ def _eval_tree(item: dict, tree: dict) -> bool:
 def docket_link(
     from_id: str, to_id: str, relation: str, file: Optional[str] = None
 ) -> dict:
-    """Link two work items with a typed relationship."""
-    schema = _load_schema()
-    path = _find_dct_file(file)
-    data = _load_dct(path)
-    if "error" in data:
-        return data
-
-    if from_id not in data["items"]:
-        return {"error": f"Item not found: {from_id}"}
-    if to_id not in data["items"]:
-        return {"error": f"Item not found: {to_id}"}
-
-    valid_relations = schema.get("link_relations", [])
-    if relation not in valid_relations:
-        return {"error": f"Invalid relation '{relation}'. Valid: {valid_relations}"}
-
-    data["items"][from_id].setdefault("links", []).append({"to": to_id, "relation": relation})
-    _add_event(data["items"][from_id], "linked", "agent", f"Linked {from_id} → {to_id} ({relation})")
-    _save_dct(path, data)
-    return {"from": from_id, "to": to_id, "relation": relation}
+    """Link two work items with a typed relationship. Refused here: this server is read-only."""
+    return _read_only()
 
 
 @mcp.tool()
@@ -477,24 +320,14 @@ def docket_saved_query(
     columns: Optional[list[str]] = None,
     file: Optional[str] = None,
 ) -> dict:
-    """Save, load, or list saved queries within the .dct file."""
-    path = _find_dct_file(file)
-    data = _ensure_dct(path)
-
+    """Load or list saved queries within the .dct file (saving is refused: read-only)."""
     if action == "save":
-        if not name:
-            return {"error": "Query name required"}
-        query = {}
-        if filter:
-            query["filter"] = filter
-        if sort:
-            query["sort"] = sort
-        if columns:
-            query["columns"] = columns
-        data.setdefault("queries", {})[name] = query
-        _save_dct(path, data)
-        return {"saved": name}
-    elif action == "load":
+        return _read_only()
+    path = _find_dct_file(file)
+    data = _load_dct(path)
+    if "error" in data:
+        return data
+    if action == "load":
         queries = data.get("queries", {})
         if name not in queries:
             return {"error": f"Query not found: {name}"}
