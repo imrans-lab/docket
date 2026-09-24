@@ -1,8 +1,26 @@
 extends Node
 class_name DocketHttpServer
-## TCPServer-based HTTP server for MCP Streamable HTTP.
+## MCP server over one of two transports, sharing the projects, tool registry
+## and JSON-RPC handler:
+##   - "http": TCPServer-based MCP Streamable HTTP (POST /mcp on 127.0.0.1);
+##   - "stdio": newline-delimited JSON-RPC on stdin/stdout, for a host that
+##     runs Docket as its child process. Only responses and notifications
+##     reach stdout then (run Godot with --quiet to keep its banner off it;
+##     project.godot flushes stdout on every print, so each line is sent);
+##     the process exits when the host closes stdin.
 ## Supports multiple .dct files loaded simultaneously.
 
+## Method and event name of the host notifications sent with host_events.
+const HOST_EVENT_METHOD := "minerva/plugin_event"
+const ITEM_CHANGED_EVENT := "item_changed"
+## How often (ms) the stdio server checks for changes made to a project file
+## by another process.
+const STALE_CHECK_MS := 2000
+
+var transport: String = "http"
+## With the stdio transport: send a HOST_EVENT_METHOD notification for every
+## item change a project commits (ITEM_CHANGED_EVENT, see _on_items_changed).
+var host_events: bool = false
 var port: int = 3010
 var dct_path: String = "docket.dct"
 var dct_paths: Array = []  # Multiple --file paths
@@ -17,14 +35,24 @@ var _clients: Array = []
 var _db: DocketDB
 var _project_dbs: Dictionary = {}  # project_name → DocketDB
 var _schema: Dictionary
+# stdio: lines read by the stdin thread, waiting for the main thread.
+var _stdin_thread: Thread
+var _stdin_lock := Mutex.new()
+var _stdin_lines: Array[String] = []
+var _stdin_closed := false
+var _next_stale_check := 0
 
 
 func _ready() -> void:
-	_server = TCPServer.new()
-	var err := _server.listen(port, "127.0.0.1")
-	if err != OK:
-		push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
-		return
+	if transport == "stdio":
+		_stdin_thread = Thread.new()
+		_stdin_thread.start(_read_stdin)
+	else:
+		_server = TCPServer.new()
+		var err := _server.listen(port, "127.0.0.1")
+		if err != OK:
+			push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
+			return
 
 	if external_state != null:
 		# GUI mode — track AppState, stay in sync on file changes
@@ -80,9 +108,12 @@ func _ready() -> void:
 
 	_handler = McpHandler.new()
 	_handler.init_with_registry(_registry)
+	for proj_name in _project_dbs:
+		_watch_project(proj_name, _project_dbs[proj_name])
 
-	# Cap frame rate to avoid busy-spinning the main loop
-	if DisplayServer.get_name() == "headless":
+	# Cap frame rate to avoid busy-spinning the main loop. A stdio host waits
+	# on each reply, which is read once a frame.
+	if DisplayServer.get_name() == "headless" and transport != "stdio":
 		Engine.max_fps = 1
 	else:
 		Engine.max_fps = 30
@@ -159,6 +190,7 @@ func _headless_add_project(path: String) -> Dictionary:
 	if _db == null:
 		_db = loaded_db
 	_registry.update_db(_schema, _db, _project_dbs)
+	_watch_project(proj_name, loaded_db)
 	_persist_headless_session()
 	return {"name": proj_name, "path": path, "prefix": loaded_db.get_id_prefix()}
 
@@ -188,6 +220,9 @@ func _persist_headless_session() -> void:
 
 
 func _process(_delta: float) -> void:
+	if transport == "stdio":
+		_process_stdio()
+		return
 	if _server == null or not _server.is_listening():
 		return
 
@@ -352,3 +387,84 @@ func _handle_post(req: Dictionary) -> String:
 		return HttpParser.format_response(202, {}, "")
 
 	return HttpParser.format_response(200, {"Content-Type": "application/json"}, JSON.stringify(result))
+
+
+# -- stdio transport ----------------------------------------------------------
+
+## Stdin thread: gather bytes into lines (decoded whole, so a character is
+## never cut in two) and hand each to the main thread; mark EOF. One byte per
+## read: a larger read blocks until it is full (fread), which a request that
+## ends sooner never makes it; stdin is buffered, so this stays cheap.
+func _read_stdin() -> void:
+	var pending := PackedByteArray()
+	while true:
+		var byte := OS.read_buffer_from_stdin(1)
+		if byte.is_empty():
+			break  # EOF (or a read error): the host has gone
+		if byte[0] != 10:
+			pending.append(byte[0])
+			continue
+		var line := pending.get_string_from_utf8().strip_edges()
+		pending = PackedByteArray()
+		if not line.is_empty():
+			_stdin_lock.lock()
+			_stdin_lines.append(line)
+			_stdin_lock.unlock()
+	_stdin_lock.lock()
+	_stdin_closed = true
+	_stdin_lock.unlock()
+
+
+func _process_stdio() -> void:
+	_stdin_lock.lock()
+	var lines := _stdin_lines
+	_stdin_lines = []
+	var closed := _stdin_closed
+	_stdin_lock.unlock()
+	for line in lines:
+		var request = JSON.parse_string(line)
+		var response = _handler.handle(request) if request is Dictionary \
+			else {"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}} if request == null \
+			else {"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "Invalid Request"}}
+		if response != null:
+			_write_stdio(response)
+	# Another process may change a project file; the registry reloads it,
+	# which reports the change (items_changed "reloaded").
+	if Time.get_ticks_msec() >= _next_stale_check:
+		_next_stale_check = Time.get_ticks_msec() + STALE_CHECK_MS
+		_registry.refresh_stale_dbs()
+	if closed:
+		_stdin_thread.wait_to_finish()
+		get_tree().quit()
+
+
+func _write_stdio(message: Dictionary) -> void:
+	print(JSON.stringify(message))
+
+
+func _watch_project(proj_name: String, pdb: DocketDB) -> void:
+	if host_events and transport == "stdio" and pdb is DocketDBJsonl:
+		(pdb as DocketDBJsonl).items_changed.connect(_on_items_changed.bind(proj_name))
+
+
+## One ITEM_CHANGED_EVENT per changed item: {project, id, change, event},
+## where `change` is created | updated | transitioned | comment_added |
+## deleted | reloaded (the whole project, id ""), and `event` the item event
+## recorded.
+func _on_items_changed(changes: Array, proj_name: String) -> void:
+	for change: Dictionary in changes:
+		_write_stdio({"jsonrpc": "2.0", "method": HOST_EVENT_METHOD, "params": {
+			"event": ITEM_CHANGED_EVENT,
+			"payload": {"project": proj_name, "id": str(change.id), "change": _change_kind(str(change.event)),
+				"event": str(change.event)}}})
+
+
+static func _change_kind(event: String) -> String:
+	match event:
+		"created", "deleted", "reloaded":
+			return event
+		"transition":
+			return "transitioned"
+		"comment_added", "comment_reply":
+			return "comment_added"
+	return "updated"

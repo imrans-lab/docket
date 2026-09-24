@@ -44,7 +44,8 @@ func _parse_args() -> Dictionary:
 
 
 func _parse_arg_values(args: Array) -> Dictionary:
-	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": ""}
+	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false,
+		"host_events": false}
 
 	var i := 0
 	while i < args.size():
@@ -75,6 +76,10 @@ func _parse_arg_values(args: Array) -> Dictionary:
 				if i + 1 < args.size():
 					i += 1
 					opts.port = int(args[i])
+			"--stdio":
+				opts.stdio = true
+			"--host-events":
+				opts.host_events = true
 			_:
 				# Bare .dct path (backward compat)
 				if str(args[i]).ends_with(".dct"):
@@ -138,6 +143,10 @@ func _print_help() -> void:
 	print("  --query <path.dcq>  Load a .dcq query file on startup")
 	print("  --serve             Run as headless MCP server (no GUI)")
 	print("  --port <number>     MCP server port (default: 3010)")
+	print("  --stdio             With --serve: MCP over stdin/stdout instead of HTTP")
+	print("                      (for a host running Docket as its child process)")
+	print("  --host-events       With --stdio: notify the host of every item change")
+	print("                      (minerva/plugin_event item_changed)")
 	print("  --test              Run tests and exit")
 	print("  --migrate           Migrate a legacy JSON .dct to SQLite and exit")
 	print("  --migrate-jsonl     Migrate a legacy SQLite .dct to JSONL and exit")
@@ -176,11 +185,16 @@ func _start_server(opts: Dictionary) -> void:
 	var ServerScript = load("res://scripts/mcp/http_server.gd")
 	_http_server = ServerScript.new()
 	_http_server.port = opts.port
+	_http_server.transport = "stdio" if opts.stdio else "http"
+	_http_server.host_events = opts.host_events
 	_http_server.dct_path = opts.file
 	_http_server.dct_paths = opts.get("files", [opts.file])
 	add_child(_http_server)
 	var file_list := ", ".join(PackedStringArray(opts.get("files", [opts.file])))
-	print("Docket MCP server listening on 127.0.0.1:%d — files: %s" % [opts.port, file_list])
+	if opts.stdio:
+		printerr("Docket MCP server on stdio — files: %s" % file_list)  # stdout carries the protocol
+	else:
+		print("Docket MCP server listening on 127.0.0.1:%d — files: %s" % [opts.port, file_list])
 
 
 func _start_gui(opts: Dictionary) -> void:

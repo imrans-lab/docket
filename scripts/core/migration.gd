@@ -38,7 +38,7 @@ static func is_sqlite_dct(path: String) -> bool:
 static func migrate(json_path: String) -> DocketDB:
 	## Migrate a JSON .dct to SQLite .dct. Returns the opened DocketDB.
 	## Creates a .json.bak backup of the original file.
-	print("DocketMigration: migrating %s from JSON to SQLite..." % json_path)
+	printerr("DocketMigration: migrating %s from JSON to SQLite..." % json_path)
 
 	# Load JSON data
 	var json_data: Dictionary = FileManager.load_file(json_path)
@@ -56,7 +56,7 @@ static func migrate(json_path: String) -> DocketDB:
 		if dst:
 			dst.store_string(content)
 			dst.close()
-		print("DocketMigration: backup saved to %s" % backup_path)
+		printerr("DocketMigration: backup saved to %s" % backup_path)
 
 	# Delete old JSON file so SQLite can create fresh
 	DirAccess.remove_absolute(json_path)
@@ -86,7 +86,7 @@ static func migrate(json_path: String) -> DocketDB:
 	for name in queries:
 		db.save_query(name, queries[name])
 
-	print("DocketMigration: migrated %d items, %d saved queries" % [migrated_count, queries.size()])
+	printerr("DocketMigration: migrated %d items, %d saved queries" % [migrated_count, queries.size()])
 
 	# Verify
 	var rows := db._exec_select("SELECT count(*) as cnt FROM items;")
@@ -94,6 +94,6 @@ static func migrate(json_path: String) -> DocketDB:
 	if db_count != migrated_count:
 		push_warning("DocketMigration: count mismatch! expected %d, got %d" % [migrated_count, db_count])
 	else:
-		print("DocketMigration: verified %d items in SQLite" % db_count)
+		printerr("DocketMigration: verified %d items in SQLite" % db_count)
 
 	return db

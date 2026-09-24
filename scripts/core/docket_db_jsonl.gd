@@ -19,6 +19,15 @@ var _lock_timeout_ms: int = 5000
 var _atomic_write_hook: Callable
 var _mutation_depth: int = 0
 var _mutation_error: String = ""
+# Item changes recorded by the mutation in progress, for items_changed.
+var _pending_changes: Array = []
+
+## Emitted once a mutation is committed and saved, with the items it changed
+## in order: [{id, event}], `event` being the item event it recorded (e.g.
+## "created", "transition", "comment_added") or "deleted". A reload from the
+## file (a change made outside this process, or docket_reload) is reported
+## as [{id: "", event: "reloaded"}]; a rollback or failed save reports nothing.
+signal items_changed(changes: Array)
 
 # Reason the most recent open_jsonl() returned null (e.g. unresolved conflict
 # markers). Read immediately after a null return.
@@ -158,7 +167,7 @@ func ensure_fresh() -> bool:
 	return reload()
 
 
-func reload() -> bool:
+func reload(report_change: bool = true) -> bool:
 	## Force a rebuild of the SQLite cache from the canonical JSONL file,
 	## discarding cached state. Returns true on success.
 	if _mutation_depth > 0 or _jsonl_path.is_empty():
@@ -189,6 +198,8 @@ func reload() -> bool:
 
 	_adopt(fresh)
 	last_open_error = ""
+	if report_change:
+		items_changed.emit([{"id": "", "event": "reloaded"}])
 	return true
 
 
@@ -241,6 +252,7 @@ func _begin_canonical_mutation() -> String:
 		var precheck := _mutation_precheck()
 		if not precheck.is_empty(): return precheck
 		_last_sql_error = ""
+		_pending_changes = []
 		_mutation_error = _exec_checked("BEGIN TRANSACTION;")
 		if not _mutation_error.is_empty(): return _mutation_error
 	_mutation_depth += 1
@@ -253,15 +265,19 @@ func _complete_canonical_mutation(error: String = "") -> String:
 	_mutation_depth -= 1
 	if _mutation_depth > 0: return _mutation_error
 	if _mutation_error.is_empty(): _mutation_error = _exec_checked("COMMIT;")
+	var changes := _pending_changes
+	_pending_changes = []
 	if not _mutation_error.is_empty():
 		var failed := _mutation_error
 		_rollback()
-		reload()
+		reload(false)
 		last_write_error = failed
 		_mutation_error = ""
 		return failed
 	var flush_error := _flush_jsonl()
 	_mutation_error = ""
+	if flush_error.is_empty() and not changes.is_empty():
+		items_changed.emit(changes)
 	return flush_error
 
 
@@ -301,6 +317,7 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	for event in events:
 		if not error.is_empty(): break
 		error = _exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [event.item_id, event.event_type, event.get("actor", ""), event.timestamp, event.get("note", "")])
+		_pending_changes.append({"id": str(event.item_id), "event": str(event.event_type)})
 	return _complete_canonical_mutation(error)
 
 
@@ -372,7 +389,7 @@ func _fail_flush(message: String) -> String:
 	if FileAccess.file_exists(_jsonl_path):
 		# SQLite is disposable. Rebuilding it restores the last canonical state so
 		# a failed compound write cannot leak into a later successful flush.
-		reload()
+		reload(false)
 		last_write_error = message
 	else:
 		_write_blocked = true
@@ -462,6 +479,7 @@ func delete_item_checked(id: String) -> String:
 	if not precheck.is_empty(): return precheck
 	# delete_item internally calls delete_secret (which we override).
 	super.delete_item(id)
+	_pending_changes.append({"id": id, "event": "deleted"})
 	return _complete_canonical_mutation()
 
 
@@ -479,6 +497,7 @@ func import_item_full_checked(new_id: String, exported: Dictionary) -> String:
 	var precheck := _begin_canonical_mutation()
 	if not precheck.is_empty(): return precheck
 	super.import_item_full(new_id, exported)
+	_pending_changes.append({"id": new_id, "event": "created"})
 	return _complete_canonical_mutation()
 
 
@@ -581,6 +600,7 @@ func add_event_checked(item_id: String, event_type: String, actor: String, note:
 	var precheck := _begin_canonical_mutation()
 	if not precheck.is_empty(): return precheck
 	super.add_event(item_id, event_type, actor, note)
+	_pending_changes.append({"id": item_id, "event": event_type})
 	return _complete_canonical_mutation()
 
 
