@@ -11,6 +11,9 @@ on:
 
 env:
   GODOT_VERSION: "4.7.1"
+  # The oldest Godot a host embedding Docket runs (Minerva); the shipped
+  # native library must load there too.
+  HOST_GODOT_VERSION: "4.6.2"
 
 permissions:
   contents: write
@@ -117,7 +120,8 @@ jobs:
           set -euo pipefail
           case "${{ runner.os }}" in
             macOS)   GODOT_BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot" ;;
-            Windows) GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*.exe' | head -1)" ;;
+            # The console build, so its output reaches the log.
+            Windows) GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*_console.exe' | head -1)" ;;
             *)       GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*' -type f | head -1)" ;;
           esac
           chmod +x "$GODOT_BIN" || true
@@ -155,6 +159,46 @@ jobs:
             windows) LIB="build/windows/docket_native.windows.template_release.x86_64.dll" ;;
           esac
           test -s "$LIB" || { echo "the export has no native library at $LIB"; exit 1; }
+          echo "NATIVE_LIB=$LIB" >> "$GITHUB_ENV"
+
+      # The library as exported must be the one built from this commit, and
+      # must load both in Docket's Godot and in the oldest Godot a host runs.
+      # A failure here fails the build, so nothing is published.
+      - name: Check the exported native library loads
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILT="addons/docket_native/bin/$(basename "$NATIVE_LIB")"
+          if command -v sha256sum > /dev/null; then sha256sum "$NATIVE_LIB" "$BUILT"; else shasum -a 256 "$NATIVE_LIB" "$BUILT"; fi
+          if [ "${{ matrix.platform }}" = macos ]; then
+            # Export signs the library, which changes its bytes but not the
+            # build UUIDs of its architectures.
+            EXPORTED_UUIDS="$(dwarfdump --uuid "$NATIVE_LIB" | awk '{print $2, $3}')"
+            BUILT_UUIDS="$(dwarfdump --uuid "$BUILT" | awk '{print $2, $3}')"
+            [ -n "$EXPORTED_UUIDS" ] && [ "$EXPORTED_UUIDS" = "$BUILT_UUIDS" ] \
+              || { echo "the exported library is not the one built:"; printf '%s\n' "$EXPORTED_UUIDS" "$BUILT_UUIDS"; exit 1; }
+          else
+            cmp "$NATIVE_LIB" "$BUILT"
+          fi
+          ./scripts/build/check_native_load.sh "$GODOT_BIN" "$NATIVE_LIB"
+
+          BASE="https://github.com/godotengine/godot/releases/download/${HOST_GODOT_VERSION}-stable"
+          mkdir -p ~/godot-host && cd ~/godot-host
+          case "${{ runner.os }}" in
+            macOS)   curl -fSL -o godot.zip "$BASE/Godot_v${HOST_GODOT_VERSION}-stable_macos.universal.zip" ;;
+            Linux)   curl -fSL -o godot.zip "$BASE/Godot_v${HOST_GODOT_VERSION}-stable_linux.x86_64.zip" ;;
+            Windows) curl -fSL -o godot.zip "$BASE/Godot_v${HOST_GODOT_VERSION}-stable_win64.exe.zip" ;;
+          esac
+          unzip -q godot.zip && rm godot.zip
+          case "${{ runner.os }}" in
+            macOS)   HOST_BIN="$HOME/godot-host/Godot.app/Contents/MacOS/Godot" ;;
+            # The console build, so its output reaches this log.
+            Windows) HOST_BIN="$(find "$HOME/godot-host" -maxdepth 1 -name 'Godot_v*_console.exe' | head -1)" ;;
+            *)       HOST_BIN="$(find "$HOME/godot-host" -maxdepth 1 -name 'Godot_v*' -type f | head -1)" ;;
+          esac
+          chmod +x "$HOST_BIN" || true
+          cd "$GITHUB_WORKSPACE"
+          ./scripts/build/check_native_load.sh "$HOST_BIN" "$NATIVE_LIB"
 
       # macOS: Godot invokes Apple's native codesign tool with an empty identity,
       # which selects ad-hoc signing (codesign/codesign=3). Godot's built-in

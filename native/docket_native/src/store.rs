@@ -167,7 +167,9 @@ mod platform {
                 failure("denied", "the Secret Service wanted confirmation, which Docket does not ask for")
             }
             Error::Zbus(e) => zbus_kind(&e),
-            Error::ZbusFdo(e) => zbus_kind(&zbus::Error::FDO(Box::new(e))),
+            // The conversion unwraps an fdo error that only carries a zbus one,
+            // such as a timed-out property read.
+            Error::ZbusFdo(e) => zbus_kind(&zbus::Error::from(e)),
             _ => failure("other", "the Secret Service gave an unreadable answer"),
         }
     }

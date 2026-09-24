@@ -96,8 +96,11 @@ app does not contain it.
 
 The extension is built against Godot's 4.5 API (godot-rust 0.4). Later Godot
 versions are meant to load such a library, so one build should serve the
-Docket app on 4.7 and hosts on 4.6; that is not yet confirmed by a load check
-on each. The API floor is only the extension's; Docket itself still needs 4.7.
+Docket app on 4.7 and hosts on 4.6. The release workflow (on a release tag or
+manual run, not on every CI run) checks exactly that before publishing: the
+library inside each exported app must load in both
+(`scripts/build/check_native_load.sh`). The API floor is only the
+extension's; Docket itself still needs 4.7.
 
 ## Running
 

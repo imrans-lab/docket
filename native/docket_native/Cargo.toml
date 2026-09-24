@@ -11,8 +11,9 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-# Exact pin. The 4.5 API loads in every later Godot, including the 4.6 hosts
-# that embed Docket.
+# Exact pin. Built against the 4.5 API, which later Godot versions, including
+# the 4.6 hosts that embed Docket, are meant to load; the release workflow's
+# load check (scripts/build/check_native_load.sh) is what confirms it.
 godot = { version = "=0.4.5", default-features = false, features = ["api-4-5"] }
 
 [target.'cfg(unix)'.dependencies]
