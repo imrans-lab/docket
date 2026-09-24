@@ -319,8 +319,8 @@ func types_problem(_project: String) -> String:
 	return UNSUPPORTED
 
 
-## One type's descriptor plus `revisions` (its immutable history, newest
-## last), or {error}.
+## One type's descriptor plus `revisions` (its immutable history, ordered by
+## revision ID, not by date), or {error}.
 func type_with_history(_project: String, _slug: String) -> Dictionary:
 	return _unsupported()
 

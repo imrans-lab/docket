@@ -6,7 +6,7 @@ class_name DocketItemView
 ## docket_get does, but resolves the type for legacy projects too.
 
 func get_definition() -> Dictionary:
-	return {"name":"docket_item_view","description":"Get one item with its full type resolution, revision token and short ID (read-only). Errors carry a kind: registry (no type registry), refresh (its type definitions could not be reloaded; only with refresh), missing (no such item).","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"project":{"type":"string"},"refresh":{"type":"boolean","description":"Reload the project's type definitions first"}},"required":["id"]}}
+	return {"name":"docket_item_view","description":"Get one item with its full type resolution, revision token and short ID (read-only). Its own errors carry a kind: registry (no type registry), refresh (its type definitions could not be reloaded; only with refresh), missing (no such item). An unknown project or ambiguous ID prefix is an error without a kind.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"project":{"type":"string"},"refresh":{"type":"boolean","description":"Reload the project's type definitions first"}},"required":["id"]}}
 
 func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, registry: TypeRegistry) -> Dictionary:
 	var id := str(args.get("id", ""))

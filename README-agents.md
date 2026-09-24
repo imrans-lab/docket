@@ -311,6 +311,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_get` | Get item by ID with full event history |
 | `docket_item_view` | Get an item with its type resolution, revision token and short ID, for any project format (read-only) |
 | `docket_query_view` | Run a query over every open project as the grid shows it, with each row's short ID and type resolution (read-only) |
+| `docket_type_overview` | List a project's types with definitions, item counts and whether it needs promoting or upgrading (read-only) |
 | `docket_update` | Update fields on an existing item |
 | `docket_transition` | Move item to a new state (off-flow moves require a note) |
 | `docket_query` | Filter, sort, and limit items |

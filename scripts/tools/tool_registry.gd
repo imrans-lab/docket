@@ -60,6 +60,7 @@ func _build_tools() -> Dictionary:
 		"docket_type_evolve": DocketTypeEvolve.new(),
 		"docket_item_view": DocketItemView.new(),
 		"docket_query_view": DocketQueryView.new(),
+		"docket_type_overview": DocketTypeOverview.new(),
 	}
 
 

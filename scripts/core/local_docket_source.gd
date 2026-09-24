@@ -654,19 +654,10 @@ func types_overview(project: String, include_deprecated: bool) -> Dictionary:
 	var registry := _registry(project)
 	if registry == null:
 		return {"error": "Open a project to manage its types.", "kind": "no_project"}
-	var diagnostic := registry.get_diagnostic()
-	if not diagnostic.is_empty():
-		return {"error": "Type registry unavailable for %s: %s" % [project, diagnostic], "kind": "unavailable"}
 	var db: DocketDB = _state.get_db_for_project(project)
 	if db == null:
 		return {"error": "The selected project is no longer open.", "kind": "closed"}
-	var counts: Dictionary = {}
-	for row in db._exec_select("SELECT type,COUNT(*) AS count FROM items GROUP BY type;"):
-		counts[str(row.type)] = int(row.count)
-	var listed: Array = registry.list_types(include_deprecated)
-	if not listed.is_empty() and listed[0] is Dictionary and listed[0].has("error"):
-		return {"error": "Type registry unavailable for %s: %s" % [project, listed[0].error], "kind": "list_failed"}
-	return {"types": listed, "counts": counts, "legacy": registry.is_legacy() or not db is DocketDBJsonl}
+	return DocketTypeOverview.overview(registry, db, project, include_deprecated)
 
 
 func types_problem(project: String) -> String:

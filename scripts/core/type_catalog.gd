@@ -39,8 +39,12 @@ static func from_registry(registry, counts: Dictionary = {}) -> Array:
 	return checked.records
 
 static func from_registry_checked(registry, counts: Dictionary = {}) -> Dictionary:
+	return from_descriptors(registry.get_project_name(), registry.list_types(true), counts)
+
+## Catalog records of `project`'s type descriptors (as TypeRegistry.list_types
+## gives them, with definitions): {records, error}.
+static func from_descriptors(project: String, values: Array, counts: Dictionary = {}) -> Dictionary:
 	var result: Array = []
-	var values: Array = registry.list_types(true)
 	if values.size() == 1 and values[0] is Dictionary and values[0].has("error"): return {"records":[],"error":str(values[0].error)}
 	for value in values:
 		if not value is Dictionary: return {"records":[],"error":"type registry returned a malformed catalog entry"}
@@ -53,7 +57,7 @@ static func from_registry_checked(registry, counts: Dictionary = {}) -> Dictiona
 		var field_kinds: Dictionary = {}
 		for field in definition.fields:
 			fields.append(str(field.key)); field_kinds[str(field.key)] = str(field.type)
-		result.append({"id":descriptor.id,"key":identity(registry.get_project_name(),str(descriptor.id)),"slug":descriptor.slug,"label":definition.label,"description":definition.description,"use_when":definition.get("use_when", ""),"aliases":definition.get("aliases", []),"project":registry.get_project_name(),"item_count":int(counts.get(descriptor.slug, 0)),"deprecated":descriptor.lifecycle == "deprecated","states":states,"fields":fields,"field_kinds":field_kinds,"revision":descriptor.current_revision})
+		result.append({"id":descriptor.id,"key":identity(project,str(descriptor.id)),"slug":descriptor.slug,"label":definition.label,"description":definition.description,"use_when":definition.get("use_when", ""),"aliases":definition.get("aliases", []),"project":project,"item_count":int(counts.get(descriptor.slug, 0)),"deprecated":descriptor.lifecycle == "deprecated","states":states,"fields":fields,"field_kinds":field_kinds,"revision":descriptor.current_revision})
 	return {"records":sorted(result),"error":""}
 
 

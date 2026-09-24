@@ -11,7 +11,7 @@ extends "res://scripts/ui/docket_source.gd"
 ## before showing the UI.
 ##
 ## Methods with no exact tool yet answer UNSUPPORTED (see DocketSource),
-## including every item write and the vault.
+## including every item write, attachments and the vault.
 
 var _connection
 var _prefs
@@ -147,9 +147,9 @@ func _read_types(project: String) -> Dictionary:
 	return {"types": types}
 
 
-## Read `project`'s types and keep them, unless a read of the same project
-## started later has finished first, or this one failed (the project keeps
-## what was read before): {types} or {error}.
+## Read `project`'s types and keep them, unless another read of the same
+## project started after this one (whether or not it succeeds), or this one
+## failed (the project keeps what was read before): {types} or {error}.
 func _refresh_types(project: String) -> Dictionary:
 	var ticket: int = _type_reads.get(project, 0) + 1
 	_type_reads[project] = ticket
@@ -364,6 +364,47 @@ func types_problem(project: String) -> String:
 	if project.is_empty():
 		return "Open a project first."
 	return _error_text(await _call("docket_type_list", {"project": project}))
+
+
+func types_overview(project: String, include_deprecated: bool) -> Dictionary:
+	if project.is_empty():
+		return {"error": "Open a project to manage its types.", "kind": "no_project"}
+	if not project_names().has(project):
+		return {"error": "The selected project is no longer open.", "kind": "closed"}
+	return await _call("docket_type_overview", {"project": project, "include_deprecated": include_deprecated})
+
+
+func type_catalog() -> Dictionary:
+	if _projects.is_empty():
+		return {"records": TypeCatalog.from_schema(_schema), "diagnostic": ""}
+	var names := project_names()
+	names.sort()
+	var records: Array = []
+	var diagnostic := ""
+	for project in names:
+		var overview := await _call("docket_type_overview", {"project": project, "include_deprecated": true})
+		var catalog: Dictionary = {"records": [], "error": str(overview.get("reason", overview.get("error", "")))}
+		if not overview.has("error"):
+			catalog = TypeCatalog.from_descriptors(project, overview.types, overview.counts)
+		if str(catalog.error).is_empty():
+			records.append_array(catalog.records)
+		else:
+			diagnostic = "Type catalog unavailable for %s: %s" % [project, catalog.error]
+	return {"records": TypeCatalog.sorted(records), "diagnostic": diagnostic}
+
+
+func type_with_history(project: String, slug: String) -> Dictionary:
+	if project.is_empty() or not project_names().has(project):
+		return {"error": "Open a project before selecting a type."}
+	return await _call("docket_type_get", {"project": project, "type": slug, "history": true})
+
+
+func validate_type_definition(project: String, definition: Dictionary) -> String:
+	var problem := await types_problem(project)
+	if not problem.is_empty():
+		return problem
+	return _error_text(await _call("docket_type_validate", {"project": project,
+		"slug": str(definition.get("slug", "")), "definition": definition, "as_stored": true}))
 
 
 func type_revision(project: String, revision_id: String) -> Dictionary:
