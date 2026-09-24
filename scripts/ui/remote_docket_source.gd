@@ -65,7 +65,8 @@ func _call(name: String, arguments: Dictionary) -> Dictionary:
 
 
 ## An MCP tools/call result as the tool's own result: the JSON text of its
-## first content block, or {error} with the text when isError is set.
+## first content block or, when isError is set, the whole error result from
+## _meta if present, else {error} with the text.
 static func decode_tool_result(reply: Dictionary) -> Dictionary:
 	if reply.has("error"):
 		var error = reply.error
@@ -76,6 +77,12 @@ static func decode_tool_result(reply: Dictionary) -> Dictionary:
 	if content is Array and not content.is_empty() and content[0] is Dictionary:
 		text = str(content[0].get("text", ""))
 	if bool(reply.get("isError", false)):
+		# Mirrors McpHandler.ERROR_RESULT_META; the literal keeps the UI free of
+		# a dependency on the MCP server code.
+		var meta = reply.get("_meta")
+		var whole = meta.get("docket/result") if meta is Dictionary else null
+		if whole is Dictionary and not str(whole.get("error", "")).is_empty():
+			return whole
 		return {"error": text if not text.is_empty() else "Docket reported an error without a message"}
 	var parsed = JSON.parse_string(text)
 	return parsed if parsed is Dictionary else {"error": "unreadable reply from Docket: %s" % text.left(200)}

@@ -3,6 +3,9 @@ class_name McpHandler
 ## JSON-RPC 2.0 router for MCP Streamable HTTP protocol.
 
 const PROTOCOL_VERSION := "2025-03-26"
+## The _meta key under which a failed tools/call keeps the tool's whole
+## error result.
+const ERROR_RESULT_META := "docket/result"
 
 var _registry: ToolRegistry
 
@@ -52,10 +55,12 @@ func _handle_tool_call(id: Variant, params: Dictionary) -> Dictionary:
 	var result = _registry.call_tool(tool_name, arguments)
 
 	if result.has("error"):
-		return _make_result(id, {
-			"content": [{"type": "text", "text": result.error}],
-			"isError": true,
-		})
+		var failed := {"content": [{"type": "text", "text": result.error}], "isError": true}
+		# An error that carries more than its text (kind, partial_copy...)
+		# keeps it whole in _meta, which clients that only read the text skip.
+		if result.size() > 1:
+			failed["_meta"] = {ERROR_RESULT_META: result}
+		return _make_result(id, failed)
 
 	return _make_result(id, {
 		"content": [{"type": "text", "text": JSON.stringify(result)}],
