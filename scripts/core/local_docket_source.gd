@@ -110,13 +110,20 @@ func reload_all() -> Array:
 	return _state.reload_all()
 
 
+## Kept per machine (UserPrefs). A value not stored there yet is taken once
+## from the primary project's file, where earlier versions kept it.
 func ui_setting(key: String, default_value: String) -> String:
-	return _state.db.get_meta_value(key, default_value) if _state.db else default_value
+	if UserPrefs.has_ui_setting(key):
+		return UserPrefs.load_ui_setting(key, default_value)
+	var inherited: String = _state.db.get_meta_value(key, "") if _state.db else ""
+	if inherited.is_empty():
+		return default_value
+	UserPrefs.save_ui_setting(key, inherited)
+	return inherited
 
 
 func set_ui_setting(key: String, value: String) -> void:
-	if _state.db:
-		_state.db.set_meta_value(key, value)
+	UserPrefs.save_ui_setting(key, value)
 
 
 func tool_count() -> int:

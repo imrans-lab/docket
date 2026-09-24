@@ -55,6 +55,30 @@ func get_display_name() -> String:
 	return " ".join(parts)
 
 
+# -- Display settings ---------------------------------------------------------
+
+## Display settings (ui_scale, ui_font_size) belong to this machine, not to
+## any project file.
+static func has_ui_setting(key: String) -> bool:
+	var ui = _load_data().get("ui", {})
+	return ui is Dictionary and ui.has(key)
+
+
+static func load_ui_setting(key: String, default_value: String) -> String:
+	var ui = _load_data().get("ui", {})
+	return str(ui.get(key, default_value)) if ui is Dictionary else default_value
+
+
+static func save_ui_setting(key: String, value: String) -> void:
+	var data := _load_data()
+	var ui = data.get("ui", {})
+	if not ui is Dictionary:
+		ui = {}
+	ui[key] = value
+	data["ui"] = ui
+	_save_data(data)
+
+
 # -- Vault password -----------------------------------------------------------
 
 static func load_vault_password() -> String:

@@ -17,7 +17,7 @@ const VALID_TRANSITIONS := {
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_project_meta",
-		"description": "Get or set project lifecycle metadata (stage, hypothesis, success criteria). Set mode appends an audit trail record.",
+		"description": "Get or set project lifecycle metadata (stage, hypothesis, success criteria). Set mode appends an audit trail record. Get also reports, under display, zoom and font settings earlier app versions kept in the project file.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
@@ -78,13 +78,23 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: D
 			return {"error": "Unknown action: %s" % action}
 
 
+## Display settings earlier versions of the app kept in the project file,
+## reported (read-only) so a host can carry them over to its own settings.
+const DISPLAY_KEYS := ["ui_scale", "ui_font_size"]
+
+
 func _handle_get(target_db: DocketDB) -> Dictionary:
 	var name: String = target_db.get_project_name()
 	var meta: Dictionary = target_db.get_project_meta()
-	if meta.is_empty():
-		return {"project": name, "stage": "", "note": "No metadata set"}
-	var result := {"project": name}
+	var display := {}
+	for key in DISPLAY_KEYS:
+		var value := target_db.get_meta_value(key, "")
+		if not value.is_empty():
+			display[key] = value
+	var result := {"project": name, "stage": "", "note": "No metadata set"} if meta.is_empty() else {"project": name}
 	result.merge(meta)
+	if not display.is_empty():
+		result["display"] = display
 	return result
 
 

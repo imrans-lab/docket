@@ -418,6 +418,7 @@ func _on_file_changed() -> void:
 	## Project list changed — update menus and persist session.
 	_update_project_menu()
 	_save_session()
+	_restore_ui_settings()
 
 
 func _on_load_failed(path: String, reason: String) -> void:
@@ -925,9 +926,10 @@ func _set_font_size(preset: String) -> void:
 	_src.set_ui_setting("ui_font_size", preset)
 
 
+## Apply the zoom and font size kept for this machine. Run again when the
+## projects change, as a value not kept yet may come from the new primary
+## project's file (DocketSource.ui_setting).
 func _restore_ui_settings() -> void:
-	if _src.project_names().is_empty():
-		return
 	var scale_str: String = await _src.ui_setting("ui_scale", "1.0")
 	var zoom_factor := float(scale_str)
 	for i in _ZOOM_LEVELS.size():

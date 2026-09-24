@@ -36,7 +36,10 @@ var _refresh_error := ""
 signal _snapshot_refreshed
 
 
-## `prefs` answers get_display_name() for authorship (as UserPrefs does).
+## `prefs` is the host's per-person settings on this machine, as UserPrefs:
+## get_display_name() for authorship, and has_ui_setting(key),
+## load_ui_setting(key, default) and save_ui_setting(key, value) for display
+## settings (without these, display settings are not kept).
 func _init(connection, prefs) -> void:
 	_connection = connection
 	_prefs = prefs
@@ -195,6 +198,31 @@ func tool_count() -> int:
 		return 0
 	var tools: Array = await _connection.list_tools()
 	return tools.size()
+
+
+## Kept in the host's per-machine prefs. A value not stored there yet is taken
+## once from the primary project's file, where earlier versions kept it.
+func ui_setting(key: String, default_value: String) -> String:
+	if not _prefs.has_method("has_ui_setting"):
+		return default_value
+	if _prefs.has_ui_setting(key):
+		return _prefs.load_ui_setting(key, default_value)
+	var primary := primary_project()
+	if primary.is_empty():
+		return default_value
+	var meta := await _call("docket_project_meta", {"action": "get", "project": primary})
+	if _prefs.has_ui_setting(key):  # the user set it while the file was read
+		return _prefs.load_ui_setting(key, default_value)
+	var inherited := str(meta.get("display", {}).get(key, "")) if meta.get("display") is Dictionary else ""
+	if inherited.is_empty():
+		return default_value
+	_prefs.save_ui_setting(key, inherited)
+	return inherited
+
+
+func set_ui_setting(key: String, value: String) -> void:
+	if _prefs.has_method("save_ui_setting"):
+		_prefs.save_ui_setting(key, value)
 
 
 func prefs():

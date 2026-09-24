@@ -97,7 +97,7 @@ func reload_all() -> Array:
 	return []
 
 
-## A display setting stored for the person (ui_scale, ui_font_size).
+## A display setting (ui_scale, ui_font_size), kept per machine.
 func ui_setting(_key: String, default_value: String) -> String:
 	return default_value
 
