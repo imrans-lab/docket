@@ -7,6 +7,17 @@ var _db: SQLite
 var _path: String
 var _is_open: bool = false
 var _last_sql_error: String = ""
+# Item changes waiting for the open transaction to commit (items_changed).
+var _pending_changes: Array = []
+var _transaction_open := false
+
+## Emitted once item changes are durable, in order: [{id, event}], `event`
+## being the item event recorded (e.g. "created", "transition",
+## "comment_added"), "deleted", or "references_updated" for an item whose
+## references were rewritten. Outside a transaction a change is reported at
+## once; inside one, when it commits (nothing if it rolls back or its commit
+## fails). DocketDBJsonl reports only once its file is saved.
+signal items_changed(changes: Array)
 
 func item_columns() -> Array:
 	var result: Array = []
@@ -613,7 +624,8 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 		placeholders.append("?")
 		bindings.append(title)
 	var sql := "INSERT INTO items (%s) VALUES (%s);" % [",".join(cols), ",".join(placeholders)]
-	_exec(sql, bindings)
+	if _exec_checked(sql, bindings).is_empty():
+		_record_change(new_id, "created")
 
 	# Tags
 	var tags: Array = exported.get("tags", [])
@@ -694,13 +706,19 @@ func delete_item(id: String) -> void:
 	delete_secret(id + ":notes")
 	_exec("DELETE FROM docket_secret_versions WHERE handle=?;", [id])
 	_exec("DELETE FROM docket_secret_versions WHERE handle=?;", [id + ":notes"])
-	_exec("DELETE FROM items WHERE id=?;", [id])
+	if _exec_checked("DELETE FROM items WHERE id=?;", [id]).is_empty():
+		_record_change(id, "deleted")
 
 
 func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:
 	## Rewrite parent and blocked_by references from old to new.
 	## Returns the total number of rows updated.
 	var count := 0
+	var referencing: Array[String] = []
+	for ref in [old_qualified, old_bare_id] if rewrite_bare else [old_qualified]:
+		for row in _exec_select("SELECT id FROM items WHERE parent=? OR blocked_by=? UNION SELECT from_id FROM item_links WHERE to_id=?;", [ref, ref, ref]):
+			if not str(row.id) in referencing:
+				referencing.append(str(row.id))
 
 	# Rewrite qualified parent refs
 	_exec("UPDATE items SET parent=? WHERE parent=?;", [new_qualified, old_qualified])
@@ -724,7 +742,8 @@ func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: Str
 	if rewrite_bare:
 		_exec("UPDATE item_links SET to_id=? WHERE to_id=?;", [new_qualified_for_bare, old_bare_id])
 		count += _get_changes_count()
-
+	for id in referencing:
+		_record_change(id, "references_updated")
 	return count
 
 
@@ -738,9 +757,12 @@ func _get_changes_count() -> int:
 
 func add_event(item_id: String, event_type: String, actor: String, note: String = "") -> void:
 	var ts := Time.get_datetime_string_from_system(true)
-	_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
+	var error := _exec_checked("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 		[item_id, event_type, actor, ts, note])
-	_exec("UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
+	if error.is_empty():
+		error = _exec_checked("UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
+	if error.is_empty():
+		_record_change(item_id, event_type)
 
 
 func get_events(item_id: String) -> Array:
@@ -1518,6 +1540,7 @@ func _exec(sql: String, bindings: Array = []) -> void:
 		ok = _db.query_with_bindings(sql, bindings)
 	if not ok and _last_sql_error.is_empty():
 		_last_sql_error = _db.error_message if _db.error_message else "SQL execution failed"
+	_track_transaction(sql, ok)
 
 
 func _exec_checked(sql: String, bindings: Array = []) -> String:
@@ -1527,12 +1550,46 @@ func _exec_checked(sql: String, bindings: Array = []) -> String:
 		ok = _db.query(sql)
 	else:
 		ok = _db.query_with_bindings(sql, bindings)
+	_track_transaction(sql, ok)
 	if not ok:
 		var msg: String = _db.error_message if _db.error_message else "SQL execution failed"
 		if _last_sql_error.is_empty(): _last_sql_error = msg
 		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
 		return msg
 	return ""
+
+
+## Record that item `id` changed (`event`): reported now, or when the open
+## transaction commits (items_changed).
+func _record_change(id: String, event: String) -> void:
+	_pending_changes.append({"id": id, "event": event})
+	if not _transaction_open:
+		_report_changes()
+
+
+## Emit and forget the recorded changes (DocketDBJsonl reports them only once
+## its file is saved).
+func _report_changes() -> void:
+	if _pending_changes.is_empty():
+		return
+	var changes := _pending_changes
+	_pending_changes = []
+	items_changed.emit(changes)
+
+
+func _track_transaction(sql: String, ok: bool) -> void:
+	if sql.begins_with("BEGIN"):
+		# A failed BEGIN inside a transaction left open does not close it.
+		_transaction_open = _transaction_open or ok
+	elif sql.begins_with("COMMIT"):
+		if ok:
+			_transaction_open = false
+			_report_changes()
+		else:
+			_pending_changes = []  # those changes were not made durable
+	elif sql.begins_with("ROLLBACK"):
+		_transaction_open = false
+		_pending_changes = []
 
 
 func _exec_select(sql: String, bindings: Array = []) -> Array:

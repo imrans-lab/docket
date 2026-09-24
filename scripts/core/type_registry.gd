@@ -629,7 +629,9 @@ func rewrite_move_references(old_qualified: String, new_qualified: String, old_b
 				if rewritten_list != custom[key]: changes[key] = rewritten_list
 		if not changes.is_empty():
 			error = _db.update_item_fields_checked(str(item.id), _storage_patch(changes, [], resolved.definition))
-			if error.is_empty(): count += 1
+			if error.is_empty():
+				count += 1
+				_db._record_change(str(item.id), "references_updated")
 	if json_db != null: error = json_db._complete_canonical_mutation(error)
 	elif error.is_empty(): error = _db._exec_checked("COMMIT;")
 	else: _db._rollback()
@@ -748,6 +750,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 			if not bind_error.is_empty(): break
 			bind_error = _db._exec_checked("UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [current.id, revision_id, id])
 			if bind_error.is_empty(): bind_error = _db._exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [id,"type_revision_changed",author,Time.get_datetime_string_from_system(true),reason])
+			if bind_error.is_empty(): _db._record_change(id, "type_revision_changed")
 		return (_db as DocketDBJsonl)._complete_canonical_mutation(bind_error)
 	var revision := {"id":revision_id,"type_id":current.id,"parent_revision":current.current_revision,"definition":checked.definition,"author":author,"created_at":Time.get_datetime_string_from_system(true),"reason":reason}
 	var record: Dictionary = _definitions[checked.slug].duplicate(true)

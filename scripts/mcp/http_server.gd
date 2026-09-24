@@ -17,6 +17,9 @@ const ITEM_CHANGED_EVENT := "item_changed"
 ## How often (ms) the stdio server checks for changes made to a project file
 ## by another process.
 const STALE_CHECK_MS := 2000
+## Longest stdio request line accepted (bytes); a longer one is dropped and
+## answered with an error, so a runaway writer cannot exhaust memory.
+const MAX_STDIO_LINE_BYTES := 64 * 1024 * 1024
 
 var transport: String = "http"
 ## With the stdio transport: send a HOST_EVENT_METHOD notification for every
@@ -46,13 +49,17 @@ var _next_stale_check := 0
 
 func _ready() -> void:
 	if transport == "stdio":
-		if "--quiet" in OS.get_cmdline_args():
+		if "--quiet" in OS.get_cmdline_args() or "-q" in OS.get_cmdline_args():
 			printerr("Docket: --stdio cannot run with --quiet, which silences its replies; use --no-header")
 			set_process(false)
 			get_tree().quit(1)
 			return
 		_stdin_thread = Thread.new()
-		_stdin_thread.start(_read_stdin)
+		if _stdin_thread.start(_read_stdin) != OK:
+			printerr("Docket: could not start the stdin reader for --stdio")
+			set_process(false)
+			get_tree().quit(1)
+			return
 	else:
 		_server = TCPServer.new()
 		var err := _server.listen(port, "127.0.0.1")
@@ -403,15 +410,21 @@ func _handle_post(req: Dictionary) -> String:
 ## ends sooner never makes it; stdin is buffered, so this stays cheap.
 func _read_stdin() -> void:
 	var pending := PackedByteArray()
+	var oversized := false
 	while true:
 		var byte := OS.read_buffer_from_stdin(1)
 		if byte.is_empty():
 			break  # EOF (or a read error): the host has gone
 		if byte[0] != 10:
-			pending.append(byte[0])
+			if pending.size() < MAX_STDIO_LINE_BYTES:
+				pending.append(byte[0])
+			else:
+				oversized = true
 			continue
-		var line := pending.get_string_from_utf8().strip_edges()
+		# An oversized line is answered as an invalid request (an empty object).
+		var line := "{}" if oversized else pending.get_string_from_utf8().strip_edges()
 		pending = PackedByteArray()
+		oversized = false
 		if not line.is_empty():
 			_stdin_lock.lock()
 			_stdin_lines.append(line)
@@ -428,10 +441,15 @@ func _process_stdio() -> void:
 	var closed := _stdin_closed
 	_stdin_lock.unlock()
 	for line in lines:
-		var request = JSON.parse_string(line)
-		var response = _handler.handle(request) if request is Dictionary \
-			else {"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}} if request == null \
-			else {"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "Invalid Request"}}
+		var json := JSON.new()
+		var parsed := json.parse(line) == OK
+		var request = json.data if parsed else null
+		# A JSON-RPC response (the host never needs one answered) is ignored.
+		if request is Dictionary and not request.has("method") and (request.has("result") or request.has("error")):
+			continue
+		var response = _handler.handle(request) if request is Dictionary and request.has("method") \
+			else {"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "Invalid Request"}} if parsed \
+			else {"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}
 		if response != null:
 			_write_stdio(response)
 	# Another process may change a project file; the registry reloads it,
@@ -449,14 +467,14 @@ func _write_stdio(message: Dictionary) -> void:
 
 
 func _watch_project(proj_name: String, pdb: DocketDB) -> void:
-	if host_events and transport == "stdio" and pdb is DocketDBJsonl:
-		(pdb as DocketDBJsonl).items_changed.connect(_on_items_changed.bind(proj_name))
+	if host_events and transport == "stdio" and pdb != null:
+		pdb.items_changed.connect(_on_items_changed.bind(proj_name))
 
 
-## One ITEM_CHANGED_EVENT per changed item: {project, id, change, event},
-## where `change` is created | updated | transitioned | comment_added |
-## deleted | reloaded (the whole project, id ""), and `event` the item event
-## recorded.
+## One ITEM_CHANGED_EVENT per recorded change (an item can have several):
+## {project, id, change, event}, where `change` is created | updated |
+## transitioned | comment_added | deleted | reloaded (the whole project,
+## id ""), and `event` the item event recorded.
 func _on_items_changed(changes: Array, proj_name: String) -> void:
 	for change: Dictionary in changes:
 		_write_stdio({"jsonrpc": "2.0", "method": HOST_EVENT_METHOD, "params": {
