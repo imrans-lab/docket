@@ -118,6 +118,11 @@ jobs:
       - name: Build GDExtension from source
         run: ./scripts/build/build_gdextension.sh ${{ matrix.platform }} ${{ matrix.arch }} all
 
+      # Docket's own Rust extension, with the runner's stable Rust toolchain;
+      # Cargo.lock pins every dependency (--locked).
+      - name: Build Rust extension from source
+        run: ./native/build.sh
+
       # Secret scan, machine-path leakage, FCIB, version skew, dead links.
       # Cheap, so it runs on every push rather than only before a release.
       - name: Preflight checks

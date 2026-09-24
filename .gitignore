@@ -17,6 +17,8 @@
 
 # GDExtension build output
 addons/godot-sqlite/bin/
+addons/docket_native/bin/
+native/*/target/
 
 # SCons build state
 .sconsign.dblite

@@ -24,6 +24,7 @@ signing, code you never built and cannot audit.
 - **SCons** — `pipx install scons` (or `pip install scons`)
 - **A C++ toolchain** — Xcode CLT on macOS, gcc/clang on Linux, MSVC on Windows
 - **Python 3** — required by SCons
+- **Rust 1.89+** — for `native/docket_native` (`rustup` or your platform's package)
 
 ## First build
 
@@ -70,6 +71,21 @@ one. The build script builds both by default.
 If you build only `template_release`, the extension fails to load under the tool
 binary with `Can't open dynamic library: .` and around 50 tests fail in ways
 that look like unrelated SQLite bugs.
+
+### The Rust extension
+
+`native/docket_native` is Docket's own native extension, written in Rust with
+[godot-rust](https://godot-rust.github.io). It provides `DocketCoordLock`, the
+cross-process lock Docket processes on one machine coordinate through. It needs
+a Rust toolchain (1.89 or newer; `rustup` is the usual source):
+
+```bash
+native/build.sh            # debug and release, for this machine
+```
+
+Output lands in `addons/docket_native/bin/`, which is gitignored. Dependencies
+are pinned exactly in `Cargo.toml`, and `Cargo.lock` is committed; the script
+builds with `--locked`, so a build never picks up versions nobody reviewed.
 
 ## Running
 
