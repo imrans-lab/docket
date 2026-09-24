@@ -734,16 +734,6 @@ func rotate_secret_checked(handle: String, new_ct: PackedByteArray, new_iv: Pack
 	return _complete_canonical_mutation()
 
 
-func set_secret_2fa(handle: String, requires: bool) -> void:
-	set_secret_2fa_checked(handle, requires)
-
-func set_secret_2fa_checked(handle: String, requires: bool) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_secret_2fa(handle, requires)
-	return _complete_canonical_mutation()
-
-
 # -- Retrieval bump -----------------------------------------------------------
 
 func bump_retrieval(id: String) -> void:

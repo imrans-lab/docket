@@ -1517,11 +1517,6 @@ func get_secret_versions(handle: String) -> Array:
 	return result
 
 
-func set_secret_2fa(handle: String, requires: bool) -> void:
-	## Set the requires_2fa flag on a secret.
-	_exec("UPDATE docket_secrets SET requires_2fa=? WHERE handle=?;", [1 if requires else 0, handle])
-
-
 static func _has_column(col_rows: Array, col_name: String) -> bool:
 	for cr in col_rows:
 		if str(cr.get("name", "")) == col_name:

@@ -203,4 +203,8 @@ func test_version_history_survives_a_round_trip() -> Variant:
 			DirAccess.remove_absolute(_path + suffix)
 	_db = DocketDBJsonl.open_jsonl(_path)
 	var versions := _db.get_secret_versions("h")
-	return A.eq(versions.size(), 1, "archived version survives a cache rebuild")
+	var r = A.eq(versions.size(), 1, "archived version survives a cache rebuild")
+	if r != true:
+		return r
+	return A.is_true(bool(versions[0].get("requires_2fa", false)),
+		"the archived version is still marked double-encrypted after the file is read back")

@@ -324,7 +324,8 @@ static func migrate_schema(db: DocketDB) -> void:
 			iv BLOB NOT NULL,
 			mac BLOB NOT NULL,
 			created_at TEXT NOT NULL,
-			rotated_by TEXT DEFAULT ''
+			rotated_by TEXT DEFAULT '',
+			requires_2fa INTEGER DEFAULT 0
 		);""")
 		db._exec("CREATE INDEX IF NOT EXISTS idx_secret_versions_handle ON docket_secret_versions(handle);")
 

@@ -511,6 +511,7 @@ static func _parse_secret_version(d: Dictionary) -> Dictionary:
 	out["iv_b64"] = _str_field(d, "iv", "")
 	out["mac_b64"] = _str_field(d, "mac", "")
 	_copy_str_opt(d, out, "rotated_by")
+	out["requires_2fa"] = bool(d.get("requires_2fa", false))
 	return out
 
 

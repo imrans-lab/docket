@@ -406,8 +406,10 @@ func _vault_operations(db: DocketDB, item_id: String, secret: Dictionary) -> Dic
 			operations.append({"handle":item_id, "owner":item_id, "suffix":"", "ciphertext":encrypted.ciphertext, "iv":encrypted.iv, "mac":encrypted.mac, "requires_2fa":requires_2fa, "rotate":not item_id.is_empty() and not db.get_secret_raw(item_id).is_empty()})
 		elif bool(secret.get("masked", false)) and not item_id.is_empty():
 			var current := db.get_secret_raw(item_id)
+			# The flag must describe how the stored value is encrypted: turning a
+			# secondary password on or off means encrypting the value again.
 			if not current.is_empty() and bool(current.get("requires_2fa", false)) != requires_2fa:
-				operations.append({"handle":item_id, "two_factor_only":true, "requires_2fa":requires_2fa})
+				return {"error": "Changing whether this secret needs a secondary password requires entering its value again."}
 		_notes_operation(operations, key, item_id, ":notes", secret)
 	elif secret.get("type") == "encrypted_note":
 		_notes_operation(operations, key, item_id, "", secret)
@@ -425,16 +427,6 @@ func _apply_vault_operations(db: DocketDB, operations: Array) -> String:
 	for operation_value in operations:
 		var operation: Dictionary = operation_value
 		var handle := str(operation.handle)
-		if bool(operation.get("two_factor_only", false)):
-			if db is DocketDBJsonl:
-				var two_factor_error := (db as DocketDBJsonl).set_secret_2fa_checked(handle, bool(operation.requires_2fa))
-				if not two_factor_error.is_empty():
-					return two_factor_error
-			else:
-				db.set_secret_2fa(handle, bool(operation.requires_2fa))
-				if not db._last_sql_error.is_empty():
-					return db._last_sql_error
-			continue
 		var error := ""
 		if bool(operation.get("rotate", false)):
 			if db is DocketDBJsonl:

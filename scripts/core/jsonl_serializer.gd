@@ -307,7 +307,7 @@ static func serialize_secrets(db: DocketDB) -> String:
 		"SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"
 	)
 	var version_rows := db._exec_select(
-		"SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;"
+		"SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa FROM docket_secret_versions ORDER BY handle ASC, version ASC;"
 	)
 
 	if secret_rows.is_empty() and version_rows.is_empty():
@@ -368,6 +368,11 @@ static func serialize_secrets(db: DocketDB) -> String:
 		var rotated_by := str(row.get("rotated_by", ""))
 		if not rotated_by.is_empty():
 			d["rotated_by"] = rotated_by
+
+		# requires_2fa: omit if false. It says how this archived value was
+		# encrypted, so a reader knows to ask for the secondary password.
+		if int(row.get("requires_2fa", 0)) == 1:
+			d["requires_2fa"] = true
 
 		lines.append(_to_ordered_json(d))
 
