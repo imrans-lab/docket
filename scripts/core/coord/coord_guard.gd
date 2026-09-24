@@ -26,6 +26,14 @@ func end(op: int) -> String:
 	return "" if _lock == null else str(_lock.end(op))
 
 
+## "" when the coordination directory is `expected`, as this host resolved
+## it; otherwise why not, and coordination stays off in this process.
+func expect_directory(expected: String) -> String:
+	if _lock == null:
+		return "Docket's native extension is not loaded, so projects cannot be coordinated."
+	return str(_lock.expect_directory(expected))
+
+
 ## The coordination directory, or "" when it cannot be found.
 func directory() -> String:
 	var lock_path := "" if _lock == null else str(_lock.lock_path())

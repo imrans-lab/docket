@@ -30,7 +30,7 @@
 //! deadline, so an operation must not hold EXCLUSIVE while it waits on the
 //! thread that would wait for it (Godot's main thread, say).
 
-use crate::coord_dir::coordination_dir;
+use crate::coord_dir::{self, coordination_dir};
 use godot::prelude::*;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -102,6 +102,15 @@ impl DocketCoordLock {
         GString::from(end(op).err().unwrap_or_default().as_str())
     }
 
+    /// Checks that the coordination directory is `expected` (an absolute
+    /// path a host resolved); "" when it is. A mismatch fails coordination for
+    /// the rest of the process, and says why.
+    #[func]
+    fn expect_directory(&self, expected: GString) -> GString {
+        let expected = expected.to_string();
+        GString::from(coord_dir::expect(std::path::Path::new(&expected)).err().unwrap_or_default().as_str())
+    }
+
     /// The lock file's path, for diagnostics, or "" when it cannot be found.
     #[func]
     fn lock_path(&self) -> GString {
@@ -123,6 +132,11 @@ pub(crate) fn begin(mode: i64, within: i64) -> Result<i64, Failure> {
     if mode != SHARED && mode != EXCLUSIVE {
         return Err(failure("refused", format!("unknown lock mode {mode}")));
     }
+    // Checked before any operation or nested step is admitted, so an id
+    // taken before a mismatch cannot be used after it; end() still works.
+    if let Some(mismatch) = coord_dir::mismatch() {
+        return Err(failure("refused", mismatch));
+    }
     if within != 0 {
         let mut state = state();
         let operation = state
@@ -140,6 +154,11 @@ pub(crate) fn begin(mode: i64, within: i64) -> Result<i64, Failure> {
     loop {
         {
             let mut state = state();
+            // Again on every pass: a mismatch reported while this waited
+            // must not be followed by granting it.
+            if let Some(mismatch) = coord_dir::mismatch() {
+                return Err(failure("refused", mismatch));
+            }
             if state.file.is_none() {
                 let file = OpenOptions::new()
                     .read(true)
