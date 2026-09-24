@@ -11,8 +11,8 @@
 //!
 //! Within a process, the lock is held for logical operations. GDScript gets
 //! each one as a DocketCoordOperation object: DocketCoordLock.open() starts
-//! an operation, `nested()` on it starts a step of the same operation that
-//! reuses its hold, and `close()` gives either back (as does freeing the
+//! an operation, `nested()` on it (or DocketCoordLock.join(it)) starts a step
+//! of the same operation that reuses its hold, and `close()` gives either back (as does freeing the
 //! object, as a safety net). The operation's id never leaves Rust. Code that
 //! is not handed an operation starts its own: it shares a SHARED hold, but
 //! waits for an EXCLUSIVE one like any other process, so no unrelated callback

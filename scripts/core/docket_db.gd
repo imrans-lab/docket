@@ -30,8 +30,19 @@ func item_columns() -> Array:
 
 
 # -- Lifecycle ----------------------------------------------------------------
+#
+# Opening, creating, checkpointing and closing write to the database (WAL
+# mode, schema migration, project defaults, checkpoints), so each runs within
+# a step of the coordination operation `op` it is given, or an operation of
+# its own when `op` is null, from before the connection opens. Without one it
+# is refused: open and create fail, close keeps the connection open.
 
-func open(path: String) -> bool:
+func open(path: String, op: RefCounted = null) -> bool:
+	if _db != null and not _on_owner_thread(): return false
+	return _writing(op, _open.bind(path)) == true
+
+
+func _open(step: RefCounted, path: String) -> bool:
 	_path = path
 	_db = SQLite.new()
 	_db.path = path
@@ -40,74 +51,110 @@ func open(path: String) -> bool:
 	if not _db.open_db():
 		push_error("DocketDB: failed to open %s" % path)
 		return false
-	_exec("PRAGMA journal_mode=WAL;")
-	_exec("PRAGMA foreign_keys=ON;")
-	_exec("PRAGMA busy_timeout=15000;")
+	_write(step, "PRAGMA journal_mode=WAL;")
+	_write(step, "PRAGMA foreign_keys=ON;")
+	_write(step, "PRAGMA busy_timeout=15000;")
 	_is_open = true
-	DocketDBSchema.migrate_schema(self)
-
-	# Auto-derive project name and ID prefix from filename if still defaults
-	var basename := path.get_file().get_basename()
-	if get_project_name().is_empty() and not basename.is_empty():
-		set_project_name(basename)
-	if get_id_prefix() == "DKT" and not basename.is_empty() and basename != "docket":
-		set_id_prefix(_derive_prefix(basename))
-
+	DocketDBSchema.migrate_schema(self, step)
+	_default_naming(step, path, true)
 	return true
 
 
-func close() -> void:
-	if not _on_owner_thread(): return
-	if _db:
-		_exec("PRAGMA wal_checkpoint(TRUNCATE);")
+# Project name and ID prefix from the file name, where still the defaults.
+func _default_naming(step: RefCounted, path: String, keep_docket_prefix: bool) -> void:
+	var basename := path.get_file().get_basename()
+	if basename.is_empty():
+		return
+	if get_project_name().is_empty():
+		_write(step, "INSERT OR REPLACE INTO docket_meta (key, value) VALUES ('project', ?);", [basename])
+	if get_id_prefix() == "DKT" and not (keep_docket_prefix and basename == "docket"):
+		_write(step, "INSERT OR REPLACE INTO docket_meta (key, value) VALUES ('id_prefix', ?);", [_derive_prefix(basename)])
+
+
+## Checkpoints the WAL into the database file and closes the connection:
+## "" or why not. Refused, leaving the connection open, inside a transaction
+## or without a coordination operation; a checkpoint that could not finish
+## is reported, and the connection is closed all the same.
+func close_checked(op: RefCounted = null) -> String:
+	if not _on_owner_thread(): return _last_sql_error
+	if _db == null:
+		_is_open = false
+		return ""
+	if _txn_depth > 0: return "%s cannot close while a change is in progress" % _path
+	return _writing_text(op, func(step: RefCounted) -> String:
+		var error := _checkpoint(step, "TRUNCATE")
 		_db.close_db()
-	_is_open = false
+		_is_open = false
+		return error)
+
+
+func close() -> void:
+	var error := close_checked()
+	if not error.is_empty():
+		push_error("DocketDB: %s" % error)
+
+
+## Flushes the WAL to the database file so other processes see every change:
+## "" or why not.
+func checkpoint_checked(op: RefCounted = null) -> String:
+	if _db == null or not _is_open: return ""
+	if not _on_owner_thread(): return _last_sql_error
+	return _writing_text(op, func(step: RefCounted) -> String: return _checkpoint(step, "PASSIVE"))
 
 
 func checkpoint() -> void:
-	## Flush WAL to main database file so other processes can see all data.
-	if _db and _is_open and _on_owner_thread():
-		_exec("PRAGMA wal_checkpoint(PASSIVE);")
+	var error := checkpoint_checked()
+	if not error.is_empty():
+		push_error("DocketDB: %s" % error)
+
+
+# PRAGMA wal_checkpoint answers one row (busy, log, checkpointed); busy
+# means it could not finish.
+func _checkpoint(step: RefCounted, mode: String) -> String:
+	var rows := _write_rows(step, "PRAGMA wal_checkpoint(%s);" % mode)
+	if rows.size() != 1:
+		return "checkpointing %s failed: %s" % [_path, _last_sql_error]
+	if int(rows[0].get("busy", 0)) != 0:
+		return "checkpointing %s did not finish: the database was busy" % _path
+	return ""
 
 
 func is_open() -> bool:
 	return _is_open
 
 
-static func create_new(path: String) -> DocketDB:
-	var db := DocketDB.new()
-	db._path = path
-	db._db = SQLite.new()
-	db._db.path = path
-	db._db.verbosity_level = SQLite.QUIET
-	db._owner_thread = OS.get_thread_caller_id()
-	if not db._db.open_db():
-		push_error("DocketDB: failed to create %s" % path)
+static func create_new(path: String, op: RefCounted = null) -> DocketDB:
+	var lease := CoordLease.shared(op)
+	if lease.has("error"):
+		push_error("DocketDB: %s" % lease.error)
 		return null
-	db._exec("PRAGMA journal_mode=WAL;")
-	db._exec("PRAGMA foreign_keys=ON;")
-	db._exec("PRAGMA busy_timeout=15000;")
-	db._init_schema()
-	db._is_open = true
+	var db := DocketDB.new()
+	var created := db._create(lease.operation, path)
+	lease.operation.close()
+	return db if created else null
 
-	# Default project name and ID prefix from filename
-	var basename := path.get_file().get_basename()
-	if db.get_project_name().is_empty() and not basename.is_empty():
-		db.set_project_name(basename)
-	if db.get_id_prefix() == "DKT" and not basename.is_empty():
-		db.set_id_prefix(_derive_prefix(basename))
 
-	return db
+func _create(step: RefCounted, path: String) -> bool:
+	_path = path
+	_db = SQLite.new()
+	_db.path = path
+	_db.verbosity_level = SQLite.QUIET
+	_owner_thread = OS.get_thread_caller_id()
+	if not _db.open_db():
+		push_error("DocketDB: failed to create %s" % path)
+		return false
+	_write(step, "PRAGMA journal_mode=WAL;")
+	_write(step, "PRAGMA foreign_keys=ON;")
+	_write(step, "PRAGMA busy_timeout=15000;")
+	DocketDBSchema.init_schema(self, step)
+	_is_open = true
+	_default_naming(step, path, false)
+	return true
 
 
 func get_path() -> String:
 	return _path
 
-
-# -- Schema creation ----------------------------------------------------------
-
-func _init_schema() -> void:
-	DocketDBSchema.init_schema(self)
 
 # -- ID generation ------------------------------------------------------------
 
@@ -1592,6 +1639,130 @@ static func _has_column(col_rows: Array, col_name: String) -> bool:
 
 
 # -- Internal SQL helpers -----------------------------------------------------
+#
+# Writes run within a coordination operation their caller supplies
+# explicitly (a DocketCoordOperation, see CoordGuard). A public method opens a
+# step of the operation it was given, or an operation of its own, before its
+# prechecks (_writing), and passes that step to every write it makes
+# (_write, _write_checked, _write_rows, _begin_transaction). A write without
+# a live step, from another thread, or into a transaction another operation
+# owns is refused and executes nothing.
+
+## `work` called with the step it must pass to every write (first argument,
+## before any bound ones), within a step of `parent` or, when that is null, a
+## SHARED operation of its own. Returns what `work` returns, or null after a
+## refusal (the reason in _last_sql_error). `work` must not await.
+func _writing(parent: RefCounted, work: Callable) -> Variant:
+	var opened := CoordLease.shared(parent)
+	if opened.has("error"):
+		_last_sql_error = opened.error
+		return null
+	var result: Variant = work.call(opened.operation)
+	opened.operation.close()
+	return result
+
+
+## _writing for work that returns "" or an error.
+func _writing_text(parent: RefCounted, work: Callable) -> String:
+	var result: Variant = _writing(parent, work)
+	return result if result is String else _last_sql_error
+
+
+static func _live(operation: RefCounted) -> bool:
+	return operation != null and operation.is_open()
+
+
+# "" when `step` may write now, or why not (also in _last_sql_error).
+func _write_refusal(step: RefCounted, sql: String) -> String:
+	if not _on_owner_thread(): return _last_sql_error
+	var reason := ""
+	if not _live(step):
+		reason = "a write to %s was attempted outside a coordination operation" % _path
+	elif _txn_depth > 0 and not _txn_owner.same_operation(step):
+		reason = "a write to %s was attempted into another operation's change" % _path
+	if reason.is_empty(): return ""
+	if _last_sql_error.is_empty(): _last_sql_error = reason
+	push_error("DocketDB: %s — %s" % [reason, sql.left(120)])
+	return reason
+
+
+func _write(step: RefCounted, sql: String, bindings: Array = []) -> void:
+	if not _write_refusal(step, sql).is_empty(): return
+	_exec(sql, bindings)
+
+
+func _write_checked(step: RefCounted, sql: String, bindings: Array = []) -> String:
+	var refusal := _write_refusal(step, sql)
+	return refusal if not refusal.is_empty() else _exec_checked(sql, bindings)
+
+
+## A write that answers rows (such as a checkpoint PRAGMA): its rows, or []
+## with the reason in _last_sql_error.
+func _write_rows(step: RefCounted, sql: String, bindings: Array = []) -> Array:
+	if not _write_refusal(step, sql).is_empty(): return []
+	return _exec_select(sql, bindings)
+
+
+# -- Transactions ------------------------------------------------------------
+#
+# A transaction belongs to the operation step that began it. Each scope
+# admitted into it gets a single-use ticket, consumed by its completion;
+# only a step of the owning operation is admitted, and only the outermost
+# completion commits (or rolls back after any failure, which is sticky).
+# Changes are reported once the transaction is settled.
+
+var _txn_owner: RefCounted = null
+var _txn_depth := 0
+var _txn_error := ""
+var _txn_tickets: Dictionary = {}
+var _txn_next_ticket := 1
+
+
+## {ticket} or {error}: admits a scope of `step` into the open transaction,
+## or begins one (BEGIN IMMEDIATE) owned by `step`.
+func _begin_transaction(step: RefCounted) -> Dictionary:
+	var refusal := _write_refusal(step, "BEGIN")
+	if not refusal.is_empty(): return {"error": refusal}
+	if _txn_depth == 0:
+		_last_sql_error = ""
+		_pending_changes = []
+		var error := _exec_checked("BEGIN IMMEDIATE TRANSACTION;")
+		if not error.is_empty(): return {"error": error}
+		_txn_owner = step
+		_txn_error = ""
+	elif not _txn_error.is_empty():
+		return {"error": _txn_error}
+	_txn_depth += 1
+	var ticket := _txn_next_ticket
+	_txn_next_ticket += 1
+	_txn_tickets[ticket] = true
+	return {"ticket": ticket}
+
+
+## Completes the scope admitted with `ticket`, recording `error` if it
+## failed: "" or the transaction's error. A ticket completes once; an unknown
+## one changes nothing.
+func _complete_transaction(ticket: int, error: String = "") -> String:
+	if not _txn_tickets.has(ticket):
+		return "that change was not admitted or has already completed"
+	_txn_tickets.erase(ticket)
+	if not error.is_empty() and _txn_error.is_empty(): _txn_error = error
+	if not _last_sql_error.is_empty() and _txn_error.is_empty(): _txn_error = _last_sql_error
+	_txn_depth -= 1
+	if _txn_depth > 0: return _txn_error
+	# Held back until the transaction is settled below.
+	var changes := _pending_changes
+	_pending_changes = []
+	var outcome := _txn_error
+	if outcome.is_empty(): outcome = _exec_checked("COMMIT;")
+	if not outcome.is_empty(): _exec("ROLLBACK;")
+	_txn_owner = null
+	_txn_error = ""
+	if outcome.is_empty():
+		_pending_changes = changes
+		_report_changes()
+	return outcome
+
 
 func _on_owner_thread() -> bool:
 	if _owner_thread == 0 or OS.get_thread_caller_id() == _owner_thread:
@@ -1616,7 +1787,7 @@ func _exec(sql: String, bindings: Array = []) -> void:
 
 func _exec_checked(sql: String, bindings: Array = []) -> String:
 	## Like _exec but returns "" on success, error message on failure.
-	if not _on_owner_thread(): return _last_sql_error
+	if not _on_owner_thread(): return "%s is used only from the thread that opened it" % _path
 	var ok: bool
 	if bindings.is_empty():
 		ok = _db.query(sql)

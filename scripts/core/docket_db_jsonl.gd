@@ -68,7 +68,7 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 		last_open_error = lease.error
 		push_error("DocketDBJsonl: %s" % last_open_error)
 		return null
-	var cache_db := _open_cache(path, cache_path)
+	var cache_db := _open_cache(path, cache_path, lease.operation)
 	lease.operation.close()
 
 	if cache_db == null:
@@ -88,12 +88,12 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 	return wrapper
 
 
-static func _open_cache(path: String, cache_path: String) -> DocketDB:
+static func _open_cache(path: String, cache_path: String, step: RefCounted) -> DocketDB:
 	var cache_db: DocketDB
 	if JSONLCache.is_cache_valid(path, cache_path):
 		# Open cache directly — faster than rebuilding
 		var temp_db := DocketDB.new()
-		if temp_db.open(cache_path):
+		if temp_db.open(cache_path, step):
 			cache_db = temp_db
 		else:
 			push_warning("DocketDBJsonl: stale cache, rebuilding from %s" % path)
@@ -111,12 +111,12 @@ static func create_new_jsonl(path: String) -> DocketDBJsonl:
 		last_open_error = lease.error
 		push_error("DocketDBJsonl: %s" % lease.error)
 		return null
-	var created := _create_new_jsonl(path)
+	var created := _create_new_jsonl(path, lease.operation)
 	lease.operation.close()
 	return created
 
 
-static func _create_new_jsonl(path: String) -> DocketDBJsonl:
+static func _create_new_jsonl(path: String, step: RefCounted) -> DocketDBJsonl:
 	var wrapper := DocketDBJsonl.new()
 	wrapper._jsonl_path = path
 	wrapper._allow_initial_write = true
@@ -124,7 +124,7 @@ static func _create_new_jsonl(path: String) -> DocketDBJsonl:
 	var cache_path := JSONLCache.cache_path_for_version(path, "2.0.0")
 
 	# Create the SQLite cache via parent's create_new
-	var cache_db := DocketDB.create_new(cache_path)
+	var cache_db := DocketDB.create_new(cache_path, step)
 	if cache_db == null:
 		push_error("DocketDBJsonl: failed to create cache at %s" % cache_path)
 		return null
@@ -212,12 +212,12 @@ func reload(report_change: bool = true, parent: RefCounted = null) -> bool:
 	if lease.has("error"):
 		last_write_error = lease.error
 		return false
-	var reloaded := _reload(report_change)
+	var reloaded := _reload(lease.operation, report_change)
 	lease.operation.close()
 	return reloaded
 
 
-func _reload(report_change: bool) -> bool:
+func _reload(step: RefCounted, report_change: bool) -> bool:
 	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 
 	# Release our connection first so the rebuild can replace the cache file
@@ -235,7 +235,7 @@ func _reload(report_change: bool) -> bool:
 		# is bad (conflict markers), so the old cache is usually still intact.
 		# Reopening it keeps the process usable and read-only-correct.
 		var fallback := DocketDB.new()
-		if fallback.open(cache_path):
+		if fallback.open(cache_path, step):
 			_adopt(fallback)
 		_write_blocked = true
 		last_write_error = "canonical reload failed; cached data is read-only"

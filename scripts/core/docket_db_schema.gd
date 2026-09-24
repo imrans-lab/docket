@@ -2,13 +2,14 @@ extends RefCounted
 class_name DocketDBSchema
 ## Schema creation and migration for DocketDB.
 ## Extracted from DocketDB to keep schema DDL separate from CRUD logic.
-## All methods take a DocketDB instance for SQL execution.
+## All methods take a DocketDB instance for SQL execution and the coordination
+## operation step (see DocketDB._write) every write runs within.
 
 
-static func init_schema(db: DocketDB) -> void:
-	db._exec("CREATE TABLE IF NOT EXISTS docket_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+static func init_schema(db: DocketDB, op: RefCounted) -> void:
+	db._write(op, "CREATE TABLE IF NOT EXISTS docket_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS items (
+	db._write(op, """CREATE TABLE IF NOT EXISTS items (
 		id TEXT PRIMARY KEY,
 		type TEXT NOT NULL, status TEXT NOT NULL,
 		title TEXT NOT NULL DEFAULT '', description TEXT DEFAULT '',
@@ -46,37 +47,37 @@ static func init_schema(db: DocketDB) -> void:
 
 	# Registry rows are fixed-shape cache records. Complete definitions stay in
 	# JSON, so adding a type, state, or field never changes SQLite's schema.
-	db._exec("""CREATE TABLE IF NOT EXISTS type_defs (
+	db._write(op, """CREATE TABLE IF NOT EXISTS type_defs (
 		id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, lifecycle TEXT NOT NULL,
 		current_revision TEXT NOT NULL, provenance_json TEXT NOT NULL
 	);""")
-	db._exec("""CREATE TABLE IF NOT EXISTS type_def_versions (
+	db._write(op, """CREATE TABLE IF NOT EXISTS type_def_versions (
 		id TEXT PRIMARY KEY, type_id TEXT NOT NULL, parent_revision TEXT,
 		definition_json TEXT NOT NULL, author TEXT NOT NULL,
 		created_at TEXT NOT NULL, reason TEXT NOT NULL,
 		FOREIGN KEY(type_id) REFERENCES type_defs(id)
 	);""")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS item_tags (
+	db._write(op, """CREATE TABLE IF NOT EXISTS item_tags (
 		item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
 		tag TEXT NOT NULL, PRIMARY KEY (item_id, tag)
 	);""")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS item_events (
+	db._write(op, """CREATE TABLE IF NOT EXISTS item_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
 		event_type TEXT NOT NULL, actor TEXT DEFAULT '',
 		timestamp TEXT NOT NULL, note TEXT DEFAULT ''
 	);""")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS item_links (
+	db._write(op, """CREATE TABLE IF NOT EXISTS item_links (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		from_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
 		to_id TEXT NOT NULL,
 		relation TEXT NOT NULL
 	);""")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS attachments (
+	db._write(op, """CREATE TABLE IF NOT EXISTS attachments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
 		filename TEXT NOT NULL,
@@ -87,7 +88,7 @@ static func init_schema(db: DocketDB) -> void:
 		description TEXT DEFAULT ''
 	);""")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS comments (
+	db._write(op, """CREATE TABLE IF NOT EXISTS comments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
 		parent_id INTEGER DEFAULT 0,
@@ -99,13 +100,13 @@ static func init_schema(db: DocketDB) -> void:
 		resolved_by TEXT DEFAULT ''
 	);""")
 
-	db._exec("CREATE INDEX IF NOT EXISTS idx_comments_item ON comments(item_id);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_comments_item ON comments(item_id);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);")
 
-	db._exec("CREATE TABLE IF NOT EXISTS saved_queries (name TEXT PRIMARY KEY, query_json TEXT NOT NULL);")
+	db._write(op, "CREATE TABLE IF NOT EXISTS saved_queries (name TEXT PRIMARY KEY, query_json TEXT NOT NULL);")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS docket_secrets (
+	db._write(op, """CREATE TABLE IF NOT EXISTS docket_secrets (
 		handle TEXT PRIMARY KEY,
 		ciphertext BLOB NOT NULL,
 		iv BLOB NOT NULL,
@@ -117,7 +118,7 @@ static func init_schema(db: DocketDB) -> void:
 		extra_json TEXT DEFAULT ''
 	);""")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS docket_secret_versions (
+	db._write(op, """CREATE TABLE IF NOT EXISTS docket_secret_versions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		handle TEXT NOT NULL,
 		version INTEGER NOT NULL,
@@ -128,9 +129,9 @@ static func init_schema(db: DocketDB) -> void:
 		rotated_by TEXT DEFAULT '',
 		requires_2fa INTEGER DEFAULT 0
 	);""")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_secret_versions_handle ON docket_secret_versions(handle);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_secret_versions_handle ON docket_secret_versions(handle);")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS transition_log (
+	db._write(op, """CREATE TABLE IF NOT EXISTS transition_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		timestamp TEXT NOT NULL,
 		item_type TEXT NOT NULL,
@@ -139,36 +140,36 @@ static func init_schema(db: DocketDB) -> void:
 		succeeded INTEGER NOT NULL DEFAULT 0,
 		valid_transitions TEXT DEFAULT ''
 	);""")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_transition_log_type ON transition_log(item_type);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_transition_log_type ON transition_log(item_type);")
 
-	db._exec("""CREATE TABLE IF NOT EXISTS mcp_error_log (
+	db._write(op, """CREATE TABLE IF NOT EXISTS mcp_error_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		timestamp TEXT NOT NULL,
 		tool_name TEXT NOT NULL,
 		error_message TEXT NOT NULL,
 		arg_keys TEXT DEFAULT ''
 	);""")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_mcp_error_tool ON mcp_error_log(tool_name);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_mcp_error_tool ON mcp_error_log(tool_name);")
 
 	# Indexes
-	db._exec("CREATE INDEX IF NOT EXISTS idx_items_type ON items(type);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_items_type_status ON items(type, status);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_items_component_key ON items(component, key);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_tags_tag ON item_tags(tag);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_events_item ON item_events(item_id);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_links_from ON item_links(from_id);")
-	db._exec("CREATE INDEX IF NOT EXISTS idx_attachments_item ON attachments(item_id);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_items_type ON items(type);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_items_type_status ON items(type, status);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_items_component_key ON items(component, key);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_tags_tag ON item_tags(tag);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_events_item ON item_events(item_id);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_links_from ON item_links(from_id);")
+	db._write(op, "CREATE INDEX IF NOT EXISTS idx_attachments_item ON attachments(item_id);")
 
 	# Seed meta
-	db._exec("INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('version', '2.0.0');")
-	db._exec("INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('counter', '0');")
-	db._exec("INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('id_prefix', 'DKT');")
+	db._write(op, "INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('version', '2.0.0');")
+	db._write(op, "INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('counter', '0');")
+	db._write(op, "INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('id_prefix', 'DKT');")
 
-	migrate_schema(db)
+	migrate_schema(db, op)
 
 
-static func _backfill_secret_ownership(db: DocketDB) -> void:
+static func _backfill_secret_ownership(db: DocketDB, op: RefCounted) -> void:
 	## Derive ownership for secrets written before the column existed.
 	##
 	## Safe by construction: ownership was always encoded in the handle, so this
@@ -184,10 +185,10 @@ static func _backfill_secret_ownership(db: DocketDB) -> void:
 			candidate = handle.substr(0, handle.length() - 6)
 		var hits := db._exec_select("SELECT 1 FROM items WHERE id=? LIMIT 1;", [candidate])
 		if hits.size() > 0:
-			db._exec("UPDATE docket_secrets SET owner_item_id=? WHERE handle=?;", [candidate, handle])
+			db._write(op, "UPDATE docket_secrets SET owner_item_id=? WHERE handle=?;", [candidate, handle])
 
 
-static func migrate_schema(db: DocketDB) -> void:
+static func migrate_schema(db: DocketDB, op: RefCounted) -> void:
 	var col_rows := db._exec_select("PRAGMA table_info(items);")
 	for column_sql in [
 		"type_id TEXT DEFAULT ''", "type_revision TEXT DEFAULT ''",
@@ -195,12 +196,12 @@ static func migrate_schema(db: DocketDB) -> void:
 	]:
 		var column_name := str(column_sql).get_slice(" ", 0)
 		if not DocketDB._has_column(col_rows, column_name):
-			db._exec("ALTER TABLE items ADD COLUMN %s;" % column_sql)
-	db._exec("""CREATE TABLE IF NOT EXISTS type_defs (
+			db._write(op, "ALTER TABLE items ADD COLUMN %s;" % column_sql)
+	db._write(op, """CREATE TABLE IF NOT EXISTS type_defs (
 		id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, lifecycle TEXT NOT NULL,
 		current_revision TEXT NOT NULL, provenance_json TEXT NOT NULL
 	);""")
-	db._exec("""CREATE TABLE IF NOT EXISTS type_def_versions (
+	db._write(op, """CREATE TABLE IF NOT EXISTS type_def_versions (
 		id TEXT PRIMARY KEY, type_id TEXT NOT NULL, parent_revision TEXT,
 		definition_json TEXT NOT NULL, author TEXT NOT NULL,
 		created_at TEXT NOT NULL, reason TEXT NOT NULL,
@@ -214,43 +215,43 @@ static func migrate_schema(db: DocketDB) -> void:
 			"summary", "article", "parameters",
 			"steps", "outcome", "tool_deps"]:
 		if not DocketDB._has_column(col_rows, col_name):
-			db._exec("ALTER TABLE items ADD COLUMN %s TEXT;" % col_name)
+			db._write(op, "ALTER TABLE items ADD COLUMN %s TEXT;" % col_name)
 
 	# Columns with non-default defaults
 	if not DocketDB._has_column(col_rows, "parent"):
-		db._exec("ALTER TABLE items ADD COLUMN parent TEXT DEFAULT '';")
+		db._write(op, "ALTER TABLE items ADD COLUMN parent TEXT DEFAULT '';")
 	if not DocketDB._has_column(col_rows, "quality"):
-		db._exec("ALTER TABLE items ADD COLUMN quality INTEGER DEFAULT 0;")
+		db._write(op, "ALTER TABLE items ADD COLUMN quality INTEGER DEFAULT 0;")
 	if not DocketDB._has_column(col_rows, "target"):
-		db._exec("ALTER TABLE items ADD COLUMN target TEXT DEFAULT '';")
+		db._write(op, "ALTER TABLE items ADD COLUMN target TEXT DEFAULT '';")
 	if not DocketDB._has_column(col_rows, "optimization"):
-		db._exec("ALTER TABLE items ADD COLUMN optimization TEXT DEFAULT '';")
+		db._write(op, "ALTER TABLE items ADD COLUMN optimization TEXT DEFAULT '';")
 
 	# Plugin-shipped skills metadata (Minerva DCR 019df57b).  Schema must match
 	# Minerva's built-in docket so a .dct opened by either codebase lands on
 	# the same final schema.
 	if not DocketDB._has_column(col_rows, "source"):
-		db._exec("ALTER TABLE items ADD COLUMN source TEXT DEFAULT '';")
+		db._write(op, "ALTER TABLE items ADD COLUMN source TEXT DEFAULT '';")
 	if not DocketDB._has_column(col_rows, "customised"):
-		db._exec("ALTER TABLE items ADD COLUMN customised INTEGER DEFAULT 0;")
+		db._write(op, "ALTER TABLE items ADD COLUMN customised INTEGER DEFAULT 0;")
 	if not DocketDB._has_column(col_rows, "pristine_hash"):
-		db._exec("ALTER TABLE items ADD COLUMN pristine_hash TEXT DEFAULT '';")
+		db._write(op, "ALTER TABLE items ADD COLUMN pristine_hash TEXT DEFAULT '';")
 	if not DocketDB._has_column(col_rows, "pristine_content"):
-		db._exec("ALTER TABLE items ADD COLUMN pristine_content TEXT DEFAULT '';")
+		db._write(op, "ALTER TABLE items ADD COLUMN pristine_content TEXT DEFAULT '';")
 	if not DocketDB._has_column(col_rows, "unsatisfied_deps"):
-		db._exec("ALTER TABLE items ADD COLUMN unsatisfied_deps TEXT DEFAULT '';")
+		db._write(op, "ALTER TABLE items ADD COLUMN unsatisfied_deps TEXT DEFAULT '';")
 	if not DocketDB._has_column(col_rows, "deprecated"):
-		db._exec("ALTER TABLE items ADD COLUMN deprecated INTEGER DEFAULT 0;")
+		db._write(op, "ALTER TABLE items ADD COLUMN deprecated INTEGER DEFAULT 0;")
 
 	# Seed id_prefix if missing
 	var prefix_rows := db._exec_select("SELECT value FROM docket_meta WHERE key='id_prefix';")
 	if prefix_rows.is_empty():
-		db._exec("INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('id_prefix', 'DKT');")
+		db._write(op, "INSERT OR IGNORE INTO docket_meta (key, value) VALUES ('id_prefix', 'DKT');")
 
 	# Add comments table if missing
 	var table_rows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='comments';")
 	if table_rows.is_empty():
-		db._exec("""CREATE TABLE IF NOT EXISTS comments (
+		db._write(op, """CREATE TABLE IF NOT EXISTS comments (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
 			parent_id INTEGER DEFAULT 0,
@@ -261,22 +262,22 @@ static func migrate_schema(db: DocketDB) -> void:
 			resolved_at TEXT DEFAULT '',
 			resolved_by TEXT DEFAULT ''
 		);""")
-		db._exec("CREATE INDEX IF NOT EXISTS idx_comments_item ON comments(item_id);")
-		db._exec("CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);")
-		db._exec("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);")
+		db._write(op, "CREATE INDEX IF NOT EXISTS idx_comments_item ON comments(item_id);")
+		db._write(op, "CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);")
+		db._write(op, "CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);")
 	else:
 		var ccols := db._exec_select("PRAGMA table_info(comments);")
 		if not DocketDB._has_column(ccols, "parent_id"):
-			db._exec("ALTER TABLE comments ADD COLUMN parent_id INTEGER DEFAULT 0;")
-			db._exec("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);")
+			db._write(op, "ALTER TABLE comments ADD COLUMN parent_id INTEGER DEFAULT 0;")
+			db._write(op, "CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);")
 		if not DocketDB._has_column(ccols, "resolved_at"):
-			db._exec("ALTER TABLE comments ADD COLUMN resolved_at TEXT DEFAULT '';")
-			db._exec("ALTER TABLE comments ADD COLUMN resolved_by TEXT DEFAULT '';")
+			db._write(op, "ALTER TABLE comments ADD COLUMN resolved_at TEXT DEFAULT '';")
+			db._write(op, "ALTER TABLE comments ADD COLUMN resolved_by TEXT DEFAULT '';")
 
 	# Add docket_secrets table if missing
 	var secrets_rows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='docket_secrets';")
 	if secrets_rows.is_empty():
-		db._exec("""CREATE TABLE IF NOT EXISTS docket_secrets (
+		db._write(op, """CREATE TABLE IF NOT EXISTS docket_secrets (
 			handle TEXT PRIMARY KEY,
 			ciphertext BLOB NOT NULL,
 			iv BLOB NOT NULL,
@@ -288,7 +289,7 @@ static func migrate_schema(db: DocketDB) -> void:
 	else:
 		var scols := db._exec_select("PRAGMA table_info(docket_secrets);")
 		if not DocketDB._has_column(scols, "requires_2fa"):
-			db._exec("ALTER TABLE docket_secrets ADD COLUMN requires_2fa INTEGER DEFAULT 0;")
+			db._write(op, "ALTER TABLE docket_secrets ADD COLUMN requires_2fa INTEGER DEFAULT 0;")
 		# Ownership used to be inferred from the handle text: a Secret item's
 		# payload was stored under handle == item_id, and its encrypted notes
 		# under "<item_id>:notes". Recording it explicitly lets standalone
@@ -296,13 +297,13 @@ static func migrate_schema(db: DocketDB) -> void:
 		# makes them listable in the GUI, and what lets a handle collision be
 		# rejected rather than silently overwriting an item.
 		if not DocketDB._has_column(scols, "owner_item_id"):
-			db._exec("ALTER TABLE docket_secrets ADD COLUMN owner_item_id TEXT DEFAULT '';")
-			_backfill_secret_ownership(db)
+			db._write(op, "ALTER TABLE docket_secrets ADD COLUMN owner_item_id TEXT DEFAULT '';")
+			_backfill_secret_ownership(db, op)
 		# Round-trips fields this build does not model. The parser preserved them
 		# already, but the cache and serializer wrote fixed columns, so they were
 		# still dropped on flush — preservation that stopped short of the write.
 		if not DocketDB._has_column(scols, "extra_json"):
-			db._exec("ALTER TABLE docket_secrets ADD COLUMN extra_json TEXT DEFAULT '';")
+			db._write(op, "ALTER TABLE docket_secrets ADD COLUMN extra_json TEXT DEFAULT '';")
 
 	# An archived version must record whether it was double-encrypted. Without
 	# it, history readers single-layer-decrypt a 2FA value and hand back the
@@ -311,12 +312,12 @@ static func migrate_schema(db: DocketDB) -> void:
 	if not vrows.is_empty():
 		var vcols := db._exec_select("PRAGMA table_info(docket_secret_versions);")
 		if not DocketDB._has_column(vcols, "requires_2fa"):
-			db._exec("ALTER TABLE docket_secret_versions ADD COLUMN requires_2fa INTEGER DEFAULT 0;")
+			db._write(op, "ALTER TABLE docket_secret_versions ADD COLUMN requires_2fa INTEGER DEFAULT 0;")
 
 	# Add docket_secret_versions table if missing
 	var vers_rows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='docket_secret_versions';")
 	if vers_rows.is_empty():
-		db._exec("""CREATE TABLE IF NOT EXISTS docket_secret_versions (
+		db._write(op, """CREATE TABLE IF NOT EXISTS docket_secret_versions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			handle TEXT NOT NULL,
 			version INTEGER NOT NULL,
@@ -327,12 +328,12 @@ static func migrate_schema(db: DocketDB) -> void:
 			rotated_by TEXT DEFAULT '',
 			requires_2fa INTEGER DEFAULT 0
 		);""")
-		db._exec("CREATE INDEX IF NOT EXISTS idx_secret_versions_handle ON docket_secret_versions(handle);")
+		db._write(op, "CREATE INDEX IF NOT EXISTS idx_secret_versions_handle ON docket_secret_versions(handle);")
 
 	# Add transition_log table if missing
 	var tlog_rows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='transition_log';")
 	if tlog_rows.is_empty():
-		db._exec("""CREATE TABLE IF NOT EXISTS transition_log (
+		db._write(op, """CREATE TABLE IF NOT EXISTS transition_log (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			timestamp TEXT NOT NULL,
 			item_type TEXT NOT NULL,
@@ -341,19 +342,19 @@ static func migrate_schema(db: DocketDB) -> void:
 			succeeded INTEGER NOT NULL DEFAULT 0,
 			valid_transitions TEXT DEFAULT ''
 		);""")
-		db._exec("CREATE INDEX IF NOT EXISTS idx_transition_log_type ON transition_log(item_type);")
+		db._write(op, "CREATE INDEX IF NOT EXISTS idx_transition_log_type ON transition_log(item_type);")
 
 	# Add mcp_error_log table if missing
 	var elog_rows := db._exec_select("SELECT name FROM sqlite_master WHERE type='table' AND name='mcp_error_log';")
 	if elog_rows.is_empty():
-		db._exec("""CREATE TABLE IF NOT EXISTS mcp_error_log (
+		db._write(op, """CREATE TABLE IF NOT EXISTS mcp_error_log (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			timestamp TEXT NOT NULL,
 			tool_name TEXT NOT NULL,
 			error_message TEXT NOT NULL,
 			arg_keys TEXT DEFAULT ''
 		);""")
-		db._exec("CREATE INDEX IF NOT EXISTS idx_mcp_error_tool ON mcp_error_log(tool_name);")
+		db._write(op, "CREATE INDEX IF NOT EXISTS idx_mcp_error_tool ON mcp_error_log(tool_name);")
 
 	# Relax FK on item_links.to_id to allow cross-project qualified refs
 	var link_fk := db._exec_select("PRAGMA foreign_key_list(item_links);")
@@ -363,17 +364,17 @@ static func migrate_schema(db: DocketDB) -> void:
 			to_id_has_fk = true
 			break
 	if to_id_has_fk:
-		db._exec("PRAGMA foreign_keys=OFF;")
-		db._exec("BEGIN TRANSACTION;")
-		db._exec("""CREATE TABLE item_links_new (
+		db._write(op, "PRAGMA foreign_keys=OFF;")
+		db._write(op, "BEGIN TRANSACTION;")
+		db._write(op, """CREATE TABLE item_links_new (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			from_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
 			to_id TEXT NOT NULL,
 			relation TEXT NOT NULL
 		);""")
-		db._exec("INSERT INTO item_links_new SELECT * FROM item_links;")
-		db._exec("DROP TABLE item_links;")
-		db._exec("ALTER TABLE item_links_new RENAME TO item_links;")
-		db._exec("CREATE INDEX IF NOT EXISTS idx_links_from ON item_links(from_id);")
-		db._exec("COMMIT;")
-		db._exec("PRAGMA foreign_keys=ON;")
+		db._write(op, "INSERT INTO item_links_new SELECT * FROM item_links;")
+		db._write(op, "DROP TABLE item_links;")
+		db._write(op, "ALTER TABLE item_links_new RENAME TO item_links;")
+		db._write(op, "CREATE INDEX IF NOT EXISTS idx_links_from ON item_links(from_id);")
+		db._write(op, "COMMIT;")
+		db._write(op, "PRAGMA foreign_keys=ON;")
