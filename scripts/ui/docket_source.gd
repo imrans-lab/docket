@@ -143,9 +143,11 @@ func attach_file(_project: String, _id: String, _filename: String, _data: Packed
 	return _unsupported()
 
 
-## Items in any open project whose parent is `qualified_id` ("project:id").
-func children_of(_qualified_id: String) -> Array:
-	return []
+## Items in any open project whose parent is `qualified_id` ("project:id"):
+## {children, error} — error names the projects whose children could not be
+## read ("" when all were), so a partial list is never shown as complete.
+func children_of(_qualified_id: String) -> Dictionary:
+	return {"children": [], "error": UNSUPPORTED}
 
 
 ## Move item `id` from `project` to `target_project`: {new_id} or {error}.

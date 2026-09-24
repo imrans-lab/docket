@@ -1617,14 +1617,16 @@ func _populate_children() -> void:
 	if not _current_project.is_empty():
 		qualified_id = "%s:%s" % [_current_project, _current_id]
 
-	var children: Array = await _src.children_of(qualified_id)
+	var found: Dictionary = await _src.children_of(qualified_id)
 	if not _still_showing(generation):
 		return
 	_children_list.clear()
+	var children: Array = found.children
 
 	var toggle_prefix := "v" if _children_container.visible else ">"
-	if children.size() > 0:
-		_children_toggle.text = "%s Children (%d)" % [toggle_prefix, children.size()]
+	var incomplete := "" if str(found.error).is_empty() else ", incomplete"
+	if children.size() > 0 or not incomplete.is_empty():
+		_children_toggle.text = "%s Children (%d%s)" % [toggle_prefix, children.size(), incomplete]
 	else:
 		_children_toggle.text = "%s Children" % toggle_prefix
 
@@ -1642,9 +1644,15 @@ func _populate_children() -> void:
 			display = "[%s] %s (%s) — %s" % [child_id, child_title, child_type, child_status]
 		_children_list.add_item(display)
 		_children_list.set_item_metadata(_children_list.item_count - 1, {"id":child_id, "project":child_project if not child_project.is_empty() else _current_project})
+	if not str(found.error).is_empty():
+		# The list above is partial; say which projects are missing from it.
+		_children_list.add_item(str(found.error))
+		_children_list.set_item_disabled(_children_list.item_count - 1, true)
 
 
 func _on_child_activated(idx: int) -> void:
+	if not _children_list.get_item_metadata(idx) is Dictionary:
+		return  # the unread-projects line
 	var reference: Dictionary = _children_list.get_item_metadata(idx)
 	var child_id: String = str(reference.get("id", ""))
 	if not child_id.is_empty():

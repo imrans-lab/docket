@@ -211,8 +211,10 @@ func ui_setting(key: String, default_value: String) -> String:
 	if primary.is_empty():
 		return default_value
 	var meta := await _call("docket_project_meta", {"action": "get", "project": primary})
-	if _prefs.has_ui_setting(key):  # the user set it while the file was read
+	if _prefs.has_ui_setting(key):  # set meanwhile, by the user or another read
 		return _prefs.load_ui_setting(key, default_value)
+	if primary_project() != primary:  # the value comes from the current primary
+		return await ui_setting(key, default_value)
 	var inherited := str(meta.get("display", {}).get(key, "")) if meta.get("display") is Dictionary else ""
 	if inherited.is_empty():
 		return default_value
@@ -334,20 +336,25 @@ func item_events(project: String, id: String) -> Array:
 ## Items whose parent is `qualified_id` ("project:id") in every open project;
 ## a bare parent id counts only in the parent's own project, as in the
 ## standalone app.
-func children_of(qualified_id: String) -> Array:
+func children_of(qualified_id: String) -> Dictionary:
 	var separator := qualified_id.find(":")
 	var owner := qualified_id.left(separator) if separator > 0 else ""
 	var bare_id := qualified_id.substr(separator + 1) if separator > 0 else qualified_id
 	var children: Array = []
+	var unread: Array[String] = []
 	for project in project_names():
 		var parents: Array = [{"field": "parent", "op": "eq", "value": qualified_id}]
 		if owner.is_empty() or project == owner:
 			parents.append({"field": "parent", "op": "eq", "value": bare_id})
 		var listed := await _call("docket_query", {"project": project, "filter": {"$or": parents}, "detail": "full"})
+		if listed.has("error"):
+			unread.append("%s (%s)" % [project, listed.error])
+			continue
 		for item in listed.get("items", []):
 			item["project"] = project
 			children.append(item)
-	return children
+	var error := "" if unread.is_empty() else "Children could not be read in: %s" % ", ".join(unread)
+	return {"children": children, "error": error}
 
 
 func run_query(query: Dictionary) -> Dictionary:

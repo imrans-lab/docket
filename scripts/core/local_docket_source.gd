@@ -187,8 +187,8 @@ func attach_file(project: String, id: String, filename: String, data: PackedByte
 	return item_db.attach_file(id, filename, data, mime, description)
 
 
-func children_of(qualified_id: String) -> Array:
-	return _state.find_children_across_projects(qualified_id)
+func children_of(qualified_id: String) -> Dictionary:
+	return {"children": _state.find_children_across_projects(qualified_id), "error": ""}
 
 
 func move_item(project: String, id: String, target_project: String) -> Dictionary:
