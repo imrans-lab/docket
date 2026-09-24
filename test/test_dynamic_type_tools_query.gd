@@ -415,6 +415,66 @@ func test_trusted_builtin_historical_import_accepts_exact_snapshot_without_activ
 	var r = A.is_true(error.is_empty() and not imported.has("error") and imported.get("author") == "old-release" and registry.get_type("discussion").current_revision == pointer, "trusted protected builtin history can be installed exactly without activation")
 	db.close(); return r
 
+# A widget item pinned to the second of two revisions, in a fresh source.
+func _two_revision_source(name: String) -> Dictionary:
+	var source: DocketDBJsonl = _db(name); var registry: TypeRegistry = _registry_with_widget(source)
+	var first: Dictionary = registry.get_revision(registry.get_type("widget").current_revision)
+	var evolved: Dictionary = registry.get_type("widget").definition.duplicate(true); evolved.label = "Widget Two"
+	var applied = registry.apply_evolution(registry.preview_evolution("widget", evolved, first.id), "historian", "second revision")
+	var second: Dictionary = registry.get_revision(registry.get_type("widget").current_revision)
+	var item: Dictionary = registry.create_item({"type":"widget","title":"Carried"}, "tester")
+	source.attach_file(str(item.id), "payload.bin", PackedByteArray([1, 2, 3]))
+	return {"db":source,"type":registry.get_type("widget"),"revisions":[first, second],"exported":source.export_item_full(str(item.id)),"setup_error":str(applied) if applied is String else ""}
+
+func test_import_of_two_new_revisions_and_an_item_is_one_change() -> Variant:
+	var from: Dictionary = _two_revision_source("TwoSource")
+	if not str(from.setup_error).is_empty(): from.db.close(); return "setup failed: %s" % from.setup_error
+	var target: DocketDBJsonl = _db("TwoTarget"); var registry: TypeRegistry = TypeRegistry.for_db(target, "TwoTarget")
+	var second_id: String = str(from.revisions[1].id)
+	var error: String = registry.import_revisions_and_item(from.type, from.revisions, "IMP-1", from.exported, "importer", "two revisions")
+	var r = A.is_true(error.is_empty() and not registry.get_revision(str(from.revisions[0].id)).has("error") and not registry.get_revision(second_id).has("error")
+		and registry.get_type("widget").provenance.imports.size() == 2 and target.get_item("IMP-1").type_revision == second_id,
+		"both revisions (the type created by the first) and the item pinned to the second land together: %s" % error)
+	if r is String: from.db.close(); target.close(); return r
+	var path: String = target.get_path(); target.close(); target = DocketDBJsonl.open_jsonl(path)
+	registry = TypeRegistry.for_db(target, "TwoTarget")
+	r = A.is_true(target != null and target.has_item("IMP-1") and target.get_item("IMP-1").type_revision == second_id and not registry.get_revision(str(from.revisions[0].id)).has("error") and not registry.get_revision(second_id).has("error"), "the file has all of it")
+	from.db.close(); target.close(); return r
+
+func test_import_failing_late_changes_nothing_and_succeeds_once_the_fault_is_gone() -> Variant:
+	var from: Dictionary = _two_revision_source("LateSource")
+	if not str(from.setup_error).is_empty(): from.db.close(); return "setup failed: %s" % from.setup_error
+	var target: DocketDBJsonl = _db("LateTarget"); var registry: TypeRegistry = TypeRegistry.for_db(target, "LateTarget")
+	var before: String = FileAccess.get_file_as_string(target.get_path())
+	var changes: Array = []
+	target.items_changed.connect(func(batch: Array): changes.append_array(batch))
+	# The attachment is the item's last related row, after both revisions.
+	target._exec("CREATE TRIGGER reject_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'attachment rejected'); END;")
+	var error: String = registry.import_revisions_and_item(from.type, from.revisions, "IMP-2", from.exported, "importer", "late failure")
+	var r = A.is_true(error.contains("attachment rejected") and FileAccess.get_file_as_string(target.get_path()) == before and not target.has_item("IMP-2")
+		and registry.get_type("widget").has("error") and registry.get_revision(str(from.revisions[0].id)).has("error") and changes.is_empty(),
+		"a late failure leaves file, cache, type history and notifications as they were: %s %s" % [error, changes])
+	if r is String: from.db.close(); target.close(); return r
+	target._exec("DROP TRIGGER IF EXISTS reject_attachment;")
+	error = registry.import_revisions_and_item(from.type, from.revisions, "IMP-2", from.exported, "importer", "retry")
+	r = A.is_true(error.is_empty() and target.has_item("IMP-2") and target.list_attachments("IMP-2").size() == 1 and not registry.get_revision(str(from.revisions[1].id)).has("error"),
+		"retried without the fault, it imports all of it: %s" % error)
+	from.db.close(); target.close(); return r
+
+func test_legacy_import_failing_late_leaves_no_partial_item() -> Variant:
+	var db: DocketDB = DocketDB.create_new(DIR + "/legacy-import.sqlite")
+	var now: String = Time.get_datetime_string_from_system(true)
+	var exported: Dictionary = {"item":{"type":"bug","status":"open","title":"Legacy","created_at":now,"updated_at":now,"fields":{},"extras":{}},
+		"tags":["kept"], "events":[{"event_type":"noted","actor":"a","timestamp":now,"note":""}], "links":[],
+		"comments":[{"id":1,"parent_id":0,"author":"a","text":"c","status":"open","created_at":now}],
+		"attachments":[{"filename":"x.bin","mime_type":"application/octet-stream","data":PackedByteArray([1]),"created_at":now,"description":""}]}
+	db._exec("CREATE TRIGGER reject_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'attachment rejected'); END;")
+	var error: String = db.import_item_full_checked("LEG-1", exported)
+	var rows := func(table: String) -> int: return db._exec_select("SELECT COUNT(*) AS n FROM %s WHERE item_id=?;" % table, ["LEG-1"])[0].n
+	var r = A.is_true(error.contains("attachment rejected") and not db.has_item("LEG-1") and rows.call("item_tags") == 0 and rows.call("item_events") == 0 and rows.call("comments") == 0 and rows.call("attachments") == 0,
+		"a failure at the last related row leaves no part of the item: %s" % error)
+	db.close(); return r
+
 func test_move_reference_rewrite_failure_keeps_source_and_reports_durable_copy() -> Variant:
 	var source: DocketDBJsonl = _db("RewriteSource"); var target: DocketDBJsonl = _db("RewriteTarget")
 	var registry: TypeRegistry = _registry_with_widget(source); var moved_item: Dictionary = registry.create_item({"type":"widget","title":"Moved"}, "tester")
