@@ -9,6 +9,10 @@
 # once per Godot a host runs: the extension targets an older API than
 # Docket's own Godot, so each needs showing.
 #
+# With DOCKET_NATIVE_LOAD_KEEP=<dir>, a failed check leaves a copy of the
+# project it built, logs included, at <dir>/project for a closer look. That
+# changes nothing about whether the check passes.
+#
 # Usage: check_native_load.sh <godot-binary> <library-file>
 set -euo pipefail
 
@@ -16,11 +20,21 @@ GODOT="${1:?usage: check_native_load.sh <godot-binary> <library-file>}"
 LIBRARY="${2:?usage: check_native_load.sh <godot-binary> <library-file>}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CLASSES=(DocketCoordLock DocketCredentialStore)
+KEEP="${DOCKET_NATIVE_LOAD_KEEP:-}"
 
 test -s "$LIBRARY" || { echo "no library at $LIBRARY"; exit 1; }
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+finish() {
+	local code=$?
+	if [ "$code" -ne 0 ] && [ -n "$KEEP" ]; then
+		{ mkdir -p "$KEEP" && cp -a "$WORK" "$KEEP/project" && echo "The project is kept at $KEEP/project."; } \
+			|| echo "Could not keep the project at $KEEP/project."
+	fi
+	rm -rf "$WORK"
+	exit "$code"
+}
+trap finish EXIT
 # Keeps Godot from reading or writing the user's own Godot data.
 export HOME="$WORK/home" XDG_DATA_HOME="$WORK/home/data" XDG_CONFIG_HOME="$WORK/home/config" XDG_CACHE_HOME="$WORK/home/cache"
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"

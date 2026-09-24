@@ -196,6 +196,7 @@ jobs:
       # must load both in Docket's Godot and in the oldest Godot a host runs.
       # A failure here fails the build, so nothing is published.
       - name: Check the exported native library loads
+        id: native_load
         shell: bash
         run: |
           set -euo pipefail
@@ -211,7 +212,7 @@ jobs:
           else
             cmp "$NATIVE_LIB" "$BUILT"
           fi
-          ./scripts/build/check_native_load.sh "$GODOT_BIN" "$NATIVE_LIB"
+          DOCKET_NATIVE_LOAD_KEEP="$RUNNER_TEMP/native-load/docket" ./scripts/build/check_native_load.sh "$GODOT_BIN" "$NATIVE_LIB"
 
           BASE="https://github.com/godotengine/godot/releases/download/${HOST_GODOT_VERSION}-stable"
           mkdir -p ~/godot-host && cd ~/godot-host
@@ -229,7 +230,73 @@ jobs:
           esac
           chmod +x "$HOST_BIN" || true
           cd "$GITHUB_WORKSPACE"
-          ./scripts/build/check_native_load.sh "$HOST_BIN" "$NATIVE_LIB"
+          DOCKET_NATIVE_LOAD_KEEP="$RUNNER_TEMP/native-load/host" ./scripts/build/check_native_load.sh "$HOST_BIN" "$NATIVE_LIB"
+
+      # Windows gives no stack for a Godot that crashes in the load check, so
+      # the project the check kept is imported once more (as a first import)
+      # under Microsoft's ProcDump, which writes a full dump if Godot crashes.
+      # This only gathers evidence; the build has already failed.
+      - name: Dump a crashing native load (Windows)
+        id: native_load_dump
+        if: failure() && steps.native_load.outcome == 'failure' && runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'native-load'
+          $archive = Join-Path $env:RUNNER_TEMP 'Procdump.zip'
+          $tools = Join-Path $env:RUNNER_TEMP 'procdump'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Procdump.zip' -OutFile $archive -ConnectionTimeoutSeconds 30 -OperationTimeoutSeconds 120
+          Expand-Archive -Path $archive -DestinationPath $tools -Force
+          $procdump = Join-Path $tools 'procdump64.exe'
+          $signature = Get-AuthenticodeSignature $procdump
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+            throw "ProcDump Authenticode verification failed: $($signature.Status)"
+          }
+          # The GUI builds (*_win64.exe, not *_console.exe): a console build
+          # starts the GUI build as a child, which ProcDump would not watch.
+          $godots = @{
+            docket = Get-ChildItem (Join-Path $HOME 'godot-bin') -Filter 'Godot_v*_win64.exe' | Select-Object -First 1
+            host   = Get-ChildItem (Join-Path $HOME 'godot-host') -Filter 'Godot_v*_win64.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          foreach ($which in 'docket', 'host') {
+            $project = Join-Path $out "$which\project"
+            if (-not (Test-Path $project) -or -not $godots[$which]) { continue }
+            $godot = $godots[$which].FullName
+            $dumps = Join-Path $out "$which\dumps"
+            New-Item -ItemType Directory -Force -Path $dumps | Out-Null
+            $cache = Join-Path $project '.godot'
+            if (Test-Path $cache) { Remove-Item -Recurse -Force $cache }
+            if (Test-Path $cache) { throw "$cache could not be removed, so the import would not be a first import" }
+            Get-ChildItem (Join-Path $project 'addons\docket_native\bin') | Get-FileHash -Algorithm SHA256 | Format-List | Out-File (Join-Path $out "$which\library.txt")
+            $arguments = @('-accepteula', '-ma', '-e', '-n', '1', '-x', "`"$dumps`"", "`"$godot`"",
+              '--headless', '--log-file', "`"$(Join-Path $out "$which\import-godot.log")`"", '--path', "`"$project`"", '--import')
+            $run = Start-Process -FilePath $procdump -ArgumentList $arguments -PassThru -NoNewWindow `
+              -RedirectStandardOutput (Join-Path $out "$which\procdump.log") -RedirectStandardError (Join-Path $out "$which\procdump.err")
+            # Reading Handle now is what lets ExitCode be read later.
+            $null = $run.Handle
+            if (-not $run.WaitForExit(120000)) {
+              $timeout = Join-Path $out "$which\timeout.txt"
+              "timed out after 120 s" | Out-File $timeout
+              & taskkill /T /F /PID $run.Id 2>&1 | Out-File $timeout -Append
+              "taskkill exit $LASTEXITCODE" | Out-File $timeout -Append
+              if (-not $run.WaitForExit(15000)) {
+                "ProcDump (PID $($run.Id)) was still running 15 s after taskkill" | Out-File $timeout -Append
+              }
+            }
+            $exit = if ($run.HasExited) { $run.ExitCode } else { 'none (still running)' }
+            "$which import under ProcDump: exit $exit"
+            Get-Content (Join-Path $out "$which\procdump.log") -ErrorAction SilentlyContinue
+            # Last, so a hanging --version cannot cost the import's evidence.
+            & ($godot -replace '\.exe$', '_console.exe') --headless --version | Out-File (Join-Path $out "$which\godot-version.txt")
+          }
+
+      - name: Upload the crashing native load's evidence (Windows)
+        if: failure() && steps.native_load_dump.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-load-crash-windows
+          path: ${{ runner.temp }}/native-load
+          retention-days: 14
 
       # macOS: Godot invokes Apple's native codesign tool with an empty identity,
       # which selects ad-hoc signing (codesign/codesign=3). Godot's built-in
