@@ -265,6 +265,7 @@ func _adopt(source: DocketDB) -> void:
 	## so its destructor cannot close the handle we now hold.
 	_db = source._db
 	_path = source._path
+	_owner_thread = source._owner_thread
 	_is_open = true
 	source._db = null
 	source._is_open = false

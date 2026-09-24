@@ -10,6 +10,10 @@ var _last_sql_error: String = ""
 # Item changes waiting for the open transaction to commit (items_changed).
 var _pending_changes: Array = []
 var _transaction_open := false
+# The thread that opened the connection. A connection, its transaction state
+# and its result buffers are used from that thread only; a call from any
+# other is refused before it touches them.
+var _owner_thread: int = 0
 
 ## Emitted once item changes are durable, in order: [{id, event}], `event`
 ## being the item event recorded (e.g. "created", "transition",
@@ -32,6 +36,7 @@ func open(path: String) -> bool:
 	_db = SQLite.new()
 	_db.path = path
 	_db.verbosity_level = SQLite.QUIET
+	_owner_thread = OS.get_thread_caller_id()
 	if not _db.open_db():
 		push_error("DocketDB: failed to open %s" % path)
 		return false
@@ -52,6 +57,7 @@ func open(path: String) -> bool:
 
 
 func close() -> void:
+	if not _on_owner_thread(): return
 	if _db:
 		_exec("PRAGMA wal_checkpoint(TRUNCATE);")
 		_db.close_db()
@@ -60,7 +66,7 @@ func close() -> void:
 
 func checkpoint() -> void:
 	## Flush WAL to main database file so other processes can see all data.
-	if _db and _is_open:
+	if _db and _is_open and _on_owner_thread():
 		_exec("PRAGMA wal_checkpoint(PASSIVE);")
 
 
@@ -74,6 +80,7 @@ static func create_new(path: String) -> DocketDB:
 	db._db = SQLite.new()
 	db._db.path = path
 	db._db.verbosity_level = SQLite.QUIET
+	db._owner_thread = OS.get_thread_caller_id()
 	if not db._db.open_db():
 		push_error("DocketDB: failed to create %s" % path)
 		return null
@@ -1181,8 +1188,7 @@ func attach_file(item_id: String, filename: String, data: PackedByteArray, mime:
 
 
 func get_attachment(att_id: int) -> Dictionary:
-	_db.query_with_bindings("SELECT * FROM attachments WHERE id=?;", [att_id])
-	var rows: Array = _db.query_result
+	var rows := _exec_select("SELECT * FROM attachments WHERE id=?;", [att_id])
 	if rows.is_empty():
 		return {}
 	var row: Dictionary = rows[0]
@@ -1587,7 +1593,17 @@ static func _has_column(col_rows: Array, col_name: String) -> bool:
 
 # -- Internal SQL helpers -----------------------------------------------------
 
+func _on_owner_thread() -> bool:
+	if _owner_thread == 0 or OS.get_thread_caller_id() == _owner_thread:
+		return true
+	var message := "%s is used only from the thread that opened it" % _path
+	if _last_sql_error.is_empty(): _last_sql_error = message
+	push_error("DocketDB: %s" % message)
+	return false
+
+
 func _exec(sql: String, bindings: Array = []) -> void:
+	if not _on_owner_thread(): return
 	var ok: bool
 	if bindings.is_empty():
 		ok = _db.query(sql)
@@ -1600,6 +1616,7 @@ func _exec(sql: String, bindings: Array = []) -> void:
 
 func _exec_checked(sql: String, bindings: Array = []) -> String:
 	## Like _exec but returns "" on success, error message on failure.
+	if not _on_owner_thread(): return _last_sql_error
 	var ok: bool
 	if bindings.is_empty():
 		ok = _db.query(sql)
@@ -1648,6 +1665,7 @@ func _track_transaction(sql: String, ok: bool) -> void:
 
 
 func _exec_select(sql: String, bindings: Array = []) -> Array:
+	if not _on_owner_thread(): return []
 	var ok: bool
 	if bindings.is_empty():
 		ok = _db.query(sql)
