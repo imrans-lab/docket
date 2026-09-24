@@ -22,6 +22,7 @@ static var _shared_by_db: Dictionary = {}
 # Every public change below runs within a SHARED coordination operation of
 # its own (CoordLease), taken before its freshness check and closed after its
 # mutation, reload and cleanup; refused, with the reason, when there is none.
+# The implementation receives that operation as its first argument.
 func _coordinated_text(work: Callable) -> String:
 	return CoordLease.run(work)
 
@@ -29,7 +30,7 @@ func _coordinated_text(work: Callable) -> String:
 func _coordinated_dict(work: Callable) -> Dictionary:
 	var lease := CoordLease.shared()
 	if lease.has("error"): return {"error": lease.error}
-	var result: Variant = work.call()
+	var result: Variant = work.call(lease.operation)
 	lease.operation.close()
 	return result if result is Dictionary else {"error": "project change stopped unexpectedly"}
 
@@ -222,7 +223,7 @@ func import_historical_revision(type_record: Dictionary, revision: Dictionary, a
 	return _coordinated_text(_import_historical_revision.bind(type_record, revision, author, reason, reload_after))
 
 
-func _import_historical_revision(type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool) -> String:
+func _import_historical_revision(_step: RefCounted, type_record: Dictionary, revision: Dictionary, author: String, reason: String, reload_after: bool) -> String:
 	## Transfers install exact historical meaning without activating it or
 	## replacing an existing current pointer.
 	var refresh_error := refresh_if_changed()
@@ -283,7 +284,7 @@ func import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id
 	return _coordinated_text(_import_revisions_and_item.bind(type_record, revisions, new_id, exported, author, reason))
 
 
-func _import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
+func _import_revisions_and_item(_step: RefCounted, type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
 	var json_db := _db as DocketDBJsonl
 	var error := json_db._begin_canonical_mutation()
 	if not error.is_empty(): return error
@@ -317,7 +318,7 @@ func define_type(slug: String, definition: Dictionary, author: String, reason: S
 	return _coordinated_dict(_define_type.bind(slug, definition, author, reason, provenance))
 
 
-func _define_type(slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary) -> Dictionary:
+func _define_type(_step: RefCounted, slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}
 	if _legacy: return {"error":"type definitions are read-only until explicit JSONL 2.0 upgrade"}
@@ -355,7 +356,7 @@ func _set_type_lifecycle(slug: String, lifecycle: String, expected_current: Stri
 	return _coordinated_text(_set_type_lifecycle_coordinated.bind(slug, lifecycle, expected_current, author, reason))
 
 
-func _set_type_lifecycle_coordinated(slug: String, lifecycle: String, expected_current: String, author: String, reason: String) -> String:
+func _set_type_lifecycle_coordinated(_step: RefCounted, slug: String, lifecycle: String, expected_current: String, author: String, reason: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	if _legacy: return "type definitions are read-only until explicit JSONL 2.0 upgrade"
@@ -484,7 +485,7 @@ func create_item(fields: Dictionary, actor: String = "") -> Dictionary:
 	return _coordinated_dict(_create_item.bind(fields, actor))
 
 
-func _create_item(fields: Dictionary, actor: String) -> Dictionary:
+func _create_item(_step: RefCounted, fields: Dictionary, actor: String) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}
 	var slug: String = str(fields.get("type", ""))
@@ -531,7 +532,7 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 	return _coordinated_text(_update_item.bind(id, changes, actor, expected_revision, expected_item_token))
 
 
-func _update_item(id: String, changes: Dictionary, actor: String, expected_revision: String, expected_item_token: String) -> String:
+func _update_item(_step: RefCounted, id: String, changes: Dictionary, actor: String, expected_revision: String, expected_item_token: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item := _db.get_item(id)
@@ -566,7 +567,7 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 	return _coordinated_text(_transition_item.bind(id, target, actor, note, extra, expected_revision, expected_item_token))
 
 
-func _transition_item(id: String, target: String, actor: String, note: String, extra: Dictionary, expected_revision: String, expected_item_token: String) -> String:
+func _transition_item(_step: RefCounted, id: String, target: String, actor: String, note: String, extra: Dictionary, expected_revision: String, expected_item_token: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item: Dictionary = _db.get_item(id)
@@ -618,7 +619,7 @@ func mirror_item(id: String, changes: Dictionary, target: String, actor: String,
 	return _coordinated_dict(_mirror_item.bind(id, changes, target, actor, note, audit_text, expected_revision, expected_item_token))
 
 
-func _mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String, expected_item_token: String) -> Dictionary:
+func _mirror_item(_step: RefCounted, id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String, expected_item_token: String) -> Dictionary:
 	## The outer mutation makes the candidate patch, transition and audit records
 	## one canonical unit while the ordinary typed operations retain validation.
 	var error := _begin_item_mutation()
@@ -644,7 +645,7 @@ func rewrite_move_references(old_qualified: String, new_qualified: String, old_b
 	return result
 
 
-func _rewrite_move_references(old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
+func _rewrite_move_references(_step: RefCounted, old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
 	## Only descriptors in each item's pinned revision authorize inspection of
 	## JSON values. Opaque future fields are preserved byte-for-value.
 	var refresh_error: String = refresh_if_changed()
@@ -702,7 +703,7 @@ func repair_item_status(id: String, target: String, actor: String, reason: Strin
 	return _coordinated_text(_repair_item_status.bind(id, target, actor, reason, fields))
 
 
-func _repair_item_status(id: String, target: String, actor: String, reason: String, fields: Dictionary) -> String:
+func _repair_item_status(_step: RefCounted, id: String, target: String, actor: String, reason: String, fields: Dictionary) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	if actor.strip_edges().is_empty() or reason.strip_edges().is_empty(): return "actor and repair reason are required"
@@ -789,7 +790,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 	return _coordinated_text(_apply_evolution.bind(preview, author, reason))
 
 
-func _apply_evolution(preview: Dictionary, author: String, reason: String) -> String:
+func _apply_evolution(_step: RefCounted, preview: Dictionary, author: String, reason: String) -> String:
 	if preview.has("error") or author.strip_edges().is_empty() or reason.strip_edges().is_empty(): return str(preview.get("error", "author and reason are required"))
 	var reload_error := refresh_if_changed()
 	if reload_error.is_empty(): reload_error = reload()

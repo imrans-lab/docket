@@ -25,9 +25,12 @@ func open(mode: int) -> Dictionary:
 
 
 ## A step of `parent` (an operation from open()) when there is one, else a new
-## operation: {operation} or {error, kind}.
+## operation: {operation} or {error, kind}. The extension checks that `parent`
+## really is a live operation; anything else is refused.
 func open_within(parent: RefCounted, mode: int) -> Dictionary:
-	return parent.nested(mode) if parent != null else open(mode)
+	if _lock == null:
+		return {"error": NO_EXTENSION, "kind": "no_extension"}
+	return _lock.join(parent, mode)
 
 
 ## "" when the coordination directory is `expected`, as this host resolved

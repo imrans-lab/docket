@@ -91,6 +91,19 @@ impl DocketCoordLock {
         opened(begin(mode, 0), mode)
     }
 
+    /// A step of `parent` in `mode` when it is given, else a new operation:
+    /// {operation} or {error, kind}. `parent` must be a live
+    /// DocketCoordOperation; anything else is refused, never treated as no
+    /// parent.
+    #[func]
+    fn join(&self, parent: Option<Gd<Object>>, mode: i64) -> VarDictionary {
+        match parent.map(operation_of) {
+            None => opened(begin(mode, 0), mode),
+            Some(Ok(id)) => opened(begin(mode, id), mode),
+            Some(Err(f)) => failed(f),
+        }
+    }
+
     /// Checks that the coordination directory is `expected` (an absolute
     /// path a host resolved); "" when it is. A mismatch fails coordination for
     /// the rest of the process, and says why.
@@ -145,6 +158,17 @@ impl DocketCoordOperation {
         self.open
     }
 
+    /// Whether `other` is a live hold of this same logical operation (itself,
+    /// or another step of it). False when either is closed or `other` is not
+    /// an operation.
+    #[func]
+    fn same_operation(&self, other: Option<Gd<Object>>) -> bool {
+        match (self.live_id(), other.map(operation_of)) {
+            (Ok(id), Some(Ok(other_id))) => id == other_id,
+            _ => false,
+        }
+    }
+
     /// SHARED or EXCLUSIVE, as requested for this hold; a SHARED step of an
     /// EXCLUSIVE operation reports SHARED.
     #[func]
@@ -165,6 +189,14 @@ impl Drop for DocketCoordOperation {
         if self.open {
             let _ = end(self.id);
         }
+    }
+}
+
+// The live operation id behind `object`, which must be a DocketCoordOperation.
+fn operation_of(object: Gd<Object>) -> Result<i64, Failure> {
+    match object.try_cast::<DocketCoordOperation>() {
+        Ok(operation) => operation.bind().live_id(),
+        Err(_) => Err(failure("refused", "that is not a coordination operation")),
     }
 }
 

@@ -255,7 +255,7 @@ func flush() -> void:
 func flush_checked() -> String:
 	## An empty result inside a nested mutation means the flush is deferred; the
 	## outermost completion remains responsible for durable commit and errors.
-	var error := CoordLease.run(_flush_jsonl)
+	var error := CoordLease.run(func(_step: RefCounted) -> String: return _flush_jsonl())
 	if not error.is_empty(): last_write_error = error
 	return error
 
@@ -363,7 +363,7 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	return CoordLease.run(_apply_registry_change.bind(type_def, revision, item_bindings, events, expected_current_revision))
 
 
-func _apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
+func _apply_registry_change(_step: RefCounted, type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
 	var error := _mutation_precheck()
 	if not error.is_empty(): return error
 	_last_sql_error = ""
@@ -519,7 +519,7 @@ func insert_item(id: String, item: Dictionary) -> String:
 	return CoordLease.run(_insert_item.bind(id, item))
 
 
-func _insert_item(id: String, item: Dictionary) -> String:
+func _insert_item(_step: RefCounted, id: String, item: Dictionary) -> String:
 	var source_error := _mutation_precheck()
 	if not source_error.is_empty(): return source_error
 	var candidate := item.duplicate(true)

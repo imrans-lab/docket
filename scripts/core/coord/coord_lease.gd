@@ -20,12 +20,14 @@ static func shared(parent: RefCounted = null) -> Dictionary:
 	return opened
 
 
-## `work` run within a SHARED operation: its result ("" or an error), or the
-## refusal when there is none to be had.
+## `work` called with a SHARED operation step it passes to what it does
+## (first argument, before any bound ones): its result ("" or an error), or
+## the refusal when there is no step to be had. `work` runs synchronously and
+## must not await.
 static func run(work: Callable, parent: RefCounted = null) -> String:
 	var opened := shared(parent)
 	if opened.has("error"):
 		return opened.error
-	var result: Variant = work.call()
+	var result: Variant = work.call(opened.operation)
 	opened.operation.close()
 	return result if result is String else "project change stopped unexpectedly"
