@@ -185,11 +185,11 @@ func test_saved_query_roundtrip_keeps_identity_field_state_and_sort_bindings() -
 func test_dcq_roundtrip_preserves_typed_sort_binding_verbatim() -> Variant:
 	var db: DocketDBJsonl = _db("DCQ"); var registry: TypeRegistry = _registry_with_widget(db); var type_id: String = registry.get_type("widget").id
 	var state: AppState = AppState.new(); state.db = db; state.schema = {}; state._project_dbs = {"DCQ":db}; state._type_registries = {"DCQ":registry}
-	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	grid._dcq_columns = ["id", "score", "state_category"]
 	grid._sort_field = "score"; grid._sort_dir = "desc"; grid._sort_binding = {"field_key":"score","type_id":type_id,"nulls":"first"}
 	var path: String = DIR + "/typed.dcq"; grid.save_dcq(path)
-	var loaded: QueryGrid = QueryGrid.new(); add_child(loaded); loaded.init(state); loaded.load_dcq(path)
+	var loaded: QueryGrid = QueryGrid.new(); add_child(loaded); loaded.init(LocalDocketSource.new(state)); loaded.load_dcq(path)
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
 	var r = A.is_true(parsed is Dictionary and parsed.sort[0].type_id == type_id and parsed.columns == ["id", "score", "state_category"] and loaded._dcq_columns == parsed.columns and loaded._sort_binding.type_id == type_id and loaded._sort_binding.nulls == "first" and loaded._sort_dir == "desc", "dcq load/save keeps stable field identity, columns, and null ordering")
 	grid.queue_free(); loaded.queue_free(); db.close(); return r
@@ -328,7 +328,7 @@ func test_query_grid_compiles_multitype_field_and_status_choice_to_exact_identit
 	if defined.has("error"): db.close(); return "second grid type definition failed: %s" % defined.error
 	registry.activate_type("second", defined.type.current_revision, "tester", "ready")
 	var state: AppState = AppState.new(); state.db = db; state.schema = {}; state._project_dbs = {"Grid":db}; state._type_registries = {"Grid":registry}
-	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var keys: Array = []
 	for record in grid._type_catalog:
 		if record.slug in ["widget","second"]: keys.append(record.key)
@@ -473,7 +473,7 @@ func test_invalid_registry_is_public_error_and_visible_empty_query_catalog() -> 
 	var listed: Dictionary = tools.call_tool("docket_type_list", {"project":"InvalidRegistry"})
 	var machines: Dictionary = tools.call_tool("docket_get_state_machine", {"project":"InvalidRegistry"})
 	var state: AppState = AppState.new(); state.db = db; state.schema = TypeRegistryBootstrap.load_shipped_schema(); state._project_dbs = {"InvalidRegistry":db}; state._type_registries = {"InvalidRegistry":registry}
-	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var r = A.is_true(not reload_error.is_empty() and listed.has("error") and machines.has("error") and grid._type_catalog.is_empty() and grid._catalog_diagnostic.contains("read-only") and grid._count_label.text.contains("Type catalog unavailable"), "invalid stored definitions propagate through public discovery and remain visible without selectable schema fallback")
 	grid.queue_free(); db.close(); return r
 

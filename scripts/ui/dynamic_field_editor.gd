@@ -15,7 +15,7 @@ func load_definition(definition: Dictionary, item: Dictionary = {}, existing_ite
 	for descriptor_value in definition.get("fields", []):
 		var descriptor: Dictionary = descriptor_value
 		var key := str(descriptor.key)
-		if key in TypeRegistry.UNIVERSAL_MUTABLE:
+		if key in DocketFields.UNIVERSAL_MUTABLE:
 			continue
 		_add_descriptor(descriptor, values.has(key), values.get(key), existing_item)
 	for key_value in values:

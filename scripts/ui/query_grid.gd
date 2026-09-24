@@ -6,7 +6,7 @@ class_name QueryGrid
 signal item_selected(id: String, project: String)
 signal item_activated(id: String, project: String)
 
-var _state: AppState
+var _src  # DocketSource
 var _run_btn: Button
 var _add_btn: Button
 var _count_label: Label
@@ -14,6 +14,11 @@ var _tree: Tree
 var _header: Control
 var _context_menu: PopupMenu
 var _current_results: Array = []
+# Per row of _current_results: {short_id, resolved} (DocketSource.run_query).
+var _row_details: Array = []
+# Bumped by each catalog load and each query, so a late older reply is dropped.
+var _catalog_generation := 0
+var _query_generation := 0
 
 # Visual query builder
 var _conditions_container: VBoxContainer
@@ -62,10 +67,11 @@ func _dropdown_values() -> Dictionary:
 
 	var types: Array = []
 	var statuses := {}
-	if _state != null and _state.schema.has("types"):
-		for type_name in _state.schema.types:
+	var schema: Dictionary = _src.schema() if _src != null else {}
+	if schema.has("types"):
+		for type_name in schema.types:
 			types.append(str(type_name))
-			for st in _state.schema.types[type_name].get("states", []):
+			for st in schema.types[type_name].get("states", []):
 				statuses[str(st)] = true
 	types.sort()
 	var status_list: Array = statuses.keys()
@@ -109,17 +115,20 @@ var _drag_start_width: int = 0
 const _DRAG_ZONE: int = 5  # pixels from column edge to trigger resize
 
 
-func init(state: AppState) -> void:
-	_state = state
-	_state.file_changed.connect(_on_file_changed)
-	_state.data_changed.connect(_on_file_changed)
-	_rebuild_type_catalog()
+## `source` is the DocketSource the grid queries. The first query runs once
+## the type catalog has loaded.
+func init(source) -> void:
+	_src = source
+	_src.file_changed.connect(_on_file_changed)
+	_src.data_changed.connect(_on_file_changed)
 	_build_ui()
+	_on_file_changed()
 
 
 func _on_file_changed() -> void:
-	_rebuild_type_catalog()
-	var shortcut_projects: Array = _state.get_project_dbs().keys()
+	if not await _rebuild_type_catalog():
+		return
+	var shortcut_projects: Array = _src.project_names().duplicate()
 	shortcut_projects.sort()
 	var project_key := ",".join(shortcut_projects)
 	for row in _condition_rows:
@@ -128,30 +137,16 @@ func _on_file_changed() -> void:
 	refresh()
 
 
-func _rebuild_type_catalog() -> void:
-	_type_catalog.clear()
-	_catalog_diagnostic = ""
-	var projects: Array = _state.get_project_dbs().keys()
-	projects.sort()
-	if projects.is_empty():
-		_type_catalog = TypeCatalog.from_schema(_state.schema)
-		return
-	for project_value in projects:
-		var project := str(project_value)
-		var counts := {}
-		var project_db = _state.get_db_for_project(project)
-		if project_db != null:
-			for item in project_db.execute_query({"filter": {}}):
-				var slug: String = str(item.get("type", ""))
-				counts[slug] = int(counts.get(slug, 0)) + 1
-		var registry: TypeRegistry = _state.get_type_registry(project)
-		var catalog_result: Dictionary = TypeCatalog.from_registry_checked(registry, counts) if registry != null else {"records":[],"error":"type registry is unavailable"}
-		if registry != null and registry.get_diagnostic().is_empty() and str(catalog_result.error).is_empty():
-			_type_catalog.append_array(catalog_result.records)
-		else:
-			var reason: String = registry.get_diagnostic() if registry != null and not registry.get_diagnostic().is_empty() else str(catalog_result.error)
-			_catalog_diagnostic = "Type catalog unavailable for %s: %s" % [project, reason]
-	_type_catalog = TypeCatalog.sorted(_type_catalog)
+## Load the type catalog; false if a newer load superseded this one.
+func _rebuild_type_catalog() -> bool:
+	_catalog_generation += 1
+	var generation := _catalog_generation
+	var catalog: Dictionary = await _src.type_catalog()
+	if generation != _catalog_generation:
+		return false
+	_type_catalog = catalog.records
+	_catalog_diagnostic = str(catalog.diagnostic)
+	return true
 
 
 func _build_ui() -> void:
@@ -228,16 +223,15 @@ func _build_ui() -> void:
 	_count_label.add_theme_font_size_override("font_size", 12)
 	add_child(_count_label)
 
-	# Initial load
+	# The first query runs once the catalog has loaded (init).
 	_sync_tree_columns()
-	_run_query()
 
 
 # -- Dynamic column rebuilding ---------------------------------------------
 
 func _rebuild_columns() -> void:
 	## Rebuild column arrays for current multi-project state.
-	var is_multi := _state._project_dbs.size() > 1
+	var is_multi: bool = _src.project_names().size() > 1
 	_multi_project = is_multi
 	if not _dcq_columns.is_empty():
 		_col_fields = []
@@ -538,7 +532,7 @@ func _add_condition_row(is_first: bool) -> void:
 	var type_chooser := TypeChooser.new()
 	type_chooser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	type_chooser.visible = false
-	var shortcut_projects: Array = _state.get_project_dbs().keys()
+	var shortcut_projects: Array = _src.project_names().duplicate()
 	shortcut_projects.sort()
 	type_chooser.configure(_type_catalog, ",".join(shortcut_projects))
 	type_chooser.selection_changed.connect(func(_values):
@@ -835,9 +829,12 @@ func _op_label_to_key(label: String) -> String:
 # -- Query -----------------------------------------------------------------
 
 func _run_query() -> void:
+	_query_generation += 1
+	var generation := _query_generation
 	_rebuild_columns()
 	if not _catalog_diagnostic.is_empty():
 		_current_results.clear()
+		_row_details.clear()
 		_tree.clear()
 		_count_label.text = _catalog_diagnostic
 		return
@@ -848,22 +845,17 @@ func _run_query() -> void:
 		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
 		query["sort"] = [sort_value]
 
-	# Use cross-project query if multiple projects loaded
-	if _state._project_dbs.size() > 1:
-		_current_results = _state.execute_cross_project_query(query)
-		if not _state.last_cross_project_query_error.is_empty():
-			_tree.clear()
-			_count_label.text = _state.last_cross_project_query_error
-			return
-	elif _state.db:
-		var registry: TypeRegistry = _state.get_type_registry()
-		_current_results = _state.db.execute_registry_query(query, registry) if registry != null else _state.db.execute_query(query)
-		if not _state.db.last_query_error.is_empty():
-			_tree.clear()
-			_count_label.text = _state.db.last_query_error
-			return
-	else:
-		_current_results = []
+	var result: Dictionary = await _src.run_query(query)
+	if generation != _query_generation:
+		return
+	if result.has("error"):
+		_current_results.clear()
+		_row_details.clear()
+		_tree.clear()
+		_count_label.text = str(result.error)
+		return
+	_current_results = result.rows
+	_row_details = result.details
 	_populate_tree()
 
 
@@ -924,7 +916,7 @@ func _build_conditions_filter() -> Dictionary:
 		var only: Dictionary = conditions[0]
 		if only["op"] == "eq" and only.get("value", "") == "":
 			return {}
-	return QueryTypeScope.compile_catalog_conditions(conditions, _type_catalog, _state.get_project_dbs().size() > 1)
+	return QueryTypeScope.compile_catalog_conditions(conditions, _type_catalog, _src.project_names().size() > 1)
 
 
 func _serialize_all_conditions() -> Dictionary:
@@ -1010,7 +1002,10 @@ func _populate_tree() -> void:
 	_tree.clear()
 	var root := _tree.create_item()
 
-	for item in _current_results:
+	for row_index in _current_results.size():
+		var item: Dictionary = _current_results[row_index]
+		var details: Dictionary = _row_details[row_index] if row_index < _row_details.size() else {}
+		var resolved: Dictionary = details.get("resolved", {"error": "unresolved"})
 		var row := _tree.create_item(root)
 		var full_id: String = str(item.get("id", ""))
 		var item_status: String = str(item.get("status", ""))
@@ -1020,20 +1015,17 @@ func _populate_tree() -> void:
 			if field == "priority":
 				var pri = item.get("priority", 0)
 				row.set_text(col_idx, str(int(pri)) if pri else "")
-			elif field == "id" and DocketDB._is_uuid7(full_id):
+			elif field == "id" and DocketFields.is_uuid7(full_id):
 				# Display short ID for UUID7, set tooltip to full ID
-				var display_id := full_id.substr(0, 7)
-				if _state.db:
-					display_id = _state.db.short_id(full_id)
-				row.set_text(col_idx, display_id)
+				row.set_text(col_idx, str(details.get("short_id", full_id.substr(0, 7))))
 				row.set_tooltip_text(col_idx, full_id)
 			elif field == "status":
 				row.set_text(col_idx, item_status)
-				var state_color := _pinned_state_color(item)
+				var state_color := _pinned_state_color(resolved)
 				if state_color.a > 0.0:
 					row.set_custom_color(col_idx, state_color)
 			elif column is Dictionary:
-				row.set_text(col_idx, _render_bound_column(item, column))
+				row.set_text(col_idx, _render_bound_column(item, column, resolved))
 			else:
 				row.set_text(col_idx, str(item.get(field, "")))
 		# Metadata always stores full ID for selection signals
@@ -1041,12 +1033,8 @@ func _populate_tree() -> void:
 
 	_count_label.text = "%d items" % _current_results.size()
 
-func _pinned_state_color(item: Dictionary) -> Color:
-	var project := _item_project(item)
-	var registry := _state.get_type_registry(project)
-	if registry == null:
-		return Color.TRANSPARENT
-	var resolved: Dictionary = registry.resolve_item(item)
+## `resolved`: the row's type resolution (DocketSource.run_query details).
+func _pinned_state_color(resolved: Dictionary) -> Color:
 	if resolved.has("error"):
 		return Color.TRANSPARENT
 	match str(resolved.state_category):
@@ -1059,14 +1047,10 @@ func _pinned_state_color(item: Dictionary) -> Color:
 		_:
 			return Color(0.65, 0.7, 0.85)
 
-func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
+func _render_bound_column(item: Dictionary, binding: Dictionary, resolved: Dictionary) -> String:
 	var project := _item_project(item)
 	if not str(binding.get("project", "")).is_empty() and binding.project != project:
 		return ""
-	var registry := _state.get_type_registry(project)
-	if registry == null:
-		return ""
-	var resolved: Dictionary = registry.resolve_item(item)
 	if resolved.has("error") or str(resolved.revision.type_id) != str(binding.get("type_id", "")):
 		return ""
 	if binding.field_key == "state_category":
@@ -1084,7 +1068,7 @@ func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
 	if not declared:
 		return ""
 	var fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
-	if bool(resolved.definition.get("protected", false)) or binding.field_key in TypeRegistry.UNIVERSAL_MUTABLE:
+	if bool(resolved.definition.get("protected", false)) or binding.field_key in DocketFields.UNIVERSAL_MUTABLE:
 		return str(item[binding.field_key]) if item.has(binding.field_key) else ""
 	if not fields.has(binding.field_key):
 		return ""
@@ -1094,8 +1078,8 @@ func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
 
 func _item_project(item: Dictionary) -> String:
 	var project: String = str(item.get("project", ""))
-	if project.is_empty() and _state.get_project_dbs().size() == 1:
-		project = str(_state.get_project_dbs().keys()[0])
+	if project.is_empty() and _src.project_names().size() == 1:
+		project = _src.project_names()[0]
 	return project
 
 func set_result_columns(bindings: Array) -> void:
@@ -1109,22 +1093,19 @@ func _show_columns_menu(anchor: Button) -> void:
 	var scoped_records: Array = _column_scope_records()
 	for record_value in scoped_records:
 		var record: Dictionary = record_value
-		var registry := _state.get_type_registry(str(record.project))
-		if registry == null:
-			continue
-		var type: Dictionary = registry.resolve_type_ref(str(record.id))
+		var type: Dictionary = await _src.resolve_type_ref(str(record.project), str(record.id))
 		if type.has("error"):
 			continue
 		for descriptor_value in type.definition.fields:
 			var descriptor: Dictionary = descriptor_value
-			if descriptor.key in TypeRegistry.UNIVERSAL_MUTABLE:
+			if descriptor.key in DocketFields.UNIVERSAL_MUTABLE:
 				continue
-			var owner_label := "%s [%s]" % [record.label, record.project] if _state.get_project_dbs().size() > 1 else str(record.label)
+			var owner_label := "%s [%s]" % [record.label, record.project] if _src.project_names().size() > 1 else str(record.label)
 			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":descriptor.key, "label":"%s — %s" % [owner_label, descriptor.get("label", descriptor.key)], "kind":descriptor.type})
 	for derived in ["state_category", "state_outcome", "is_terminal"]:
 		for record_value in scoped_records:
 			var record: Dictionary = record_value
-			var owner_label := "%s [%s]" % [record.label, record.project] if _state.get_project_dbs().size() > 1 else str(record.label)
+			var owner_label := "%s [%s]" % [record.label, record.project] if _src.project_names().size() > 1 else str(record.label)
 			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":derived, "label":"%s — %s" % [owner_label, derived], "kind":"string"})
 	for selected_value in _dcq_columns:
 		if selected_value is Dictionary and not _candidate_has_binding(selected_value):

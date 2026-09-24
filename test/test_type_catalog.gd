@@ -281,7 +281,7 @@ func test_query_grid_large_selection_keeps_row_bounded_and_full_identity_detail(
 	schema.types["long_type"] = {"label": long_label, "description": "Long label fixture", "states": []}
 	var state := AppState.new()
 	state.schema = schema
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var chooser: TypeChooser = grid._condition_rows[0].type_chooser
 	var keys: Array = []
 	for record in grid._type_catalog:
@@ -324,7 +324,7 @@ func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
 
 func test_query_grid_refreshes_empty_catalog_after_loading_legacy_project() -> Variant:
 	var state := AppState.new(); state.schema = _schema()
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	grid._condition_rows[0].type_chooser._search.text = "discussion"
 	var db := _make_db("Loaded", [{"type": "discussion", "status": "active", "title": "Loaded thread"}])
 	db.close(); _dbs.erase(db)
@@ -425,7 +425,7 @@ func test_unsupported_project_operator_reports_actionable_error() -> Variant:
 
 func test_query_grid_serializes_project_identity_and_executes_only_that_project() -> Variant:
 	var state := _two_project_state()
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var alpha_key := ""
 	for record in grid._type_catalog:
 		if record.project == "Alpha" and record.slug == "discussion": alpha_key = record.key
@@ -441,7 +441,7 @@ func test_query_grid_serializes_project_identity_and_executes_only_that_project(
 
 func test_query_grid_multiselect_keeps_each_project_type_pair_coupled() -> Variant:
 	var state := _two_project_state()
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var keys: Array = []
 	for record in grid._type_catalog:
 		if (record.project == "Alpha" and record.slug == "discussion") or (record.project == "Beta" and record.slug == "code_review"): keys.append(record.key)
@@ -477,19 +477,19 @@ func test_shortcut_actions_enforce_caps_and_persist_recency_order() -> Variant:
 
 func test_legacy_unqualified_filter_round_trips_without_rebinding() -> Variant:
 	var state := _two_project_state()
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var original := {"conditions": [{"field": "type", "op": "eq", "value": "discussion"}]}
 	grid.set_filter(JSON.stringify(original))
 	var path := _db_dir + "/legacy.dcq"
 	grid.save_dcq(path)
-	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(state); reopened.load_dcq(path)
+	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(LocalDocketSource.new(state)); reopened.load_dcq(path)
 	var saved = JSON.parse_string(reopened.get_filter())
 	var r = A.eq(saved, original, "legacy literal survives dcq save and load")
 	grid.queue_free(); reopened.queue_free(); return r
 
 func test_grouped_status_roundtrip_keeps_exact_project_identity() -> Variant:
 	var state := _two_project_state()
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var alpha_key := ""
 	for record in grid._type_catalog:
 		if record.project == "Alpha" and record.slug == "code_review": alpha_key = record.key
@@ -497,7 +497,7 @@ func test_grouped_status_roundtrip_keeps_exact_project_identity() -> Variant:
 	grid.set_filter(JSON.stringify(original))
 	var path := _db_dir + "/grouped-status.dcq"
 	grid.save_dcq(path)
-	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(state); reopened.load_dcq(path)
+	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(LocalDocketSource.new(state)); reopened.load_dcq(path)
 	var saved = JSON.parse_string(reopened.get_filter())
 	var r = A.eq(saved, original, "group identity survives UI and dcq round trip")
 	if r is String: grid.queue_free(); reopened.queue_free(); return r
@@ -508,7 +508,7 @@ func test_grouped_status_roundtrip_keeps_exact_project_identity() -> Variant:
 
 func test_incompatible_status_remains_visible_in_query_grid() -> Variant:
 	var state := _two_project_state()
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	grid.set_filter(JSON.stringify({"conditions": [{"field": "type", "op": "eq", "value": "code_review"}, {"field": "status", "op": "eq", "value": "active", "conj": "and"}]}))
 	var row: Dictionary = grid._condition_rows[1]
 	var r = A.is_true(row.validation.visible, "incompatible condition is visibly invalid")
@@ -519,7 +519,7 @@ func test_incompatible_status_remains_visible_in_query_grid() -> Variant:
 func test_added_and_reindexed_rows_refresh_branch_scope_immediately() -> Variant:
 	var state := AppState.new()
 	state.schema = _schema()
-	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
+	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var discussion_key := ""
 	for record in grid._type_catalog:
 		if record.slug == "discussion": discussion_key = record.key

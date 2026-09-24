@@ -100,7 +100,7 @@ func test_form_commits_unsaved_fields_with_transition_and_refuses_partial_guard_
 	var created := registry.create_item({"type":"review", "title":"Review", "revision":"abc", "source":"origin"}, "tester")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_item(str(created.id), "form")
 	_set_dynamic_text(form, "findings", "Looks good")
 	form._select_status_by_name("approved")
@@ -122,7 +122,7 @@ func test_record_form_creation_keeps_required_immutable_field_editable_and_saves
 	_active_registry(state, "form")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_draft("review", {"type":"review", "status":"requested", "title":"", "fields":{}}, "form")
 	var source_row: Dictionary = form._dynamic_fields._rows.source
 	var r = A.is_false((source_row.mode as OptionButton).disabled, "actual RecordForm draft keeps required immutable fields editable during creation")
@@ -151,7 +151,7 @@ func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Va
 		return activate_error
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_draft("review", {"type":"review", "status":"requested", "title":"", "fields":{}}, "form")
 	form._title_edit.text = "Durable values"
 	_set_dynamic_text(form, "revision", "abc")
@@ -233,7 +233,7 @@ func test_duplicate_ids_route_form_and_comments_to_explicit_project() -> Variant
 	beta_db.import_item_full(duplicate_id, beta_item)
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(alpha)
+	form.init(LocalDocketSource.new(alpha))
 	form.load_item(duplicate_id, "beta")
 	form._title_edit.text = "Beta edited"
 	await form._save_changes()
@@ -245,7 +245,7 @@ func test_duplicate_ids_route_form_and_comments_to_explicit_project() -> Variant
 	r = A.is_true(alpha.db.list_comments(duplicate_id).is_empty() and beta_db.list_comments(duplicate_id).size() == 1, "comment service routing retains the explicit project origin")
 	if r is String:
 		return r
-	var attached := form.attach_to_current("proof.txt", "beta".to_utf8_buffer(), "text/plain")
+	var attached: Dictionary = await form.attach_to_current("proof.txt", "beta".to_utf8_buffer(), "text/plain")
 	return A.is_true(not attached.has("error") and alpha.db.list_attachments(duplicate_id).is_empty() and beta_db.list_attachments(duplicate_id).size() == 1, "attachment service routing retains the explicit project origin")
 
 func test_duplicate_id_activation_and_back_navigation_retain_project_origin() -> Variant:
@@ -264,7 +264,7 @@ func test_duplicate_id_activation_and_back_navigation_retain_project_origin() ->
 	beta_db.delete_item(str(beta_item.id))
 	beta_db.import_item_full(duplicate_id, beta_export)
 	var shell := AppShell.new()
-	shell.init(state)
+	shell.init(LocalDocketSource.new(state))
 	add_child(shell)
 	shell._on_item_activated(duplicate_id, "alpha")
 	shell._on_item_activated(duplicate_id, "beta")
@@ -276,7 +276,7 @@ func test_context_copy_extracts_id_from_selected_origin_metadata() -> Variant:
 	var state := _state("fields")
 	var grid := QueryGrid.new()
 	add_child(grid)
-	grid.init(state)
+	grid.init(LocalDocketSource.new(state))
 	grid._tree.clear()
 	var root := grid._tree.create_item()
 	var row := grid._tree.create_item(root)
@@ -297,7 +297,7 @@ func test_children_use_qualified_origin_and_isolate_bare_refs_by_project() -> Va
 		return str(alpha_child.error)
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_item(parent_id, "alpha")
 	var r = A.eq(form._children_list.item_count, 1, "single-project form resolves one qualified child reference")
 	if r is String:
@@ -340,7 +340,7 @@ func test_draft_save_refuses_closed_origin_without_falling_back_or_losing_edits(
 	_active_registry(state, "beta")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_draft("review", {"type":"review", "status":"requested", "title":"", "fields":{}}, "beta")
 	form._title_edit.text = "Retained draft"
 	_set_dynamic_text(form, "revision", "abc")
@@ -359,20 +359,21 @@ func test_result_columns_require_pinned_type_identity() -> Variant:
 	var type := registry.get_type("review")
 	var grid := QueryGrid.new()
 	add_child(grid)
-	grid.init(state)
+	grid.init(LocalDocketSource.new(state))
 	var binding := {"project":"fields", "type_id":type.id, "field_key":"findings", "label":"Findings"}
 	var wrong := binding.duplicate(true)
 	wrong.type_id = "type:unrelated"
-	var r = A.eq(grid._render_bound_column(item, binding), "visible", "custom result column renders from fields under the pinned descriptor")
+	var resolved: Dictionary = grid._src.cached_resolve("fields", item)
+	var r = A.eq(grid._render_bound_column(item, binding, resolved), "visible", "custom result column renders from fields under the pinned descriptor")
 	if r is String:
 		return r
-	r = A.eq(grid._render_bound_column(item, wrong), "", "unrelated type identity cannot reinterpret a custom result column")
+	r = A.eq(grid._render_bound_column(item, wrong, resolved), "", "unrelated type identity cannot reinterpret a custom result column")
 	if r is String:
 		return r
 	var builtin := registry.get_type("bug")
 	var builtin_item := {"type":"bug", "type_id":builtin.id, "type_revision":builtin.current_revision, "status":"new", "resolution":"fixed", "fields":{}, "project":"fields"}
 	var builtin_binding := {"project":"fields", "type_id":builtin.id, "field_key":"resolution", "label":"Resolution"}
-	return A.eq(grid._render_bound_column(builtin_item, builtin_binding), "fixed", "builtin descriptor columns use their flat storage authority")
+	return A.eq(grid._render_bound_column(builtin_item, builtin_binding, grid._src.cached_resolve("fields", builtin_item)), "fixed", "builtin descriptor columns use their flat storage authority")
 
 func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Variant:
 	var state := _state("fields")
@@ -384,7 +385,7 @@ func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Var
 	registry.activate_type("audit", second.type.current_revision, "tester", "ready")
 	var grid := QueryGrid.new()
 	add_child(grid)
-	grid.init(state)
+	grid.init(LocalDocketSource.new(state))
 	grid._rebuild_type_catalog()
 	var anchor := Button.new()
 	grid.add_child(anchor)
@@ -423,7 +424,7 @@ func test_column_menu_uses_query_branch_scope_and_project_labels() -> Variant:
 	_active_registry(state, "beta")
 	var grid := QueryGrid.new()
 	add_child(grid)
-	grid.init(state)
+	grid.init(LocalDocketSource.new(state))
 	grid._rebuild_type_catalog()
 	var alpha_review: Dictionary = {}
 	var beta_review: Dictionary = {}
@@ -471,13 +472,13 @@ func test_dcq_string_columns_round_trip_in_explicit_order() -> Variant:
 	var state := _state("fields")
 	var grid := QueryGrid.new()
 	add_child(grid)
-	grid.init(state)
+	grid.init(LocalDocketSource.new(state))
 	grid.set_result_columns(["title", "status"])
 	var path := "%s/ordered.dcq" % DIR
 	grid.save_dcq(path)
 	var restored := QueryGrid.new()
 	add_child(restored)
-	restored.init(state)
+	restored.init(LocalDocketSource.new(state))
 	restored.load_dcq(path)
 	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
 	var r = A.is_true(parsed is Dictionary and parsed.columns == ["title", "status"], "saved DCQ retains explicit universal column order")
@@ -489,7 +490,7 @@ func test_searchable_creation_catalog_includes_active_zero_count_custom_type() -
 	var state := _state("fields")
 	_active_registry(state, "fields")
 	var shell := AppShell.new()
-	shell.init(state)
+	shell.init(LocalDocketSource.new(state))
 	add_child(shell)
 	shell._show_new_item_dialog()
 	var r = A.is_true(shell._new_item_list.item_count > 0, "searchable creation catalog includes active registry types with zero items")
@@ -504,7 +505,7 @@ func test_creation_chooser_opens_ordinary_builtin_and_custom_drafts() -> Variant
 	var state := _state("fields")
 	_active_registry(state, "fields")
 	var shell := AppShell.new()
-	shell.init(state)
+	shell.init(LocalDocketSource.new(state))
 	add_child(shell)
 	shell._show_new_item_dialog()
 	shell._new_item_search.text = "bug"
@@ -526,7 +527,7 @@ func test_ordinary_builtin_draft_saves_without_creating_or_unlocking_a_vault() -
 	UserPrefs.clear_vault_password()
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_draft("bug", {"type":"bug", "status":"new", "title":"", "fields":{}}, "fields")
 	form._title_edit.text = "Ordinary bug"
 	var save_error = await form._save_changes()
@@ -545,7 +546,7 @@ func test_secret_draft_binds_value_and_notes_handles_to_created_item() -> Varian
 	UserPrefs.save_vault_password(password)
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_draft("secret", {"type":"secret", "status":"active", "title":"", "fields":{}}, "fields")
 	form._title_edit.text = "Credential"
 	form._secret_value_edit.text = "secret-value"
@@ -569,14 +570,14 @@ func test_protected_types_stay_out_of_ordinary_creation_and_keep_specialized_pat
 	if r is String:
 		return r
 	var shell := AppShell.new()
-	shell.init(state)
+	shell.init(LocalDocketSource.new(state))
 	add_child(shell)
 	shell._show_new_item_dialog()
 	for type_value in shell._new_item_catalog:
 		if str(type_value.slug) == "secret" or str(type_value.slug) == "encrypted_note":
 			return "ordinary creation catalog exposed a protected type"
 	var form := shell._record_form
-	var specialized := form._create_protected_draft(state.db, "secret", {"title":"Credential", "fields":{}, "unset_fields":[]})
+	var specialized: Dictionary = form._src._create_protected_draft(state.db, "secret", {"title":"Credential", "fields":{}, "unset_fields":[]})
 	return A.is_true(not specialized.has("error") and state.db.get_item(str(specialized.id)).type == "secret", "existing specialized protected-item path remains available")
 
 func test_guided_note_cancel_keeps_pending_fields_unsaved() -> Variant:
@@ -591,7 +592,7 @@ func test_guided_note_cancel_keeps_pending_fields_unsaved() -> Variant:
 	var created := registry.create_item({"type":"review", "title":"Review", "revision":"abc", "source":"origin"}, "tester")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_item(str(created.id), "form")
 	_set_dynamic_text(form, "findings", "unsaved")
 	var changes := form._collect_changes()
@@ -612,7 +613,7 @@ func test_guided_note_confirmation_commits_original_pending_snapshot() -> Varian
 	var created := registry.create_item({"type":"review", "title":"Review", "revision":"abc", "source":"origin"}, "tester")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_item(str(created.id), "form")
 	_set_dynamic_text(form, "findings", "pending findings")
 	form._prompt_transition_note("reviewing", form._collect_changes())
@@ -638,7 +639,7 @@ func test_guided_note_confirmation_refuses_change_while_dialog_is_open_without_l
 	var created := registry.create_item({"type":"review", "title":"Review", "revision":"abc", "source":"origin"}, "tester")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_item(str(created.id), "form")
 	_set_dynamic_text(form, "findings", "pending findings")
 	form._prompt_transition_note("reviewing", form._collect_changes())
@@ -655,8 +656,8 @@ func test_checked_protected_payload_failure_rolls_back_metadata_and_ciphertext()
 	var state := _state("fields")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
-	var created := form._create_protected_draft(state.db, "secret", {"title":"Credential", "fields":{}, "unset_fields":[]})
+	form.init(LocalDocketSource.new(state))
+	var created: Dictionary = form._src._create_protected_draft(state.db, "secret", {"title":"Credential", "fields":{}, "unset_fields":[]})
 	if created.has("error"):
 		return str(created.error)
 	var item_id := str(created.id)
@@ -696,7 +697,7 @@ func test_form_uses_backend_content_token_to_refuse_stale_save() -> Variant:
 	var created := registry.create_item({"type":"review", "title":"Original", "revision":"abc", "source":"origin"}, "tester")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_item(str(created.id), "form")
 	var external_error := registry.update_item(str(created.id), {"title":"External"}, "other")
 	if not external_error.is_empty():
@@ -711,7 +712,7 @@ func test_form_refuses_stale_pinned_revision_after_selected_repin() -> Variant:
 	var created := registry.create_item({"type":"review", "title":"Original", "revision":"abc", "source":"origin"}, "tester")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_item(str(created.id), "form")
 	var evolved := _definition()
 	evolved.label = "Review evolved"
@@ -734,7 +735,7 @@ func test_draft_project_switch_retains_edits_when_type_is_unavailable() -> Varia
 	state._type_registries.beta = TypeRegistry.for_db(beta_db, "beta")
 	var form := RecordForm.new()
 	add_child(form)
-	form.init(state)
+	form.init(LocalDocketSource.new(state))
 	form.load_draft("review", {"type":"review", "title":"", "fields":{}}, "alpha")
 	(form._dynamic_fields._rows.revision.editor as LineEdit).text = "unsaved"
 	form._project_option.select(1)

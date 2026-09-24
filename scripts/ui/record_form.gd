@@ -7,7 +7,12 @@ signal item_changed
 signal back_pressed
 signal child_opened(id: String, project: String)
 
-var _state: AppState
+const Vault := preload("res://scripts/ui/record_form_vault.gd")
+
+var _src  # DocketSource
+var _vault  # Vault: this form's vault controls' behaviour
+# Bumped by each load_item, so a slower earlier load is dropped.
+var _load_generation := 0
 var _current_id: String = ""
 var _fields_grid: GridContainer
 var _title_edit: LineEdit
@@ -169,9 +174,11 @@ var _project_inline_label: Label  # "Project:" label next to _project_option in 
 var _move_btn: Button  # "Move to..." button (visible when 2+ projects, item saved)
 
 
-func init(state: AppState) -> void:
-	_state = state
-	_state.file_changed.connect(_on_file_changed)
+## `source` is the DocketSource the form reads and saves through.
+func init(source) -> void:
+	_src = source
+	_vault = Vault.new(self)
+	_src.file_changed.connect(_on_file_changed)
 	_build_ui()
 
 
@@ -282,7 +289,7 @@ func _build_ui() -> void:
 	_type_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_type_option.item_selected.connect(_on_type_changed)
 	meta_row.add_child(_type_option)
-	var initial_project := _state.db.get_project_name() if _state.db != null else ""
+	var initial_project: String = _src.primary_project()
 	_rebuild_type_options(initial_project)
 
 	meta_row.add_child(_make_inline_label("Status:"))
@@ -613,17 +620,17 @@ func _build_ui() -> void:
 	_secret_show_btn = Button.new()
 	_secret_show_btn.text = "Show"
 	_secret_show_btn.toggle_mode = true
-	_secret_show_btn.pressed.connect(_on_secret_show_toggle)
+	_secret_show_btn.pressed.connect(_vault._on_secret_show_toggle)
 	_secret_value_container.add_child(_secret_show_btn)
 
 	_secret_copy_btn = Button.new()
 	_secret_copy_btn.text = "Copy"
-	_secret_copy_btn.pressed.connect(_on_secret_copy)
+	_secret_copy_btn.pressed.connect(_vault._on_secret_copy)
 	_secret_value_container.add_child(_secret_copy_btn)
 
 	_secret_generate_btn = Button.new()
 	_secret_generate_btn.text = "Generate"
-	_secret_generate_btn.pressed.connect(_on_secret_generate)
+	_secret_generate_btn.pressed.connect(_vault._on_secret_generate)
 	_secret_value_container.add_child(_secret_generate_btn)
 	_body_vbox.add_child(_secret_value_container)
 
@@ -656,12 +663,12 @@ func _build_ui() -> void:
 	_encrypted_notes_show_btn = Button.new()
 	_encrypted_notes_show_btn.text = "Show"
 	_encrypted_notes_show_btn.toggle_mode = true
-	_encrypted_notes_show_btn.pressed.connect(_on_encrypted_notes_show_toggle)
+	_encrypted_notes_show_btn.pressed.connect(_vault._on_encrypted_notes_show_toggle)
 	enc_notes_btns.add_child(_encrypted_notes_show_btn)
 
 	_encrypted_notes_copy_btn = Button.new()
 	_encrypted_notes_copy_btn.text = "Copy"
-	_encrypted_notes_copy_btn.pressed.connect(_on_encrypted_notes_copy)
+	_encrypted_notes_copy_btn.pressed.connect(_vault._on_encrypted_notes_copy)
 	enc_notes_btns.add_child(_encrypted_notes_copy_btn)
 	_body_vbox.add_child(enc_notes_btns)
 
@@ -671,7 +678,7 @@ func _build_ui() -> void:
 	_secret_history_toggle.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_secret_history_toggle.flat = true
 	_secret_history_toggle.add_theme_font_size_override("font_size", 14)
-	_secret_history_toggle.pressed.connect(_on_secret_history_toggle)
+	_secret_history_toggle.pressed.connect(_vault._on_secret_history_toggle)
 	_body_vbox.add_child(_secret_history_toggle)
 
 	_secret_history_container = VBoxContainer.new()
@@ -965,38 +972,37 @@ func _add_section_label(text: String) -> void:
 
 func _rebuild_project_options() -> void:
 	_project_option.clear()
-	if _state._project_dbs.size() <= 1:
+	var projects: Array = _src.project_paths().keys()
+	if projects.size() <= 1:
 		_project_option.visible = false
 		_project_inline_label.visible = false
 		return
 	_project_option.visible = true
 	_project_inline_label.visible = true
-	for proj_name in _state._project_dbs:
+	for proj_name in projects:
 		_project_option.add_item(proj_name)
 
 
-func _get_selected_project_db() -> DocketDB:
+## The project a save goes to: the item's own, else the one picked (or the
+## only one open); "" when that project is no longer open.
+func _selected_project() -> String:
+	var open: Dictionary = _src.project_paths()
 	if not _current_project.is_empty():
-		return _state.get_db_for_project(_current_project)
-	if _state._project_dbs.size() <= 1:
-		return _state.db
+		return _current_project if open.has(_current_project) else ""
+	if open.size() <= 1:
+		return _src.primary_project()
 	if _project_option.item_count == 0:
-		return null
+		return ""
 	var proj_name: String = _project_option.get_item_text(_project_option.selected)
-	return _state.get_db_for_project(proj_name)
+	return proj_name if open.has(proj_name) else ""
 
-
-# -- Type / status helpers -------------------------------------------------
 
 func _get_type_name(idx: int) -> String:
 	return str(_type_option.get_item_metadata(idx)) if idx >= 0 and idx < _type_option.item_count else ""
 
 func _rebuild_type_options(project: String, selected_slug: String = "") -> void:
 	_type_option.clear()
-	var registry := _state.get_type_registry(project)
-	if registry == null:
-		return
-	for type_value in registry.list_types(false):
+	for type_value in _src.cached_types(project):
 		var type: Dictionary = type_value
 		if type.has("error") or (type.lifecycle != "active" and type.slug != selected_slug):
 			continue
@@ -1006,6 +1012,7 @@ func _rebuild_type_options(project: String, selected_slug: String = "") -> void:
 		_type_option.set_item_metadata(_type_option.item_count - 1, type.slug)
 		if type.slug == selected_slug:
 			_type_option.select(_type_option.item_count - 1)
+
 
 func _on_draft_project_changed(_index: int) -> void:
 	if not _is_draft or _loading:
@@ -1032,12 +1039,9 @@ func _rebuild_status_options(type_name: String) -> void:
 	var project := _current_project
 	if project.is_empty() and _project_option.item_count > 0:
 		project = _project_option.get_item_text(_project_option.selected)
-	if project.is_empty() and _state.db != null:
-		project = _state.db.get_project_name()
-	var registry := _state.get_type_registry(project)
-	if registry == null:
-		return
-	var type: Dictionary = registry.get_type(type_name)
+	if project.is_empty():
+		project = _src.primary_project()
+	var type: Dictionary = _src.cached_type(project, type_name)
 	if type.has("error"):
 		return
 	for state_value in type.definition.lifecycle.states:
@@ -1103,10 +1107,11 @@ func _update_field_visibility(type_name: String) -> void:
 	if type_name != "secret":
 		_encrypted_notes_label.text = "Encrypted Notes"
 		return
-	if not _state.schema.types.has(type_name):
+	var schema: Dictionary = _src.schema()
+	if not schema.types.has(type_name):
 		return
-	var opt_fields: Array = _state.schema.types[type_name].optional_fields
-	var req_fields: Array = _state.schema.types[type_name].get("required_fields", [])
+	var opt_fields: Array = schema.types[type_name].optional_fields
+	var req_fields: Array = schema.types[type_name].get("required_fields", [])
 
 	for entry in _field_map:
 		var field_name: String = entry[0]
@@ -1167,21 +1172,21 @@ func get_current_project() -> String:
 func attach_to_current(filename: String, data: PackedByteArray, mime: String = "application/octet-stream", description: String = "") -> Dictionary:
 	if _current_id.is_empty() or _current_project.is_empty():
 		return {"error":"no project-scoped item is open"}
-	var item_db: DocketDB = _state.get_db_for_project(_current_project)
-	if item_db == null or not item_db.has_item(_current_id):
-		return {"error":"originating project is closed or item is missing"}
-	return item_db.attach_file(_current_id, filename, data, mime, description)
+	return await _src.attach_file(_current_project, _current_id, filename, data, mime, description)
 
 
 func load_item(id: String, project: String = "") -> void:
+	_load_generation += 1
+	var generation := _load_generation
+	var view: Dictionary = {"error": "", "kind": "closed"} if project.is_empty() else await _src.item_view(project, id)
+	if generation != _load_generation:
+		return
 	_loading = true
 	_current_id = id
 	_is_draft = false
 	_draft_item = {}
 
-	# Search across all project DBs for the item
-	var item_db: DocketDB = _state.get_db_for_project(project) if not project.is_empty() else null
-	if item_db == null:
+	if str(view.get("kind", "")) == "closed":
 		_id_label.text = "(item not found)"
 		_project_label.text = ""
 		_current_project = ""
@@ -1192,29 +1197,32 @@ func load_item(id: String, project: String = "") -> void:
 	_project_option.visible = false  # Hide selector for existing items
 	_project_inline_label.visible = false
 	# Show Move button when 2+ projects and item is saved
-	_move_btn.visible = _state._project_dbs.size() > 1
-	var item: Dictionary = item_db.get_item(id)
-	var registry := _state.get_type_registry(_current_project)
-	if registry == null:
+	_move_btn.visible = _src.project_names().size() > 1
+	if str(view.get("kind", "")) == "registry":
 		_id_label.text = "(type registry unavailable)"
 		_loading = false
 		return
-	var resolved: Dictionary = registry.resolve_item(item)
+	if view.has("error"):
+		_id_label.text = "%s — %s" % [id, view.error]
+		_loading = false
+		return
+	var item: Dictionary = view.item
+	var resolved: Dictionary = view.resolved
 	if resolved.has("error"):
 		_id_label.text = "%s — %s" % [id, resolved.error]
 		_loading = false
 		return
 	_loaded_revision = str(item.get("type_revision", resolved.revision.id))
-	_loaded_item_token = registry.item_token(item)
+	_loaded_item_token = str(view.token)
 	# Display short ID for UUID7, full for legacy
-	if DocketDB._is_uuid7(id):
-		_id_label.text = item_db.short_id(id)
+	if DocketFields.is_uuid7(id):
+		_id_label.text = str(view.short_id)
 		_id_label.tooltip_text = id
 	else:
 		_id_label.text = id
 		_id_label.tooltip_text = ""
 	# Show project badge when multi-project
-	if _state._project_dbs.size() > 1 and not _current_project.is_empty():
+	if _src.project_names().size() > 1 and not _current_project.is_empty():
 		_project_label.text = "  [%s]" % _current_project
 	else:
 		_project_label.text = ""
@@ -1252,11 +1260,11 @@ func load_item(id: String, project: String = "") -> void:
 	# Secret type: load identity + decrypt secret value + encrypted notes
 	_identity_edit.text = str(item.get("surfaced_from", ""))
 	if type_name == "secret":
-		_load_secret_value(item_db)
-		_load_encrypted_notes(item_db, id + ":notes")
-		_populate_secret_history(item_db)
+		_vault._load_secret_value()
+		_vault._load_encrypted_notes(id + ":notes")
+		_vault._populate_secret_history()
 	elif type_name == "encrypted_note":
-		_load_encrypted_notes(item_db, id)
+		_vault._load_encrypted_notes(id)
 
 	_build_transition_buttons(item)
 	_populate_events(item)
@@ -1287,7 +1295,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 			if _project_option.get_item_text(i) == project:
 				_project_option.select(i)
 				break
-	var initial_project := _project_option.get_item_text(_project_option.selected) if _project_option.item_count > 0 else (_state.db.get_project_name() if _state.db != null else "")
+	var initial_project: String = _project_option.get_item_text(_project_option.selected) if _project_option.item_count > 0 else _src.primary_project()
 	_current_project = project if not project.is_empty() else initial_project
 	_rebuild_type_options(initial_project, type_name)
 
@@ -1304,12 +1312,10 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 
 	_update_field_visibility(type_name)
 	_type_option.disabled = false
-	var draft_project := _project_option.get_item_text(_project_option.selected) if _project_option.item_count > 0 else (_state.db.get_project_name() if _state.db != null else "")
-	var draft_registry := _state.get_type_registry(draft_project)
-	if draft_registry != null:
-		var draft_type: Dictionary = draft_registry.get_type(type_name)
-		if not draft_type.has("error"):
-			_dynamic_fields.load_definition(draft_type.definition, item, false)
+	var draft_project: String = _project_option.get_item_text(_project_option.selected) if _project_option.item_count > 0 else _src.primary_project()
+	var draft_type: Dictionary = _src.cached_type(draft_project, type_name)
+	if not draft_type.has("error"):
+		_dynamic_fields.load_definition(draft_type.definition, item, false)
 	_resolution_edit.text = ""
 	_environment_edit.text = ""
 	_repro_steps_edit.text = ""
@@ -1377,10 +1383,7 @@ func _build_transition_buttons(item: Dictionary) -> void:
 		child.queue_free()
 
 	var status_str: String = str(item.get("status", ""))
-	var registry := _state.get_type_registry(_current_project)
-	if registry == null:
-		return
-	var resolved: Dictionary = registry.resolve_item(item)
+	var resolved: Dictionary = _src.cached_resolve(_current_project, item)
 	if resolved.has("error"):
 		return
 	var valid: Array = resolved.definition.lifecycle.transitions.get(status_str, [])
@@ -1405,39 +1408,35 @@ func _populate_events(item: Dictionary) -> void:
 func _save_changes() -> Variant:
 	if _is_draft:
 		return await _save_draft()
-	var item_db: DocketDB = _state.get_db_for_project(_current_project)
-	if _current_id.is_empty() or item_db == null:
-		_id_label.text = "Save refused: the originating project is closed."
-		return "the originating project is closed"
-	var registry := _state.get_type_registry(_current_project)
-	if registry == null:
-		_id_label.text = "Save refused: type registry unavailable."
-		return "type registry unavailable"
-	var refresh_error := registry.refresh_if_changed()
-	if not refresh_error.is_empty():
-		_id_label.text = "Save refused: %s" % refresh_error
-		return refresh_error
-	var item: Dictionary = item_db.get_item(_current_id)
-	if item.is_empty():
-		_id_label.text = "Save refused: item no longer exists in %s." % _current_project
-		return "item no longer exists in %s" % _current_project
+	var view: Dictionary = await _src.item_view(_current_project, _current_id, true)
+	match str(view.get("kind", "")):
+		"closed":
+			_id_label.text = "Save refused: the originating project is closed."
+			return "the originating project is closed"
+		"registry":
+			_id_label.text = "Save refused: type registry unavailable."
+			return "type registry unavailable"
+		"refresh", "missing":
+			_id_label.text = "Save refused: %s." % view.error if view.kind == "missing" else "Save refused: %s" % view.error
+			return str(view.error)
+	var item: Dictionary = view.item
 	var old_status: String = str(item.get("status", ""))
 	var type_name: String = str(item.get("type", ""))
 	var protected: bool = type_name in ["secret", "encrypted_note"]
-	var prepared_payload: Dictionary = {"operations":[]}
+	var secret: Dictionary = {}
 	if protected:
-		prepared_payload = await _prepare_protected_payload(item_db, _current_id, type_name)
-	if prepared_payload.has("error"):
-		_id_label.text = "Save refused: %s" % prepared_payload.error
-		_show_vault_error(str(prepared_payload.error))
-		return str(prepared_payload.error)
+		secret = await _vault._secret_input(_current_id, type_name)
+	if secret.has("error"):
+		_id_label.text = "Save refused: %s" % secret.error
+		_vault._show_vault_error(str(secret.error))
+		return str(secret.error)
 	var new_status: String = str(_status_option.get_item_metadata(_status_option.selected))
 	var changes := _collect_changes()
 	if changes.has("error"):
 		_id_label.text = "Save refused: %s" % changes.error
 		return str(changes.error)
 	if new_status != old_status:
-		var resolved := registry.resolve_item(item)
+		var resolved: Dictionary = view.resolved
 		if resolved.has("error"):
 			_id_label.text = "Save refused: %s" % resolved.error
 			return str(resolved.error)
@@ -1448,19 +1447,14 @@ func _save_changes() -> Variant:
 		else:
 			_prompt_transition_note(new_status, changes)
 		return ""
-	var error := registry._begin_item_mutation() if protected else ""
-	if error.is_empty():
-		error = registry.update_item(_current_id, changes, "user", _loaded_revision, _loaded_item_token)
-	if error.is_empty() and protected:
-		error = _apply_prepared_payload(item_db, prepared_payload.operations)
-	if protected:
-		error = registry._complete_item_mutation(error)
+	var error: String = await _src.save_item(_current_project, _current_id, changes, _loaded_revision, _loaded_item_token, secret)
 	if not error.is_empty():
 		_id_label.text = "Save refused: %s" % error
-		_show_vault_error(error)
+		_vault._show_vault_error(error)
 		return error
-	_after_shared_save(item_db)
+	_after_shared_save()
 	return ""
+
 
 func _collect_changes() -> Dictionary:
 	var parent_text := _parent_edit.text.strip_edges()
@@ -1477,95 +1471,54 @@ func _collect_changes() -> Dictionary:
 		return dynamic
 	changes.fields = dynamic.fields
 	changes.unset_fields = dynamic.unset_fields
-	var registry := _state.get_type_registry(_current_project)
-	if registry != null:
-		var type := registry.get_type(_get_type_name(_type_option.selected))
-		if not type.has("error") and bool(type.definition.get("protected", false)):
-			for entry in _field_map:
-				if not entry[2].visible:
-					continue
-				changes[entry[0]] = int(entry[2].value) if entry[2] is SpinBox else str(entry[2].text)
-			if type.slug == "secret":
-				changes.surfaced_from = _identity_edit.text
+	var type: Dictionary = _src.cached_type(_current_project, _get_type_name(_type_option.selected))
+	if not type.has("error") and bool(type.definition.get("protected", false)):
+		for entry in _field_map:
+			if not entry[2].visible:
+				continue
+			changes[entry[0]] = int(entry[2].value) if entry[2] is SpinBox else str(entry[2].text)
+		if type.slug == "secret":
+			changes.surfaced_from = _identity_edit.text
 	return changes
 
-func _after_shared_save(item_db: DocketDB) -> void:
+func _after_shared_save() -> void:
 	item_changed.emit()
 	load_item(_current_id, _current_project)
 
 
 func _save_draft() -> Variant:
 	var type_name := _get_type_name(_type_option.selected)
-	var target_db: DocketDB = _get_selected_project_db()
-	if target_db == null:
+	var project := _selected_project()
+	if project.is_empty():
 		_id_label.text = "(new) Save refused: the originating project is closed. Draft edits were retained."
 		return "the originating project is closed"
-	var project := target_db.get_project_name()
 	_current_project = project
-	var registry := _state.get_type_registry(project)
 	var fields := _collect_changes()
 	if fields.has("error"):
 		_id_label.text = "(new) Error: %s" % fields.error
 		return str(fields.error)
 	fields.type = type_name
-	var type_record: Dictionary = registry.get_type(type_name)
-	var definition_protected: bool = not type_record.has("error") and bool(type_record.definition.get("protected", false))
-	var protected_payload: bool = type_name in ["secret", "encrypted_note"]
-	var regular_allowed: bool = bool(type_record.get("definition", {}).get("protected_behavior", {}).get("regular_creation_allowed", true))
-	var prepared_payload: Dictionary = {"operations":[]}
-	if protected_payload:
-		prepared_payload = await _prepare_protected_payload(target_db, "", type_name)
-	if prepared_payload.has("error"):
-		_id_label.text = "(new) Error: %s" % prepared_payload.error
-		return str(prepared_payload.error)
-	var transaction_error := registry._begin_item_mutation() if protected_payload else ""
-	if not transaction_error.is_empty():
-		_id_label.text = "(new) Error: %s" % transaction_error
-		return transaction_error
-	var created := registry.create_item(fields, "user")
-	if created.has("error") and definition_protected and not regular_allowed and protected_payload:
-		created = _create_protected_draft(target_db, type_name, fields)
+	var secret: Dictionary = {}
+	if type_name in ["secret", "encrypted_note"]:
+		secret = await _vault._secret_input("", type_name)
+	if secret.has("error"):
+		_id_label.text = "(new) Error: %s" % secret.error
+		return str(secret.error)
+	var created: Dictionary = await _src.create_item(project, fields, secret)
+	if bool(created.get("payload_failed", false)):
+		_id_label.text = "(new) Protected item unchanged: %s" % created.error
+		_vault._show_vault_error(str(created.error))
+		return str(created.error)
 	if created.has("error"):
-		if protected_payload:
-			registry._complete_item_mutation(str(created.error))
 		_id_label.text = "(new) Error: %s" % created.error
 		return str(created.error)
 	var id := str(created.id)
-	if protected_payload:
-		for operation_value in prepared_payload.operations:
-			var operation: Dictionary = operation_value
-			operation.handle = id + str(operation.get("suffix", ""))
-			operation.owner = id
-		transaction_error = _apply_prepared_payload(target_db, prepared_payload.operations)
-		transaction_error = registry._complete_item_mutation(transaction_error)
-	if not transaction_error.is_empty():
-		_id_label.text = "(new) Protected item unchanged: %s" % transaction_error
-		_show_vault_error(transaction_error)
-		return transaction_error
-
 	_is_draft = false
 	_draft_item = {}
 	_current_id = id
 	item_changed.emit()
 	load_item(id, project)
 	return ""
-
-func _create_protected_draft(target_db: DocketDB, type_name: String, fields: Dictionary) -> Dictionary:
-	var flat := fields.duplicate(true)
-	flat.erase("type")
-	flat.erase("unset_fields")
-	var custom: Dictionary = flat.get("fields", {})
-	flat.erase("fields")
-	for key in custom:
-		flat[key] = custom[key]
-	var item := DataModel.create_item(_state.schema, type_name, flat)
-	if item.has("error"):
-		return item
-	var id := target_db.next_uuid7_id()
-	var error := target_db.insert_item(id, item)
-	if error is String and not error.is_empty():
-		return {"error":error}
-	return {"id":id, "item":target_db.get_item(id)}
 
 
 func _on_desc_drag_input(event: InputEvent) -> void:
@@ -1615,7 +1568,7 @@ func _populate_children() -> void:
 	if not _current_project.is_empty():
 		qualified_id = "%s:%s" % [_current_project, _current_id]
 
-	var children: Array = _state.find_children_across_projects(qualified_id)
+	var children: Array = await _src.children_of(qualified_id)
 
 	var toggle_prefix := "v" if _children_container.visible else ">"
 	if children.size() > 0:
@@ -1623,7 +1576,7 @@ func _populate_children() -> void:
 	else:
 		_children_toggle.text = "%s Children" % toggle_prefix
 
-	var is_multi := _state._project_dbs.size() > 1
+	var is_multi: bool = _src.project_names().size() > 1
 	for child in children:
 		var child_id: String = str(child.get("id", ""))
 		var child_type: String = str(child.get("type", ""))
@@ -1648,18 +1601,18 @@ func _on_child_activated(idx: int) -> void:
 
 func _on_move_pressed() -> void:
 	## Show a popup to select target project, then move the item.
-	if _current_id.is_empty() or _state._project_dbs.size() < 2:
+	if _current_id.is_empty() or _src.project_names().size() < 2:
 		return
 	# Build list of other projects
 	var popup := PopupMenu.new()
 	var idx := 0
-	for proj_name in _state._project_dbs:
+	for proj_name in _src.project_paths():
 		if proj_name != _current_project:
 			popup.add_item(proj_name, idx)
 			idx += 1
 	popup.id_pressed.connect(func(menu_id: int):
 		var target_name: String = popup.get_item_text(menu_id)
-		var result := _state.move_item(_current_id, target_name, _current_project)
+		var result: Dictionary = await _src.move_item(_current_project, _current_id, target_name)
 		if result.has("error"):
 			_id_label.text = "%s — Move failed: %s" % [_current_id, str(result.error)]
 		else:
@@ -1694,30 +1647,20 @@ func _on_add_comment() -> void:
 	var text := _comment_input.text.strip_edges()
 	if text.is_empty():
 		return
-	var comment_db: DocketDB = _state.get_db_for_project(_current_project)
-	if comment_db == null:
-		return
-	var author := _state.prefs.get_display_name()
-	comment_db.add_comment(_current_id, author, text)
+	var added: Dictionary = await _src.add_comment(_current_project, _current_id, _src.prefs().get_display_name(), text)
+	if added.has("error"):
+		return  # keep the typed text
 	_comment_input.text = ""
 	_refresh_comments_and_events()
 
 
 func _on_accept_comment(comment_id: int) -> void:
-	var comment_db: DocketDB = _state.get_db_for_project(_current_project)
-	if comment_db == null:
-		return
-	var author := _state.prefs.get_display_name()
-	comment_db.resolve_comment(comment_id, "accepted", author)
+	await _src.resolve_comment(_current_project, comment_id, "accepted", _src.prefs().get_display_name())
 	_refresh_comments_and_events()
 
 
 func _on_reject_comment(comment_id: int) -> void:
-	var comment_db: DocketDB = _state.get_db_for_project(_current_project)
-	if comment_db == null:
-		return
-	var author := _state.prefs.get_display_name()
-	comment_db.resolve_comment(comment_id, "rejected", author)
+	await _src.resolve_comment(_current_project, comment_id, "rejected", _src.prefs().get_display_name())
 	_refresh_comments_and_events()
 
 
@@ -1727,20 +1670,18 @@ func _on_reply_comment(comment_id: int) -> void:
 	var text := _comment_input.text.strip_edges()
 	if text.is_empty():
 		return
-	var comment_db: DocketDB = _state.get_db_for_project(_current_project)
-	if comment_db == null:
-		return
-	var author := _state.prefs.get_display_name()
-	comment_db.add_comment(_current_id, author, text, comment_id)
+	var added: Dictionary = await _src.add_comment(_current_project, _current_id, _src.prefs().get_display_name(), text, comment_id)
+	if added.has("error"):
+		return  # keep the typed text
 	_comment_input.text = ""
 	_refresh_comments_and_events()
 
 
 func _refresh_comments_and_events() -> void:
-	_populate_comments()
-	var ev_db: DocketDB = _state.get_db_for_project(_current_project)
-	if ev_db != null and ev_db.has_item(_current_id):
-		_populate_events(ev_db.get_item(_current_id))
+	await _populate_comments()
+	var events: Array = await _src.item_events(_current_project, _current_id)
+	if not events.is_empty():
+		_populate_events({"events": events})
 	item_changed.emit()
 
 
@@ -1749,10 +1690,7 @@ func _populate_comments() -> void:
 		child.queue_free()
 	if _current_id.is_empty():
 		return
-	var cmt_db: DocketDB = _state.get_db_for_project(_current_project)
-	if cmt_db == null:
-		return
-	var comments := cmt_db.list_comments(_current_id)
+	var comments: Array = await _src.list_comments(_current_project, _current_id)
 
 	# Update toggle label with count
 	var prefix := "v" if _comments_container.visible else ">"
@@ -1861,32 +1799,24 @@ func _on_transition(target: String) -> void:
 
 
 func _do_status_transition(target: String, note: String, changes: Dictionary = {}) -> bool:
-	var trans_db: DocketDB = _state.get_db_for_project(_current_project)
-	if trans_db == null:
+	var view: Dictionary = await _src.item_view(_current_project, _current_id)
+	if str(view.get("kind", "")) == "closed":
 		_show_transition_error("The originating project is closed.")
 		return false
-	var registry := _state.get_type_registry(_current_project)
-	var item: Dictionary = trans_db.get_item(_current_id)
-	var type_name: String = str(item.get("type", ""))
-	var protected: bool = type_name in ["secret", "encrypted_note"]
-	var prepared_payload: Dictionary = {"operations":[]}
-	if protected:
-		prepared_payload = await _prepare_protected_payload(trans_db, _current_id, type_name)
-	if prepared_payload.has("error"):
-		_show_transition_error(str(prepared_payload.error))
+	var type_name: String = str(view.get("item", {}).get("type", ""))
+	var secret: Dictionary = {}
+	if type_name in ["secret", "encrypted_note"]:
+		secret = await _vault._secret_input(_current_id, type_name)
+	if secret.has("error"):
+		_show_transition_error(str(secret.error))
 		return false
-	var error := registry._begin_item_mutation() if protected else ""
-	if error.is_empty():
-		error = registry.transition_item(_current_id, target, "user", note, changes, _loaded_revision, _loaded_item_token)
-	if error.is_empty() and protected:
-		error = _apply_prepared_payload(trans_db, prepared_payload.operations)
-	if protected:
-		error = registry._complete_item_mutation(error)
+	var error: String = await _src.transition_item(_current_project, _current_id, target, note, changes,
+		_loaded_revision, _loaded_item_token, secret)
 	if not error.is_empty():
 		_show_transition_error(error)
-		_show_vault_error(error)
+		_vault._show_vault_error(error)
 		return false
-	_after_shared_save(trans_db)
+	_after_shared_save()
 	return true
 
 
@@ -1939,438 +1869,3 @@ func _show_transition_error(msg: String) -> void:
 
 
 # -- Secret / Encrypted Note helpers ----------------------------------------
-
-func _derive_vault_key(db: DocketDB) -> PackedByteArray:
-	## Derive vault key from stored password. Returns empty on failure.
-	var password := UserPrefs.load_vault_password()
-	if password.is_empty():
-		return PackedByteArray()
-	if not db.has_vault():
-		return PackedByteArray()
-	var salt := db.get_vault_salt()
-	var key := VaultCrypto.derive_key(password, salt, db.get_vault_iterations())
-	if not db.verify_vault(key):
-		return PackedByteArray()
-	return key
-
-
-func _ensure_vault(db: DocketDB) -> PackedByteArray:
-	## Get or initialize vault key. Returns empty on failure.
-	var password := UserPrefs.load_vault_password()
-	if password.is_empty():
-		_show_vault_error("Vault password not set. Go to Preferences first.")
-		return PackedByteArray()
-	if db.has_vault():
-		var salt := db.get_vault_salt()
-		var key := VaultCrypto.derive_key(password, salt, db.get_vault_iterations())
-		if not db.verify_vault(key):
-			_show_vault_error("Vault password does not match.")
-			return PackedByteArray()
-		return key
-	else:
-		var salt := VaultCrypto.generate_salt()
-		var key := VaultCrypto.derive_key(password, salt, VaultCrypto.PBKDF2_ITERATIONS)
-		db.init_vault(key, salt, VaultCrypto.PBKDF2_ITERATIONS)
-		return key
-
-
-func _show_vault_error(msg: String) -> void:
-	_secret_vault_error_label.text = msg
-	_secret_vault_error_label.visible = true
-
-
-func _load_secret_value(item_db: DocketDB) -> void:
-	## Decrypt and display secret value for current item.
-	_secret_vault_error_label.visible = false
-	var key := _derive_vault_key(item_db)
-	if key.is_empty():
-		_secret_value_edit.text = ""
-		_secret_value_decrypted = ""
-		if not UserPrefs.load_vault_password().is_empty():
-			_show_vault_error("Vault password mismatch or no vault.")
-		return
-
-	var raw := item_db.get_secret_raw(_current_id)
-	if raw.is_empty():
-		_secret_value_edit.text = ""
-		_secret_value_decrypted = ""
-		return
-
-	_secret_2fa_check.button_pressed = raw.get("requires_2fa", false)
-
-	var plaintext: String
-	if raw.get("requires_2fa", false):
-		var secondary_pw := await _prompt_secondary_password()
-		if secondary_pw.is_empty():
-			_secret_value_edit.text = "********"
-			_secret_value_decrypted = ""
-			_show_vault_error("Secondary password required to view secret.")
-			return
-		var secondary_salt := item_db.get_vault_salt()
-		var secondary_key := VaultCrypto.derive_key(secondary_pw, secondary_salt, item_db.get_vault_iterations())
-		plaintext = VaultCrypto.decrypt_2fa(raw.ciphertext, raw.iv, raw.mac, key, secondary_key)
-		if plaintext.is_empty():
-			AuditLog.record(item_db.get_path(), AuditLog.READ, _current_id, false, "gui",
-				"2FA decryption failed")
-			_show_vault_error("Decryption failed. Wrong secondary password or corrupted data.")
-			return
-		AuditLog.record(item_db.get_path(), AuditLog.READ, _current_id, true, "gui", "2fa")
-	else:
-		plaintext = VaultCrypto.decrypt(raw.ciphertext, raw.iv, raw.mac, key)
-		if plaintext.is_empty():
-			AuditLog.record(item_db.get_path(), AuditLog.READ, _current_id, false, "gui",
-				"decryption failed")
-			_show_vault_error("Decryption failed. Data may be corrupted.")
-			return
-		AuditLog.record(item_db.get_path(), AuditLog.READ, _current_id, true, "gui")
-
-	_secret_value_decrypted = plaintext
-	_secret_value_edit.text = "********"
-	_secret_value_edit.secret = true
-	_secret_show_btn.text = "Show"
-	_secret_show_btn.button_pressed = false
-
-
-func _load_encrypted_notes(item_db: DocketDB, handle: String) -> void:
-	## Decrypt and display encrypted notes.
-	var key := _derive_vault_key(item_db)
-	if key.is_empty():
-		_encrypted_notes_edit.text = ""
-		_encrypted_notes_decrypted = ""
-		return
-
-	var raw := item_db.get_secret_raw(handle)
-	if raw.is_empty():
-		_encrypted_notes_edit.text = ""
-		_encrypted_notes_decrypted = ""
-		return
-
-	var plaintext := VaultCrypto.decrypt(raw.ciphertext, raw.iv, raw.mac, key)
-	if plaintext.is_empty():
-		_encrypted_notes_edit.text = ""
-		_encrypted_notes_decrypted = ""
-		return
-
-	_encrypted_notes_decrypted = plaintext
-	_encrypted_notes_edit.text = "********"
-
-
-func _populate_secret_history(item_db: DocketDB) -> void:
-	## Show version history for current secret.
-	for child in _secret_history_container.get_children():
-		child.queue_free()
-
-	var versions := item_db.get_secret_versions(_current_id)
-	var toggle_prefix := "v" if _secret_history_container.visible else ">"
-	if versions.size() > 0:
-		_secret_history_toggle.text = "%s Version History (%d)" % [toggle_prefix, versions.size()]
-	else:
-		_secret_history_toggle.text = "%s Version History" % toggle_prefix
-
-	for ver in versions:
-		var row := HBoxContainer.new()
-		var ver_label := Label.new()
-		ver_label.text = "v%d — %s" % [ver.version, ver.created_at]
-		ver_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(ver_label)
-
-		if not str(ver.get("rotated_by", "")).is_empty():
-			var by_label := Label.new()
-			by_label.text = "by %s" % ver.rotated_by
-			by_label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.6))
-			row.add_child(by_label)
-
-		var show_btn := Button.new()
-		show_btn.text = "Show"
-		show_btn.add_theme_font_size_override("font_size", 11)
-		show_btn.pressed.connect(_on_history_show.bind(ver, show_btn))
-		row.add_child(show_btn)
-
-		var copy_btn := Button.new()
-		copy_btn.text = "Copy"
-		copy_btn.add_theme_font_size_override("font_size", 11)
-		copy_btn.pressed.connect(_on_history_copy.bind(ver))
-		row.add_child(copy_btn)
-
-		_secret_history_container.add_child(row)
-
-
-func _on_history_show(ver: Dictionary, btn: Button) -> void:
-	var item_db: DocketDB = _state.get_db_for_project(_current_project)
-	if item_db == null:
-		return
-	var key := _derive_vault_key(item_db)
-	if key.is_empty():
-		return
-	var plaintext := VaultCrypto.decrypt(ver.ciphertext, ver.iv, ver.mac, key)
-	if plaintext.is_empty():
-		btn.text = "(failed)"
-		return
-	if btn.text == "Show":
-		btn.text = plaintext
-	else:
-		btn.text = "Show"
-
-
-func _on_history_copy(ver: Dictionary) -> void:
-	var item_db: DocketDB = _state.get_db_for_project(_current_project)
-	if item_db == null:
-		return
-	var key := _derive_vault_key(item_db)
-	if key.is_empty():
-		return
-	var plaintext := VaultCrypto.decrypt(ver.ciphertext, ver.iv, ver.mac, key)
-	if not plaintext.is_empty():
-		DisplayServer.clipboard_set(plaintext)
-
-
-func _prepare_protected_payload(db: DocketDB, item_id: String, type_name: String) -> Dictionary:
-	var operations: Array = []
-	var key := _ensure_vault(db)
-	if key.is_empty():
-		return {"error":_secret_vault_error_label.text}
-	if type_name == "secret":
-		var new_value := _secret_value_edit.text
-		if not new_value.is_empty() and new_value != "********":
-			var encrypted: Dictionary
-			if _secret_2fa_check.button_pressed:
-				var secondary_password := await _prompt_secondary_password()
-				if secondary_password.is_empty():
-					return {"error":"Secondary password required for 2FA secret."}
-				var secondary_key := VaultCrypto.derive_key(secondary_password, db.get_vault_salt(), db.get_vault_iterations())
-				encrypted = VaultCrypto.encrypt_2fa(new_value, key, secondary_key)
-			else:
-				encrypted = VaultCrypto.encrypt(new_value, key)
-			operations.append({"handle":item_id, "owner":item_id, "suffix":"", "ciphertext":encrypted.ciphertext, "iv":encrypted.iv, "mac":encrypted.mac, "requires_2fa":_secret_2fa_check.button_pressed, "rotate":not item_id.is_empty() and not db.get_secret_raw(item_id).is_empty()})
-		elif new_value == "********" and not item_id.is_empty():
-			var current := db.get_secret_raw(item_id)
-			if not current.is_empty() and bool(current.get("requires_2fa", false)) != _secret_2fa_check.button_pressed:
-				operations.append({"handle":item_id, "two_factor_only":true, "requires_2fa":_secret_2fa_check.button_pressed})
-		_prepare_notes_operation(operations, key, item_id, ":notes")
-	elif type_name == "encrypted_note":
-		_prepare_notes_operation(operations, key, item_id, "")
-	return {"operations":operations}
-
-func _prepare_notes_operation(operations: Array, key: PackedByteArray, item_id: String, suffix: String) -> void:
-	var text := _encrypted_notes_edit.text
-	if text.is_empty() or text == "********":
-		return
-	var encrypted: Dictionary = VaultCrypto.encrypt(text, key)
-	operations.append({"handle":item_id + suffix, "owner":item_id, "suffix":suffix, "ciphertext":encrypted.ciphertext, "iv":encrypted.iv, "mac":encrypted.mac, "requires_2fa":false, "rotate":false})
-
-func _apply_prepared_payload(db: DocketDB, operations: Array) -> String:
-	for operation_value in operations:
-		var operation: Dictionary = operation_value
-		var handle := str(operation.handle)
-		if bool(operation.get("two_factor_only", false)):
-			if db is DocketDBJsonl:
-				var two_factor_error := (db as DocketDBJsonl).set_secret_2fa_checked(handle, bool(operation.requires_2fa))
-				if not two_factor_error.is_empty():
-					return two_factor_error
-			else:
-				db.set_secret_2fa(handle, bool(operation.requires_2fa))
-				if not db._last_sql_error.is_empty():
-					return db._last_sql_error
-			continue
-		var error := ""
-		if bool(operation.get("rotate", false)):
-			if db is DocketDBJsonl:
-				error = (db as DocketDBJsonl).rotate_secret_checked(handle, operation.ciphertext, operation.iv, operation.mac, _state.prefs.get_display_name(), bool(operation.requires_2fa))
-			else:
-				db.rotate_secret(handle, operation.ciphertext, operation.iv, operation.mac, _state.prefs.get_display_name(), bool(operation.requires_2fa))
-				error = db._last_sql_error
-		elif db is DocketDBJsonl:
-			error = (db as DocketDBJsonl).set_secret_checked(handle, operation.ciphertext, operation.iv, operation.mac, bool(operation.requires_2fa), str(operation.owner))
-		else:
-			db.set_secret(handle, operation.ciphertext, operation.iv, operation.mac, bool(operation.requires_2fa), str(operation.owner))
-			error = db._last_sql_error
-		if not error.is_empty():
-			return error
-	return ""
-
-
-func _save_encrypted_secret(db: DocketDB, item_id: String) -> String:
-	## Encrypt and store (or rotate) the secret value for an item.
-	var new_value := _secret_value_edit.text
-	# Skip if masked display text and nothing changed
-	if new_value == "********" and _secret_value_decrypted.is_empty():
-		return ""
-	# If showing masked text and we have a cached decrypted value, nothing changed
-	if new_value == "********" and not _secret_value_decrypted.is_empty():
-		# Check if only 2FA flag changed
-		var raw := db.get_secret_raw(item_id)
-		if not raw.is_empty():
-			var old_2fa: bool = raw.get("requires_2fa", false)
-			if old_2fa != _secret_2fa_check.button_pressed:
-				if db is DocketDBJsonl:
-					return (db as DocketDBJsonl).set_secret_2fa_checked(item_id, _secret_2fa_check.button_pressed)
-				db.set_secret_2fa(item_id, _secret_2fa_check.button_pressed)
-				return db._last_sql_error
-		return ""
-	if new_value.is_empty():
-		return ""
-
-	var key := _ensure_vault(db)
-	if key.is_empty():
-		return _secret_vault_error_label.text
-
-	var requires_2fa := _secret_2fa_check.button_pressed
-	var ciphertext: PackedByteArray
-	var iv_bytes: PackedByteArray
-	var mac_bytes: PackedByteArray
-
-	if requires_2fa:
-		# Double encrypt: inner with secondary key, outer with vault key
-		var secondary_pw := await _prompt_secondary_password()
-		if secondary_pw.is_empty():
-			_show_vault_error("Secondary password required for 2FA secret.")
-			return _secret_vault_error_label.text
-		var secondary_salt := db.get_vault_salt()
-		var secondary_key := VaultCrypto.derive_key(secondary_pw, secondary_salt, db.get_vault_iterations())
-		var outer := VaultCrypto.encrypt_2fa(new_value, key, secondary_key)
-		ciphertext = outer.ciphertext
-		iv_bytes = outer.iv
-		mac_bytes = outer.mac
-	else:
-		var encrypted := VaultCrypto.encrypt(new_value, key)
-		ciphertext = encrypted.ciphertext
-		iv_bytes = encrypted.iv
-		mac_bytes = encrypted.mac
-
-	# Rotate if existing secret
-	var existing := db.get_secret_raw(item_id)
-	var write_error := ""
-	if not existing.is_empty():
-		var author := _state.prefs.get_display_name()
-		if db is DocketDBJsonl:
-			write_error = (db as DocketDBJsonl).rotate_secret_checked(item_id, ciphertext, iv_bytes, mac_bytes, author, requires_2fa)
-		else:
-			db.rotate_secret(item_id, ciphertext, iv_bytes, mac_bytes, author, requires_2fa)
-			write_error = db._last_sql_error
-	else:
-		if db is DocketDBJsonl:
-			write_error = (db as DocketDBJsonl).set_secret_checked(item_id, ciphertext, iv_bytes, mac_bytes, requires_2fa, item_id)
-		else:
-			db.set_secret(item_id, ciphertext, iv_bytes, mac_bytes, requires_2fa, item_id)
-			write_error = db._last_sql_error
-	if not write_error.is_empty():
-		return write_error
-
-	# Write-time validation: read back and verify ciphertext != plaintext
-	var readback := db.get_secret_raw(item_id)
-	if not readback.is_empty():
-		var raw_str := (readback.ciphertext as PackedByteArray).get_string_from_utf8()
-		if raw_str == new_value:
-			push_error("CRITICAL: Secret stored as plaintext! handle=%s" % item_id)
-			_show_vault_error("CRITICAL: Encryption verification failed!")
-			return _secret_vault_error_label.text
-	return ""
-
-
-func _save_encrypted_notes(db: DocketDB, item_id: String, handle_suffix: String) -> String:
-	## Encrypt and store encrypted notes.
-	var handle := item_id + handle_suffix
-	var new_text := _encrypted_notes_edit.text
-	# Skip if masked and no changes
-	if new_text == "********":
-		return ""
-	if new_text.is_empty():
-		return ""
-
-	var key := _ensure_vault(db)
-	if key.is_empty():
-		return _secret_vault_error_label.text
-
-	var encrypted := VaultCrypto.encrypt(new_text, key)
-	if db is DocketDBJsonl:
-		return (db as DocketDBJsonl).set_secret_checked(handle, encrypted.ciphertext, encrypted.iv, encrypted.mac, false, item_id)
-	db.set_secret(handle, encrypted.ciphertext, encrypted.iv, encrypted.mac, false, item_id)
-	return db._last_sql_error
-
-
-func _prompt_secondary_password() -> String:
-	## Show a blocking dialog for secondary password input. Returns empty on cancel.
-	_secret_2fa_input.text = ""
-	if not _secret_2fa_dialog.is_inside_tree():
-		add_child(_secret_2fa_dialog)
-	_secret_2fa_dialog.popup_centered(Vector2i(300, 150))
-	var result: Array = await _wait_for_2fa_dialog()
-	if result[0]:
-		return _secret_2fa_input.text
-	return ""
-
-
-func _wait_for_2fa_dialog() -> Array:
-	## Helper: returns [true] on confirm, [false] on cancel.
-	var state := {"confirmed": false, "done": false}
-	var on_confirm := func():
-		state.confirmed = true
-		state.done = true
-	var on_cancel := func():
-		state.done = true
-	_secret_2fa_dialog.confirmed.connect(on_confirm, CONNECT_ONE_SHOT)
-	_secret_2fa_dialog.canceled.connect(on_cancel, CONNECT_ONE_SHOT)
-	while not state.done:
-		await get_tree().process_frame
-	return [state.confirmed]
-
-
-func _on_secret_show_toggle() -> void:
-	if _secret_show_btn.button_pressed:
-		if not _secret_value_decrypted.is_empty():
-			_secret_value_edit.text = _secret_value_decrypted
-		_secret_value_edit.secret = false
-		_secret_show_btn.text = "Hide"
-	else:
-		if not _secret_value_decrypted.is_empty():
-			_secret_value_edit.text = "********"
-		_secret_value_edit.secret = true
-		_secret_show_btn.text = "Show"
-
-
-func _on_secret_copy() -> void:
-	if not _secret_value_decrypted.is_empty():
-		DisplayServer.clipboard_set(_secret_value_decrypted)
-	elif not _secret_value_edit.text.is_empty() and _secret_value_edit.text != "********":
-		DisplayServer.clipboard_set(_secret_value_edit.text)
-
-
-func _on_secret_generate() -> void:
-	## Generate a random password.
-	var length := 24
-	var bytes := Crypto.new().generate_random_bytes(length)
-	var chars := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
-	var result := ""
-	for i in range(length):
-		result += chars[bytes[i] % chars.length()]
-	_secret_value_edit.text = result
-	_secret_value_edit.secret = false
-	_secret_show_btn.text = "Hide"
-	_secret_show_btn.button_pressed = true
-	_secret_value_decrypted = ""  # Clear cached, user should save
-
-
-func _on_encrypted_notes_show_toggle() -> void:
-	if _encrypted_notes_show_btn.button_pressed:
-		if not _encrypted_notes_decrypted.is_empty():
-			_encrypted_notes_edit.text = _encrypted_notes_decrypted
-		_encrypted_notes_show_btn.text = "Hide"
-	else:
-		if not _encrypted_notes_decrypted.is_empty():
-			_encrypted_notes_edit.text = "********"
-		_encrypted_notes_show_btn.text = "Show"
-
-
-func _on_encrypted_notes_copy() -> void:
-	if not _encrypted_notes_decrypted.is_empty():
-		DisplayServer.clipboard_set(_encrypted_notes_decrypted)
-
-
-func _on_secret_history_toggle() -> void:
-	_secret_history_container.visible = not _secret_history_container.visible
-	var count := _secret_history_container.get_child_count()
-	var prefix := "v" if _secret_history_container.visible else ">"
-	if count > 0:
-		_secret_history_toggle.text = "%s Version History (%d)" % [prefix, count]
-	else:
-		_secret_history_toggle.text = "%s Version History" % prefix

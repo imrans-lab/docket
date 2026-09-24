@@ -3,7 +3,7 @@ class_name ProjectTypesPanel
 
 signal registry_changed(project: String)
 
-var _state: AppState
+var _src  # DocketSource
 var _project: OptionButton
 var _search: LineEdit
 var _show_deprecated: CheckBox
@@ -30,11 +30,13 @@ var _selected_slug: String = ""
 var _expected_revision: String = ""
 var _loaded_definition: Dictionary = {}
 var _editor_baseline: String = ""
+# Bumped by each list refresh, so an older one finishing late is dropped.
+var _list_generation := 0
 
-func init(state: AppState) -> void:
-	_state = state
+func init(source) -> void:
+	_src = source
 	_build_ui()
-	_state.file_changed.connect(refresh)
+	_src.file_changed.connect(refresh)
 	refresh()
 
 func _build_ui() -> void:
@@ -162,8 +164,7 @@ func _button(parent: Control, caption: String, callback: Callable) -> void:
 func refresh() -> void:
 	var wanted := _active_project
 	_project.clear()
-	var names: Array = _state.get_project_dbs().keys()
-	names.sort_custom(func(a, b): return str(a).nocasecmp_to(str(b)) < 0)
+	var names: Array[String] = _src.project_names()
 	for name in names:
 		_project.add_item(str(name))
 		if str(name) == wanted:
@@ -221,34 +222,27 @@ func _set_editor_enabled(enabled: bool) -> void:
 		control.modulate = Color.WHITE if enabled else Color(0.6, 0.6, 0.6)
 
 func _refresh_list() -> void:
+	_list_generation += 1
+	var generation := _list_generation
+	var overview: Dictionary = {"error": "Open a project to manage its types.", "kind": "no_project"} \
+		if _project_name().is_empty() else await _src.types_overview(_project_name(), _show_deprecated.button_pressed)
+	if generation != _list_generation:
+		return
 	_types.clear()
-	var registry := _registry()
-	if registry == null:
-		_summary.text = "Open a project to manage its types."
+	if overview.has("error"):
+		_summary.text = str(overview.error)
 		_set_editor_enabled(false)
-		_upgrade_box.visible = false
+		match str(overview.get("kind", "")):
+			"no_project":
+				_upgrade_box.visible = false
+			"unavailable":
+				_message(_summary.text, true)
+				_upgrade_box.visible = false
+			"list_failed":
+				_message(_summary.text, true)
 		return
-	var diagnostic := registry.get_diagnostic()
-	if not diagnostic.is_empty():
-		_summary.text = "Type registry unavailable for %s: %s" % [_project_name(), diagnostic]
-		_message(_summary.text, true)
-		_set_editor_enabled(false)
-		_upgrade_box.visible = false
-		return
-	var db: DocketDB = _state.get_db_for_project(_project_name())
-	if db == null:
-		_summary.text = "The selected project is no longer open."
-		_set_editor_enabled(false)
-		return
-	var counts: Dictionary = {}
-	for row in db._exec_select("SELECT type,COUNT(*) AS count FROM items GROUP BY type;"):
-		counts[str(row.type)] = int(row.count)
-	var listed: Array = registry.list_types(_show_deprecated.button_pressed)
-	if not listed.is_empty() and listed[0] is Dictionary and listed[0].has("error"):
-		_summary.text = "Type registry unavailable for %s: %s" % [_project_name(), listed[0].error]
-		_message(_summary.text, true)
-		_set_editor_enabled(false)
-		return
+	var listed: Array = overview.types
+	var counts: Dictionary = overview.counts
 	var needle := _search.text.to_lower()
 	var shown := 0
 	for type_value in listed:
@@ -262,12 +256,7 @@ func _refresh_list() -> void:
 		shown += 1
 	_summary.text = "%s — %d matching types. Active types with zero items are included; drafts cannot create ordinary items." % [_project_name(), shown]
 	_set_editor_enabled(true)
-	_upgrade_box.visible = registry.is_legacy() or not db is DocketDBJsonl
-
-func _registry() -> TypeRegistry:
-	if _project_name().is_empty():
-		return null
-	return _state.get_type_registry(_project_name())
+	_upgrade_box.visible = bool(overview.legacy)
 
 func _type_selected(index: int) -> void:
 	if _has_unsaved_editor():
@@ -276,11 +265,10 @@ func _type_selected(index: int) -> void:
 	_load_type(str(_types.get_item_metadata(index)))
 
 func _load_type(slug: String) -> void:
-	var registry := _registry()
-	if registry == null:
+	if _project_name().is_empty():
 		_message("Open a project before selecting a type.", true)
 		return
-	var type: Dictionary = registry.get_type(slug)
+	var type: Dictionary = await _src.type_with_history(_project_name(), slug)
 	if type.has("error"):
 		_message(str(type.error), true)
 		return
@@ -295,7 +283,7 @@ func _load_type(slug: String) -> void:
 	_loaded_definition = type.definition.duplicate(true)
 	_definition.text = JSON.stringify(_loaded_definition, "  ", false, true)
 	_history.clear()
-	for revision_value in registry.revisions_for_type(type.id):
+	for revision_value in type.revisions:
 		var revision: Dictionary = revision_value
 		_history.add_item("%s — %s — %s — %s" % [revision.created_at, revision.author, revision.reason, revision.id])
 		_history.set_item_metadata(_history.item_count - 1, revision.id)
@@ -303,11 +291,10 @@ func _load_type(slug: String) -> void:
 	_editor_baseline = _editor_snapshot()
 
 func _history_selected(index: int) -> void:
-	var registry := _registry()
-	if registry == null or _editor_project != _project_name():
+	if _project_name().is_empty() or _editor_project != _project_name():
 		_message("The editor does not belong to the selected project.", true)
 		return
-	var revision: Dictionary = registry.get_revision(str(_history.get_item_metadata(index)))
+	var revision: Dictionary = await _src.type_revision(_project_name(), str(_history.get_item_metadata(index)))
 	if revision.has("error"):
 		_message(str(revision.error), true)
 		return
@@ -320,12 +307,12 @@ func _history_selected(index: int) -> void:
 	_editor_baseline = _editor_snapshot()
 
 func _new_draft() -> void:
-	var registry := _registry()
-	if registry == null:
+	if _project_name().is_empty():
 		_message("Open a project before creating a type draft.", true)
 		return
-	if not registry.get_diagnostic().is_empty():
-		_message(registry.get_diagnostic(), true)
+	var problem: String = await _src.types_problem(_project_name())
+	if not problem.is_empty():
+		_message(problem, true)
 		return
 	_editor_project = _project_name()
 	_selected_slug = ""
@@ -373,27 +360,28 @@ func _item_ids() -> Array:
 	return result
 
 func _validate_preview() -> Dictionary:
-	var registry := _registry()
-	if registry == null:
+	if _project_name().is_empty():
 		var absent := {"error":"Open a project before validating a definition."}
 		_message(absent.error, true)
 		return absent
-	if not registry.get_diagnostic().is_empty():
-		var unavailable := {"error":registry.get_diagnostic()}
+	var problem: String = await _src.types_problem(_project_name())
+	if not problem.is_empty():
+		var unavailable := {"error":problem}
 		_message(unavailable.error, true)
 		return unavailable
 	var candidate := _candidate()
 	if candidate.has("error"):
 		_message(str(candidate.error), true)
 		return candidate
-	var error := registry.validate_definition(candidate)
+	var error: String = await _src.validate_type_definition(_project_name(), candidate)
 	if not error.is_empty():
 		_message(error, true)
 		return {"error":error}
 	if _selected_slug.is_empty():
 		_message("Valid draft definition. Saving will create it without allowing ordinary item creation.", false)
 		return {"definition":candidate}
-	var preview: Dictionary = registry.preview_evolution(_selected_slug, candidate, _expected_revision, _item_ids())
+	var preview: Dictionary = await _src.preview_type_evolution(_project_name(), _selected_slug, candidate,
+		_expected_revision, _item_ids())
 	if preview.has("error"):
 		_message(str(preview.error), true)
 		return preview
@@ -401,47 +389,40 @@ func _validate_preview() -> Dictionary:
 	return preview
 
 func _save_definition() -> void:
-	var preview := _validate_preview()
+	var preview: Dictionary = await _validate_preview()
 	if preview.has("error"):
 		return
 	if _author.text.strip_edges().is_empty() or _reason.text.strip_edges().is_empty():
 		_message("Author and reason are required provenance metadata.", true)
 		return
-	var registry := _registry()
 	if _selected_slug.is_empty():
-		var result: Dictionary = registry.define_type(_slug.text.strip_edges(), preview.definition, _author.text, _reason.text)
+		var result: Dictionary = await _src.define_type(_project_name(), _slug.text.strip_edges(), preview.definition,
+			_author.text, _reason.text)
 		if result.has("error"):
 			_message(str(result.error), true)
 			return
 		_selected_slug = _slug.text.strip_edges()
 	else:
-		var error: String = registry.apply_evolution(preview, _author.text, _reason.text)
+		var error: String = await _src.apply_type_evolution(_project_name(), preview, _author.text, _reason.text)
 		if not error.is_empty():
 			_message(_stale_message(error), true)
 			return
 	registry_changed.emit(_project_name())
-	_refresh_list()
-	_load_type(_selected_slug)
+	await _refresh_list()
+	await _load_type(_selected_slug)
 
 func _set_lifecycle(lifecycle: String) -> void:
 	if _editor_project != _project_name() or _selected_slug.is_empty():
 		_message("Select a saved type in this project first.", true)
 		return
-	var registry := _registry()
-	if registry == null:
-		_message("Open a project before changing a type lifecycle.", true)
-		return
-	var error: String
-	if lifecycle == "active":
-		error = registry.activate_type(_selected_slug, _expected_revision, _author.text, _reason.text)
-	else:
-		error = registry.deprecate_type(_selected_slug, _expected_revision, _author.text, _reason.text)
+	var error: String = await _src.set_type_lifecycle(_project_name(), _selected_slug, lifecycle, _expected_revision,
+		_author.text, _reason.text)
 	if not error.is_empty():
 		_message(_stale_message(error), true)
 		return
 	registry_changed.emit(_project_name())
-	_refresh_list()
-	_load_type(_selected_slug)
+	await _refresh_list()
+	await _load_type(_selected_slug)
 
 func _stale_message(error: String) -> String:
 	if error.contains("stale") or error.contains("source changed"):
@@ -455,7 +436,7 @@ func _promote_sqlite() -> void:
 	if not _upgrade_ack.button_pressed:
 		_message("Confirm that incompatible writers are stopped before promoting SQLite.", true)
 		return
-	var result: Dictionary = _state.promote_project_to_jsonl(_project_name(), true)
+	var result: Dictionary = await _src.promote_project(_project_name())
 	if not bool(result.get("success", false)):
 		_upgrade_preview = {}
 		_upgrade_ack.button_pressed = false
@@ -468,19 +449,10 @@ func _promote_sqlite() -> void:
 	refresh()
 
 func _preview_upgrade() -> void:
-	var db: DocketDB = _state.get_db_for_project(_project_name())
-	if db == null:
-		_message("Open a project before previewing an upgrade.", true)
-		return
-	if not db is DocketDBJsonl:
-		_message("Promote this SQLite project to JSONL first using the explicit action above.", true)
-		return
-	_upgrade_preview = JSONLTypeUpgrade.preview(db.get_path(), _state.schema)
+	_upgrade_preview = await _src.preview_project_upgrade(_project_name())
 	if not bool(_upgrade_preview.get("ok", false)):
 		_message(str(_upgrade_preview.get("error", "upgrade preview failed")), true)
 		return
-	_upgrade_preview["project"] = _project_name()
-	_upgrade_preview["path"] = db.get_path()
 	_upgrade_ack.button_pressed = false
 	_message("Preview only; the source was not changed. %d items will be bound to %d starter definitions. Rollback snapshot: %s. v2 cache: %s." % [_upgrade_preview.items, _upgrade_preview.definitions, _upgrade_preview.backup_path, _upgrade_preview.cache_path], false)
 
@@ -491,13 +463,12 @@ func _apply_upgrade() -> void:
 	if not _upgrade_ack.button_pressed:
 		_message("Confirm that incompatible writers are stopped before applying the upgrade.", true)
 		return
-	var db: DocketDB = _state.get_db_for_project(_project_name())
-	if _upgrade_preview.get("project") != _project_name() or db == null or _upgrade_preview.get("path") != db.get_path() or _upgrade_preview.get("source_hash") != FileAccess.get_sha256(db.get_path()):
+	var result: Dictionary = await _src.apply_project_upgrade(_project_name(), _upgrade_preview)
+	if bool(result.get("stale", false)):
 		_upgrade_preview = {}
 		_upgrade_ack.button_pressed = false
-		_message("The project or canonical source changed. Preview this project again before applying.", true)
+		_message(str(result.error), true)
 		return
-	var result: Dictionary = _state.upgrade_project_to_jsonl_v2(_project_name(), _upgrade_preview, true)
 	if not bool(result.get("ok", false)):
 		_upgrade_preview = {}
 		_upgrade_ack.button_pressed = false

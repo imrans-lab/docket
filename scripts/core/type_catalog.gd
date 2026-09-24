@@ -32,11 +32,13 @@ static func from_schema(schema: Dictionary, project: String = "", counts: Dictio
 		})
 	return sorted(result)
 
-static func from_registry(registry: TypeRegistry, counts: Dictionary = {}) -> Array:
+# `registry` is a TypeRegistry, left untyped so the UI can use this file
+# without loading the storage classes.
+static func from_registry(registry, counts: Dictionary = {}) -> Array:
 	var checked: Dictionary = from_registry_checked(registry, counts)
 	return checked.records
 
-static func from_registry_checked(registry: TypeRegistry, counts: Dictionary = {}) -> Dictionary:
+static func from_registry_checked(registry, counts: Dictionary = {}) -> Dictionary:
 	var result: Array = []
 	var values: Array = registry.list_types(true)
 	if values.size() == 1 and values[0] is Dictionary and values[0].has("error"): return {"records":[],"error":str(values[0].error)}

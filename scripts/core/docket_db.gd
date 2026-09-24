@@ -222,8 +222,7 @@ func short_id(full_id: String) -> String:
 
 
 static func _is_uuid7(id: String) -> bool:
-	## Check if an ID looks like a UUID7 (32 lowercase hex chars).
-	return id.length() == 32 and id.is_valid_hex_number(false)
+	return DocketFields.is_uuid7(id)
 
 
 # -- Meta helpers -------------------------------------------------------------

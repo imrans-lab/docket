@@ -3,7 +3,7 @@ class_name TypeRegistry
 ## Project-scoped resolution and validation for immutable type revisions.
 
 const FIELD_TYPES := ["string", "markdown", "integer", "number", "boolean", "enum", "date", "timestamp", "item_ref", "reference_list", "array", "object"]
-const UNIVERSAL_MUTABLE := ["title", "description", "assigned_to", "directed_to", "priority", "severity", "tags", "parent", "blocked_by"]
+const UNIVERSAL_MUTABLE := DocketFields.UNIVERSAL_MUTABLE
 const STATE_CATEGORIES := ["queued", "active", "waiting", "terminal"]
 const STATE_OUTCOMES := ["", "success", "action_required", "cancelled", "rejected", "duplicate", "superseded", "obsolete", "failed", "unspecified"]
 const RESERVED_FIELD_KEYS := ["id", "type", "type_id", "type_revision", "status", "created_at", "updated_at", "events", "links", "fields", "extras", "fields_json", "extras_json", "unset_fields"]

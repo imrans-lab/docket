@@ -38,7 +38,7 @@ func _state(name: String) -> AppState:
 	return state
 
 func _panel(state: AppState) -> ProjectTypesPanel:
-	var panel := ProjectTypesPanel.new(); add_child(panel); panel.init(state); return panel
+	var panel := ProjectTypesPanel.new(); add_child(panel); panel.init(LocalDocketSource.new(state)); return panel
 
 func _sqlite_state(name: String) -> AppState:
 	var path := "%s/%s.dct" % [DIR, name]
@@ -63,7 +63,7 @@ func _author(panel: ProjectTypesPanel) -> void:
 
 func test_panel_invalid_preview_and_draft_definition() -> Variant:
 	var state := _state("draft"); var panel := _panel(state); panel._new_draft(); panel._slug.text = "Bad Slug"; panel._label.text = "Broken"
-	var invalid: Dictionary = panel._validate_preview(); var r = A.is_true(invalid.has("error"), "panel reports invalid definitions before a write"); if r is String: return r
+	var invalid: Dictionary = await panel._validate_preview(); var r = A.is_true(invalid.has("error"), "panel reports invalid definitions before a write"); if r is String: return r
 	var definition := _definition(); panel._slug.text = definition.slug; panel._label.text = definition.label; panel._description.text = definition.description; panel._use_when.text = definition.use_when; panel._definition.text = JSON.stringify({"fields":definition.fields,"lifecycle":definition.lifecycle}); _author(panel); panel._save_definition()
 	var saved: Dictionary = state.get_type_registry("draft").get_type("code_review")
 	r = A.eq(saved.lifecycle, "draft", "panel saves new definitions as drafts"); if r is String: return r
@@ -98,7 +98,7 @@ func test_upgrade_preview_is_read_only_and_acknowledgement_required() -> Variant
 	return A.is_true(not refused.ok and str(refused.error).contains("incompatible writers stopped") and FileAccess.get_sha256(target) == before, "upgrade apply requires explicit exclusive-writer acknowledgement")
 
 func test_app_shell_navigation_reaches_project_types() -> Variant:
-	var state := _state("navigation"); var shell := AppShell.new(); shell.init(state); add_child(shell); shell._on_menu_action("project_types")
+	var state := _state("navigation"); var shell := AppShell.new(); shell.init(LocalDocketSource.new(state)); add_child(shell); shell._on_menu_action("project_types")
 	return A.is_true(shell._current_work_idx >= 0 and shell._work_entries[shell._current_work_idx].type == "types" and shell._project_types.get_parent() != null, "File > Project Types opens a reusable management work entry")
 
 func test_sqlite_promotion_requires_ack_and_reopens_jsonl_with_backup() -> Variant:

@@ -7,8 +7,8 @@ extends Node
 ## stored. That makes the salt and iteration count load-bearing: the secondary
 ## key is derived from them, so altering either strands the inner layer forever.
 ##
-## These exercise the same sequence AppShell._reencrypt_vault_secrets performs,
-## which cannot be driven headlessly.
+## Each drives LocalDocketSource._reencrypt_vault_secrets over one open
+## project, then checks the vault with keys derived independently here.
 
 var A := AssertHelpers
 var _test_dir := "user://test_vault_pw_change"
@@ -18,7 +18,9 @@ var _db: DocketDBJsonl
 const OLD_PW := "old-vault-password"
 const NEW_PW := "new-vault-password"
 const SECOND_PW := "secondary-password"
-const ITERS := 1000   # keep the suite fast; behaviour under test is unrelated
+# Keeps the fixtures fast. A change re-derives a vault with no 2FA secrets
+# at VaultCrypto.PBKDF2_ITERATIONS, about a second and a half per derivation.
+const ITERS := 1000
 
 
 func setup() -> void:
@@ -49,32 +51,10 @@ func teardown() -> void:
 	DirAccess.remove_absolute(_test_dir)
 
 
-## Mirrors AppShell._reencrypt_vault_secrets.
 func _change_password(old_pw: String, new_pw: String) -> void:
-	var old_salt := _db.get_vault_salt()
-	var old_key := VaultCrypto.derive_key(old_pw, old_salt, _db.get_vault_iterations())
-
-	var has_2fa := false
-	for probe in _db.get_all_secrets_raw():
-		if bool(probe.get("requires_2fa", false)):
-			has_2fa = true
-			break
-
-	var new_salt := old_salt
-	var new_iters := _db.get_vault_iterations()
-	if not has_2fa:
-		new_salt = VaultCrypto.generate_salt()
-		new_iters = ITERS
-
-	var new_key := VaultCrypto.derive_key(new_pw, new_salt, new_iters)
-	for secret in _db.get_all_secrets_raw():
-		var payload := VaultCrypto.decrypt(secret.ciphertext, secret.iv, secret.mac, old_key)
-		if payload.is_empty():
-			continue
-		var enc := VaultCrypto.encrypt(payload, new_key)
-		_db.set_secret(secret.handle, enc.ciphertext, enc.iv, enc.mac,
-			bool(secret.get("requires_2fa", false)))
-	_db.init_vault(new_key, new_salt, new_iters)
+	var state := AppState.new()
+	state._project_dbs = {"pw": _db}
+	LocalDocketSource.new(state)._reencrypt_vault_secrets(old_pw, new_pw)
 
 
 func _init_vault(pw: String) -> PackedByteArray:

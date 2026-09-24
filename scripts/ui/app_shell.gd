@@ -5,7 +5,7 @@ class_name AppShell
 
 enum ViewMode { QUERY, DETAIL, SPLIT, TYPES }
 
-var _state: AppState
+var _src  # DocketSource
 var _menu_builder: MenuBuilder
 var _content_area: PanelContainer
 var _query_grid: QueryGrid
@@ -52,12 +52,12 @@ var _recent_files: PackedStringArray = []
 
 # External change polling
 var _poll_timer: Timer
-var _last_poll_mtime: int = 0
 var _last_projects_token: String = ""
 
 
-func init(state: AppState) -> void:
-	_state = state
+## `source` is a DocketSource (LocalDocketSource in the standalone app).
+func init(source) -> void:
+	_src = source
 	_build_ui()
 
 
@@ -83,8 +83,7 @@ func _ready() -> void:
 	_poll_timer.timeout.connect(_on_poll_external_changes)
 	add_child(_poll_timer)
 	_poll_timer.start()
-	_last_poll_mtime = _get_dct_mtime()
-	_last_projects_token = _get_projects_token()
+	_last_projects_token = await _src.change_token()
 
 
 func _notification(what: int) -> void:
@@ -126,7 +125,7 @@ func _build_ui() -> void:
 
 	_menu_builder = MenuBuilder.new()
 	_menu_builder.action_triggered.connect(_on_menu_action)
-	var type_keys: Array = _state.schema.types.keys()
+	var type_keys: Array = _src.schema().types.keys()
 	type_keys.sort()
 	var type_names := PackedStringArray()
 	for t in type_keys:
@@ -135,8 +134,8 @@ func _build_ui() -> void:
 
 	_load_recent_files()
 	_menu_builder.set_recent_files(_recent_files)
-	if not _state.dct_path.is_empty():
-		_add_to_recent(_state.dct_path)
+	if not _src.primary_path().is_empty():
+		_add_to_recent(_src.primary_path())
 
 	var menu_row := HBoxContainer.new()
 	menu_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -148,7 +147,7 @@ func _build_ui() -> void:
 	menu_row.add_child(spacer)
 
 	_file_label = Label.new()
-	_file_label.text = _state.dct_path.get_file()
+	_file_label.text = _src.primary_path().get_file()
 	_file_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
 	menu_row.add_child(_file_label)
 
@@ -173,18 +172,18 @@ func _build_ui() -> void:
 	# Build child panels (not yet parented to content_area)
 	_query_grid = QueryGrid.new()
 	_query_grid.custom_minimum_size.x = 400
-	_query_grid.init(_state)
+	_query_grid.init(_src)
 	_query_grid.item_selected.connect(_on_item_selected)
 	_query_grid.item_activated.connect(_on_item_activated)
 
 	_record_form = RecordForm.new()
 	_record_form.custom_minimum_size.x = 400
-	_record_form.init(_state)
+	_record_form.init(_src)
 	_record_form.item_changed.connect(_on_item_changed)
 	_record_form.back_pressed.connect(_on_back_pressed)
 	_record_form.child_opened.connect(_open_item_entry)
 	_project_types = ProjectTypesPanel.new()
-	_project_types.init(_state)
+	_project_types.init(_src)
 	_project_types.registry_changed.connect(func(_project: String): _query_grid.refresh())
 
 	_split_container = HSplitContainer.new()
@@ -252,15 +251,15 @@ func _build_ui() -> void:
 	_build_new_item_dialog()
 
 	# A .dct that could not be opened (conflict markers, corruption)
-	_state.load_failed.connect(_on_load_failed)
+	_src.load_failed.connect(_on_load_failed)
 
 	# Populate Close Project submenu with current projects
 	_update_project_menu()
 
 	# Listen for project changes to update menu and persist session
-	_state.file_changed.connect(_on_file_changed)
-	_state.open_item_requested.connect(func(id: String, project: String): _open_item_entry.call_deferred(id, project))
-	_state.open_query_requested.connect(_on_open_query_from_mcp)
+	_src.file_changed.connect(_on_file_changed)
+	_src.open_item_requested.connect(func(id: String, project: String): _open_item_entry.call_deferred(id, project))
+	_src.open_query_requested.connect(_on_open_query_from_mcp)
 
 	# Preferences dialog
 	_prefs_dialog = ConfirmationDialog.new()
@@ -411,33 +410,6 @@ func _detach_all() -> void:
 
 # -- External change polling -----------------------------------------------
 
-func _get_dct_mtime() -> int:
-	## Get modification time of the .dct file (or its WAL).
-	var path := _state.dct_path
-	if path.is_empty():
-		return 0
-	# Check WAL file first — it changes on every write
-	var wal_path := path + "-wal"
-	if FileAccess.file_exists(wal_path):
-		return FileAccess.get_modified_time(wal_path)
-	if FileAccess.file_exists(path):
-		return FileAccess.get_modified_time(path)
-	return 0
-
-func _get_projects_token() -> String:
-	var parts: Array[String] = []
-	var projects: Array = _state.get_project_dbs().keys()
-	projects.sort()
-	for project in projects:
-		var pdb: DocketDB = _state.get_db_for_project(str(project))
-		var path := pdb.get_path()
-		var canonical_hash := FileAccess.get_sha256(path) if FileAccess.file_exists(path) else "missing"
-		var wal := path + "-wal"
-		var wal_stamp := str(FileAccess.get_modified_time(wal)) if FileAccess.file_exists(wal) else ""
-		parts.append("%s:%s:%s" % [project, canonical_hash, wal_stamp])
-	return "|".join(parts)
-
-
 func _on_file_changed() -> void:
 	## Project list changed — update menus and persist session.
 	_update_project_menu()
@@ -456,7 +428,7 @@ func _on_poll_external_changes() -> void:
 	## Pick up external edits to the .dct (git pull, MCP server, another
 	## instance). Re-querying alone is not enough: the grid reads the SQLite
 	## cache, so without an actual reload it would redisplay stale rows.
-	var current_token := _get_projects_token()
+	var current_token: String = await _src.change_token()
 	if current_token == _last_projects_token:
 		return
 	_last_projects_token = current_token
@@ -465,9 +437,9 @@ func _on_poll_external_changes() -> void:
 	# affected what the user is looking at.
 	var open_id := _record_form.get_current_id() if _record_form else ""
 	var open_project := _record_form.get_current_project() if _record_form else ""
-	var before := _item_revision(open_id, open_project)
+	var before: String = await _item_revision(open_id, open_project)
 
-	var reloaded := _state.reload_stale()
+	var reloaded: Array = await _src.reload_stale()
 	if reloaded.is_empty():
 		return
 
@@ -481,7 +453,7 @@ func _on_poll_external_changes() -> void:
 	# open form's business, so reload silently. Only a change to the item under
 	# edit is worth interrupting for — the user may have unsaved edits, and
 	# saving them would overwrite what just arrived.
-	var after := _item_revision(open_id, open_project)
+	var after: String = await _item_revision(open_id, open_project)
 	if after == before:
 		return
 
@@ -499,30 +471,20 @@ func _on_poll_external_changes() -> void:
 
 
 func _item_revision(item_id: String, project: String = "") -> String:
-	if item_id.is_empty():
-		return ""
-	var item_db: DocketDB = _state.get_db_for_project(project)
-	if item_db == null:
-		return ""
-	var item: Dictionary = item_db.get_item(item_id)
-	if item.is_empty():
-		return ""
-	var registry := _state.get_type_registry(project)
-	return registry.item_token(item) if registry != null else ""
+	return await _src.item_token(project, item_id)
 
 
 func _on_reload_from_disk() -> void:
 	## File > Reload from Disk — unconditional re-read, discarding cache.
 	var open_id := _record_form.get_current_id() if _record_form else ""
 	var open_project := _record_form.get_current_project() if _record_form else ""
-	var reloaded := _state.reload_all()
-	_last_poll_mtime = _get_dct_mtime()
-	_last_projects_token = _get_projects_token()
+	var reloaded: Array = await _src.reload_all()
+	_last_projects_token = await _src.change_token()
 
 	if _query_grid and _query_grid.is_visible_in_tree():
 		_query_grid.refresh()
 	if not open_id.is_empty():
-		if _item_revision(open_id, open_project).is_empty():
+		if (await _item_revision(open_id, open_project)).is_empty():
 			_on_back_pressed()  # the open item no longer exists on disk
 		else:
 			_confirm_reload_dialog.dialog_text = "Reloaded project data is available. Load it and discard the current form edits, or keep reviewing the unsaved form?"
@@ -540,7 +502,7 @@ func _on_reload_open_item_confirmed() -> void:
 	var open_project := _record_form.get_current_project() if _record_form else ""
 	if open_id.is_empty():
 		return
-	if _item_revision(open_id, open_project).is_empty():
+	if (await _item_revision(open_id, open_project)).is_empty():
 		_on_back_pressed()  # item is gone — return to the list
 	else:
 		_record_form.load_item(open_id, open_project)
@@ -555,8 +517,7 @@ func _on_menu_action(action: String) -> void:
 		return
 	if action.begins_with("new_protected:"):
 		var protected_type := action.substr("new_protected:".length())
-		var project := _state.db.get_project_name() if _state.db != null else ""
-		_create_and_edit_item(protected_type, project, true)
+		_create_and_edit_item(protected_type, _src.primary_project(), true)
 		return
 	if action.begins_with("work:"):
 		var idx := int(action.substr("work:".length()))
@@ -566,7 +527,7 @@ func _on_menu_action(action: String) -> void:
 	if action.begins_with("open_recent:"):
 		var recent_idx := int(action.split(":")[1])
 		if recent_idx >= 0 and recent_idx < _recent_files.size():
-			_state.load_dct(_recent_files[recent_idx])
+			await _src.open_project(_recent_files[recent_idx])
 			_add_to_recent(_recent_files[recent_idx])
 			_update_window_title()
 			_update_project_menu()
@@ -577,7 +538,7 @@ func _on_menu_action(action: String) -> void:
 		if recent_idx >= 0 and recent_idx < _recent_files.size():
 			var path := _recent_files[recent_idx]
 			if FileAccess.file_exists(path):
-				_state.add_project(path)
+				await _src.add_project(path)
 				_add_to_recent(path)
 				_update_window_title()
 				_update_project_menu()
@@ -585,7 +546,7 @@ func _on_menu_action(action: String) -> void:
 		return
 	if action.begins_with("close_project:"):
 		var proj_name := action.substr("close_project:".length())
-		_state.remove_project(proj_name)
+		await _src.remove_project(proj_name)
 		_update_window_title()
 		_update_project_menu()
 		_save_session()
@@ -602,7 +563,7 @@ func _on_menu_action(action: String) -> void:
 		"open":
 			_open_dialog.popup_centered(Vector2i(600, 400))
 		"save":
-			_state.save()
+			_src.save_all()
 		"reload":
 			_on_reload_from_disk()
 		"vault":
@@ -661,7 +622,7 @@ func _on_menu_action(action: String) -> void:
 # -- File dialog callbacks -------------------------------------------------
 
 func _on_open_file_selected(path: String) -> void:
-	_state.load_dct(path)
+	await _src.open_project(path)
 	_add_to_recent(path)
 	_update_window_title()
 	_update_project_menu()
@@ -669,18 +630,14 @@ func _on_open_file_selected(path: String) -> void:
 
 
 func _on_save_as_file_selected(path: String) -> void:
-	_state.dct_path = path
-	_state.save()
+	await _src.save_primary_as(path)
 	_add_to_recent(path)
 	_update_window_title()
 
 
 func _on_new_file_selected(path: String) -> void:
-	# If projects are already loaded, append instead of replacing
-	if _state._project_dbs.size() > 0:
-		_state.create_and_add_project(path)
-	else:
-		_state.create_dct(path)
+	# Appended beside any projects already open.
+	await _src.create_project(path)
 	_add_to_recent(path)
 	_update_window_title()
 	_update_project_menu()
@@ -688,11 +645,11 @@ func _on_new_file_selected(path: String) -> void:
 
 
 func _update_window_title() -> void:
-	if _state.dct_path.is_empty():
+	if _src.primary_path().is_empty():
 		DisplayServer.window_set_title("Docket")
 		_file_label.text = ""
 	else:
-		var fname := _state.dct_path.get_file()
+		var fname: String = _src.primary_path().get_file()
 		DisplayServer.window_set_title("Docket — %s" % fname)
 		_file_label.text = fname
 
@@ -700,18 +657,18 @@ func _update_window_title() -> void:
 func _update_project_menu() -> void:
 	## Update the Close Project submenu with current project names.
 	var names := PackedStringArray()
-	for proj_name in _state.get_project_dbs():
+	for proj_name in _src.project_paths():
 		names.append(proj_name)
 	_menu_builder.set_project_list(names)
 
 
 func _save_session() -> void:
-	if _state.get_project_dbs().is_empty():
+	var project_paths: Dictionary = _src.project_paths()
+	if project_paths.is_empty():
 		return  # Don't clobber saved session with empty data
 	var paths := PackedStringArray()
-	for proj_name in _state.get_project_dbs():
-		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
-		var p := pdb.get_path()
+	for proj_name in project_paths:
+		var p: String = project_paths[proj_name]
 		if not p.is_empty():
 			paths.append(ProjectSettings.globalize_path(p) if p.begins_with("res://") else p)
 	UserPrefs.save_session(paths)
@@ -744,12 +701,10 @@ func _build_new_item_dialog() -> void:
 
 func _show_new_item_dialog() -> void:
 	_new_item_project.clear()
-	var projects: Array = _state.get_project_dbs().keys()
-	projects.sort_custom(func(a, b): return str(a).nocasecmp_to(str(b)) < 0)
-	for project in projects:
-		_new_item_project.add_item(str(project))
+	for project in _src.project_names():
+		_new_item_project.add_item(project)
 	_new_item_search.text = ""
-	_rebuild_new_item_catalog()
+	await _rebuild_new_item_catalog()
 	_new_item_dialog.popup_centered(Vector2i(560, 430))
 
 func _rebuild_new_item_catalog() -> void:
@@ -760,19 +715,13 @@ func _rebuild_new_item_catalog() -> void:
 		_filter_new_item_catalog()
 		return
 	var project: String = _new_item_project.get_item_text(_new_item_project.selected)
-	var registry: TypeRegistry = _state.get_type_registry(project)
-	if registry == null:
-		_new_item_dialog.dialog_text = "Type registry unavailable for %s." % project
+	var listed_result: Dictionary = await _src.list_types(project)
+	if listed_result.has("error"):
+		_new_item_dialog.dialog_text = str(listed_result.error)
 		_new_item_dialog.get_ok_button().disabled = true
 		_filter_new_item_catalog()
 		return
-	var listed: Array = registry.list_types(false)
-	if not listed.is_empty() and listed[0] is Dictionary and listed[0].has("error"):
-		_new_item_dialog.dialog_text = "Type registry error: %s" % str(listed[0].error)
-		_new_item_dialog.get_ok_button().disabled = true
-		_filter_new_item_catalog()
-		return
-	for type_value in listed:
+	for type_value in listed_result.types:
 		var type: Dictionary = type_value
 		if type.has("error") or type.lifecycle != "active":
 			continue
@@ -810,10 +759,7 @@ func _on_item_selected(id: String, project: String = "") -> void:
 
 
 func _create_and_edit_item(type_name: String, project: String = "", protected_path: bool = false, expected_type_id: String = "") -> void:
-	var registry := _state.get_type_registry(project)
-	if registry == null:
-		return
-	var type: Dictionary = registry.get_type(type_name)
+	var type: Dictionary = await _src.get_type(project, type_name)
 	if type.has("error") or type.lifecycle != "active":
 		return
 	if not expected_type_id.is_empty() and str(type.id) != expected_type_id:
@@ -839,10 +785,9 @@ func _open_item_entry(id: String, project: String = "") -> void:
 		_activate_work_entry(idx)
 	else:
 		var label := id
-		var item_db: DocketDB = _state.get_db_for_project(project)
-		if item_db != null and item_db.has_item(id):
-			var item: Dictionary = item_db.get_item(id)
-			label = "[%s] %s: %s" % [project, id, str(item.get("title", ""))]
+		var titled: Dictionary = await _src.item_title(project, id)
+		if titled.has("title"):
+			label = "[%s] %s: %s" % [project, id, str(titled.title)]
 		idx = _add_work_entry("item", label, "", id, project)
 		_activate_work_entry(idx)
 
@@ -852,10 +797,11 @@ func _on_item_changed() -> void:
 	# Update the work entry label if the title changed
 	if _current_work_idx >= 0 and _current_work_idx < _work_entries.size():
 		var entry: Dictionary = _work_entries[_current_work_idx]
-		var item_db: DocketDB = _state.get_db_for_project(str(entry.get("project", "")))
-		if entry.type == "item" and item_db != null and item_db.has_item(entry.item_id):
-			var item: Dictionary = item_db.get_item(entry.item_id)
-			entry.label = "[%s] %s: %s" % [entry.project, entry.item_id, str(item.get("title", ""))]
+		if entry.type != "item":
+			return
+		var titled: Dictionary = await _src.item_title(str(entry.get("project", "")), str(entry.item_id))
+		if titled.has("title"):
+			entry.label = "[%s] %s: %s" % [entry.project, entry.item_id, str(titled.title)]
 			_rebuild_work_menu()
 
 
@@ -903,7 +849,7 @@ func _on_open_query_from_mcp(filter: String, label: String) -> void:
 
 
 func _on_add_project_selected(path: String) -> void:
-	_state.add_project(path)
+	await _src.add_project(path)
 	_add_to_recent(path)
 	_update_project_menu()
 	_save_session()
@@ -948,22 +894,20 @@ func _zoom_reset() -> void:
 func _apply_zoom() -> void:
 	var zoom_factor: float = _ZOOM_LEVELS[_current_zoom_idx]
 	get_tree().root.content_scale_factor = zoom_factor
-	if _state.db:
-		_state.db.set_meta_value("ui_scale", str(zoom_factor))
+	_src.set_ui_setting("ui_scale", str(zoom_factor))
 
 
 func _set_font_size(preset: String) -> void:
 	_current_font_size = preset
 	var font_sz: int = _FONT_SIZES.get(preset, 14)
 	get_tree().root.add_theme_font_size_override("font_size", font_sz)
-	if _state.db:
-		_state.db.set_meta_value("ui_font_size", preset)
+	_src.set_ui_setting("ui_font_size", preset)
 
 
 func _restore_ui_settings() -> void:
-	if not _state.db:
+	if _src.project_names().is_empty():
 		return
-	var scale_str := _state.db.get_meta_value("ui_scale", "1.0")
+	var scale_str: String = await _src.ui_setting("ui_scale", "1.0")
 	var zoom_factor := float(scale_str)
 	for i in _ZOOM_LEVELS.size():
 		if absf(_ZOOM_LEVELS[i] - zoom_factor) < 0.01:
@@ -971,7 +915,7 @@ func _restore_ui_settings() -> void:
 			break
 	get_tree().root.content_scale_factor = zoom_factor
 
-	var font_preset := _state.db.get_meta_value("ui_font_size", "medium")
+	var font_preset: String = await _src.ui_setting("ui_font_size", "medium")
 	_current_font_size = font_preset
 	var font_size: int = _FONT_SIZES.get(font_preset, 14)
 	get_tree().root.add_theme_font_size_override("font_size", font_size)
@@ -988,18 +932,10 @@ func _show_mcp_info() -> void:
 		"  godot --headless --path <project> -- serve\n" +
 		"  godot --headless --path <project> -- serve --port 3010\n\n" +
 
-		"Tools: %d registered — call tools/list for the full set.\n\n" % _mcp_tool_count() +
-		"File: %s" % _state.dct_path
+		"Tools: %d registered — call tools/list for the full set.\n\n" % (await _src.tool_count()) +
+		"File: %s" % _src.primary_path()
 	)
 	_info_dialog.popup_centered()
-
-
-func _mcp_tool_count() -> int:
-	## Registered tool count, read from the registry rather than restated — a
-	## hardcoded list here drifted out of date as tools were added.
-	var reg := ToolRegistry.new()
-	reg.init(_state.schema, _state.db, _state.get_project_dbs())
-	return reg.list_tools().size()
 
 
 func _show_vault() -> void:
@@ -1011,11 +947,9 @@ func _show_vault() -> void:
 	## is an inventory, not a viewer.
 	var lines: PackedStringArray = []
 	var total := 0
-	for proj_name in _state.get_project_dbs():
-		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
-		var entries: Array = pdb.list_standalone_secrets()
-		if entries.is_empty():
-			continue
+	var listed: Dictionary = await _src.standalone_secrets()
+	for proj_name in listed:
+		var entries: Array = listed[proj_name]
 		lines.append("%s:" % proj_name)
 		for e in entries:
 			total += 1
@@ -1046,8 +980,8 @@ func _show_about() -> void:
 	# Derive the type list from the schema rather than restating it — a
 	# hardcoded count goes stale the moment a type is added.
 	var type_names: Array = []
-	if _state.schema.has("types"):
-		type_names = _state.schema.types.keys()
+	if _src.schema().has("types"):
+		type_names = _src.schema().types.keys()
 	type_names.sort()
 
 	_info_dialog.dialog_text = (
@@ -1064,91 +998,20 @@ func _show_about() -> void:
 
 
 func _show_preferences() -> void:
-	_prefs_first.text = _state.prefs.first_name
-	_prefs_last.text = _state.prefs.last_name
-	_prefs_vault_pw.text = UserPrefs.load_vault_password()
-	_prefs_vault_hint.text = UserPrefs.load_vault_password_hint()
+	_prefs_first.text = _src.prefs().first_name
+	_prefs_last.text = _src.prefs().last_name
+	var vault: Dictionary = await _src.vault_settings()
+	_prefs_vault_pw.text = str(vault.password)
+	_prefs_vault_hint.text = str(vault.hint)
 	_prefs_dialog.popup_centered(Vector2i(300, 380))
 
 
 func _on_prefs_confirmed() -> void:
-	_state.prefs.first_name = _prefs_first.text.strip_edges()
-	_state.prefs.last_name = _prefs_last.text.strip_edges()
-	_state.prefs.save()
-
-	# Save vault password hint
-	UserPrefs.save_vault_password_hint(_prefs_vault_hint.text.strip_edges())
-
-	# Handle vault password change
-	var new_password := _prefs_vault_pw.text
-	var old_password := UserPrefs.load_vault_password()
-	if new_password != old_password:
-		_reencrypt_vault_secrets(old_password, new_password)
-		if new_password.is_empty():
-			UserPrefs.clear_vault_password()
-		else:
-			UserPrefs.save_vault_password(new_password)
-
-
-func _reencrypt_vault_secrets(old_password: String, new_password: String) -> void:
-	## Re-encrypt all secrets in all open dockets when vault password changes.
-	if old_password.is_empty() or new_password.is_empty():
-		return
-	for proj_name in _state.get_project_dbs():
-		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
-		if not pdb.has_vault():
-			continue
-		var old_salt := pdb.get_vault_salt()
-		# Unwrap at whatever cost this vault was built with...
-		var old_key := VaultCrypto.derive_key(old_password, old_salt, pdb.get_vault_iterations())
-		if not pdb.verify_vault(old_key):
-			push_warning("Vault password mismatch for project '%s', skipping re-encryption" % proj_name)
-			continue
-		# A dual-password secret is encrypted twice: an inner layer under a key
-		# derived from the SECONDARY password, and an outer layer under the vault
-		# key. Only the outer layer can be re-wrapped here — the secondary
-		# password is not known, and is deliberately never stored.
-		#
-		# That constrains what a password change may alter. The secondary key is
-		# derived from (secondary password, vault salt, iteration count), so
-		# changing the salt or the cost silently re-defines a key nobody can
-		# reproduce, leaving the inner layer permanently undecryptable. The old
-		# code regenerated the salt, raised the cost, and dropped requires_2fa —
-		# any of which alone destroys a 2FA secret.
-		var has_2fa := false
-		for probe in pdb.get_all_secrets_raw():
-			if bool(probe.get("requires_2fa", false)):
-				has_2fa = true
-				break
-
-		# Reusing the salt is safe: a salt must be unique per vault, not per
-		# password change, and the new password already yields a different key.
-		var new_salt := old_salt
-		var new_iters := pdb.get_vault_iterations()
-		if not has_2fa:
-			# No inner layer to strand, so take the opportunity to re-salt and
-			# upgrade the KDF cost.
-			new_salt = VaultCrypto.generate_salt()
-			new_iters = VaultCrypto.PBKDF2_ITERATIONS
-		elif pdb.get_vault_iterations() < VaultCrypto.PBKDF2_ITERATIONS:
-			push_warning(
-				"Project '%s' holds dual-password secrets, so its KDF cost cannot be " % proj_name
-				+ "raised by a password change without their secondary passwords.")
-
-		var new_key := VaultCrypto.derive_key(new_password, new_salt, new_iters)
-		for secret in pdb.get_all_secrets_raw():
-			# Single-layer decrypt is correct for both kinds: for a 2FA secret it
-			# yields the still-encrypted inner blob, which is re-wrapped as-is.
-			var payload := VaultCrypto.decrypt(secret.ciphertext, secret.iv, secret.mac, old_key)
-			if payload.is_empty():
-				push_warning("Failed to decrypt secret '%s' in '%s', skipping" % [secret.handle, proj_name])
-				continue
-			var encrypted := VaultCrypto.encrypt(payload, new_key)
-			# requires_2fa must survive, or the reader will not know to peel the
-			# inner layer and will hand back ciphertext as though it were plaintext.
-			pdb.set_secret(secret.handle, encrypted.ciphertext, encrypted.iv, encrypted.mac,
-				bool(secret.get("requires_2fa", false)))
-		pdb.init_vault(new_key, new_salt, new_iters)
+	_src.prefs().first_name = _prefs_first.text.strip_edges()
+	_src.prefs().last_name = _prefs_last.text.strip_edges()
+	_src.prefs().save()
+	# A changed password re-encrypts the vaults first (DocketSource).
+	await _src.set_vault_settings(_prefs_vault_pw.text, _prefs_vault_hint.text.strip_edges())
 
 
 func _on_viewport_resized() -> void:

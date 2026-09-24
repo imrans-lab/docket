@@ -207,7 +207,7 @@ func _start_gui(opts: Dictionary) -> void:
 	# Create and attach shell BEFORE loading .dct files so that
 	# file_changed signals reach the RecordForm (which connects in init).
 	var shell := AppShell.new()
-	shell.init(state)
+	shell.init(LocalDocketSource.new(state))
 	add_child(shell)
 
 	if files.size() > 0:
