@@ -293,6 +293,10 @@ func item_events(project: String, id: String) -> Array:
 	return [] if item.has("error") else item.get("events", [])
 
 
+func run_query(query: Dictionary) -> Dictionary:
+	return await _call("docket_query_view", query)
+
+
 func move_item(project: String, id: String, target_project: String) -> Dictionary:
 	return await _call("docket_move", {"id": id, "source_project": project, "target_project": target_project})
 

@@ -595,33 +595,7 @@ func _reencrypt_vault_secrets(old_password: String, new_password: String) -> voi
 # -- Queries ----------------------------------------------------------------------
 
 func run_query(query: Dictionary) -> Dictionary:
-	var rows: Array = []
-	if _state.get_project_dbs().size() > 1:
-		rows = _state.execute_cross_project_query(query)
-		if not _state.last_cross_project_query_error.is_empty():
-			return {"error": _state.last_cross_project_query_error}
-	elif _state.db:
-		var registry: TypeRegistry = _state.get_type_registry()
-		rows = _state.db.execute_registry_query(query, registry) if registry != null else _state.db.execute_query(query)
-		if not _state.db.last_query_error.is_empty():
-			return {"error": _state.db.last_query_error}
-	var details: Array = []
-	for item in rows:
-		var full_id := str(item.get("id", ""))
-		var short := full_id.substr(0, 7)
-		if _state.db:
-			short = _state.db.short_id(full_id)
-		var registry := _state.get_type_registry(_row_project(item))
-		details.append({"short_id": short,
-			"resolved": registry.resolve_item(item) if registry != null else {"error": "no type registry"}})
-	return {"rows": rows, "details": details}
-
-
-func _row_project(item: Dictionary) -> String:
-	var project: String = str(item.get("project", ""))
-	if project.is_empty() and _state.get_project_dbs().size() == 1:
-		project = str(_state.get_project_dbs().keys()[0])
-	return project
+	return _state.project_query().run_with_details(query, _state.db)
 
 
 func type_catalog() -> Dictionary:

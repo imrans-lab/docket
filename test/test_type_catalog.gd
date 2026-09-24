@@ -391,8 +391,8 @@ func test_cross_project_binding_preserves_or_branches() -> Variant:
 		{"field": "type", "op": "eq", "value": "discussion", "conj": "and"},
 		{"field": "type", "op": "eq", "value": "code_review", "conj": "or"},
 	]}}
-	var alpha: Array = state._bind_project_conditions(query, "alpha").query.filter.conditions
-	var beta: Array = state._bind_project_conditions(query, "beta").query.filter.conditions
+	var alpha: Array = state.project_query()._bind_project_conditions(query, "alpha").query.filter.conditions
+	var beta: Array = state.project_query()._bind_project_conditions(query, "beta").query.filter.conditions
 	var r = A.eq(alpha[0].op, "is_not_empty", "matching project keeps first branch true")
 	if r is String: return r
 	r = A.eq(beta[0].value, [], "other project disables only scoped branch")

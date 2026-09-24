@@ -59,6 +59,7 @@ func _build_tools() -> Dictionary:
 		"docket_type_activate": DocketTypeActivate.new(),
 		"docket_type_evolve": DocketTypeEvolve.new(),
 		"docket_item_view": DocketItemView.new(),
+		"docket_query_view": DocketQueryView.new(),
 	}
 
 
@@ -148,6 +149,8 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn)
+	elif name == "docket_query_view":
+		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, get_type_registry)
 	elif name == "docket_gui_open":
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, gui_open_fn)
 	else:
