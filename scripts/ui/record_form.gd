@@ -180,6 +180,7 @@ var _current_project: String = ""  # project name that owns current item
 var _project_label: Label  # shows [project] badge in header
 var _project_option: OptionButton  # project selector for new items (visible when 2+ projects)
 var _project_inline_label: Label  # "Project:" label next to _project_option in meta row
+var _children_badge := ""  # " (N)" or " (N, incomplete)" after the children toggle
 var _move_btn: Button  # "Move to..." button (visible when 2+ projects, item saved)
 
 
@@ -1597,18 +1598,23 @@ func _on_desc_drag_top_input(event: InputEvent) -> void:
 
 func _on_children_toggle() -> void:
 	_children_container.visible = not _children_container.visible
-	if _children_container.visible:
-		_children_toggle.text = "v Children"
-	else:
-		_children_toggle.text = "> Children"
+	_label_children_toggle()
+
+
+## "v"/"> Children", with the count and whether the list is incomplete
+## (_children_badge) once they are known.
+func _label_children_toggle() -> void:
+	var prefix := "v" if _children_container.visible else ">"
+	_children_toggle.text = "%s Children%s" % [prefix, _children_badge]
 
 
 func _populate_children() -> void:
 	# Cleared now so no row of the previous item stays clickable, and again
 	# after the reply so two overlapping populates cannot both add rows.
 	_children_list.clear()
+	_children_badge = ""
 	if _current_id.is_empty():
-		_children_toggle.text = "> Children"
+		_label_children_toggle()
 		return
 	var generation := _load_generation
 
@@ -1623,12 +1629,9 @@ func _populate_children() -> void:
 	_children_list.clear()
 	var children: Array = found.children
 
-	var toggle_prefix := "v" if _children_container.visible else ">"
 	var incomplete := "" if str(found.error).is_empty() else ", incomplete"
-	if children.size() > 0 or not incomplete.is_empty():
-		_children_toggle.text = "%s Children (%d%s)" % [toggle_prefix, children.size(), incomplete]
-	else:
-		_children_toggle.text = "%s Children" % toggle_prefix
+	_children_badge = " (%d%s)" % [children.size(), incomplete] if children.size() > 0 or not incomplete.is_empty() else ""
+	_label_children_toggle()
 
 	var is_multi: bool = _src.project_names().size() > 1
 	for child in children:
