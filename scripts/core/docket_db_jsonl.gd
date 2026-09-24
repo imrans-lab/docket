@@ -24,21 +24,16 @@ var _write_blocked: bool = false
 var _allow_initial_write: bool = false
 var _lock_timeout_ms: int = 5000
 var _atomic_write_hook: Callable
-var _mutation_depth: int = 0
-var _mutation_error: String = ""
-# The coordination operation (CoordLease) the outermost mutation holds. Only
-# the connection's own thread can join it (DocketDBConnection).
-var _mutation_operation: RefCounted = null
-# True from a mutation's admission until it has released its operation. A
-# change started meanwhile by something the mutation itself triggers (an
-# items_changed listener during a reload, say) is refused rather than let it
-# take over or drop the outer mutation's operation.
+# True from an outermost change's admission until it has finished with the
+# file. A change started meanwhile by something the change itself triggers
+# (an items_changed listener during a reload, say) is refused.
 var _mutation_busy := false
-# The step of the change through the transaction API (_canonical) that is
-# rewriting the file, so a failed write reloads within it.
+# The step of the change or flush (_flush_within) that is rewriting the file,
+# so a failed write reloads within it; null when _flush_jsonl is called
+# directly, its writes then taking operations of their own.
 var _flushing_step: RefCounted = null
 
-# items_changed (DocketDB) is reported once a mutation is committed AND
+# items_changed (DocketDB) is reported once a change is committed AND
 # saved to the file; a rollback or failed save reports nothing. A reload from
 # the file (a change made outside this process, or docket_reload) is reported
 # as [{id: "", event: "reloaded"}].
@@ -46,12 +41,6 @@ var _flushing_step: RefCounted = null
 # Reason the most recent open_jsonl() returned null (e.g. unresolved conflict
 # markers). Read immediately after a null return.
 static var last_open_error: String = ""
-
-
-# The operation step a file write runs within: the change's (_canonical), or
-# the older mutations' own operation.
-func _flush_operation() -> RefCounted:
-	return _flushing_step if _flushing_step != null else _mutation_operation
 
 
 func _flush_within(step: RefCounted) -> String:
@@ -310,63 +299,6 @@ func _mutation_precheck(step: RefCounted) -> String:
 	return ""
 
 
-## A canonical mutation is a change in progress too (DocketDB).
-func _change_in_progress() -> bool:
-	return super() or _mutation_depth > 0
-
-
-func _begin_canonical_mutation() -> String:
-	var refusal := _thread_refusal()
-	if not refusal.is_empty(): return refusal
-	if _mutation_depth > 0 and (not _mutation_error.is_empty() or not _last_sql_error.is_empty()):
-		return _mutation_error if not _mutation_error.is_empty() else _last_sql_error
-	if _mutation_depth == 0:
-		if _mutation_busy: return "another change to this project is in progress"
-		# Held from before the freshness check until the outermost completion.
-		var lease := CoordLease.shared()
-		if lease.has("error"): return lease.error
-		_mutation_busy = true
-		_mutation_operation = lease.operation
-		var precheck := _mutation_precheck(_mutation_operation)
-		if not precheck.is_empty():
-			_close_mutation_operation()
-			return precheck
-		_last_sql_error = ""
-		_pending_changes = []
-		_mutation_error = _exec_checked("BEGIN TRANSACTION;")
-		if not _mutation_error.is_empty():
-			_close_mutation_operation()
-			return _mutation_error
-	_mutation_depth += 1
-	return ""
-
-
-func _complete_canonical_mutation(error: String = "") -> String:
-	if not error.is_empty() and _mutation_error.is_empty(): _mutation_error = error
-	if not _last_sql_error.is_empty() and _mutation_error.is_empty(): _mutation_error = _last_sql_error
-	_mutation_depth -= 1
-	if _mutation_depth > 0: return _mutation_error
-	if _mutation_error.is_empty(): _mutation_error = _exec_checked("COMMIT;")
-	if not _mutation_error.is_empty():
-		var failed := _mutation_error
-		_rollback()
-		reload(is_stale(), _mutation_operation)  # reports another writer's change it adopts, not ours
-		last_write_error = failed
-		_mutation_error = ""
-		_close_mutation_operation()
-		return failed
-	var flush_error := _flush_jsonl()
-	_mutation_error = ""
-	# Listeners hear of the change only once the operation is given back, so
-	# one that makes a change of its own starts it as a separate operation.
-	_close_mutation_operation()
-	if flush_error.is_empty():
-		super._report_changes()
-	else:
-		_pending_changes = []
-	return flush_error
-
-
 # -- Canonical changes through the transaction API --------------------------
 #
 # A change runs `work` (called with its step, returning a Dictionary with an
@@ -415,15 +347,7 @@ func _canonical_step(step: RefCounted, work: Callable) -> Dictionary:
 	return result
 
 
-func _close_mutation_operation() -> void:
-	if _mutation_operation != null:
-		_mutation_operation.close()
-		_mutation_operation = null
-	_mutation_busy = false
-
-
-## Held until the change has saved the file (_canonical_step, or
-## _complete_canonical_mutation).
+## Held until the change has saved the file (_canonical).
 func _report_changes() -> void:
 	pass
 
@@ -512,7 +436,7 @@ func _flush_jsonl() -> String:
 	# Update cache fingerprint so it stays valid
 	var fingerprint := _file_fingerprint(_jsonl_path)
 	if not fingerprint.is_empty():
-		super.set_meta_value_checked("jsonl_hash", fingerprint, _flush_operation())
+		super.set_meta_value_checked("jsonl_hash", fingerprint, _flushing_step)
 	last_write_error = ""
 	return ""
 
@@ -533,7 +457,7 @@ func _fail_flush(message: String) -> String:
 		# SQLite is disposable. Rebuilding it restores the last canonical state so
 		# a failed compound write cannot leak into a later successful flush. The
 		# failed change is not reported; another writer's change it adopts is.
-		reload(is_stale(), _flush_operation())
+		reload(is_stale(), _flushing_step)
 		last_write_error = message
 	else:
 		_write_blocked = true

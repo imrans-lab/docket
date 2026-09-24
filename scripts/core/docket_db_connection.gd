@@ -372,14 +372,6 @@ func _exec_rows(sql: String, bindings: Array = []) -> Array:
 	return _db.query_result if _db.query_result else []
 
 
-func _begin() -> void:
-	_exec("BEGIN TRANSACTION;")
-
-
-func _commit() -> void:
-	_exec("COMMIT;")
-
-
 func _rollback() -> void:
 	_exec("ROLLBACK;")
 

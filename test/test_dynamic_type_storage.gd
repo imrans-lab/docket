@@ -639,17 +639,17 @@ func test_midmutation_flush_close_and_reload_cannot_publish_uncommitted_cache() 
 	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
 	var original := _read_file(path)
 	var db := DocketDBJsonl.open_jsonl(path)
-	var r = A.eq(db._begin_canonical_mutation(), "", "outer mutation starts")
+	var reloaded := {}
+	var error := db.run_change(null, func(step: RefCounted) -> String:
+		var nested := db.run_change(step, func(_inner: RefCounted) -> String:
+			return db._exec_checked("UPDATE items SET title='uncommitted' WHERE id='ORD-0001';"))
+		db.flush()
+		db.close()
+		reloaded.still_open = db.is_open()
+		reloaded.value = db.reload()
+		return nested if not nested.is_empty() else "forced outer failure")
+	var r = A.eq([error, reloaded.get("still_open"), reloaded.get("value")], ["forced outer failure", true, false], "reload and close are deferred while the change is open")
 	if r is String: db.close(); return r
-	r = A.eq(db._begin_canonical_mutation(), "", "nested mutation joins transaction")
-	if r is String: return r
-	db._exec_checked("UPDATE items SET title='uncommitted' WHERE id='ORD-0001';")
-	db.flush()
-	db.close()
-	r = A.is_false(db.reload(), "reload and close are deferred while mutation is active")
-	if r is String: return r
-	db._complete_canonical_mutation("forced outer failure")
-	db._complete_canonical_mutation()
 	r = A.eq(_read_file(path), original, "public flush never publishes uncommitted SQL")
 	if r is String: db.close(); return r
 	r = A.eq(db.get_item("ORD-0001").title, "Before definition", "failed outer mutation reconstructs cache")
