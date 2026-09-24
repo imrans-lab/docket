@@ -84,6 +84,13 @@ jobs:
       - name: Install SCons
         run: pipx install scons
 
+      # The build's inputs include the pinned godot-sqlite commit and the
+      # patches applied to it (build_gdextension.sh).
+      - name: Pinned godot-sqlite commit
+        id: sqlite_pin
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:third_party/godot-sqlite)" >> "$GITHUB_OUTPUT"
+
       - name: Cache godot-cpp objects
         uses: actions/cache@v6
         with:
@@ -91,7 +98,7 @@ jobs:
             third_party/godot-sqlite/godot-cpp/bin
             third_party/godot-sqlite/godot-cpp/gen
             third_party/godot-sqlite/.sconsign.dblite
-          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
+          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ steps.sqlite_pin.outputs.sha }}-${{ hashFiles('third_party/patches/**') }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
 
       # Windows runners have bash via Git for Windows, so one script covers all
       # three platforms. MSVC is already on the image and SCons finds it.

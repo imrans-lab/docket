@@ -198,6 +198,8 @@ static func _json_predicate(path: String, op: String, value) -> Dictionary:
 	if op == "is_not_empty": return {"sql":"(json_type(fields_json,?) IS NOT NULL AND json_type(fields_json,?)!='null' AND json_extract(fields_json,?)!='')","bindings":[path,path,path]}
 	var scalar: Dictionary = _scalar("json_extract(fields_json,?)", op, value)
 	if scalar.has("error"): return scalar
+	# An empty `in` compiles to a bare 0, which has no path placeholder.
+	if scalar.sql == "0": return {"sql":"0","bindings":[]}
 	return {"sql":scalar.sql,"bindings":[path] + scalar.bindings}
 
 static func _scalar(expression: String, op_value, value) -> Dictionary:

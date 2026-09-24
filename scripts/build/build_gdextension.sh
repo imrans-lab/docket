@@ -26,6 +26,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SQLITE_SRC="$REPO_ROOT/third_party/godot-sqlite"
 OUT_DIR="$REPO_ROOT/addons/godot-sqlite/bin"
+# Applied to the pinned source before building (third_party/patches/README.md).
+SQLITE_PATCH="$REPO_ROOT/third_party/patches/godot-sqlite-read-only-query.patch"
 
 PLATFORM="${1:?platform required: macos | linux | windows}"
 ARCH="${2:-}"
@@ -50,6 +52,39 @@ if [[ ! -f "$SQLITE_SRC/godot-cpp/SConstruct" ]]; then
 fi
 if ! command -v scons >/dev/null 2>&1; then
 	echo "error: scons not found. Install it (pip install scons) and retry." >&2
+	exit 1
+fi
+
+# -- Patched source -----------------------------------------------------------
+#
+# The source built must be the pinned commit plus the patch, nothing else. A
+# clean checkout gets the patch (applied to the index, then checked out, so
+# line-ending conversion cannot make it fail); an already patched one is
+# accepted only if its tracked source is exactly that. Untracked files, such
+# as build output, are not compared.
+
+pinned="$(git -C "$REPO_ROOT" rev-parse HEAD:third_party/godot-sqlite)"
+if [[ "$(git -C "$SQLITE_SRC" rev-parse HEAD)" != "$pinned" ]]; then
+	echo "error: $SQLITE_SRC is not at its pinned commit $pinned — run: git submodule update --init --recursive" >&2
+	exit 1
+fi
+# The settings that shape the diff are fixed here, so git configuration
+# (diff.algorithm, diff.context and the like) cannot change it; the patch
+# file is this command's output.
+source_diff() {
+	git -C "$SQLITE_SRC" -c core.quotePath=false -c diff.suppressBlankEmpty=false \
+		diff --no-color --no-ext-diff --no-textconv --full-index --no-renames --ignore-submodules=all \
+		--diff-algorithm=myers -U3 --inter-hunk-context=0 --indent-heuristic \
+		--src-prefix=a/ --dst-prefix=b/ HEAD --
+}
+if [[ -z "$(source_diff)" ]]; then
+	git -C "$SQLITE_SRC" apply --cached "$SQLITE_PATCH"
+	git -C "$SQLITE_SRC" diff --cached --name-only -z | xargs -0 git -C "$SQLITE_SRC" checkout --
+fi
+if [[ "$(source_diff)" != "$(cat "$SQLITE_PATCH")" ]]; then
+	echo "error: $SQLITE_SRC is not its pinned commit plus $(basename "$SQLITE_PATCH")." >&2
+	echo "       Local edits or a partly applied patch; nothing was changed. To start over from the pin:" >&2
+	echo "       git -C third_party/godot-sqlite reset --hard && git submodule update --init --recursive" >&2
 	exit 1
 fi
 

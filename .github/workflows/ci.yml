@@ -103,6 +103,13 @@ jobs:
       - name: Install SCons
         run: pipx install scons
 
+      # The build's inputs include the pinned godot-sqlite commit and the
+      # patches applied to it (build_gdextension.sh).
+      - name: Pinned godot-sqlite commit
+        id: sqlite_pin
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:third_party/godot-sqlite)" >> "$GITHUB_OUTPUT"
+
       # godot-cpp dominates build time and only changes when the pinned
       # submodule commit changes, so key the cache on that SHA.
       - name: Cache godot-cpp objects
@@ -112,7 +119,7 @@ jobs:
             third_party/godot-sqlite/godot-cpp/bin
             third_party/godot-sqlite/godot-cpp/gen
             third_party/godot-sqlite/.sconsign.dblite
-          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
+          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ steps.sqlite_pin.outputs.sha }}-${{ hashFiles('third_party/patches/**') }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
 
       # Builds both template_release and template_debug. The debug variant is
       # what the Godot tool binary loads when running the test suite; without it

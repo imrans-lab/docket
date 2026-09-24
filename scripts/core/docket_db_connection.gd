@@ -6,6 +6,8 @@ class_name DocketDBConnection
 ## once those are durable. DocketDB builds the project storage on it.
 
 
+const READ_ONLY_QUERY := &"query_read_only"
+
 var _db: SQLite
 var _path: String
 var _is_open: bool = false
@@ -123,7 +125,7 @@ func _write_checked(step: RefCounted, sql: String, bindings: Array = []) -> Stri
 func _write_rows(step: RefCounted, sql: String, bindings: Array = []) -> Array:
 	if not _thread_refusal().is_empty(): return []
 	var admission := _write_admission(step, sql)
-	if admission.is_empty(): return _exec_select(sql, bindings)
+	if admission.is_empty(): return _exec_rows(sql, bindings)
 	if not admission.foreign: _note_write_failure(admission.error)
 	return []
 
@@ -292,8 +294,24 @@ func _track_transaction(sql: String, ok: bool) -> void:
 		_pending_changes = []
 
 
+## Rows of one statement that only reads (a SELECT, or PRAGMA table_info /
+## foreign_key_list), with exactly one binding per parameter: SQLite's own
+## query_read_only (third_party/patches), which refuses anything else before
+## it runs. [] with the reason in _last_sql_error otherwise.
 func _exec_select(sql: String, bindings: Array = []) -> Array:
 	if not _on_owner_thread(): return []
+	# Called by name: DocketDB checks the method is there when it connects.
+	var ok: bool = _db.call(READ_ONLY_QUERY, sql, bindings)
+	if not ok:
+		var msg: String = _db.error_message if _db.error_message else "SQL query failed"
+		if _last_sql_error.is_empty(): _last_sql_error = msg
+		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
+		return []
+	return _db.query_result if _db.query_result else []
+
+
+# Rows answered by any statement, writes included (_write_rows).
+func _exec_rows(sql: String, bindings: Array = []) -> Array:
 	var ok: bool
 	if bindings.is_empty():
 		ok = _db.query(sql)

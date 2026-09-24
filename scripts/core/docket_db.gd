@@ -48,6 +48,11 @@ func _connect(path: String, verb: String) -> bool:
 	_path = path
 	_last_sql_error = ""
 	_db = SQLite.new()
+	if not _db.has_method(READ_ONLY_QUERY):
+		_last_sql_error = "the SQLite extension has no %s (it is not built from Docket's patched source; see scripts/build/build_gdextension.sh)" % READ_ONLY_QUERY
+		push_error("DocketDB: cannot %s %s: %s" % [verb, path, _last_sql_error])
+		_db = null
+		return false
 	_db.path = path
 	_db.verbosity_level = SQLite.QUIET
 	_owner_thread = OS.get_thread_caller_id()

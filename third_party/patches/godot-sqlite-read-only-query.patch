@@ -1,0 +1,238 @@
+diff --git a/doc_classes/SQLite.xml b/doc_classes/SQLite.xml
+index 8e7bcce6d2b7a91f60882844f63405f9bccf01c2..b87cfe01325c87df05134922f1818adca6218f58 100644
+--- a/doc_classes/SQLite.xml
++++ b/doc_classes/SQLite.xml
+@@ -65,6 +65,13 @@
+ 				Query the database using the raw SQL statement defined in [code]query_string[/code].
+ 			</description>
+ 		</method>
++		<method name="query_read_only">
++			<return type="bool" />
++			<description>
++				Runs exactly one statement that only reads: a [code]SELECT[/code] (with [code]WITH[/code], recursion and functions other than [code]load_extension[/code]) or [code]PRAGMA table_info[/code] / [code]PRAGMA foreign_key_list[/code]. Anything else is refused before it runs, including a second statement, writes, transaction control, [code]ATTACH[/code] and other pragmas. [code]param_bindings[/code] must supply exactly one value per parameter. On failure [member query_result] is empty and [member error_message] says why.
++				This is a boundary for database operations, not a sandbox: functions registered with [method create_function] and loaded extensions still run their own code.
++			</description>
++		</method>
+ 		<method name="query_with_bindings">
+ 			<return type="bool" />
+ 			<description>
+diff --git a/src/gdsqlite.cpp b/src/gdsqlite.cpp
+index 99a5172d388eb7d4dd51dcf8e76fa479403024c8..8bfc1c2fa6698f259084be81fb4e3d768b3af873 100644
+--- a/src/gdsqlite.cpp
++++ b/src/gdsqlite.cpp
+@@ -9,6 +9,7 @@ void SQLite::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("query", "query_string"), &SQLite::query);
+ 	ClassDB::bind_method(D_METHOD("query_with_bindings", "query_string", "param_bindings"), &SQLite::query_with_bindings);
+ 	ClassDB::bind_method(D_METHOD("query_with_named_bindings", "query_string", "param_bindings"), &SQLite::query_with_named_bindings);
++	ClassDB::bind_method(D_METHOD("query_read_only", "query_string", "param_bindings"), &SQLite::query_read_only, DEFVAL(Array()));
+ 
+ 	ClassDB::bind_method(D_METHOD("create_table", "table_name", "table_data"), &SQLite::create_table);
+ 	ClassDB::bind_method(D_METHOD("drop_table", "table_name"), &SQLite::drop_table);
+@@ -1386,4 +1387,180 @@ int SQLite::load_extension(const String &p_path, const String &entrypoint) {
+ 	}
+ 
+ 	return rc;
+-}
+\ No newline at end of file
++}
++
++/* -- query_read_only (Docket patch) ------------------------------------------
++ *
++ * Runs exactly one statement that SQLite prepares as read-only, on this
++ * connection, under an authorizer that allows reading and nothing else. The
++ * authorizer is installed before anything is prepared and stays until the
++ * statement is finalized, so it also covers a reprepare during sqlite3_step.
++ * The statement that is classified is the one that is executed. */
++
++int SQLite::read_only_authorizer(void *p_user_data, int p_action, const char *p_arg1, const char *p_arg2, const char *p_database, const char *p_trigger) {
++	switch (p_action) {
++		case SQLITE_SELECT:
++		case SQLITE_READ:
++		case SQLITE_RECURSIVE:
++			return SQLITE_OK;
++		case SQLITE_FUNCTION:
++			/* p_arg2 is the function's name. */
++			return (p_arg2 != nullptr && sqlite3_stricmp(p_arg2, "load_extension") == 0) ? SQLITE_DENY : SQLITE_OK;
++		case SQLITE_PRAGMA:
++			/* p_arg1 is the pragma's name: only these two schema reads. */
++			return (p_arg1 != nullptr && (sqlite3_stricmp(p_arg1, "table_info") == 0 || sqlite3_stricmp(p_arg1, "foreign_key_list") == 0)) ? SQLITE_OK : SQLITE_DENY;
++		default:
++			return SQLITE_DENY;
++	}
++}
++
++bool SQLite::read_only_failure(const String &p_message) {
++	error_message = p_message;
++	return false;
++}
++
++bool SQLite::query_read_only(const String &p_query, Array param_bindings) {
++	if (read_only_running) {
++		/* Leaves the running query's rows and error alone. */
++		ERR_PRINT("GDSQLite Error: a read-only query is already running on this connection");
++		return false;
++	}
++	query_result.clear();
++	error_message = "";
++	if (db == nullptr) {
++		return read_only_failure("the database is not open");
++	}
++	for (int64_t i = 0; i < p_query.length(); i++) {
++		if (p_query[i] == 0) {
++			return read_only_failure("the query contains a NUL character");
++		}
++	}
++	read_only_running = true;
++	sqlite3_set_authorizer(db, read_only_authorizer, nullptr);
++	const bool ok = run_read_only(p_query.utf8(), param_bindings);
++	sqlite3_set_authorizer(db, nullptr, nullptr);
++	read_only_running = false;
++	if (!ok) {
++		query_result.clear();
++	}
++	return ok;
++}
++
++bool SQLite::run_read_only(const CharString &p_query, const Array &p_param_bindings) {
++	sqlite3_stmt *stmt = nullptr;
++	const char *tail = nullptr;
++	int rc = sqlite3_prepare_v2(db, p_query.get_data(), -1, &stmt, &tail);
++	if (rc != SQLITE_OK) {
++		sqlite3_finalize(stmt);
++		return read_only_failure(String::utf8(sqlite3_errmsg(db)));
++	}
++	if (stmt == nullptr) {
++		return read_only_failure("the query has no statement");
++	}
++
++	/* Whatever follows may only be whitespace, comments and empty statements,
++	 * which prepare to no statement. Checked before anything is stepped. */
++	while (tail != nullptr && *tail != '\0') {
++		sqlite3_stmt *next = nullptr;
++		const char *rest = nullptr;
++		rc = sqlite3_prepare_v2(db, tail, -1, &next, &rest);
++		if (rc != SQLITE_OK || next != nullptr) {
++			const String message = rc != SQLITE_OK ? String::utf8(sqlite3_errmsg(db)) : String("the query has more than one statement");
++			sqlite3_finalize(next);
++			sqlite3_finalize(stmt);
++			return read_only_failure(message);
++		}
++		if (rest == tail) {
++			sqlite3_finalize(stmt);
++			return read_only_failure("the query's remaining text could not be read");
++		}
++		tail = rest;
++	}
++
++	if (sqlite3_stmt_readonly(stmt) == 0) {
++		sqlite3_finalize(stmt);
++		return read_only_failure("the query would change the database");
++	}
++
++	const int parameter_count = sqlite3_bind_parameter_count(stmt);
++	if (p_param_bindings.size() != parameter_count) {
++		sqlite3_finalize(stmt);
++		return read_only_failure("the query takes " + String::num_int64(parameter_count) + " bindings, " + String::num_int64(p_param_bindings.size()) + " were given");
++	}
++	for (int i = 0; i < parameter_count; i++) {
++		const Variant value = p_param_bindings[i];
++		switch (value.get_type()) {
++			case Variant::NIL:
++				rc = sqlite3_bind_null(stmt, i + 1);
++				break;
++			case Variant::BOOL:
++			case Variant::INT:
++				rc = sqlite3_bind_int64(stmt, i + 1, int64_t(value));
++				break;
++			case Variant::FLOAT:
++				rc = sqlite3_bind_double(stmt, i + 1, value);
++				break;
++			case Variant::STRING:
++			case Variant::STRING_NAME: {
++				const CharString text = (value.operator String()).utf8();
++				rc = sqlite3_bind_text(stmt, i + 1, text.get_data(), text.length(), SQLITE_TRANSIENT);
++				break;
++			}
++			case Variant::PACKED_BYTE_ARRAY: {
++				const PackedByteArray bytes = value;
++				rc = bytes.is_empty() ? sqlite3_bind_null(stmt, i + 1) : sqlite3_bind_blob64(stmt, i + 1, bytes.ptr(), bytes.size(), SQLITE_TRANSIENT);
++				break;
++			}
++			default:
++				sqlite3_finalize(stmt);
++				return read_only_failure("binding " + String::num_int64(i + 1) + " has a type that cannot be bound");
++		}
++		if (rc != SQLITE_OK) {
++			const String message = String::utf8(sqlite3_errmsg(db));
++			sqlite3_finalize(stmt);
++			return read_only_failure(message);
++		}
++	}
++
++	const int column_count = sqlite3_column_count(stmt);
++	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
++		Dictionary row;
++		for (int i = 0; i < column_count; i++) {
++			Variant column_value;
++			switch (sqlite3_column_type(stmt, i)) {
++				case SQLITE_INTEGER:
++					column_value = (int64_t)sqlite3_column_int64(stmt, i);
++					break;
++				case SQLITE_FLOAT:
++					column_value = sqlite3_column_double(stmt, i);
++					break;
++				case SQLITE_TEXT:
++					column_value = String::utf8((const char *)sqlite3_column_text(stmt, i));
++					break;
++				case SQLITE_BLOB: {
++					PackedByteArray bytes;
++					bytes.resize(sqlite3_column_bytes(stmt, i));
++					if (bytes.size() > 0) {
++						memcpy(bytes.ptrw(), sqlite3_column_blob(stmt, i), bytes.size());
++					}
++					column_value = bytes;
++					break;
++				}
++				default:
++					break;
++			}
++			row[StringName(String::utf8(sqlite3_column_name(stmt, i)))] = column_value;
++		}
++		query_result.append(row);
++	}
++	if (rc != SQLITE_DONE) {
++		const String message = String::utf8(sqlite3_errmsg(db));
++		sqlite3_finalize(stmt);
++		return read_only_failure(message);
++	}
++	rc = sqlite3_finalize(stmt);
++	if (rc != SQLITE_OK) {
++		return read_only_failure(String::utf8(sqlite3_errmsg(db)));
++	}
++	return true;
++}
+diff --git a/src/gdsqlite.hpp b/src/gdsqlite.hpp
+index 2a7587383808137a44dbca15a52f2918ef0d75da..1239509041468e1aff768c5c38f64deff87b9dca 100644
+--- a/src/gdsqlite.hpp
++++ b/src/gdsqlite.hpp
+@@ -45,6 +45,12 @@ private:
+ 	bool execute_statement(sqlite3_stmt *stmt);
+ 	void update_error_message(int rc);
+ 
++	// query_read_only (Docket patch, third_party/patches in Docket's tree).
++	static int read_only_authorizer(void *p_user_data, int p_action, const char *p_arg1, const char *p_arg2, const char *p_database, const char *p_trigger);
++	bool run_read_only(const CharString &p_query, const Array &p_param_bindings);
++	bool read_only_failure(const String &p_message);
++	bool read_only_running = false;
++
+ 	String normalize_path(const String p_path, const bool read_only) const;
+ 	String sanitize_identifier(const String &p_name) const;
+ 
+@@ -80,6 +86,7 @@ public:
+ 	bool query(const String &p_query);
+ 	bool query_with_bindings(const String &p_query, Array param_bindings);
+ 	bool query_with_named_bindings(const String &p_query, Dictionary param_bindings);
++	bool query_read_only(const String &p_query, Array param_bindings);
+ 
+ 	bool create_table(const String &p_name, const Dictionary &p_table_dict);
+ 	bool drop_table(const String &p_name);
