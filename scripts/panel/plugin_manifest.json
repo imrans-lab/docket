@@ -1,0 +1,66 @@
+{
+	"id": "docket",
+	"name": "Docket",
+	"version": "",
+	"host_api_version": "1",
+	"backend": {
+		"transport": "stdio",
+		"entrypoint": "",
+		"args": []
+	},
+	"tools": [],
+	"ui": {
+		"panels": [
+			{
+				"name": "docket",
+				"kind": "godot_scene",
+				"entry_scene": "scripts/panel/docket_panel.tscn",
+				"scripts": [],
+				"file_extensions": [
+					".dct"
+				],
+				"ipc_channels": [
+					"docket_comment",
+					"docket_flush",
+					"docket_get",
+					"docket_item_view",
+					"docket_move",
+					"docket_project_add",
+					"docket_project_list",
+					"docket_project_meta",
+					"docket_project_remove",
+					"docket_query",
+					"docket_query_view",
+					"docket_reload",
+					"docket_type_activate",
+					"docket_type_define",
+					"docket_type_evolve",
+					"docket_type_get",
+					"docket_type_list",
+					"docket_type_overview",
+					"docket_type_validate"
+				],
+				"save_mode": "none"
+			}
+		]
+	},
+	"events": [
+		{
+			"name": "item_changed",
+			"payload_schema": {
+				"type": "object"
+			}
+		}
+	],
+	"permissions": {
+		"host_capabilities": [],
+		"network": {
+			"mode": "none"
+		},
+		"filesystem": {
+			"mode": "none",
+			"paths": []
+		}
+	},
+	"autostart": true
+}
