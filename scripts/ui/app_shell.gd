@@ -53,6 +53,10 @@ var _recent_files: PackedStringArray = []
 # External change polling
 var _poll_timer: Timer
 var _last_projects_token: String = ""
+# True while an external-change poll is running, so timer ticks do not stack.
+var _polling := false
+# Bumped by each new-item catalog rebuild, so a slower earlier one is dropped.
+var _catalog_generation := 0
 
 
 ## `source` is a DocketSource (LocalDocketSource in the standalone app).
@@ -428,6 +432,14 @@ func _on_poll_external_changes() -> void:
 	## Pick up external edits to the .dct (git pull, MCP server, another
 	## instance). Re-querying alone is not enough: the grid reads the SQLite
 	## cache, so without an actual reload it would redisplay stale rows.
+	if _polling:
+		return
+	_polling = true
+	await _poll_external_changes()
+	_polling = false
+
+
+func _poll_external_changes() -> void:
 	var current_token: String = await _src.change_token()
 	if current_token == _last_projects_token:
 		return
@@ -708,6 +720,8 @@ func _show_new_item_dialog() -> void:
 	_new_item_dialog.popup_centered(Vector2i(560, 430))
 
 func _rebuild_new_item_catalog() -> void:
+	_catalog_generation += 1
+	var generation := _catalog_generation
 	_new_item_catalog.clear()
 	_new_item_dialog.get_ok_button().disabled = false
 	_new_item_dialog.dialog_text = ""
@@ -716,6 +730,8 @@ func _rebuild_new_item_catalog() -> void:
 		return
 	var project: String = _new_item_project.get_item_text(_new_item_project.selected)
 	var listed_result: Dictionary = await _src.list_types(project)
+	if generation != _catalog_generation:
+		return
 	if listed_result.has("error"):
 		_new_item_dialog.dialog_text = str(listed_result.error)
 		_new_item_dialog.get_ok_button().disabled = true
@@ -788,7 +804,10 @@ func _open_item_entry(id: String, project: String = "") -> void:
 		var titled: Dictionary = await _src.item_title(project, id)
 		if titled.has("title"):
 			label = "[%s] %s: %s" % [project, id, str(titled.title)]
-		idx = _add_work_entry("item", label, "", id, project)
+		# Another open of the same item may have added its entry meanwhile.
+		idx = _find_item_work_entry(id, project)
+		if idx < 0:
+			idx = _add_work_entry("item", label, "", id, project)
 		_activate_work_entry(idx)
 
 

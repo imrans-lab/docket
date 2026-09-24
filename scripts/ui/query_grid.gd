@@ -107,6 +107,8 @@ var _last_context_copy_id: String = ""
 var _catalog_diagnostic: String = ""
 var _columns_menu: PopupMenu
 var _column_candidates: Array = []
+# Bumped by each columns-menu build, so a slower earlier one is dropped.
+var _columns_generation := 0
 
 # Header drag state
 var _drag_col: int = -1   # index of column whose RIGHT edge is being dragged
@@ -1088,12 +1090,20 @@ func set_result_columns(bindings: Array) -> void:
 	_populate_tree()
 
 func _show_columns_menu(anchor: Button) -> void:
-	_columns_menu.clear()
-	_column_candidates.clear()
+	_columns_generation += 1
+	var generation := _columns_generation
 	var scoped_records: Array = _column_scope_records()
+	var types: Array = []
 	for record_value in scoped_records:
 		var record: Dictionary = record_value
-		var type: Dictionary = await _src.resolve_type_ref(str(record.project), str(record.id))
+		types.append(await _src.resolve_type_ref(str(record.project), str(record.id)))
+		if generation != _columns_generation:
+			return
+	_columns_menu.clear()
+	_column_candidates.clear()
+	for i in scoped_records.size():
+		var record: Dictionary = scoped_records[i]
+		var type: Dictionary = types[i]
 		if type.has("error"):
 			continue
 		for descriptor_value in type.definition.fields:

@@ -32,6 +32,15 @@ var _loaded_definition: Dictionary = {}
 var _editor_baseline: String = ""
 # Bumped by each list refresh, so an older one finishing late is dropped.
 var _list_generation := 0
+# Bumped when a type load or draft starts (so a slower earlier one is dropped)
+# and whenever the editor switches or clears (so a preview or history view
+# begun before then drops its result).
+var _type_generation := 0
+# True while a type or project write is in flight, so a second click cannot
+# repeat it.
+var _writing := false
+## Reported when the selected project or type changed while an action waited.
+const PROJECT_CHANGED := "The selected project or type changed before this finished; nothing more was done."
 
 func init(source) -> void:
 	_src = source
@@ -201,6 +210,7 @@ func _select_project(project_name: String) -> void:
 			return
 
 func _clear_editor(message: String = "Select a type or start a new draft.") -> void:
+	_type_generation += 1
 	_editor_project = ""
 	_selected_slug = ""
 	_expected_revision = ""
@@ -265,14 +275,22 @@ func _type_selected(index: int) -> void:
 	_load_type(str(_types.get_item_metadata(index)))
 
 func _load_type(slug: String) -> void:
-	if _project_name().is_empty():
+	var project := _project_name()
+	if project.is_empty():
 		_message("Open a project before selecting a type.", true)
 		return
-	var type: Dictionary = await _src.type_with_history(_project_name(), slug)
+	_type_generation += 1
+	var generation := _type_generation
+	var type: Dictionary = await _src.type_with_history(project, slug)
+	if generation != _type_generation or project != _project_name():
+		return
 	if type.has("error"):
 		_message(str(type.error), true)
 		return
-	_editor_project = _project_name()
+	# The editor switches types only now: a preview begun while this load
+	# waited belongs to the previous one.
+	_type_generation += 1
+	_editor_project = project
 	_selected_slug = slug
 	_expected_revision = str(type.current_revision)
 	_slug.text = slug
@@ -294,7 +312,11 @@ func _history_selected(index: int) -> void:
 	if _project_name().is_empty() or _editor_project != _project_name():
 		_message("The editor does not belong to the selected project.", true)
 		return
-	var revision: Dictionary = await _src.type_revision(_project_name(), str(_history.get_item_metadata(index)))
+	var project := _project_name()
+	var generation := _type_generation
+	var revision: Dictionary = await _src.type_revision(project, str(_history.get_item_metadata(index)))
+	if generation != _type_generation or project != _project_name():
+		return
 	if revision.has("error"):
 		_message(str(revision.error), true)
 		return
@@ -307,14 +329,20 @@ func _history_selected(index: int) -> void:
 	_editor_baseline = _editor_snapshot()
 
 func _new_draft() -> void:
-	if _project_name().is_empty():
+	var project := _project_name()
+	if project.is_empty():
 		_message("Open a project before creating a type draft.", true)
 		return
-	var problem: String = await _src.types_problem(_project_name())
+	_type_generation += 1
+	var generation := _type_generation
+	var problem: String = await _src.types_problem(project)
+	if generation != _type_generation or project != _project_name():
+		return
 	if not problem.is_empty():
 		_message(problem, true)
 		return
-	_editor_project = _project_name()
+	_type_generation += 1  # as in _load_type
+	_editor_project = project
 	_selected_slug = ""
 	_expected_revision = ""
 	_slug.editable = true
@@ -360,11 +388,20 @@ func _item_ids() -> Array:
 	return result
 
 func _validate_preview() -> Dictionary:
-	if _project_name().is_empty():
+	return await _preview_for(_project_name())
+
+
+## _validate_preview for `project`. If another project or type is selected
+## while it waits, it reports PROJECT_CHANGED and previews nothing.
+func _preview_for(project: String) -> Dictionary:
+	if project.is_empty():
 		var absent := {"error":"Open a project before validating a definition."}
 		_message(absent.error, true)
 		return absent
-	var problem: String = await _src.types_problem(_project_name())
+	var generation := _type_generation
+	var problem: String = await _src.types_problem(project)
+	if project != _project_name() or generation != _type_generation:
+		return _changed()
 	if not problem.is_empty():
 		var unavailable := {"error":problem}
 		_message(unavailable.error, true)
@@ -373,56 +410,89 @@ func _validate_preview() -> Dictionary:
 	if candidate.has("error"):
 		_message(str(candidate.error), true)
 		return candidate
-	var error: String = await _src.validate_type_definition(_project_name(), candidate)
+	var error: String = await _src.validate_type_definition(project, candidate)
+	if project != _project_name() or generation != _type_generation:
+		return _changed()
 	if not error.is_empty():
 		_message(error, true)
 		return {"error":error}
 	if _selected_slug.is_empty():
 		_message("Valid draft definition. Saving will create it without allowing ordinary item creation.", false)
 		return {"definition":candidate}
-	var preview: Dictionary = await _src.preview_type_evolution(_project_name(), _selected_slug, candidate,
+	var preview: Dictionary = await _src.preview_type_evolution(project, _selected_slug, candidate,
 		_expected_revision, _item_ids())
+	if project != _project_name() or generation != _type_generation:
+		return _changed()
 	if preview.has("error"):
 		_message(str(preview.error), true)
 		return preview
 	_message("Compatible evolution preview: %d selected items will be validated and repinned. Saved-query impact: %s" % [preview.items.size(), JSON.stringify(preview.saved_query_impact)], false)
 	return preview
 
+func _changed() -> Dictionary:
+	_message(PROJECT_CHANGED, true)
+	return {"error": PROJECT_CHANGED}
+
+## Run the write `step` unless another is in flight.
+func _write_once(step: Callable) -> void:
+	if _writing:
+		return
+	_writing = true
+	await step.call()
+	_writing = false
+
 func _save_definition() -> void:
-	var preview: Dictionary = await _validate_preview()
+	await _write_once(_save_definition_now)
+
+func _save_definition_now() -> void:
+	var project := _project_name()
+	var preview: Dictionary = await _preview_for(project)
 	if preview.has("error"):
 		return
 	if _author.text.strip_edges().is_empty() or _reason.text.strip_edges().is_empty():
 		_message("Author and reason are required provenance metadata.", true)
 		return
-	if _selected_slug.is_empty():
-		var result: Dictionary = await _src.define_type(_project_name(), _slug.text.strip_edges(), preview.definition,
-			_author.text, _reason.text)
+	var slug := _selected_slug
+	if slug.is_empty():
+		slug = str(preview.definition.slug)  # the slug that was validated
+		var result: Dictionary = await _src.define_type(project, slug, preview.definition, _author.text, _reason.text)
 		if result.has("error"):
 			_message(str(result.error), true)
 			return
-		_selected_slug = _slug.text.strip_edges()
 	else:
-		var error: String = await _src.apply_type_evolution(_project_name(), preview, _author.text, _reason.text)
+		var error: String = await _src.apply_type_evolution(project, preview, _author.text, _reason.text)
 		if not error.is_empty():
 			_message(_stale_message(error), true)
 			return
-	registry_changed.emit(_project_name())
-	await _refresh_list()
-	await _load_type(_selected_slug)
+	await _after_type_write(project, slug)
 
 func _set_lifecycle(lifecycle: String) -> void:
-	if _editor_project != _project_name() or _selected_slug.is_empty():
+	await _write_once(_set_lifecycle_now.bind(lifecycle))
+
+func _set_lifecycle_now(lifecycle: String) -> void:
+	var project := _project_name()
+	var slug := _selected_slug
+	if _editor_project != project or slug.is_empty():
 		_message("Select a saved type in this project first.", true)
 		return
-	var error: String = await _src.set_type_lifecycle(_project_name(), _selected_slug, lifecycle, _expected_revision,
+	var error: String = await _src.set_type_lifecycle(project, slug, lifecycle, _expected_revision,
 		_author.text, _reason.text)
 	if not error.is_empty():
 		_message(_stale_message(error), true)
 		return
-	registry_changed.emit(_project_name())
+	await _after_type_write(project, slug)
+
+## After type `slug` of `project` was written: tell listeners, and reload the
+## list and editor if that project is still selected.
+func _after_type_write(project: String, slug: String) -> void:
+	registry_changed.emit(project)
+	if project != _project_name():
+		_message(PROJECT_CHANGED, true)
+		return
+	_type_generation += 1  # the editor now stands for `slug`
+	_selected_slug = slug
 	await _refresh_list()
-	await _load_type(_selected_slug)
+	await _load_type(slug)
 
 func _stale_message(error: String) -> String:
 	if error.contains("stale") or error.contains("source changed"):
@@ -433,10 +503,18 @@ func _stale_message(error: String) -> String:
 	return error
 
 func _promote_sqlite() -> void:
+	await _write_once(_promote_sqlite_now)
+
+func _promote_sqlite_now() -> void:
 	if not _upgrade_ack.button_pressed:
 		_message("Confirm that incompatible writers are stopped before promoting SQLite.", true)
 		return
-	var result: Dictionary = await _src.promote_project(_project_name())
+	var project := _project_name()
+	var result: Dictionary = await _src.promote_project(project)
+	if project != _project_name():
+		registry_changed.emit(project)
+		_migrated_elsewhere(project, result)
+		return
 	if not bool(result.get("success", false)):
 		_upgrade_preview = {}
 		_upgrade_ack.button_pressed = false
@@ -445,11 +523,23 @@ func _promote_sqlite() -> void:
 		return
 	_upgrade_preview = {}
 	_message("SQLite promotion complete at %s with %d items. Original backup: %s. Preview the separate JSONL 2.0 upgrade next." % [result.path, result.item_count, result.backup_path], false)
-	registry_changed.emit(_project_name())
+	registry_changed.emit(project)
 	refresh()
 
+## A migration of `project` finished after another project was selected.
+func _migrated_elsewhere(project: String, result: Dictionary) -> void:
+	var done := bool(result.get("success", result.get("ok", false)))
+	var backup := str(result.get("backup_path", ""))
+	_message("The migration of %s finished while another project was selected: %s. Backup: %s." % [project,
+		"done" if done else str(result.get("error", "failed")), backup if not backup.is_empty() else "none"], not done)
+
 func _preview_upgrade() -> void:
-	_upgrade_preview = await _src.preview_project_upgrade(_project_name())
+	var project := _project_name()
+	var preview: Dictionary = await _src.preview_project_upgrade(project)
+	if project != _project_name():
+		_changed()
+		return
+	_upgrade_preview = preview
 	if not bool(_upgrade_preview.get("ok", false)):
 		_message(str(_upgrade_preview.get("error", "upgrade preview failed")), true)
 		return
@@ -457,13 +547,22 @@ func _preview_upgrade() -> void:
 	_message("Preview only; the source was not changed. %d items will be bound to %d starter definitions. Rollback snapshot: %s. v2 cache: %s." % [_upgrade_preview.items, _upgrade_preview.definitions, _upgrade_preview.backup_path, _upgrade_preview.cache_path], false)
 
 func _apply_upgrade() -> void:
+	await _write_once(_apply_upgrade_now)
+
+func _apply_upgrade_now() -> void:
 	if _upgrade_preview.is_empty() or not bool(_upgrade_preview.get("ok", false)):
 		_message("Preview the upgrade first.", true)
 		return
 	if not _upgrade_ack.button_pressed:
 		_message("Confirm that incompatible writers are stopped before applying the upgrade.", true)
 		return
-	var result: Dictionary = await _src.apply_project_upgrade(_project_name(), _upgrade_preview)
+	var project := _project_name()
+	var result: Dictionary = await _src.apply_project_upgrade(project, _upgrade_preview)
+	if project != _project_name():
+		_upgrade_preview = {}
+		registry_changed.emit(project)
+		_migrated_elsewhere(project, result)
+		return
 	if bool(result.get("stale", false)):
 		_upgrade_preview = {}
 		_upgrade_ack.button_pressed = false
@@ -477,7 +576,7 @@ func _apply_upgrade() -> void:
 		return
 	_upgrade_preview = {}
 	_message("Upgrade complete. Rollback snapshot: %s. The project registry and cache were reopened from v2." % result.backup_path, false)
-	registry_changed.emit(_project_name())
+	registry_changed.emit(project)
 	refresh()
 
 func _message(text: String, failure: bool) -> void:
