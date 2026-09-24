@@ -1191,6 +1191,7 @@ func load_item(id: String, project: String = "") -> void:
 	# belong to the previous item, and its protected content must not linger.
 	_load_generation += 1
 	_vault.clear()
+	_clear_children()
 	_loading = true
 	_current_id = id
 	_is_draft = false
@@ -1292,6 +1293,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 	## Load an unsaved draft item into the form. Will be inserted into DB on Save.
 	_load_generation += 1
 	_vault.clear()
+	_clear_children()
 	_loading = true
 	_is_draft = true
 	_draft_item = item.duplicate(true)
@@ -1608,13 +1610,19 @@ func _label_children_toggle() -> void:
 	_children_toggle.text = "%s Children%s" % [prefix, _children_badge]
 
 
+## Drop the shown children, their count and "incomplete" mark, as the form
+## moves to another item, a draft or an error.
+func _clear_children() -> void:
+	_children_list.clear()
+	_children_badge = ""
+	_label_children_toggle()
+
+
 func _populate_children() -> void:
 	# Cleared now so no row of the previous item stays clickable, and again
 	# after the reply so two overlapping populates cannot both add rows.
-	_children_list.clear()
-	_children_badge = ""
+	_clear_children()
 	if _current_id.is_empty():
-		_label_children_toggle()
 		return
 	var generation := _load_generation
 
