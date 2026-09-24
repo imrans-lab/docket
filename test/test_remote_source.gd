@@ -1,9 +1,12 @@
 extends Node
-## The item form over RemoteDocketSource, answered by the real tool registry
-## through McpHandler as a host's connection would, with some replies held
-## back: a reply for an item the form has since moved away from must leave
-## nothing of that item on screen — not its fields, and not its children.
+## The Docket UI over RemoteDocketSource, answered by the real tool registry
+## through McpHandler as a host's connection would: with some replies held
+## back, a reply for an item the form has since moved away from must leave
+## nothing of that item on screen (not its fields, and not its children);
+## and a shell shown inside a host must leave the host's preferences and
+## theme as they were.
 
+const AppShell := preload("res://scripts/ui/app_shell.gd")
 const RecordForm := preload("res://scripts/ui/record_form.gd")
 
 const A = preload("res://test/assert_helpers.gd")
@@ -36,6 +39,29 @@ class Prefs:
 	extends RefCounted
 	func get_display_name() -> String:
 		return "Tester"
+
+
+## Host preferences that record every write made to them.
+class RecordingPrefs:
+	extends RefCounted
+	var first_name := "Host"
+	var last_name := "Person"
+	var writes: Array = []
+
+	func get_display_name() -> String:
+		return "Host Person"
+
+	func has_ui_setting(_key: String) -> bool:
+		return false
+
+	func load_ui_setting(_key: String, default_value: String) -> String:
+		return default_value
+
+	func save_ui_setting(key: String, value: String) -> void:
+		writes.append([key, value])
+
+	func save() -> void:
+		writes.append(["save"])
 
 
 func setup() -> void:
@@ -101,3 +127,30 @@ func test_late_replies_for_a_previous_item_change_nothing_on_screen() -> Variant
 	connection.release()
 	return A.eq([form._current_id, form._title_edit.text], [item_b, "Item B"],
 		"a late view of A does not replace B on the form")
+
+
+func test_a_shell_inside_a_host_leaves_its_preferences_and_theme_alone() -> Variant:
+	var db := DocketDBJsonl.create_new_jsonl("%s/embedded.dct" % DIR)
+	_dbs.append(db)
+	db.set_project_name("embedded")
+	var registry := ToolRegistry.new()
+	registry.init(TypeRegistryBootstrap.load_shipped_schema(), db, {"embedded": db})
+	var connection := HeldConnection.new()
+	connection.handler = McpHandler.new()
+	connection.handler.init_with_registry(registry)
+	var prefs := RecordingPrefs.new()
+	var source = Remote.new(connection, prefs)
+	var r = A.eq(await source.start(), "", "the remote source reads the process")
+	if r is String: return r
+	var shared := Theme.new()
+	shared.default_font_size = 13
+	var shell := AppShell.new()
+	shell.theme = shared
+	shell.init(source, true)
+	add_child(shell)
+	for i in 3:
+		await get_tree().process_frame  # the shell restores its settings as it starts
+	shell._set_font_size("large")
+	shell._on_prefs_confirmed()
+	return A.eq([prefs.writes, shared.default_font_size, shell.theme != shared, shell.theme.default_font_size],
+		[[], 13, true, 18], "font size and preferences stay in the shell; the host's theme keeps its size")

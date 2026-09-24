@@ -3,6 +3,7 @@ extends VBoxContainer
 ## query semantics; stable catalog IDs are retained while search changes what
 ## is visible, and ItemList supplies native keyboard navigation.
 
+const DocketSource := preload("docket_source.gd")
 const TypeCatalog := preload("../core/type_catalog.gd")
 
 signal selection_changed(values: Array)
@@ -13,6 +14,8 @@ var _selected: Array = []
 var _pinned: Array = []
 var _recent: Array = []
 var _project_key := ""
+# Where the pinned and recent types are remembered (a DocketSource).
+var _src
 var _button: Button
 var _popup: PopupPanel
 var _search: LineEdit
@@ -102,13 +105,15 @@ func _init() -> void:
 	content.add_child(_empty_label)
 
 
-func configure(catalog: Array, project_key: String) -> void:
+## `source` (a DocketSource) remembers the shortcuts of `project_key`.
+func configure(catalog: Array, project_key: String, source) -> void:
+	_src = source
 	_catalog = TypeCatalog.sorted(catalog)
 	_project_key = project_key
-	var shortcuts := UserPrefs.load_type_shortcuts(project_key)
+	var shortcuts: Dictionary = _src.type_shortcuts(project_key)
 	_pinned = shortcuts.pinned
 	_recent = shortcuts.recent
-	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
+	_src.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild()
 
 
@@ -118,7 +123,7 @@ func update_catalog(catalog: Array, project_key: String) -> void:
 	_catalog = TypeCatalog.sorted(catalog)
 	if project_key != _project_key:
 		_project_key = project_key
-		var shortcuts := UserPrefs.load_type_shortcuts(project_key)
+		var shortcuts: Dictionary = _src.type_shortcuts(project_key)
 		_pinned = shortcuts.pinned
 		_recent = shortcuts.recent
 	_rebuild()
@@ -272,7 +277,7 @@ func _rebuild_shortcuts() -> void:
 func _activate_shortcut(key: String) -> void:
 	if not _selected.has(key): _selected.append(key)
 	_record_recent(key)
-	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
+	_src.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild(); selection_changed.emit(selected_values())
 
 
@@ -288,7 +293,7 @@ func _on_selection_changed(index: int) -> void:
 		var key := str(_list.get_item_metadata(idx))
 		_selected.append(key)
 		_record_recent(key)
-	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
+	_src.save_type_shortcuts(_project_key, _pinned, _recent)
 	_update_summary()
 	selection_changed.emit(selected_values())
 
@@ -300,13 +305,13 @@ func _on_item_clicked(index: int, _position: Vector2, mouse_button: int) -> void
 	if _pinned.has(key):
 		_pinned.erase(key)
 	else:
-		if _pinned.size() >= UserPrefs.MAX_QUERY_TYPE_PINS:
-			_shortcut_error.text = "Pin limit reached (%d). Unpin a type before adding another." % UserPrefs.MAX_QUERY_TYPE_PINS
+		if _pinned.size() >= DocketSource.MAX_TYPE_PINS:
+			_shortcut_error.text = "Pin limit reached (%d). Unpin a type before adding another." % DocketSource.MAX_TYPE_PINS
 			_shortcut_error.visible = true
 			return
 		_pinned.append(key)
 	_shortcut_error.visible = false
-	UserPrefs.save_type_shortcuts(_project_key, _pinned, _recent)
+	_src.save_type_shortcuts(_project_key, _pinned, _recent)
 	_rebuild()
 	shortcuts_changed.emit(_pinned.duplicate(), _recent.duplicate())
 
@@ -314,5 +319,5 @@ func _on_item_clicked(index: int, _position: Vector2, mouse_button: int) -> void
 func _record_recent(key: String) -> void:
 	_recent.erase(key)
 	_recent.push_front(key)
-	if _recent.size() > UserPrefs.MAX_QUERY_TYPE_RECENTS:
-		_recent.resize(UserPrefs.MAX_QUERY_TYPE_RECENTS)
+	if _recent.size() > DocketSource.MAX_TYPE_RECENTS:
+		_recent.resize(DocketSource.MAX_TYPE_RECENTS)

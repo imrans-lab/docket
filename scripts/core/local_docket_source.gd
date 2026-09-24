@@ -129,6 +129,51 @@ func set_ui_setting(key: String, value: String) -> void:
 	UserPrefs.save_ui_setting(key, value)
 
 
+# What the UI remembers is kept per machine (UserPrefs), and the recent
+# projects in their own file.
+const _RECENTS_PATH := "user://recent_dockets.json"
+
+
+func last_query() -> Dictionary:
+	return UserPrefs.load_last_query()
+
+
+func save_last_query(filter: String, label: String) -> void:
+	UserPrefs.save_last_query(filter, label)
+
+
+func type_shortcuts(project_key: String) -> Dictionary:
+	return UserPrefs.load_type_shortcuts(project_key)
+
+
+func save_type_shortcuts(project_key: String, pinned: Array, recent: Array) -> void:
+	UserPrefs.save_type_shortcuts(project_key, pinned, recent)
+
+
+func recent_projects() -> PackedStringArray:
+	var paths := PackedStringArray()
+	if not FileAccess.file_exists(_RECENTS_PATH):
+		return paths
+	var f := FileAccess.open(_RECENTS_PATH, FileAccess.READ)
+	if not f:
+		return paths
+	var parsed = JSON.parse_string(f.get_as_text())
+	if parsed is Array:
+		for p in parsed:
+			paths.append(str(p))
+	return paths
+
+
+func save_recent_projects(paths: PackedStringArray) -> void:
+	var f := FileAccess.open(_RECENTS_PATH, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(Array(paths)))
+
+
+func save_session(paths: PackedStringArray) -> void:
+	UserPrefs.save_session(paths)
+
+
 func tool_count() -> int:
 	var registry := ToolRegistry.new()
 	registry.init(_state.schema, _state.db, _state.get_project_dbs())

@@ -10,10 +10,14 @@ var _type_names: PackedStringArray
 var _recent_sub: PopupMenu
 var _add_recent_sub: PopupMenu
 var _close_project_sub: PopupMenu
+# Inside a host: no Quit and no zoom, which belong to the host's window, and
+# no Preferences.
+var _embedded := false
 
 
-func build(type_names: PackedStringArray) -> MenuBar:
+func build(type_names: PackedStringArray, embedded := false) -> MenuBar:
 	_type_names = type_names
+	_embedded = embedded
 	menu_bar = MenuBar.new()
 	menu_bar.prefer_global_menu = false
 	menu_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -92,10 +96,10 @@ func _build_file_menu() -> void:
 	popup.add_item("Open Query...", 6)
 	popup.add_item("Save Query As...", 7)
 
-	popup.add_separator()
-
-	popup.add_item("Quit", 4)
-	popup.set_item_shortcut(popup.get_item_index(4), _make_shortcut(KEY_Q, true))
+	if not _embedded:
+		popup.add_separator()
+		popup.add_item("Quit", 4)
+		popup.set_item_shortcut(popup.get_item_index(4), _make_shortcut(KEY_Q, true))
 
 	popup.id_pressed.connect(_on_file_id_pressed)
 	menu_bar.add_child(popup)
@@ -114,16 +118,14 @@ func _build_view_menu() -> void:
 	popup.add_item("Side-by-Side", 2)
 	popup.set_item_shortcut(2, _make_shortcut(KEY_3, true))
 
-	popup.add_separator()
-
-	popup.add_item("Zoom In", 10)
-	popup.set_item_shortcut(popup.get_item_index(10), _make_shortcut(KEY_EQUAL, true))
-
-	popup.add_item("Zoom Out", 11)
-	popup.set_item_shortcut(popup.get_item_index(11), _make_shortcut(KEY_MINUS, true))
-
-	popup.add_item("Reset Zoom", 12)
-	popup.set_item_shortcut(popup.get_item_index(12), _make_shortcut(KEY_0, true))
+	if not _embedded:
+		popup.add_separator()
+		popup.add_item("Zoom In", 10)
+		popup.set_item_shortcut(popup.get_item_index(10), _make_shortcut(KEY_EQUAL, true))
+		popup.add_item("Zoom Out", 11)
+		popup.set_item_shortcut(popup.get_item_index(11), _make_shortcut(KEY_MINUS, true))
+		popup.add_item("Reset Zoom", 12)
+		popup.set_item_shortcut(popup.get_item_index(12), _make_shortcut(KEY_0, true))
 
 	popup.add_separator()
 
@@ -187,8 +189,10 @@ func _build_help_menu() -> void:
 	var popup := PopupMenu.new()
 	popup.name = "Help"
 
-	popup.add_item("Preferences...", 2)
-	popup.add_separator()
+	# The person's name and vault settings belong to the host's own.
+	if not _embedded:
+		popup.add_item("Preferences...", 2)
+		popup.add_separator()
 	popup.add_item("MCP Connection Info", 0)
 	popup.add_separator()
 	popup.add_item("About Docket", 1)

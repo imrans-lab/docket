@@ -539,7 +539,7 @@ func _add_condition_row(is_first: bool) -> void:
 	type_chooser.visible = false
 	var shortcut_projects: Array = _src.project_names().duplicate()
 	shortcut_projects.sort()
-	type_chooser.configure(_type_catalog, ",".join(shortcut_projects))
+	type_chooser.configure(_type_catalog, ",".join(shortcut_projects), _src)
 	type_chooser.selection_changed.connect(func(_values):
 		_user_has_modified = true
 		_refresh_scoped_controls()

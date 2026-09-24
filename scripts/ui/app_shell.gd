@@ -49,10 +49,16 @@ var _work_entries: Array = []
 var _current_work_idx: int = -1
 var _nav_history: Array = []  # Stack of previous _current_work_idx values
 
-# Recent files
-const _RECENTS_PATH := "user://recent_dockets.json"
+# Recent files (kept by the DocketSource)
 const _MAX_RECENTS := 5
 var _recent_files: PackedStringArray = []
+
+# Inside a host: the shell leaves the host's window, root theme and process
+# alone (no quit, title, zoom or sizing of its own), and fills its parent.
+var _embedded := false
+# Whether `theme` is the shell's own copy (made inside a host the first time
+# a font size is applied, which is at start).
+var _owns_theme := false
 
 # External change polling
 var _poll_timer: Timer
@@ -63,22 +69,27 @@ var _polling := false
 var _catalog_generation := 0
 
 
-## `source` is a DocketSource (LocalDocketSource in the standalone app).
-func init(source) -> void:
+## `source` is a DocketSource (LocalDocketSource in the standalone app);
+## `embedded` when a host shows the shell inside its own window.
+func init(source, embedded := false) -> void:
 	_src = source
+	_embedded = embedded
 	_build_ui()
 
 
 func _ready() -> void:
-	# Viewport is available now that we're in the tree.
-	size = get_viewport().get_visible_rect().size
-	get_viewport().size_changed.connect(_on_viewport_resized)
+	if _embedded:
+		set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	else:
+		# Viewport is available now that we're in the tree.
+		size = get_viewport().get_visible_rect().size
+		get_viewport().size_changed.connect(_on_viewport_resized)
 
 	# Restore persisted UI settings (zoom, font size)
 	_restore_ui_settings()
 
 	# Restore last query if available, otherwise start with "All Items"
-	var last_q := UserPrefs.load_last_query()
+	var last_q: Dictionary = _src.last_query()
 	if last_q.is_empty():
 		_add_work_entry("query", "All Items", "", "")
 	else:
@@ -95,7 +106,7 @@ func _ready() -> void:
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and not _embedded:
 		_save_current_work_state()
 		_persist_last_query()
 		get_tree().quit()
@@ -116,7 +127,7 @@ func _persist_last_query() -> void:
 				break
 	if entry.is_empty():
 		return
-	UserPrefs.save_last_query(entry.filter, entry.label)
+	_src.save_last_query(entry.filter, entry.label)
 
 
 func _build_ui() -> void:
@@ -138,7 +149,10 @@ func _build_ui() -> void:
 	var type_names := PackedStringArray()
 	for t in type_keys:
 		type_names.append(t)
-	var mbar := _menu_builder.build(type_names)
+	var mbar := _menu_builder.build(type_names, _embedded)
+	if _embedded:
+		# Menu shortcuts too act only while focus is within the shell.
+		mbar.shortcut_context = self
 
 	_load_recent_files()
 	_menu_builder.set_recent_files(_recent_files)
@@ -607,6 +621,8 @@ func _on_menu_action(action: String) -> void:
 			_save_recent_files()
 			_menu_builder.set_recent_files(_recent_files)
 		"quit":
+			if _embedded:
+				return
 			_save_current_work_state()
 			_persist_last_query()
 			get_tree().quit()
@@ -662,13 +678,10 @@ func _on_new_file_selected(path: String) -> void:
 
 
 func _update_window_title() -> void:
-	if _src.primary_path().is_empty():
-		DisplayServer.window_set_title("Docket")
-		_file_label.text = ""
-	else:
-		var fname: String = _src.primary_path().get_file()
-		DisplayServer.window_set_title("Docket — %s" % fname)
-		_file_label.text = fname
+	var fname: String = _src.primary_path().get_file()
+	_file_label.text = fname
+	if not _embedded:
+		DisplayServer.window_set_title("Docket — %s" % fname if not fname.is_empty() else "Docket")
 
 
 func _update_project_menu() -> void:
@@ -688,7 +701,7 @@ func _save_session() -> void:
 		var p: String = project_paths[proj_name]
 		if not p.is_empty():
 			paths.append(ProjectSettings.globalize_path(p) if p.begins_with("res://") else p)
-	UserPrefs.save_session(paths)
+	_src.save_session(paths)
 
 
 # -- Grid/form callbacks ---------------------------------------------------
@@ -850,6 +863,11 @@ func _on_back_pressed() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Inside a host, keys are the shell's only while focus is within it.
+	if _embedded:
+		var focused := get_viewport().gui_get_focus_owner()
+		if focused == null or not is_ancestor_of(focused):
+			return
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_ESCAPE and _current_mode == ViewMode.DETAIL:
 			_on_back_pressed()
@@ -918,6 +936,8 @@ func _zoom_reset() -> void:
 
 
 func _apply_zoom() -> void:
+	if _embedded:
+		return
 	var zoom_factor: float = _ZOOM_LEVELS[_current_zoom_idx]
 	get_tree().root.content_scale_factor = zoom_factor
 	_src.set_ui_setting("ui_scale", str(zoom_factor))
@@ -925,9 +945,21 @@ func _apply_zoom() -> void:
 
 func _set_font_size(preset: String) -> void:
 	_current_font_size = preset
-	var font_sz: int = _FONT_SIZES.get(preset, 14)
-	get_tree().root.add_theme_font_size_override("font_size", font_sz)
+	_apply_font_size(_FONT_SIZES.get(preset, 14))
 	_src.set_ui_setting("ui_font_size", preset)
+
+
+# The window's font size in the standalone app; inside a host, only the
+# shell's own: a theme of its own (a copy of any it was given, which may be
+# shared), which its children inherit.
+func _apply_font_size(font_size: int) -> void:
+	if not _embedded:
+		get_tree().root.add_theme_font_size_override("font_size", font_size)
+		return
+	if not _owns_theme:
+		theme = theme.duplicate() if theme != null else Theme.new()
+		_owns_theme = true
+	theme.default_font_size = font_size
 
 
 ## Apply the zoom and font size kept for this machine. Run again when the
@@ -940,12 +972,12 @@ func _restore_ui_settings() -> void:
 		if absf(_ZOOM_LEVELS[i] - zoom_factor) < 0.01:
 			_current_zoom_idx = i
 			break
-	get_tree().root.content_scale_factor = zoom_factor
+	if not _embedded:
+		get_tree().root.content_scale_factor = zoom_factor
 
 	var font_preset: String = await _src.ui_setting("ui_font_size", "medium")
 	_current_font_size = font_preset
-	var font_size: int = _FONT_SIZES.get(font_preset, 14)
-	get_tree().root.add_theme_font_size_override("font_size", font_size)
+	_apply_font_size(_FONT_SIZES.get(font_preset, 14))
 
 
 func _show_mcp_info() -> void:
@@ -1034,6 +1066,8 @@ func _show_preferences() -> void:
 
 
 func _on_prefs_confirmed() -> void:
+	if _embedded:
+		return  # the host keeps the person's preferences
 	_src.prefs().first_name = _prefs_first.text.strip_edges()
 	_src.prefs().last_name = _prefs_last.text.strip_edges()
 	_src.prefs().save()
@@ -1050,25 +1084,11 @@ func _on_viewport_resized() -> void:
 
 
 func _load_recent_files() -> void:
-	_recent_files = PackedStringArray()
-	if not FileAccess.file_exists(_RECENTS_PATH):
-		return
-	var f := FileAccess.open(_RECENTS_PATH, FileAccess.READ)
-	if not f:
-		return
-	var parsed = JSON.parse_string(f.get_as_text())
-	if parsed is Array:
-		for p in parsed:
-			_recent_files.append(str(p))
+	_recent_files = _src.recent_projects()
 
 
 func _save_recent_files() -> void:
-	var arr: Array = []
-	for p in _recent_files:
-		arr.append(p)
-	var f := FileAccess.open(_RECENTS_PATH, FileAccess.WRITE)
-	if f:
-		f.store_string(JSON.stringify(arr))
+	_src.save_recent_projects(_recent_files)
 
 
 func _add_to_recent(path: String) -> void:

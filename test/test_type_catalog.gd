@@ -7,6 +7,7 @@ const QueryGrid := preload("res://scripts/ui/query_grid.gd")
 const QueryTypeScope := preload("res://scripts/core/query_type_scope.gd")
 const TypeCatalog := preload("res://scripts/core/type_catalog.gd")
 const TypeChooser := preload("res://scripts/ui/type_chooser.gd")
+const DocketSource := preload("res://scripts/ui/docket_source.gd")
 
 var A := AssertHelpers
 var _db_dir := "user://test_type_catalog"
@@ -197,7 +198,7 @@ func test_type_chooser_keeps_selection_when_search_hides_it() -> Variant:
 	var chooser := TypeChooser.new()
 	add_child(chooser)
 	var catalog := TypeCatalog.from_schema(_schema(), "alpha")
-	chooser.configure(catalog, "chooser-test")
+	chooser.configure(catalog, "chooser-test", DocketSource.new())
 	var keys := [catalog[0].key, catalog[1].key]
 	chooser.set_selected_values(keys)
 	chooser._search.text = "approval"
@@ -208,7 +209,7 @@ func test_type_chooser_keeps_selection_when_search_hides_it() -> Variant:
 
 func test_type_chooser_supports_focusable_keyboard_multiselect() -> Variant:
 	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "keyboard-test")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "keyboard-test", DocketSource.new())
 	var original_count := chooser._list.item_count
 	chooser._list.select(0, false); chooser._on_selection_changed(0)
 	chooser._list.select(1, false); chooser._on_selection_changed(1)
@@ -225,7 +226,7 @@ func test_type_chooser_supports_focusable_keyboard_multiselect() -> Variant:
 	chooser.queue_free(); return r
 
 func test_search_down_then_space_moves_focus_and_selects_catalog_value() -> Variant:
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha"), "input-test")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha"), "input-test", DocketSource.new())
 	chooser._search.grab_focus()
 	var down := InputEventKey.new(); down.pressed = true; down.keycode = KEY_DOWN
 	chooser._on_search_gui_input(down)
@@ -254,7 +255,7 @@ func test_popup_opens_below_anchor_with_opaque_bounded_content() -> Variant:
 		var slug := "popup_type_%03d" % i
 		large_schema.types[slug] = {"label": "Popup Type %03d" % i, "description": "Purpose for popup catalog type %03d" % i, "states": []}
 	var catalog: Array = TypeCatalog.from_schema(large_schema, "Alpha")
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "popup-test")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "popup-test", DocketSource.new())
 	var selected: Array = []
 	for i in 100: selected.append(catalog[i].key)
 	chooser.set_selected_values(selected)
@@ -317,7 +318,7 @@ func test_query_grid_large_selection_keeps_row_bounded_and_full_identity_detail(
 	grid.queue_free(); return r
 
 func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha", {"discussion": 1}), "row-test")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(TypeCatalog.from_schema(_schema(), "Alpha", {"discussion": 1}), "row-test", DocketSource.new())
 	var discussion_index := -1
 	for i in chooser._list.item_count:
 		if chooser._list.get_item_text(i).begins_with("discussion"): discussion_index = i
@@ -349,7 +350,7 @@ func test_query_grid_refreshes_empty_catalog_after_loading_legacy_project() -> V
 func test_duplicate_slug_selection_uses_catalog_identity_and_human_label() -> Variant:
 	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
 	catalog.append_array(TypeCatalog.from_schema(_schema(), "Beta"))
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "duplicate-test")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "duplicate-test", DocketSource.new())
 	var alpha_key := ""
 	for record in catalog:
 		if record.project == "Alpha" and record.slug == "discussion": alpha_key = record.key
@@ -361,7 +362,7 @@ func test_duplicate_slug_selection_uses_catalog_identity_and_human_label() -> Va
 
 func test_shortcut_button_selects_type_without_reordering_catalog() -> Variant:
 	var catalog := TypeCatalog.from_schema(_schema(), "Alpha")
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "shortcut-test")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "shortcut-test", DocketSource.new())
 	var key: String = str(catalog[0].key)
 	chooser._pinned = [key]; chooser._rebuild()
 	var before := []
@@ -375,7 +376,7 @@ func test_shortcut_button_selects_type_without_reordering_catalog() -> Variant:
 	chooser.queue_free(); return r
 
 func test_unknown_historical_selection_remains_visible() -> Variant:
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure([], "unknown-test")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure([], "unknown-test", DocketSource.new())
 	chooser.set_selected_values(["retired-type-id"])
 	var r = A.is_true(chooser._button.text.contains("Unknown historical type"), "unknown selection is visible")
 	chooser.queue_free(); return r
@@ -461,7 +462,7 @@ func test_shortcut_actions_enforce_caps_and_persist_recency_order() -> Variant:
 	var schema := {"types": {}}
 	for i in 55: schema.types["kind_%02d" % i] = {"label": "Kind %02d" % i, "states": []}
 	var catalog := TypeCatalog.from_schema(schema, "Alpha")
-	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "shortcut-boundary")
+	var chooser := TypeChooser.new(); add_child(chooser); chooser.configure(catalog, "shortcut-boundary", LocalDocketSource.new(_two_project_state()))
 	for i in 14:
 		chooser._list.deselect_all(); chooser._list.select(i); chooser._on_selection_changed(i)
 	var r = A.eq(chooser._recent.size(), UserPrefs.MAX_QUERY_TYPE_RECENTS, "normal selection caps recents")

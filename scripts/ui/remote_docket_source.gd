@@ -38,21 +38,22 @@ var _refresh_error := ""
 signal _snapshot_refreshed
 
 
-## `prefs` is the host's per-person settings on this machine, as UserPrefs:
-## get_display_name() for authorship, and has_ui_setting(key),
-## load_ui_setting(key, default) and save_ui_setting(key, value) for display
-## settings (without these, display settings are not kept).
+## `prefs` is the host's per-person settings on this machine, read only:
+## get_display_name() for authorship (this source never writes them).
 func _init(connection, prefs) -> void:
 	_connection = connection
 	_prefs = prefs
 
 
-## Read the open projects and their types: "" or why the process could not
-## be read.
+## Read the schema and the open projects and their types: "" or why not.
 func start() -> String:
-	var schema_text := FileAccess.get_file_as_string("res://data/schema.json")
-	var parsed = JSON.parse_string(schema_text)
-	_schema = parsed if parsed is Dictionary else {}
+	# The schema ships beside the UI (data/ next to scripts/), wherever the
+	# UI's files are.
+	var schema_path: String = get_script().resource_path.get_base_dir().path_join("../../data/schema.json").simplify_path()
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(schema_path))
+	if not parsed is Dictionary:
+		return "the Docket schema could not be read at %s" % schema_path
+	_schema = parsed
 	return await _refresh_snapshot()
 
 
@@ -202,31 +203,29 @@ func tool_count() -> int:
 	return tools.size()
 
 
-## Kept in the host's per-machine prefs. A value not stored there yet is taken
-## once from the primary project's file, where earlier versions kept it.
+## Kept by this source while it lives (never in the host's preferences); a
+## value not set yet is taken once from the primary project's file.
 func ui_setting(key: String, default_value: String) -> String:
-	if not _prefs.has_method("has_ui_setting"):
-		return default_value
-	if _prefs.has_ui_setting(key):
-		return _prefs.load_ui_setting(key, default_value)
+	var settings: Dictionary = _remembered.get_or_add("ui_settings", {})
+	if settings.has(key):
+		return settings[key]
 	var primary := primary_project()
 	if primary.is_empty():
 		return default_value
 	var meta := await _call("docket_project_meta", {"action": "get", "project": primary})
-	if _prefs.has_ui_setting(key):  # set meanwhile, by the user or another read
-		return _prefs.load_ui_setting(key, default_value)
+	if settings.has(key):  # set meanwhile, by the user or another read
+		return settings[key]
 	if primary_project() != primary:  # the value comes from the current primary
 		return await ui_setting(key, default_value)
 	var inherited := str(meta.get("display", {}).get(key, "")) if meta.get("display") is Dictionary else ""
 	if inherited.is_empty():
 		return default_value
-	_prefs.save_ui_setting(key, inherited)
+	settings[key] = inherited
 	return inherited
 
 
 func set_ui_setting(key: String, value: String) -> void:
-	if _prefs.has_method("save_ui_setting"):
-		_prefs.save_ui_setting(key, value)
+	_remembered.get_or_add("ui_settings", {})[key] = value
 
 
 func prefs():

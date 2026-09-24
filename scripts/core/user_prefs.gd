@@ -4,8 +4,10 @@ class_name UserPrefs
 ## Provides display name and initials for comments/authorship.
 
 const _PREFS_PATH := "user://docket_prefs.json"
-const MAX_QUERY_TYPE_PINS := 50
-const MAX_QUERY_TYPE_RECENTS := 12
+# The limits are the UI's (DocketSource).
+const _Source := preload("res://scripts/ui/docket_source.gd")
+const MAX_QUERY_TYPE_PINS := _Source.MAX_TYPE_PINS
+const MAX_QUERY_TYPE_RECENTS := _Source.MAX_TYPE_RECENTS
 
 var first_name: String = ""
 var last_name: String = ""

@@ -111,6 +111,54 @@ func tool_count() -> int:
 	return 0
 
 
+# -- What the UI remembers for the person -----------------------------------------
+#
+# Answered at once. The standalone app keeps these per machine
+# (LocalDocketSource); a source with nowhere of its own to keep them, such as
+# one inside a host, keeps them only while it lives, so it never writes the
+# host's files.
+
+## The most types the query type chooser keeps pinned, and recently used.
+const MAX_TYPE_PINS := 50
+const MAX_TYPE_RECENTS := 12
+
+var _remembered := {}
+
+
+## The last query shown, {filter, label}, or {} when there is none.
+func last_query() -> Dictionary:
+	return _remembered.get("last_query", {}).duplicate()
+
+
+func save_last_query(filter: String, label: String) -> void:
+	_remembered["last_query"] = {"filter": filter, "label": label}
+
+
+## The type chooser's shortcuts for `project_key`: {pinned, recent}.
+func type_shortcuts(project_key: String) -> Dictionary:
+	var shortcuts: Dictionary = _remembered.get("type_shortcuts", {})
+	return shortcuts.get(project_key, {"pinned": [], "recent": []}).duplicate(true)
+
+
+func save_type_shortcuts(project_key: String, pinned: Array, recent: Array) -> void:
+	var shortcuts: Dictionary = _remembered.get_or_add("type_shortcuts", {})
+	shortcuts[project_key] = {"pinned": pinned.slice(0, MAX_TYPE_PINS), "recent": recent.slice(0, MAX_TYPE_RECENTS)}
+
+
+## The project files opened recently, most recent first.
+func recent_projects() -> PackedStringArray:
+	return _remembered.get("recent_projects", PackedStringArray())
+
+
+func save_recent_projects(paths: PackedStringArray) -> void:
+	_remembered["recent_projects"] = paths
+
+
+## Remember `paths` as the projects to open at the next start.
+func save_session(_paths: PackedStringArray) -> void:
+	pass
+
+
 # -- Items --------------------------------------------------------------------------
 
 ## Item `id`'s current revision token, "" when it is gone.
