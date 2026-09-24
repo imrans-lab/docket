@@ -722,19 +722,21 @@ func _show_new_item_dialog() -> void:
 func _rebuild_new_item_catalog() -> void:
 	_catalog_generation += 1
 	var generation := _catalog_generation
+	# The previous project's entries go at once, and OK waits for this one's.
 	_new_item_catalog.clear()
-	_new_item_dialog.get_ok_button().disabled = false
+	_filter_new_item_catalog()
+	_new_item_dialog.get_ok_button().disabled = true
 	_new_item_dialog.dialog_text = ""
 	if _new_item_project.item_count == 0:
-		_filter_new_item_catalog()
+		_new_item_dialog.get_ok_button().disabled = false
 		return
 	var project: String = _new_item_project.get_item_text(_new_item_project.selected)
 	var listed_result: Dictionary = await _src.list_types(project)
 	if generation != _catalog_generation:
 		return
+	_new_item_dialog.get_ok_button().disabled = listed_result.has("error")
 	if listed_result.has("error"):
 		_new_item_dialog.dialog_text = str(listed_result.error)
-		_new_item_dialog.get_ok_button().disabled = true
 		_filter_new_item_catalog()
 		return
 	for type_value in listed_result.types:

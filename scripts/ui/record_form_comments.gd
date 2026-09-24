@@ -36,10 +36,11 @@ func submit(parent_id: int = 0) -> void:
 	if added.has("error"):
 		_form._show_error("Comment not added", str(added.error))  # the typed text stays
 		return
+	if not _form._still_showing(generation):
+		return  # the input now belongs to another item
 	if _form._comment_input.text.strip_edges() == text:
 		_form._comment_input.text = ""
-	if _form._still_showing(generation):
-		_refresh()
+	_refresh()
 
 
 func _resolve(comment_id: int, resolution: String) -> void:

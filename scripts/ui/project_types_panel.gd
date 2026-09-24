@@ -32,9 +32,9 @@ var _loaded_definition: Dictionary = {}
 var _editor_baseline: String = ""
 # Bumped by each list refresh, so an older one finishing late is dropped.
 var _list_generation := 0
-# Bumped when a type load or draft starts (so a slower earlier one is dropped)
-# and whenever the editor switches or clears (so a preview or history view
-# begun before then drops its result).
+# Bumped when a type load, draft or history view starts (so a slower earlier
+# one is dropped) and whenever the editor switches or clears (so a preview,
+# history view or post-write reload begun before then drops its result).
 var _type_generation := 0
 # True while a type or project write is in flight, so a second click cannot
 # repeat it.
@@ -313,9 +313,16 @@ func _history_selected(index: int) -> void:
 		_message("The editor does not belong to the selected project.", true)
 		return
 	var project := _project_name()
+	# Each history view supersedes earlier ones, and edits made while it
+	# waits are kept rather than replaced.
+	_type_generation += 1
 	var generation := _type_generation
+	var edited := _editor_snapshot()
 	var revision: Dictionary = await _src.type_revision(project, str(_history.get_item_metadata(index)))
 	if generation != _type_generation or project != _project_name():
+		return
+	if _editor_snapshot() != edited:
+		_message("The editor changed while the revision loaded; it was not replaced.", true)
 		return
 	if revision.has("error"):
 		_message(str(revision.error), true)
@@ -446,6 +453,8 @@ func _save_definition() -> void:
 
 func _save_definition_now() -> void:
 	var project := _project_name()
+	var owner := _type_generation
+	var written := _editor_snapshot()
 	var preview: Dictionary = await _preview_for(project)
 	if preview.has("error"):
 		return
@@ -464,7 +473,7 @@ func _save_definition_now() -> void:
 		if not error.is_empty():
 			_message(_stale_message(error), true)
 			return
-	await _after_type_write(project, slug)
+	await _after_type_write(project, slug, owner, written)
 
 func _set_lifecycle(lifecycle: String) -> void:
 	await _write_once(_set_lifecycle_now.bind(lifecycle))
@@ -472,6 +481,8 @@ func _set_lifecycle(lifecycle: String) -> void:
 func _set_lifecycle_now(lifecycle: String) -> void:
 	var project := _project_name()
 	var slug := _selected_slug
+	var owner := _type_generation
+	var written := _editor_snapshot()
 	if _editor_project != project or slug.is_empty():
 		_message("Select a saved type in this project first.", true)
 		return
@@ -480,19 +491,25 @@ func _set_lifecycle_now(lifecycle: String) -> void:
 	if not error.is_empty():
 		_message(_stale_message(error), true)
 		return
-	await _after_type_write(project, slug)
+	await _after_type_write(project, slug, owner, written)
 
-## After type `slug` of `project` was written: tell listeners, and reload the
-## list and editor if that project is still selected.
-func _after_type_write(project: String, slug: String) -> void:
+## After type `slug` of `project` was written from the editor as it stood at
+## `owner` (a _type_generation) with contents `written` (_editor_snapshot):
+## tell listeners, and reload the list and the editor unless the user has
+## since moved the editor or the project on, or edited it.
+func _after_type_write(project: String, slug: String, owner: int, written: String) -> void:
 	registry_changed.emit(project)
-	if project != _project_name():
-		_message(PROJECT_CHANGED, true)
+	if project != _project_name() or owner != _type_generation or _editor_snapshot() != written:
+		_message("%s was saved; the editor has changed since, so it was not reloaded." % slug, false)
+		if project == _project_name():
+			await _refresh_list()
 		return
 	_type_generation += 1  # the editor now stands for `slug`
+	var reloading := _type_generation
 	_selected_slug = slug
 	await _refresh_list()
-	await _load_type(slug)
+	if project == _project_name() and reloading == _type_generation:
+		await _load_type(slug)
 
 func _stale_message(error: String) -> String:
 	if error.contains("stale") or error.contains("source changed"):

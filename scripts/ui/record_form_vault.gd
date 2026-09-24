@@ -5,10 +5,52 @@ extends RefCounted
 ## form's own controls.
 
 var _form  # RecordForm
+# The form generation whose protected content finished loading, and which
+# parts ("value", "notes") did; a protected item is saved only once all its
+# parts (a secret's value and notes, an encrypted note's notes) loaded for
+# the item shown.
+var _loaded_generation := -1
+var _loaded_parts: Array[String] = []
 
 
 func _init(form) -> void:
 	_form = form
+
+
+## Forget everything protected the form showed or decrypted, as it moves to
+## another item or clears.
+func clear() -> void:
+	_form._secret_value_edit.text = ""
+	_form._secret_value_edit.secret = true
+	_form._secret_show_btn.text = "Show"
+	_form._secret_show_btn.button_pressed = false
+	_form._secret_value_decrypted = ""
+	_form._secret_2fa_check.button_pressed = false
+	_form._secret_vault_error_label.text = ""
+	_form._secret_vault_error_label.visible = false
+	_form._encrypted_notes_edit.text = ""
+	_form._encrypted_notes_decrypted = ""
+	_form._encrypted_notes_show_btn.text = "Show"
+	_form._encrypted_notes_show_btn.button_pressed = false
+	for child in _form._secret_history_container.get_children():
+		child.queue_free()
+	_loaded_generation = -1
+	_loaded_parts.clear()
+
+
+func _mark_loaded(generation: int, part: String) -> void:
+	if generation != _loaded_generation:
+		_loaded_generation = generation
+		_loaded_parts.clear()
+	_loaded_parts.append(part)
+
+
+## Whether the protected content of the item shown (of type `type_name`) has
+## loaded, so a save cannot overwrite it with what the form did not read.
+func _content_loaded(type_name: String) -> bool:
+	if _loaded_generation != _form._load_generation or not _loaded_parts.has("notes"):
+		return false
+	return type_name != "secret" or _loaded_parts.has("value")
 
 
 func _show_vault_error(msg: String) -> void:
@@ -34,6 +76,7 @@ func _load_secret_value() -> void:
 	if not info.exists:
 		_form._secret_value_edit.text = ""
 		_form._secret_value_decrypted = ""
+		_mark_loaded(generation, "value")
 		return
 
 	_form._secret_2fa_check.button_pressed = info.requires_2fa
@@ -43,9 +86,11 @@ func _load_secret_value() -> void:
 		if not _form._still_showing(generation):
 			return
 		if secondary_pw.is_empty():
+			# Left masked: a save keeps the stored value.
 			_form._secret_value_edit.text = "********"
 			_form._secret_value_decrypted = ""
 			_show_vault_error("Secondary password required to view secret.")
+			_mark_loaded(generation, "value")
 			return
 	var read: Dictionary = await _form._src.read_secret(project, id, secondary_pw, true)
 	if not _form._still_showing(generation):
@@ -58,6 +103,7 @@ func _load_secret_value() -> void:
 	_form._secret_value_edit.text = "********"
 	_form._secret_value_edit.secret = true
 	_form._secret_show_btn.text = "Show"
+	_mark_loaded(generation, "value")
 	_form._secret_show_btn.button_pressed = false
 
 
@@ -67,7 +113,11 @@ func _load_encrypted_notes(handle: String) -> void:
 	var read: Dictionary = await _form._src.read_secret(_form._current_project, handle)
 	if not _form._still_showing(generation):
 		return
-	if read.has("error") or str(read.value).is_empty():
+	if read.has("error"):
+		_show_vault_error(str(read.error))
+		return
+	_mark_loaded(generation, "notes")
+	if str(read.value).is_empty():
 		_form._encrypted_notes_edit.text = ""
 		_form._encrypted_notes_decrypted = ""
 		return
@@ -146,10 +196,17 @@ func _on_history_copy(ver: Dictionary) -> void:
 ## secondary password when a new 2FA value is set. {error} when the vault
 ## cannot take it or no secondary password is given.
 func _secret_input(item_id: String, type_name: String) -> Dictionary:
+	var generation: int = _form._load_generation
 	var problem: String = await _form._src.vault_problem(_form._current_project if not _form._current_project.is_empty() else _form._selected_project())
+	if not _form._still_showing(generation):
+		return {"error": _form.MOVED_ON}  # the caller drops it; nothing is shown
 	if not problem.is_empty():
 		_show_vault_error(problem)
 		return {"error": problem}
+	if not item_id.is_empty() and not _content_loaded(type_name):
+		var unread := "Its protected content has not loaded, so saving could overwrite it. Reopen the item and try again."
+		_show_vault_error(unread)
+		return {"error": unread}
 	var secret := {"type": type_name, "requires_2fa": _form._secret_2fa_check.button_pressed}
 	if type_name == "secret":
 		var new_value: String = _form._secret_value_edit.text

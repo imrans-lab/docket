@@ -221,18 +221,7 @@ func _clear_fields() -> void:
 	# Non-mapped fields
 	_parent_edit.text = ""
 	_identity_edit.text = ""
-	_secret_value_edit.text = ""
-	_secret_value_edit.secret = true
-	_secret_show_btn.text = "Show"
-	_secret_value_decrypted = ""
-	_secret_2fa_check.button_pressed = false
-	_secret_vault_error_label.text = ""
-	_secret_vault_error_label.visible = false
-	_encrypted_notes_edit.text = ""
-	_encrypted_notes_decrypted = ""
-	_encrypted_notes_show_btn.text = "Show"
-	for child in _secret_history_container.get_children():
-		child.queue_free()
+	_vault.clear()
 	_hide_all_optional_fields()
 	for child in _transition_bar.get_children():
 		child.queue_free()
@@ -1198,8 +1187,9 @@ func load_item(id: String, project: String = "") -> void:
 	if generation != _load_generation:
 		return
 	# The form switches items only now: steps begun while this load waited
-	# belong to the previous item.
+	# belong to the previous item, and its protected content must not linger.
 	_load_generation += 1
+	_vault.clear()
 	_loading = true
 	_current_id = id
 	_is_draft = false
@@ -1300,6 +1290,7 @@ func load_item(id: String, project: String = "") -> void:
 func load_draft(type_name: String, item: Dictionary, project: String = "") -> void:
 	## Load an unsaved draft item into the form. Will be inserted into DB on Save.
 	_load_generation += 1
+	_vault.clear()
 	_loading = true
 	_is_draft = true
 	_draft_item = item.duplicate(true)
@@ -1365,13 +1356,6 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 	_blocked_by_edit.text = ""
 	_parent_edit.text = ""
 	_identity_edit.text = ""
-	_secret_value_edit.text = ""
-	_secret_value_edit.secret = true
-	_secret_show_btn.text = "Show"
-	_secret_value_decrypted = ""
-	_secret_2fa_check.button_pressed = false
-	_encrypted_notes_edit.text = ""
-	_encrypted_notes_decrypted = ""
 	_command_edit.text = ""
 	_usage_edit.text = ""
 	_prompt_text_edit.text = ""
