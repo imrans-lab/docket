@@ -380,9 +380,15 @@ const _ITEM_COLS: Array = [
 ]
 
 
-func insert_item(id: String, item: Dictionary) -> String:
-	## Inserts an item into the database. Returns "" on success, error message on failure.
-	# Insert main row
+## Inserts item `id` with its tags, events and links, as one change within a
+## step of `op` (or an operation of its own): "" or why not.
+func insert_item(id: String, item: Dictionary, op: RefCounted = null) -> String:
+	return run_change(op, _insert_item.bind(id, item))
+
+
+# The rows, within `step`: inside a transaction any failed write fails it
+# (_write); outside one (a cache rebuild) it is kept in _last_sql_error.
+func _insert_item(step: RefCounted, id: String, item: Dictionary) -> String:
 	if item.has("fields_json") or item.has("extras_json"): return "internal envelope columns are not accepted as item input"
 	var stored_item := item.duplicate(true)
 	var fields: Dictionary = stored_item.get("fields", {}) if stored_item.get("fields", {}) is Dictionary else {}
@@ -413,7 +419,7 @@ func insert_item(id: String, item: Dictionary) -> String:
 			placeholders.append("?")
 			bindings.append(stored_item[col] if col in ["fields_json", "extras_json"] else _normalize_text(stored_item[col]))
 	var sql := "INSERT INTO items (%s) VALUES (%s);" % [",".join(cols), ",".join(placeholders)]
-	var err := _exec_checked(sql, bindings)
+	var err := _write_checked(step, sql, bindings)
 	if not err.is_empty():
 		return err
 
@@ -421,12 +427,12 @@ func insert_item(id: String, item: Dictionary) -> String:
 	var tags_raw = item.get("tags", [])
 	var tags: Array = tags_raw if tags_raw is Array else []
 	for tag in tags:
-		_exec("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
+		_write(step, "INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
 
 	# Events
 	var events: Array = item.get("events", [])
 	for ev in events:
-		_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
+		_write(step, "INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 			[id, str(ev.get("event_type", "")), str(ev.get("actor", "")),
 			 str(ev.get("timestamp", "")), str(ev.get("note", ""))])
 
@@ -436,7 +442,7 @@ func insert_item(id: String, item: Dictionary) -> String:
 		var to_id: String = str(link.get("to", ""))
 		var relation: String = str(link.get("relation", ""))
 		if not to_id.is_empty() and not relation.is_empty():
-			_exec("INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);",
+			_write(step, "INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);",
 				[id, to_id, relation])
 
 	return ""
@@ -455,12 +461,21 @@ func has_item(id: String) -> bool:
 
 
 func update_item_fields(id: String, changes: Dictionary) -> void:
-	update_item_fields_checked(id, changes)
+	var error := update_item_fields_checked(id, changes)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
 
 
-func update_item_fields_checked(id: String, changes: Dictionary) -> String:
+## Applies `changes` to item `id` (columns, `fields`/`extras` merged into the
+## stored envelopes, `unset_fields`/`unset_extras` removed from them, `tags`
+## replaced), as one change within a step of `op` (or an operation of its
+## own): "" or why not.
+func update_item_fields_checked(id: String, changes: Dictionary, op: RefCounted = null) -> String:
 	if changes.is_empty():
 		return ""
+	return run_change(op, _update_item_fields.bind(id, changes))
+
+
+func _update_item_fields(step: RefCounted, id: String, changes: Dictionary) -> String:
 	if changes.has("fields_json") or changes.has("extras_json"): return "internal envelope columns are not accepted as item input"
 	var field_changes = changes.get("fields", {})
 	var extra_changes = changes.get("extras", {})
@@ -521,25 +536,18 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 		bindings.append(stored_changes[col] if col in ["fields_json", "extras_json"] else _normalize_text(stored_changes[col]))
 	if sets.size() > 0:
 		bindings.append(id)
-		var error := _exec_checked("UPDATE items SET %s WHERE id=?;" % ",".join(sets), bindings)
+		var error := _write_checked(step, "UPDATE items SET %s WHERE id=?;" % ",".join(sets), bindings)
 		if not error.is_empty(): return error
 
 	# Handle tags replacement
 	if changes.has("tags"):
-		var error := _exec_checked("DELETE FROM item_tags WHERE item_id=?;", [id])
+		var error := _write_checked(step, "DELETE FROM item_tags WHERE item_id=?;", [id])
 		if not error.is_empty(): return error
 		var tags: Array = changes["tags"]
 		for tag in tags:
-			error = _exec_checked("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
+			error = _write_checked(step, "INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
 			if not error.is_empty(): return error
 	return ""
-
-
-func set_item_field(id: String, field: String, val) -> void:
-	if field == "tags":
-		update_item_fields(id, {"tags": val})
-	else:
-		_exec("UPDATE items SET %s=? WHERE id=?;" % field, [_normalize_text(val), id])
 
 
 # -- Full item export/import/delete (for cross-project moves) -----------------
@@ -786,40 +794,37 @@ func _delete_item_rows(step: RefCounted, id: String) -> String:
 
 
 func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:
-	## Rewrite parent and blocked_by references from old to new.
-	## Returns the total number of rows updated.
-	var count := 0
+	var result := rewrite_refs_checked(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare, rewrite_bare)
+	if not str(result.error).is_empty(): push_error("DocketDB: %s" % result.error)
+	return int(result.count)
+
+
+## Rewrites parent, blocked_by and link references from the old id to the new
+## one (the bare id too, when `rewrite_bare`), as one change within a step of
+## `op` (or an operation of its own): {count, error}, `count` the rows
+## rewritten (0 on failure). Each item whose references changed is reported
+## ("references_updated").
+func rewrite_refs_checked(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true, op: RefCounted = null) -> Dictionary:
+	var result := _change(op, _rewrite_refs.bind(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare, rewrite_bare))
+	var error := str(result.error)
+	return {"count": int(result.get("count", 0)) if error.is_empty() else 0, "error": error}
+
+
+func _rewrite_refs(step: RefCounted, old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool) -> Dictionary:
 	var referencing: Array[String] = []
 	for ref in [old_qualified, old_bare_id] if rewrite_bare else [old_qualified]:
 		for row in _exec_select("SELECT id FROM items WHERE parent=? OR blocked_by=? UNION SELECT from_id FROM item_links WHERE to_id=?;", [ref, ref, ref]):
 			if not str(row.id) in referencing:
 				referencing.append(str(row.id))
-
-	# Rewrite qualified parent refs
-	_exec("UPDATE items SET parent=? WHERE parent=?;", [new_qualified, old_qualified])
-	count += _get_changes_count()
-
-	# Rewrite bare parent refs (backwards compat)
-	if rewrite_bare:
-		_exec("UPDATE items SET parent=? WHERE parent=?;", [new_qualified_for_bare, old_bare_id])
-		count += _get_changes_count()
-
-	# Rewrite qualified blocked_by refs
-	_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified, old_qualified])
-	count += _get_changes_count()
-
-	# Rewrite bare blocked_by refs
-	if rewrite_bare:
-		_exec("UPDATE items SET blocked_by=? WHERE blocked_by=?;", [new_qualified_for_bare, old_bare_id])
-		count += _get_changes_count()
-	_exec("UPDATE item_links SET to_id=? WHERE to_id=?;", [new_qualified, old_qualified])
-	count += _get_changes_count()
-	if rewrite_bare:
-		_exec("UPDATE item_links SET to_id=? WHERE to_id=?;", [new_qualified_for_bare, old_bare_id])
-		count += _get_changes_count()
+	var count := 0
+	for sql in ["UPDATE items SET parent=? WHERE parent=?;", "UPDATE items SET blocked_by=? WHERE blocked_by=?;", "UPDATE item_links SET to_id=? WHERE to_id=?;"]:
+		for pair in [[new_qualified, old_qualified], [new_qualified_for_bare, old_bare_id]] if rewrite_bare else [[new_qualified, old_qualified]]:
+			var error := _write_checked(step, sql, pair)
+			if not error.is_empty(): return {"error": error}
+			count += _get_changes_count()
 	for id in referencing:
 		_record_change(id, "references_updated")
-	return count
+	return {"count": count, "error": ""}
 
 
 func _get_changes_count() -> int:
@@ -831,13 +836,26 @@ func _get_changes_count() -> int:
 # -- Events -------------------------------------------------------------------
 
 func add_event(item_id: String, event_type: String, actor: String, note: String = "") -> void:
+	var error := add_event_checked(item_id, event_type, actor, note)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Records event `event_type` on item `item_id` and touches its updated_at,
+## as one change within a step of `op` (or an operation of its own): "" or
+## why not.
+func add_event_checked(item_id: String, event_type: String, actor: String, note: String = "", op: RefCounted = null) -> String:
+	return run_change(op, _add_event.bind(item_id, event_type, actor, note))
+
+
+func _add_event(step: RefCounted, item_id: String, event_type: String, actor: String, note: String) -> String:
 	var ts := Time.get_datetime_string_from_system(true)
-	var error := _exec_checked("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
+	var error := _write_checked(step, "INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 		[item_id, event_type, actor, ts, note])
 	if error.is_empty():
-		error = _exec_checked("UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
+		error = _write_checked(step, "UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
 	if error.is_empty():
 		_record_change(item_id, event_type)
+	return error
 
 
 func get_events(item_id: String) -> Array:
@@ -920,8 +938,15 @@ func get_error_report() -> Array:
 # -- Links --------------------------------------------------------------------
 
 func add_link(from_id: String, to_id: String, relation: String) -> void:
-	_exec("INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);",
-		[from_id, to_id, relation])
+	var error := add_link_checked(from_id, to_id, relation)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Links `from_id` to `to_id` as `relation`, within a step of `op` (or an
+## operation of its own): "" or why not.
+func add_link_checked(from_id: String, to_id: String, relation: String, op: RefCounted = null) -> String:
+	return run_change(op, func(step: RefCounted) -> String:
+		return _write_checked(step, "INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);", [from_id, to_id, relation]))
 
 
 func get_links(item_id: String) -> Array:
@@ -1360,18 +1385,32 @@ func _detach_file(step: RefCounted, att_id: int) -> String:
 
 # -- Comments -----------------------------------------------------------------
 
-func add_comment(item_id: String, author: String, text: String, parent_id: int = 0) -> Dictionary:
+## Adds a comment (a reply when `parent_id` is set) and its event, as one
+## change within a step of `op` (or an operation of its own): the comment's
+## record, or {error}.
+func add_comment(item_id: String, author: String, text: String, parent_id: int = 0, op: RefCounted = null) -> Dictionary:
+	return _without_error(_change(op, _add_comment.bind(item_id, author, text, parent_id)))
+
+
+func _add_comment(step: RefCounted, item_id: String, author: String, text: String, parent_id: int) -> Dictionary:
 	var ts := Time.get_datetime_string_from_system(true)
 	var clean_text: String = _normalize_text(text)
-	_exec("INSERT INTO comments (item_id, parent_id, author, text, status, created_at) VALUES (?, ?, ?, ?, 'open', ?);",
+	var error := _write_checked(step, "INSERT INTO comments (item_id, parent_id, author, text, status, created_at) VALUES (?, ?, ?, ?, 'open', ?);",
 		[item_id, parent_id, author, clean_text, ts])
+	if not error.is_empty(): return {"error": error}
 	var rows := _exec_select("SELECT last_insert_rowid() as lid;")
 	var cid: int = int(rows[0].lid) if rows.size() > 0 else 0
-	if parent_id > 0:
-		add_event(item_id, "comment_reply", author, text.substr(0, 80))
-	else:
-		add_event(item_id, "comment_added", author, text.substr(0, 80))
-	return {"id": cid, "item_id": item_id, "parent_id": parent_id, "author": author, "text": text, "status": "open", "created_at": ts}
+	error = _add_event(step, item_id, "comment_reply" if parent_id > 0 else "comment_added", author, text.substr(0, 80))
+	return {"id": cid, "item_id": item_id, "parent_id": parent_id, "author": author, "text": text, "status": "open", "created_at": ts, "error": error}
+
+
+# A change's record without its "error" entry once it succeeded, or just
+# {error}.
+static func _without_error(result: Dictionary) -> Dictionary:
+	var error := str(result.error)
+	if not error.is_empty(): return {"error": error}
+	result.erase("error")
+	return result
 
 
 func list_comments(item_id: String) -> Array:
@@ -1382,19 +1421,29 @@ func list_comments(item_id: String) -> Array:
 	return result
 
 
-func resolve_comment(comment_id: int, resolution: String, resolved_by: String) -> Dictionary:
+## Resolves comment `comment_id` as "accepted" or "rejected", with its event,
+## as one change within a step of `op` (or an operation of its own): the
+## comment's record, or {error}.
+func resolve_comment(comment_id: int, resolution: String, resolved_by: String, op: RefCounted = null) -> Dictionary:
 	if resolution not in ["accepted", "rejected"]:
 		return {"error": "Resolution must be 'accepted' or 'rejected'"}
+	return _without_error(_change(op, _resolve_comment.bind(comment_id, resolution, resolved_by)))
+
+
+func _resolve_comment(step: RefCounted, comment_id: int, resolution: String, resolved_by: String) -> Dictionary:
 	var ts := Time.get_datetime_string_from_system(true)
-	_exec("UPDATE comments SET status=?, resolved_at=?, resolved_by=? WHERE id=?;",
+	var error := _write_checked(step, "UPDATE comments SET status=?, resolved_at=?, resolved_by=? WHERE id=?;",
 		[resolution, ts, resolved_by, comment_id])
+	if not error.is_empty(): return {"error": error}
 	var rows := _exec_select("SELECT * FROM comments WHERE id=?;", [comment_id])
 	if rows.is_empty():
 		return {"error": "Comment not found"}
 	var row: Dictionary = rows[0]
 	var item_id: String = str(row.get("item_id", ""))
-	add_event(item_id, "comment_" + resolution, resolved_by, str(row.get("text", "")).substr(0, 80))
-	return _build_comment_dict(row)
+	error = _add_event(step, item_id, "comment_" + resolution, resolved_by, str(row.get("text", "")).substr(0, 80))
+	var result := _build_comment_dict(row)
+	result["error"] = error
+	return result
 
 
 func get_comment(comment_id: int) -> Dictionary:

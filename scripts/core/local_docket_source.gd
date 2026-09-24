@@ -205,14 +205,11 @@ func save_item(project: String, id: String, changes: Dictionary, revision: Strin
 	var prepared: Dictionary = _vault_operations(item_db, id, secret) if protected else {"operations": []}
 	if prepared.has("error"):
 		return str(prepared.error)
-	var error := registry._begin_item_mutation() if protected else ""
-	if error.is_empty():
-		error = registry.update_item(id, changes, "user", revision, token)
-	if error.is_empty() and protected:
-		error = _apply_vault_operations(item_db, prepared.operations)
-	if protected:
-		error = registry._complete_item_mutation(error)
-	return error
+	if not protected:
+		return registry.update_item(id, changes, "user", revision, token)
+	return item_db.run_change(null, func(change: RefCounted) -> String:
+		var error := registry.update_item(id, changes, "user", revision, token, change)
+		return error if not error.is_empty() else _apply_vault_operations(item_db, prepared.operations, change))
 
 
 func create_item(project: String, fields: Dictionary, secret: Dictionary = {}) -> Dictionary:
@@ -228,30 +225,35 @@ func create_item(project: String, fields: Dictionary, secret: Dictionary = {}) -
 	var prepared: Dictionary = _vault_operations(target_db, "", secret) if protected_payload else {"operations": []}
 	if prepared.has("error"):
 		return {"error": str(prepared.error)}
-	var transaction_error := registry._begin_item_mutation() if protected_payload else ""
-	if not transaction_error.is_empty():
-		return {"error": transaction_error}
-	var created := registry.create_item(fields, "user")
-	if created.has("error") and definition_protected and not regular_allowed and protected_payload:
-		created = _create_protected_draft(target_db, type_name, fields)
-	if created.has("error"):
-		if protected_payload:
-			registry._complete_item_mutation(str(created.error))
-		return {"error": str(created.error)}
-	var id := str(created.id)
-	if protected_payload:
+	if not protected_payload:
+		var plain := registry.create_item(fields, "user")
+		return {"error": str(plain.error)} if plain.has("error") else {"id": str(plain.id)}
+	# The item and its vault entries are one change: a payload that cannot be
+	# stored leaves no item behind.
+	var created := {}
+	var payload_error := target_db.run_change(null, func(change: RefCounted) -> String:
+		created.merge(registry.create_item(fields, "user", change))
+		if created.has("error") and definition_protected and not regular_allowed:
+			created.clear()
+			created.merge(_create_protected_draft(target_db, type_name, fields, change))
+		if created.has("error"): return str(created.error)
+		var id := str(created.id)
 		for operation_value in prepared.operations:
 			var operation: Dictionary = operation_value
 			operation.handle = id + str(operation.get("suffix", ""))
 			operation.owner = id
-		transaction_error = _apply_vault_operations(target_db, prepared.operations)
-		transaction_error = registry._complete_item_mutation(transaction_error)
-	if not transaction_error.is_empty():
-		return {"error": transaction_error, "payload_failed": true}
-	return {"id": id}
+		return _apply_vault_operations(target_db, prepared.operations, change))
+	if created.has("error"):
+		return {"error": str(created.error)}
+	# Refused before the item was attempted (a stale or read-only project).
+	if created.is_empty():
+		return {"error": payload_error}
+	if not payload_error.is_empty():
+		return {"error": payload_error, "payload_failed": true}
+	return {"id": str(created.id)}
 
 
-func _create_protected_draft(target_db: DocketDB, type_name: String, fields: Dictionary) -> Dictionary:
+func _create_protected_draft(target_db: DocketDB, type_name: String, fields: Dictionary, op: RefCounted = null) -> Dictionary:
 	var flat := fields.duplicate(true)
 	flat.erase("type")
 	flat.erase("unset_fields")
@@ -263,8 +265,8 @@ func _create_protected_draft(target_db: DocketDB, type_name: String, fields: Dic
 	if item.has("error"):
 		return item
 	var id := target_db.next_uuid7_id()
-	var error := target_db.insert_item(id, item)
-	if error is String and not error.is_empty():
+	var error := target_db.insert_item(id, item, op)
+	if not error.is_empty():
 		return {"error":error}
 	return {"id":id, "item":target_db.get_item(id)}
 
@@ -279,14 +281,11 @@ func transition_item(project: String, id: String, target: String, note: String, 
 	var prepared: Dictionary = _vault_operations(trans_db, id, secret) if protected else {"operations": []}
 	if prepared.has("error"):
 		return str(prepared.error)
-	var error := registry._begin_item_mutation() if protected else ""
-	if error.is_empty():
-		error = registry.transition_item(id, target, "user", note, changes, revision, token)
-	if error.is_empty() and protected:
-		error = _apply_vault_operations(trans_db, prepared.operations)
-	if protected:
-		error = registry._complete_item_mutation(error)
-	return error
+	if not protected:
+		return registry.transition_item(id, target, "user", note, changes, revision, token)
+	return trans_db.run_change(null, func(change: RefCounted) -> String:
+		var error := registry.transition_item(id, target, "user", note, changes, revision, token, change)
+		return error if not error.is_empty() else _apply_vault_operations(trans_db, prepared.operations, change))
 
 
 # -- Comments -------------------------------------------------------------------------
@@ -423,22 +422,16 @@ func _notes_operation(operations: Array, key: PackedByteArray, item_id: String, 
 	operations.append({"handle":item_id + suffix, "owner":item_id, "suffix":suffix, "ciphertext":encrypted.ciphertext, "iv":encrypted.iv, "mac":encrypted.mac, "requires_2fa":false, "rotate":false})
 
 
-func _apply_vault_operations(db: DocketDB, operations: Array) -> String:
+# The vault entries, within the change `step` belongs to.
+func _apply_vault_operations(db: DocketDB, operations: Array, step: RefCounted) -> String:
 	for operation_value in operations:
 		var operation: Dictionary = operation_value
 		var handle := str(operation.handle)
 		var error := ""
 		if bool(operation.get("rotate", false)):
-			if db is DocketDBJsonl:
-				error = (db as DocketDBJsonl).rotate_secret_checked(handle, operation.ciphertext, operation.iv, operation.mac, _state.prefs.get_display_name(), bool(operation.requires_2fa))
-			else:
-				db.rotate_secret(handle, operation.ciphertext, operation.iv, operation.mac, _state.prefs.get_display_name(), bool(operation.requires_2fa))
-				error = db._last_sql_error
-		elif db is DocketDBJsonl:
-			error = (db as DocketDBJsonl).set_secret_checked(handle, operation.ciphertext, operation.iv, operation.mac, bool(operation.requires_2fa), str(operation.owner))
+			error = db.rotate_secret_checked(handle, operation.ciphertext, operation.iv, operation.mac, _state.prefs.get_display_name(), bool(operation.requires_2fa), step)
 		else:
-			db.set_secret(handle, operation.ciphertext, operation.iv, operation.mac, bool(operation.requires_2fa), str(operation.owner))
-			error = db._last_sql_error
+			error = db.set_secret_checked(handle, operation.ciphertext, operation.iv, operation.mac, bool(operation.requires_2fa), str(operation.owner), step)
 		if not error.is_empty():
 			return error
 	return ""

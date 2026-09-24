@@ -422,21 +422,20 @@ func _close_mutation_operation() -> void:
 	_mutation_busy = false
 
 
-## Held until _complete_canonical_mutation has saved the file.
+## Held until the change has saved the file (_canonical_step, or
+## _complete_canonical_mutation).
 func _report_changes() -> void:
 	pass
 
 
-func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
-	## One checked cache transaction stages the immutable snapshot, current
-	## pointer, item pins, and audit events before one canonical replacement.
-	return CoordLease.run(_apply_registry_change.bind(type_def, revision, item_bindings, events, expected_current_revision))
+## A type revision, the type's current pointer, item pins and audit events,
+## as one change within a step of `op` (or an operation of its own): "" or
+## why not, and then none of it is kept.
+func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String, op: RefCounted = null) -> String:
+	return run_change(op, _apply_registry_change.bind(type_def, revision, item_bindings, events, expected_current_revision))
 
 
 func _apply_registry_change(step: RefCounted, type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
-	var error := _mutation_precheck(step)
-	if not error.is_empty(): return error
-	_last_sql_error = ""
 	if JSONLParser._parse_type_def(type_def).is_empty() or JSONLParser._parse_type_def_version(revision).is_empty(): return "incomplete type definition snapshot"
 	if str(type_def.get("id", "")) != str(revision.get("type_id", "")): return "revision belongs to another type"
 	var expected_revision_id: String = "%s@%s" % [revision.type_id, TypeRegistryBootstrap._definition_hash(revision.definition)]
@@ -451,24 +450,19 @@ func _apply_registry_change(step: RefCounted, type_def: Dictionary, revision: Di
 		if not has_item(str(binding.item_id)): return "item binding refers to missing item '%s'" % binding.item_id
 	for event in events:
 		if not has_item(str(event.item_id)): return "event refers to missing item '%s'" % event.item_id
-	if not _last_sql_error.is_empty(): return _last_sql_error
-	error = _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	if error.is_empty():
-		if existing.is_empty(): error = _exec_checked("INSERT INTO type_defs (id,slug,lifecycle,current_revision,provenance_json) VALUES (?,?,?,?,?);", [type_def.id, type_def.slug, type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true)])
-	if error.is_empty(): error = _exec_checked("INSERT INTO type_def_versions (id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES (?,?,?,?,?,?,?);", [revision.id, revision.type_id, revision.get("parent_revision", null), JSON.stringify(revision.definition, "", true, true), revision.author, revision.created_at, revision.reason])
-	if error.is_empty() and not existing.is_empty(): error = _exec_checked("UPDATE type_defs SET lifecycle=?,current_revision=?,provenance_json=? WHERE id=? AND current_revision=?;", [type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true), type_def.id, expected_current_revision])
+	var error := ""
+	if existing.is_empty(): error = _write_checked(step, "INSERT INTO type_defs (id,slug,lifecycle,current_revision,provenance_json) VALUES (?,?,?,?,?);", [type_def.id, type_def.slug, type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true)])
+	if error.is_empty(): error = _write_checked(step, "INSERT INTO type_def_versions (id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES (?,?,?,?,?,?,?);", [revision.id, revision.type_id, revision.get("parent_revision", null), JSON.stringify(revision.definition, "", true, true), revision.author, revision.created_at, revision.reason])
+	if error.is_empty() and not existing.is_empty(): error = _write_checked(step, "UPDATE type_defs SET lifecycle=?,current_revision=?,provenance_json=? WHERE id=? AND current_revision=?;", [type_def.lifecycle, type_def.current_revision, JSON.stringify(type_def.provenance, "", true, true), type_def.id, expected_current_revision])
 	for binding in item_bindings:
-		if not error.is_empty(): break
-		if binding.has("changes"):
-			error = update_item_fields_checked(str(binding.item_id), binding.changes)
-			if not error.is_empty(): break
-		error = _exec_checked("UPDATE items SET type=?,type_id=?,type_revision=? WHERE id=?;", [type_def.slug, binding.type_id, binding.type_revision, binding.item_id])
+		if not error.is_empty(): return error
+		if binding.has("changes"): error = update_item_fields_checked(str(binding.item_id), binding.changes, step)
+		if error.is_empty(): error = _write_checked(step, "UPDATE items SET type=?,type_id=?,type_revision=? WHERE id=?;", [type_def.slug, binding.type_id, binding.type_revision, binding.item_id])
 	for event in events:
-		if not error.is_empty(): break
-		error = _exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [event.item_id, event.event_type, event.get("actor", ""), event.timestamp, event.get("note", "")])
-		_record_change(str(event.item_id), str(event.event_type))
-	return _complete_canonical_mutation(error)
+		if not error.is_empty(): return error
+		error = _write_checked(step, "INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [event.item_id, event.event_type, event.get("actor", ""), event.timestamp, event.get("note", "")])
+		if error.is_empty(): _record_change(str(event.item_id), str(event.event_type))
+	return error
 
 
 # -- JSONL write-through ------------------------------------------------------
@@ -581,47 +575,22 @@ static func _atomic_write(path: String, content: String) -> String:
 
 # -- Overridden mutating methods ----------------------------------------------
 
-# Each override: call super (SQLite), then flush JSONL.
+# A change made through run_change (DocketDB) is a canonical one: its
+# transaction is the cache's, and the file is rewritten once it commits.
+func _change(op: RefCounted, work: Callable) -> Dictionary:
+	return _canonical(op, work)
 
 
-func insert_item(id: String, item: Dictionary) -> String:
-	return CoordLease.run(_insert_item.bind(id, item))
-
-
+# An item of a format 2.0 project is pinned to its type's current revision
+# unless it names one, as read within the change.
 func _insert_item(step: RefCounted, id: String, item: Dictionary) -> String:
-	var source_error := _mutation_precheck(step)
-	if not source_error.is_empty(): return source_error
 	var candidate := item.duplicate(true)
 	if super.get_meta_value("jsonl_version", "1.0.0") == "2.0.0" and (not candidate.has("type_id") or not candidate.has("type_revision")):
 		var rows := _exec_select("SELECT id,current_revision FROM type_defs WHERE slug=?;", [candidate.get("type", "")])
 		if rows.size() != 1: return "type '%s' has no active project definition" % candidate.get("type", "")
 		candidate["type_id"] = rows[0].id
 		candidate["type_revision"] = rows[0].current_revision
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	var result := super.insert_item(id, candidate)
-	return _complete_canonical_mutation(result)
-
-
-func update_item_fields(id: String, changes: Dictionary) -> void:
-	update_item_fields_checked(id, changes)
-
-
-func update_item_fields_checked(id: String, changes: Dictionary) -> String:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	var error := super.update_item_fields_checked(id, changes)
-	return _complete_canonical_mutation(error)
-
-
-func set_item_field(id: String, field: String, val) -> void:
-	set_item_field_checked(id, field, val)
-
-func set_item_field_checked(id: String, field: String, val) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_item_field(id, field, val)
-	return _complete_canonical_mutation()
+	return super._insert_item(step, id, candidate)
 
 
 func delete_item_checked(id: String, op: RefCounted = null) -> String:
@@ -646,20 +615,6 @@ func import_item_full_checked(new_id: String, exported: Dictionary, op: RefCount
 
 func _import_item_full_in_cache(step: RefCounted, new_id: String, exported: Dictionary) -> Dictionary:
 	return {"error": super.import_item_full_checked(new_id, exported, step)}
-
-
-func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:
-	var result := rewrite_refs_checked(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare, rewrite_bare)
-	if not str(result.error).is_empty(): last_write_error = str(result.error)
-	return int(result.count)
-
-
-func rewrite_refs_checked(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> Dictionary:
-	var begin_error := _begin_canonical_mutation()
-	if not begin_error.is_empty(): return {"count": 0, "error": begin_error}
-	var count := super.rewrite_refs(old_qualified, new_qualified, old_bare_id, new_qualified_for_bare, rewrite_bare)
-	var error := _complete_canonical_mutation()
-	return {"count": count if error.is_empty() else 0, "error": error}
 
 
 # -- ID generation (mutates counter) -----------------------------------------
@@ -707,32 +662,6 @@ func _set_counter_in_cache(step: RefCounted, val: int) -> Dictionary:
 	return {"error": super.set_counter_checked(val, step)}
 
 
-# -- Events -------------------------------------------------------------------
-
-func add_event(item_id: String, event_type: String, actor: String, note: String = "") -> void:
-	add_event_checked(item_id, event_type, actor, note)
-
-
-func add_event_checked(item_id: String, event_type: String, actor: String, note: String = "") -> String:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	super.add_event(item_id, event_type, actor, note)
-	return _complete_canonical_mutation()
-
-
-# -- Links --------------------------------------------------------------------
-
-func add_link(from_id: String, to_id: String, relation: String) -> void:
-	add_link_checked(from_id, to_id, relation)
-
-
-func add_link_checked(from_id: String, to_id: String, relation: String) -> String:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	super.add_link(from_id, to_id, relation)
-	return _complete_canonical_mutation()
-
-
 # -- Attachments --------------------------------------------------------------
 
 func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "", op: RefCounted = null) -> Dictionary:
@@ -758,29 +687,6 @@ func _detach_file_in_cache(step: RefCounted, att_id: int) -> Dictionary:
 	return {"error": super.detach_file_checked(att_id, step)}
 
 
-# -- Comments -----------------------------------------------------------------
-
-func add_comment(item_id: String, author: String, text: String, parent_id: int = 0) -> Dictionary:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return {"error": precheck}
-	# add_comment internally calls add_event (which triggers our override + flush).
-	# One transaction and depth guard make the comment, event and item timestamp
-	# one persistence unit.
-	var result := super.add_comment(item_id, author, text, parent_id)
-	var flush_error := _complete_canonical_mutation(str(result.get("error", "")))
-	if not flush_error.is_empty(): return {"error": flush_error}
-	return result
-
-
-func resolve_comment(comment_id: int, resolution: String, resolved_by: String) -> Dictionary:
-	var begin_error := _begin_canonical_mutation()
-	if not begin_error.is_empty(): return {"error": begin_error}
-	var result := super.resolve_comment(comment_id, resolution, resolved_by)
-	var flush_error := _complete_canonical_mutation(str(result.get("error", "")))
-	if not flush_error.is_empty(): return {"error": flush_error}
-	return result
-
-
 # -- Saved queries ------------------------------------------------------------
 
 func save_query_checked(name: String, query_dict: Dictionary, op: RefCounted = null) -> String:
@@ -799,16 +705,6 @@ func init_vault_checked(key: PackedByteArray, salt: PackedByteArray, iterations:
 
 func _init_vault_in_cache(step: RefCounted, key: PackedByteArray, salt: PackedByteArray, iterations: int) -> Dictionary:
 	return {"error": super.init_vault_checked(key, salt, iterations, step)}
-
-
-func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
-	set_secret_checked(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
-
-func set_secret_checked(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_secret(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
-	return _complete_canonical_mutation()
 
 
 func set_secret_owner_checked(handle: String, owner_item_id: String, op: RefCounted = null) -> String:
@@ -834,16 +730,6 @@ func delete_secret_checked(handle: String, op: RefCounted = null) -> Dictionary:
 
 func _delete_secret_in_cache(step: RefCounted, handle: String) -> Dictionary:
 	return super.delete_secret_checked(handle, step)
-
-
-func rotate_secret(handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String = "", requires_2fa: bool = false) -> void:
-	rotate_secret_checked(handle, new_ct, new_iv, new_mac, rotated_by, requires_2fa)
-
-func rotate_secret_checked(handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String = "", requires_2fa: bool = false) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.rotate_secret(handle, new_ct, new_iv, new_mac, rotated_by, requires_2fa)
-	return _complete_canonical_mutation()
 
 
 func rewrap_vault(old_key: PackedByteArray, new_key: PackedByteArray, op: RefCounted = null) -> String:

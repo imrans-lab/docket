@@ -132,15 +132,6 @@ func test_update_fields() -> Variant:
 	return A.contains(got.tags, "updated")
 
 
-func test_set_item_field() -> Variant:
-	_db.insert_item("DKT-0001", {"type": "bug", "status": "new", "title": "X",
-		"created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00",
-		"tags": [], "events": [], "links": []})
-	_db.set_item_field("DKT-0001", "status", "active")
-	var got := _db.get_item("DKT-0001")
-	return A.eq(got.status, "active")
-
-
 # -- Events -------------------------------------------------------------------
 
 func test_add_and_get_events() -> Variant:

@@ -65,25 +65,33 @@ func verify_vault(key: PackedByteArray) -> bool:
 
 
 func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
-	## Insert or update an encrypted secret.
-	##
-	## owner_item_id names the work item this secret belongs to, or "" for a
-	## standalone entry (typically created by an agent over MCP). On update it is
-	## only written when supplied, so callers that do not care about ownership
-	## cannot accidentally orphan an item's payload.
+	var error := set_secret_checked(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Insert or update an encrypted secret, as one change within a step of `op`
+## (or an operation of its own): "" or why not.
+##
+## owner_item_id names the work item this secret belongs to, or "" for a
+## standalone entry (typically created by an agent over MCP). On update it is
+## only written when supplied, so callers that do not care about ownership
+## cannot accidentally orphan an item's payload.
+func set_secret_checked(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "", op: RefCounted = null) -> String:
+	return run_change(op, _set_secret.bind(handle, ciphertext, iv, mac, requires_2fa, owner_item_id))
+
+
+func _set_secret(step: RefCounted, handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool, owner_item_id: String) -> String:
 	var now := Time.get_datetime_string_from_system(true)
 	var flag := 1 if requires_2fa else 0
 	var existing := _exec_select("SELECT handle FROM docket_secrets WHERE handle=?;", [handle])
-	if existing.size() > 0:
-		if owner_item_id.is_empty():
-			_exec("UPDATE docket_secrets SET ciphertext=?, iv=?, mac=?, updated_at=?, requires_2fa=? WHERE handle=?;",
-				[ciphertext, iv, mac, now, flag, handle])
-		else:
-			_exec("UPDATE docket_secrets SET ciphertext=?, iv=?, mac=?, updated_at=?, requires_2fa=?, owner_item_id=? WHERE handle=?;",
-				[ciphertext, iv, mac, now, flag, owner_item_id, handle])
-	else:
-		_exec("INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+	if existing.is_empty():
+		return _write_checked(step, "INSERT INTO docket_secrets (handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
 			[handle, ciphertext, iv, mac, now, now, flag, owner_item_id])
+	if owner_item_id.is_empty():
+		return _write_checked(step, "UPDATE docket_secrets SET ciphertext=?, iv=?, mac=?, updated_at=?, requires_2fa=? WHERE handle=?;",
+			[ciphertext, iv, mac, now, flag, handle])
+	return _write_checked(step, "UPDATE docket_secrets SET ciphertext=?, iv=?, mac=?, updated_at=?, requires_2fa=?, owner_item_id=? WHERE handle=?;",
+		[ciphertext, iv, mac, now, flag, owner_item_id, handle])
 
 
 func get_secret_owner(handle: String) -> String:
@@ -258,7 +266,18 @@ func get_all_secrets_raw() -> Array:
 
 
 func rotate_secret(handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String = "", requires_2fa: bool = false) -> void:
-	## Archive current secret value into versions table, then store new value.
+	var error := rotate_secret_checked(handle, new_ct, new_iv, new_mac, rotated_by, requires_2fa)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Archives the secret's current value into its versions, then stores the new
+## one, as one change within a step of `op` (or an operation of its own): ""
+## or why not.
+func rotate_secret_checked(handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String = "", requires_2fa: bool = false, op: RefCounted = null) -> String:
+	return run_change(op, _rotate_secret.bind(handle, new_ct, new_iv, new_mac, rotated_by, requires_2fa))
+
+
+func _rotate_secret(step: RefCounted, handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String, requires_2fa: bool) -> String:
 	var now := Time.get_datetime_string_from_system(true)
 	# Get current value to archive
 	var current := get_secret_raw(handle)
@@ -269,10 +288,10 @@ func rotate_secret(handle: String, new_ct: PackedByteArray, new_iv: PackedByteAr
 		# requires_2fa describes the value being archived, so it is read from the
 		# row being replaced rather than from the incoming one.
 		var was_2fa := 1 if bool(current.get("requires_2fa", false)) else 0
-		_exec("INSERT INTO docket_secret_versions (handle, version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+		var error := _write_checked(step, "INSERT INTO docket_secret_versions (handle, version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
 			[handle, next_ver, current.ciphertext, current.iv, current.mac, now, rotated_by, was_2fa])
-	# Store new value
-	set_secret(handle, new_ct, new_iv, new_mac, requires_2fa)
+		if not error.is_empty(): return error
+	return _set_secret(step, handle, new_ct, new_iv, new_mac, requires_2fa, "")
 
 
 func get_secret_versions(handle: String) -> Array:

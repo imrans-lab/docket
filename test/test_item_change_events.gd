@@ -58,22 +58,23 @@ func test_sqlite_changes_are_reported_when_durable() -> Variant:
 	db.items_changed.connect(func(batch: Array): changes.append_array(batch))
 
 	db.add_event(id, "noted", "test")
-	var r = A.eq(changes, [{"id": id, "event": "noted"}], "outside a transaction: reported at once")
+	var r = A.eq(changes, [{"id": id, "event": "noted"}], "a change of its own: reported by the time it returns")
 	if r is String: return r
 
 	changes.clear()
-	db._exec_checked("BEGIN TRANSACTION;")
-	db.add_event(id, "rolled_back", "test")
-	var before_end := changes.size()
-	db._rollback()
-	r = A.eq([before_end, changes.size()], [0, 0], "a rolled-back change is never reported")
+	var seen := {"before_end": -1}
+	db.run_change(null, func(step: RefCounted) -> String:
+		db.add_event_checked(id, "rolled_back", "test", "", step)
+		seen.before_end = changes.size()
+		return "roll it back")
+	r = A.eq([seen.before_end, changes.size()], [0, 0], "a rolled-back change is never reported")
 	if r is String: return r
 
-	db._exec_checked("BEGIN TRANSACTION;")
-	db.add_event(id, "committed", "test")
-	before_end = changes.size()
-	db._exec_checked("COMMIT;")
-	return A.eq([before_end, changes], [0, [{"id": id, "event": "committed"}]], "reported at commit, not before")
+	var error := db.run_change(null, func(step: RefCounted) -> String:
+		var added := db.add_event_checked(id, "committed", "test", "", step)
+		seen.before_end = changes.size()
+		return added)
+	return A.eq([error, seen.before_end, changes], ["", 0, [{"id": id, "event": "committed"}]], "reported at commit, not before")
 
 
 func test_move_reports_references_rewritten_in_another_project() -> Variant:
@@ -124,10 +125,10 @@ func test_jsonl_reports_only_saved_changes_and_adopted_outside_edits() -> Varian
 	var other := DocketDBJsonl.open_jsonl(outside)
 	other.add_event(id, "outside_edit", "other writer")
 	other.close()
-	db._begin_canonical_mutation()
-	db.add_event(id, "local_edit", "test")
-	DirAccess.copy_absolute(outside, path)
-	var error := db._complete_canonical_mutation()
+	var error := db.run_change(null, func(step: RefCounted) -> String:
+		var added := db.add_event_checked(id, "local_edit", "test", "", step)
+		DirAccess.copy_absolute(outside, path)
+		return added)
 	var events: Array = db.get_events(id).map(func(event: Dictionary) -> String: return str(event.event_type))
 	r = A.is_false(error.is_empty(), "the save over another writer's change fails")
 	if r is String: return r

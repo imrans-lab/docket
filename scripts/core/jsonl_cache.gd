@@ -216,17 +216,24 @@ static func _insert_type_registry(db: DocketDB, definitions: Array, revisions: A
 		db._exec("INSERT INTO type_def_versions (id,type_id,parent_revision,definition_json,author,created_at,reason) VALUES (?,?,?,?,?,?,?);", [record.id, record.type_id, record.get("parent_revision", null), JSON.stringify(record.definition, "", true, true), record.author, record.created_at, record.reason])
 
 
+# Within the rebuild's own transaction, so the rows are written directly
+# rather than each as a change of its own (insert_item).
 static func _insert_items(db: DocketDB, items: Array) -> void:
+	var lease := CoordLease.shared()
+	if lease.has("error"):
+		db._last_sql_error = str(lease.error)
+		return
 	for item in items:
 		var id: String = str(item.get("id", ""))
 		if id.is_empty():
 			db._last_sql_error = "invalid canonical record: item with empty id"
 			continue
-		# insert_item() accepts the parsed dict directly.
+		# The parsed dict is accepted directly.
 		# Tags are in item["tags"]; events/links arrays are empty (loaded separately).
-		var err := db.insert_item(id, item)
+		var err := db._insert_item(lease.operation, id, item)
 		if not err.is_empty():
 			db._last_sql_error = "canonical item insert failed for %s: %s" % [id, err]
+	lease.operation.close()
 
 
 # -- Events -------------------------------------------------------------------

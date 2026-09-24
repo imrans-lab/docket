@@ -44,11 +44,11 @@ static func migrate(json_path: String) -> DocketDB:
 		DocketDBJsonl.last_open_error = lease.error
 		push_error("DocketMigration: %s" % lease.error)
 		return null
-	var result := _migrate(json_path)
+	var result := _migrate(lease.operation, json_path)
 	lease.operation.close()
 	return result
 
-static func _migrate(json_path: String) -> DocketDB:
+static func _migrate(step: RefCounted, json_path: String) -> DocketDB:
 	## Migrate a JSON .dct to SQLite .dct. Returns the opened DocketDB.
 	## Creates a .json.bak backup of the original file.
 	printerr("DocketMigration: migrating %s from JSON to SQLite..." % json_path)
@@ -84,15 +84,24 @@ static func _migrate(json_path: String) -> DocketDB:
 	var counter: int = int(json_data.get("counter", 0))
 	db.set_counter(counter)
 
-	# Migrate items in a transaction
-	db._begin()
+	# Migrate items as one change; an item it refuses is skipped, but a failed
+	# write fails them all.
 	var items: Dictionary = json_data.get("items", {})
-	var migrated_count := 0
-	for id in items:
-		var item: Dictionary = items[id]
-		db.insert_item(id, item)
-		migrated_count += 1
-	db._commit()
+	var migrated := {"count": 0}
+	var items_error := db.run_change(step, func(change: RefCounted) -> String:
+		for id in items:
+			var item: Dictionary = items[id]
+			if db._insert_item(change, id, item).is_empty(): migrated.count += 1
+		return "")
+	if not items_error.is_empty():
+		# The original goes back in place, so the file still opens as JSON.
+		db.close()
+		for suffix in ["", "-wal", "-shm"]: DirAccess.remove_absolute(json_path + suffix)
+		DirAccess.copy_absolute(backup_path, json_path)
+		DocketDBJsonl.last_open_error = "items were not migrated: %s" % items_error
+		push_error("DocketMigration: %s" % DocketDBJsonl.last_open_error)
+		return null
+	var migrated_count: int = migrated.count
 
 	# Migrate saved queries
 	var queries: Dictionary = json_data.get("queries", {})

@@ -15,7 +15,6 @@ var _definitions: Dictionary = {}
 var _revisions: Dictionary = {}
 var _generation: String = ""
 var _load_error: String = ""
-var _sqlite_mutation_depth: int = 0
 
 static var _shared_by_db: Dictionary = {}
 
@@ -32,33 +31,15 @@ func _coordinated_text(work: Callable, parent: RefCounted = null) -> String:
 	return CoordLease.run(work, parent)
 
 
-func _coordinated_dict(work: Callable) -> Dictionary:
+func _coordinated_dict(work: Callable, parent: RefCounted = null) -> Dictionary:
 	var refusal := _db._thread_refusal() if _db != null else ""
 	if not refusal.is_empty(): return {"error": refusal}
-	var lease := CoordLease.shared()
+	var lease := CoordLease.shared(parent)
 	if lease.has("error"): return {"error": lease.error}
 	var result: Variant = work.call(lease.operation)
 	lease.operation.close()
 	return result if result is Dictionary else {"error": "project change stopped unexpectedly"}
 
-
-func _begin_item_mutation() -> String:
-	if _db is DocketDBJsonl: return (_db as DocketDBJsonl)._begin_canonical_mutation()
-	if _sqlite_mutation_depth == 0:
-		_db._last_sql_error = ""
-		var error: String = _db._exec_checked("BEGIN TRANSACTION;")
-		if not error.is_empty(): return error
-	_sqlite_mutation_depth += 1
-	return ""
-
-func _complete_item_mutation(error: String = "") -> String:
-	if _db is DocketDBJsonl: return (_db as DocketDBJsonl)._complete_canonical_mutation(error)
-	if _sqlite_mutation_depth <= 0: return error if not error.is_empty() else "mutation was not started"
-	_sqlite_mutation_depth -= 1
-	if _sqlite_mutation_depth > 0: return error
-	if error.is_empty(): error = _db._exec_checked("COMMIT;")
-	else: _db._rollback()
-	return error
 
 static func for_db(db: DocketDB, project: String = "") -> TypeRegistry:
 	# Weak registry entries let UI and MCP contexts share semantics without extending DB lifetime.
@@ -342,7 +323,7 @@ func define_type(slug: String, definition: Dictionary, author: String, reason: S
 	return _coordinated_dict(_define_type.bind(slug, definition, author, reason, provenance))
 
 
-func _define_type(_step: RefCounted, slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary) -> Dictionary:
+func _define_type(step: RefCounted, slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}
 	if _legacy: return {"error":"type definitions are read-only until explicit JSONL 2.0 upgrade"}
@@ -364,7 +345,7 @@ func _define_type(_step: RefCounted, slug: String, definition: Dictionary, autho
 	var safe_provenance := provenance.duplicate(true)
 	safe_provenance["protected"] = false
 	var record := {"id":type_id,"slug":slug,"lifecycle":"draft","current_revision":revision_id,"provenance":safe_provenance}
-	error = (_db as DocketDBJsonl).apply_registry_change(record, revision, [], [], "")
+	error = (_db as DocketDBJsonl).apply_registry_change(record, revision, [], [], "", step)
 	if not error.is_empty(): return {"error":error}
 	error = reload()
 	if not error.is_empty(): return {"error":error}
@@ -507,11 +488,11 @@ func validate_candidate(definition: Dictionary, candidate: Dictionary, creation:
 		if bool(descriptor.get("required", false)) and (not candidate.has(key) or candidate[key] == null or (candidate[key] is String and candidate[key].strip_edges().is_empty())): return "required field '%s' is missing" % key
 	return ""
 
-func create_item(fields: Dictionary, actor: String = "") -> Dictionary:
-	return _coordinated_dict(_create_item.bind(fields, actor))
+func create_item(fields: Dictionary, actor: String = "", op: RefCounted = null) -> Dictionary:
+	return _coordinated_dict(_create_item.bind(fields, actor), op)
 
 
-func _create_item(_step: RefCounted, fields: Dictionary, actor: String) -> Dictionary:
+func _create_item(step: RefCounted, fields: Dictionary, actor: String) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}
 	var slug: String = str(fields.get("type", ""))
@@ -535,18 +516,11 @@ func _create_item(_step: RefCounted, fields: Dictionary, actor: String) -> Dicti
 		if key in UNIVERSAL_MUTABLE: item[key] = candidate[key]
 		elif bool(definition.get("protected", false)) and key in DocketDB._ITEM_COLS: item[key] = candidate[key]
 		elif key != "type": item.fields[key] = candidate[key]
-	error = _begin_item_mutation()
-	if not error.is_empty(): return {"error":error}
 	var id := _db.next_uuid7_id()
-	if id.is_empty(): error = "failed to allocate item ID"
-	if error.is_empty(): error = _db.insert_item(id, item)
-	if error.is_empty():
-		if _db is DocketDBJsonl:
-			error = (_db as DocketDBJsonl).add_event_checked(id, "created", actor, "Item created")
-		else:
-			_db.add_event(id, "created", actor, "Item created")
-			error = _db._last_sql_error
-	error = _complete_item_mutation(error)
+	if id.is_empty(): return {"error":"failed to allocate item ID"}
+	error = _db.run_change(step, func(change: RefCounted) -> String:
+		var inserted := _db.insert_item(id, item, change)
+		return inserted if not inserted.is_empty() else _db.add_event_checked(id, "created", actor, "Item created", change))
 	return {"error":error} if not error.is_empty() else {"id":id,"item":_db.get_item(id)}
 
 func item_token(item_or_id) -> String:
@@ -554,11 +528,11 @@ func item_token(item_or_id) -> String:
 	if item.is_empty(): return ""
 	return TypeRegistryBootstrap._definition_hash(_normalize_json_numbers(item))
 
-func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "") -> String:
-	return _coordinated_text(_update_item.bind(id, changes, actor, expected_revision, expected_item_token))
+func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "", op: RefCounted = null) -> String:
+	return _coordinated_text(_update_item.bind(id, changes, actor, expected_revision, expected_item_token), op)
 
 
-func _update_item(_step: RefCounted, id: String, changes: Dictionary, actor: String, expected_revision: String, expected_item_token: String) -> String:
+func _update_item(step: RefCounted, id: String, changes: Dictionary, actor: String, expected_revision: String, expected_item_token: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item := _db.get_item(id)
@@ -579,21 +553,15 @@ func _update_item(_step: RefCounted, id: String, changes: Dictionary, actor: Str
 	var error := validate_candidate(resolved.definition, candidate)
 	if not error.is_empty(): return error
 	var patch := _storage_patch(normalized.values, normalized.unset, resolved.definition)
-	error = _begin_item_mutation()
-	if not error.is_empty(): return error
-	error = _db.update_item_fields_checked(id, patch)
-	if error.is_empty():
-		if _db is DocketDBJsonl: error = (_db as DocketDBJsonl).add_event_checked(id, "typed_update", actor)
-		else:
-			_db.add_event(id, "typed_update", actor)
-			error = _db._last_sql_error
-	return _complete_item_mutation(error)
+	return _db.run_change(step, func(change: RefCounted) -> String:
+		var updated := _db.update_item_fields_checked(id, patch, change)
+		return updated if not updated.is_empty() else _db.add_event_checked(id, "typed_update", actor, "", change))
 
-func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "") -> String:
-	return _coordinated_text(_transition_item.bind(id, target, actor, note, extra, expected_revision, expected_item_token))
+func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "", op: RefCounted = null) -> String:
+	return _coordinated_text(_transition_item.bind(id, target, actor, note, extra, expected_revision, expected_item_token), op)
 
 
-func _transition_item(_step: RefCounted, id: String, target: String, actor: String, note: String, extra: Dictionary, expected_revision: String, expected_item_token: String) -> String:
+func _transition_item(step: RefCounted, id: String, target: String, actor: String, note: String, extra: Dictionary, expected_revision: String, expected_item_token: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item: Dictionary = _db.get_item(id)
@@ -622,47 +590,35 @@ func _transition_item(_step: RefCounted, id: String, target: String, actor: Stri
 	if not error.is_empty(): return error
 	var patch := _storage_patch(normalized.values, normalized.unset, definition)
 	patch.status = target
-	error = _begin_item_mutation()
-	if not error.is_empty(): return error
-	error = _db.update_item_fields_checked(id, patch)
-	if error.is_empty():
-		if _db is DocketDBJsonl: error = (_db as DocketDBJsonl).add_event_checked(id, "transition", actor, "%s → %s%s" % [item.status,target,". "+note if not note.is_empty() else ""])
-		else:
-			_db.add_event(id, "transition", actor, "%s → %s%s" % [item.status,target,". "+note if not note.is_empty() else ""])
-			error = _db._last_sql_error
+	var event_note := "%s → %s%s" % [item.status,target,". "+note if not note.is_empty() else ""]
+	# A blocked item's blocker, when it is an item of this project, gets a "blocks" link.
 	var blocking: Dictionary = definition.protected_behavior.get("blocking", {})
-	if error.is_empty() and bool(blocking.get("enabled", false)) and target == str(blocking.get("state", "")) and normalized.values.has("blocked_by"):
-		var blocker := str(normalized.values.blocked_by)
+	var blocker := ""
+	if bool(blocking.get("enabled", false)) and target == str(blocking.get("state", "")) and normalized.values.has("blocked_by"):
+		blocker = str(normalized.values.blocked_by)
 		if ":" in blocker: blocker = blocker.split(":", false, 1)[1]
-		if _db.has_item(blocker):
-			if _db is DocketDBJsonl: error = (_db as DocketDBJsonl).add_link_checked(blocker, id, "blocks")
-			else:
-				_db.add_link(blocker, id, "blocks")
-				error = _db._last_sql_error
-	return _complete_item_mutation(error)
+	return _db.run_change(step, func(change: RefCounted) -> String:
+		var failed := _db.update_item_fields_checked(id, patch, change)
+		if failed.is_empty(): failed = _db.add_event_checked(id, "transition", actor, event_note, change)
+		if failed.is_empty() and not blocker.is_empty() and _db.has_item(blocker): failed = _db.add_link_checked(blocker, id, "blocks", change)
+		return failed)
 
 func mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String = "", expected_item_token: String = "") -> Dictionary:
 	return _coordinated_dict(_mirror_item.bind(id, changes, target, actor, note, audit_text, expected_revision, expected_item_token))
 
 
-func _mirror_item(_step: RefCounted, id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String, expected_item_token: String) -> Dictionary:
-	## The outer mutation makes the candidate patch, transition and audit records
-	## one canonical unit while the ordinary typed operations retain validation.
-	var error := _begin_item_mutation()
-	if not error.is_empty(): return {"error":error}
-	if not target.is_empty(): error = transition_item(id, target, actor, note, changes, expected_revision, expected_item_token)
-	else: error = update_item(id, changes, actor, expected_revision, expected_item_token)
+func _mirror_item(step: RefCounted, id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String, expected_item_token: String) -> Dictionary:
+	## One change makes the candidate patch, transition and audit records one
+	## canonical unit while the ordinary typed operations, joining it, retain
+	## their validation.
 	var comment: Dictionary = {}
-	if error.is_empty():
-		comment = _db.add_comment(id, actor, audit_text)
-		error = str(comment.get("error", ""))
-		if error.is_empty(): error = _db._last_sql_error
-	if error.is_empty():
-		if _db is DocketDBJsonl: error = (_db as DocketDBJsonl).add_event_checked(id, "mirrored", actor, audit_text)
-		else:
-			_db.add_event(id, "mirrored", actor, audit_text)
-			error = _db._last_sql_error
-	error = _complete_item_mutation(error)
+	var error := _db.run_change(step, func(change: RefCounted) -> String:
+		var failed := transition_item(id, target, actor, note, changes, expected_revision, expected_item_token, change) if not target.is_empty() \
+			else update_item(id, changes, actor, expected_revision, expected_item_token, change)
+		if not failed.is_empty(): return failed
+		comment.merge(_db.add_comment(id, actor, audit_text, 0, change))
+		failed = str(comment.get("error", ""))
+		return failed if not failed.is_empty() else _db.add_event_checked(id, "mirrored", actor, audit_text, change))
 	return {"error":error} if not error.is_empty() else {"comment_id":comment.get("id", 0)}
 
 func rewrite_move_references(old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
@@ -671,30 +627,32 @@ func rewrite_move_references(old_qualified: String, new_qualified: String, old_b
 	return result
 
 
-func _rewrite_move_references(_step: RefCounted, old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
-	## Only descriptors in each item's pinned revision authorize inspection of
-	## JSON values. Opaque future fields are preserved byte-for-value.
+func _rewrite_move_references(step: RefCounted, old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
 	var refresh_error: String = refresh_if_changed()
 	if not refresh_error.is_empty(): return {"count":0,"error":refresh_error}
-	var json_db: DocketDBJsonl = null
-	if _db is DocketDBJsonl: json_db = _db as DocketDBJsonl
-	var error: String = json_db._begin_canonical_mutation() if json_db != null else _db._exec_checked("BEGIN TRANSACTION;")
-	if not error.is_empty(): return {"count":0,"error":error}
-	var count: int = 0
-	if json_db != null:
-		var rewritten: Dictionary = json_db.rewrite_refs_checked(old_qualified,new_qualified,old_bare,new_for_bare,rewrite_bare)
-		count = int(rewritten.get("count", 0)); error = str(rewritten.get("error", ""))
-	else:
-		count = _db.rewrite_refs(old_qualified,new_qualified,old_bare,new_for_bare,rewrite_bare)
-		if not _db._last_sql_error.is_empty(): error = _db._last_sql_error
-	var items: Array = _db.execute_query({}, "full") if error.is_empty() else []
-	if not _db.last_query_error.is_empty(): error = _db.last_query_error
+	var counted := {"count": 0}
+	var error := _db.run_change(step, _rewrite_references_in_change.bind(counted, old_qualified, new_qualified, old_bare, new_for_bare, rewrite_bare))
+	if error.is_empty():
+		var reload_error: String = reload()
+		if not reload_error.is_empty(): error = reload_error
+	return {"count":counted.count if error.is_empty() else 0,"error":error}
+
+
+# The rewrite, within the change _rewrite_move_references runs, counting the
+# rows and items it rewrites into `counted`. Only descriptors in each item's
+# pinned revision authorize inspection of JSON values. Opaque future fields
+# are preserved byte-for-value.
+func _rewrite_references_in_change(step: RefCounted, counted: Dictionary, old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> String:
+	var refs: Dictionary = _db.rewrite_refs_checked(old_qualified,new_qualified,old_bare,new_for_bare,rewrite_bare,step)
+	var error := str(refs.error)
+	if not error.is_empty(): return error
+	counted.count = int(refs.count)
+	var items: Array = _db.execute_query({}, "full")
+	if not _db.last_query_error.is_empty(): return _db.last_query_error
 	for item in items:
-		if not error.is_empty(): break
 		var resolved: Dictionary = resolve_item(item)
 		if resolved.has("error"):
-			error = "cannot safely rewrite references for '%s': %s" % [item.get("id", ""),resolved.error]
-			break
+			return "cannot safely rewrite references for '%s': %s" % [item.get("id", ""),resolved.error]
 		var changes: Dictionary = {}
 		for descriptor in resolved.definition.fields:
 			var key: String = str(descriptor.key)
@@ -708,17 +666,11 @@ func _rewrite_move_references(_step: RefCounted, old_qualified: String, new_qual
 				for reference in custom[key]: rewritten_list.append(_rewrite_reference(str(reference),old_qualified,new_qualified,old_bare,new_for_bare,rewrite_bare))
 				if rewritten_list != custom[key]: changes[key] = rewritten_list
 		if not changes.is_empty():
-			error = _db.update_item_fields_checked(str(item.id), _storage_patch(changes, [], resolved.definition))
-			if error.is_empty():
-				count += 1
-				_db._record_change(str(item.id), "references_updated")
-	if json_db != null: error = json_db._complete_canonical_mutation(error)
-	elif error.is_empty(): error = _db._exec_checked("COMMIT;")
-	else: _db._rollback()
-	if error.is_empty():
-		var reload_error: String = reload()
-		if not reload_error.is_empty(): error = reload_error
-	return {"count":count if error.is_empty() else 0,"error":error}
+			error = _db.update_item_fields_checked(str(item.id), _storage_patch(changes, [], resolved.definition), step)
+			if not error.is_empty(): return error
+			counted.count += 1
+			_db._record_change(str(item.id), "references_updated")
+	return ""
 
 func _rewrite_reference(value: String, old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> String:
 	if value == old_qualified: return new_qualified
@@ -729,7 +681,7 @@ func repair_item_status(id: String, target: String, actor: String, reason: Strin
 	return _coordinated_text(_repair_item_status.bind(id, target, actor, reason, fields))
 
 
-func _repair_item_status(_step: RefCounted, id: String, target: String, actor: String, reason: String, fields: Dictionary) -> String:
+func _repair_item_status(step: RefCounted, id: String, target: String, actor: String, reason: String, fields: Dictionary) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	if actor.strip_edges().is_empty() or reason.strip_edges().is_empty(): return "actor and repair reason are required"
@@ -758,21 +710,9 @@ func _repair_item_status(_step: RefCounted, id: String, target: String, actor: S
 	var error := validate_candidate(definition, candidate)
 	if not error.is_empty(): return error
 	var patch := _storage_patch(normalized.values, normalized.unset, definition); patch.status = target
-	if not _db is DocketDBJsonl:
-		_db._last_sql_error = ""
-		error = _db._exec_checked("BEGIN TRANSACTION;")
-		if error.is_empty(): error = _db.update_item_fields_checked(id, patch)
-		if error.is_empty():
-			_db.add_event(id, "status_repaired", actor, reason)
-			error = _db._last_sql_error
-		if error.is_empty(): error = _db._exec_checked("COMMIT;")
-		else: _db._rollback()
-		return error
-	error = (_db as DocketDBJsonl)._begin_canonical_mutation()
-	if not error.is_empty(): return error
-	error = (_db as DocketDBJsonl).update_item_fields_checked(id, patch)
-	if error.is_empty(): error = (_db as DocketDBJsonl).add_event_checked(id, "status_repaired", actor, reason)
-	return (_db as DocketDBJsonl)._complete_canonical_mutation(error)
+	return _db.run_change(step, func(change: RefCounted) -> String:
+		var updated := _db.update_item_fields_checked(id, patch, change)
+		return updated if not updated.is_empty() else _db.add_event_checked(id, "status_repaired", actor, reason, change))
 
 func preview_evolution(slug: String, definition: Dictionary, expected_current: String, item_ids: Array = []) -> Dictionary:
 	# Reads only, but its freshness check touches shared registry state.
@@ -819,30 +759,37 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 	return _coordinated_text(_apply_evolution.bind(preview, author, reason))
 
 
-func _apply_evolution(_step: RefCounted, preview: Dictionary, author: String, reason: String) -> String:
+func _apply_evolution(step: RefCounted, preview: Dictionary, author: String, reason: String) -> String:
 	if preview.has("error") or author.strip_edges().is_empty() or reason.strip_edges().is_empty(): return str(preview.get("error", "author and reason are required"))
 	var reload_error := refresh_if_changed()
 	if reload_error.is_empty(): reload_error = reload()
 	if not reload_error.is_empty(): return reload_error
-	var begin_error := (_db as DocketDBJsonl)._begin_canonical_mutation()
-	if not begin_error.is_empty(): return begin_error
+	var new_revision := {"created": false}
+	var error := _db.run_change(step, _evolve_in_change.bind(new_revision, preview, author, reason))
+	if error.is_empty() and new_revision.created: error = reload()
+	return error
+
+
+# The evolution, within the change _apply_evolution runs: the selected items
+# rebound to the previewed revision, which is recorded first (and
+# `new_revision.created` set) unless it is the type's current one.
+func _evolve_in_change(step: RefCounted, new_revision: Dictionary, preview: Dictionary, author: String, reason: String) -> String:
 	# Preview dictionaries are untrusted and can outlive their source snapshot.
 	var checked := preview_evolution(str(preview.get("slug", "")), preview.get("definition", {}), str(preview.get("expected_current", "")), preview.get("items", []))
-	if checked.has("error"): return (_db as DocketDBJsonl)._complete_canonical_mutation(str(checked.error))
+	if checked.has("error"): return str(checked.error)
 	var current: Dictionary = get_type(checked.slug)
 	var revision_id := "%s@%s" % [current.id, TypeRegistryBootstrap._definition_hash(checked.definition)]
 	if revision_id == current.current_revision:
-		var bind_error := ""
 		for id in checked.items:
-			if not bind_error.is_empty(): break
 			var item: Dictionary = _db.get_item(id)
 			var defaults: Dictionary = _upgrade_defaults(item, checked.definition)
-			if not defaults.is_empty(): bind_error = (_db as DocketDBJsonl).update_item_fields_checked(id, _storage_patch(defaults, [], checked.definition))
-			if not bind_error.is_empty(): break
-			bind_error = _db._exec_checked("UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [current.id, revision_id, id])
-			if bind_error.is_empty(): bind_error = _db._exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [id,"type_revision_changed",author,Time.get_datetime_string_from_system(true),reason])
-			if bind_error.is_empty(): _db._record_change(id, "type_revision_changed")
-		return (_db as DocketDBJsonl)._complete_canonical_mutation(bind_error)
+			var error := ""
+			if not defaults.is_empty(): error = _db.update_item_fields_checked(id, _storage_patch(defaults, [], checked.definition), step)
+			if error.is_empty(): error = _db._write_checked(step, "UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [current.id, revision_id, id])
+			if error.is_empty(): error = _db._write_checked(step, "INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [id,"type_revision_changed",author,Time.get_datetime_string_from_system(true),reason])
+			if not error.is_empty(): return error
+			_db._record_change(id, "type_revision_changed")
+		return ""
 	var revision := {"id":revision_id,"type_id":current.id,"parent_revision":current.current_revision,"definition":checked.definition,"author":author,"created_at":Time.get_datetime_string_from_system(true),"reason":reason}
 	var record: Dictionary = _definitions[checked.slug].duplicate(true)
 	record.current_revision = revision_id
@@ -853,10 +800,8 @@ func _apply_evolution(_step: RefCounted, preview: Dictionary, author: String, re
 		var defaults: Dictionary = _upgrade_defaults(item, checked.definition)
 		bindings.append({"item_id":id,"type_id":current.id,"type_revision":revision_id,"changes":_storage_patch(defaults, [], checked.definition)})
 		events.append({"item_id":id,"event_type":"type_revision_changed","actor":author,"timestamp":Time.get_datetime_string_from_system(true),"note":reason})
-	var error := (_db as DocketDBJsonl).apply_registry_change(record, revision, bindings, events, current.current_revision)
-	error = (_db as DocketDBJsonl)._complete_canonical_mutation(error)
-	if error.is_empty(): error = reload()
-	return error
+	new_revision.created = true
+	return (_db as DocketDBJsonl).apply_registry_change(record, revision, bindings, events, current.current_revision, step)
 
 func _descriptor(record: Dictionary) -> Dictionary:
 	var revision: Dictionary = _revisions.get(record.current_revision, {})

@@ -79,6 +79,34 @@ static func _refused(result: Variant) -> Dictionary:
 	return result if result is Dictionary else {"error": str(result)}
 
 
+## `work`, called with its step and returning "" or why it failed, as one
+## change within a step of `op` (or an operation of its own): one
+## transaction, which a change made within it (given its step) joins.
+## Returns "" or why not, and then nothing `work` wrote is kept. Changes are
+## reported once the outermost change has committed (DocketDBJsonl: once its
+## file is saved).
+func run_change(op: RefCounted, work: Callable) -> String:
+	return str(_change(op, _text_change.bind(work)).error)
+
+
+static func _text_change(step: RefCounted, work: Callable) -> Dictionary:
+	return {"error": str(work.call(step))}
+
+
+# run_change for `work` returning a Dictionary with an "error" entry: what
+# `work` returns, its "error" being the change's outcome.
+func _change(op: RefCounted, work: Callable) -> Dictionary:
+	return _refused(_writing(op, _change_step.bind(work)))
+
+
+func _change_step(step: RefCounted, work: Callable) -> Dictionary:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return {"error": txn.error}
+	var result: Dictionary = work.call(step)
+	result.error = _complete_transaction(step, txn.ticket, str(result.get("error", "")))
+	return result
+
+
 var _guard := CoordGuard.new()
 
 

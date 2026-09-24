@@ -683,7 +683,7 @@ func test_checked_setters_return_sql_and_canonical_write_failures() -> Variant:
 	var r = A.is_true(not error.is_empty(), "checked metadata setter returns SQL failure")
 	if r is String: db.close(); return r
 	db._atomic_write_hook = func(_path, _text): return "injected setter write failure"
-	error = db.set_item_field_checked("ORD-0001", "title", "must roll back")
+	error = db.update_item_fields_checked("ORD-0001", {"title": "must roll back"})
 	db._atomic_write_hook = Callable()
 	r = A.contains(error, "injected setter write failure", "checked item setter returns canonical failure")
 	if r is String: db.close(); return r
