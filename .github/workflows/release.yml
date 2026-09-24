@@ -6,8 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build (e.g. v0.1.0)"
-        required: true
+        description: "Tag to build and publish (e.g. v0.1.0); leave empty with validate_only"
+        required: false
+        default: ""
+      validate_only:
+        # Runs every build, export and check on all three platforms for the
+        # chosen branch or tag, and publishes nothing.
+        description: "Build and check only; publish nothing"
+        type: boolean
+        required: false
+        default: false
 
 env:
   GODOT_VERSION: "4.7.1"
@@ -46,9 +54,32 @@ jobs:
             rust_targets: x86_64-pc-windows-msvc
 
     steps:
+      # A manual release builds the tag it publishes; anything else builds the
+      # exact commit the run was started for, so every platform builds the same
+      # commit even if a branch moves meanwhile.
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.sha }}
           submodules: recursive
+
+      - name: Check what is being built
+        shell: bash
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          VALIDATE_ONLY: ${{ github.event.inputs.validate_only }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$VALIDATE_ONLY" != true ] && [ -z "$INPUT_TAG" ]; then
+            echo "a manual release needs a tag; use validate_only to build without one"; exit 1
+          fi
+          if [ -n "$INPUT_TAG" ]; then
+            [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$INPUT_TAG^{commit}")" ] \
+              || { echo "the checkout is not tag $INPUT_TAG"; exit 1; }
+          else
+            [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] \
+              || { echo "the checkout is not the run's commit $GITHUB_SHA"; exit 1; }
+          fi
+          echo "building $(git rev-parse HEAD)"
 
       - name: Install SCons
         run: pipx install scons
@@ -280,6 +311,8 @@ jobs:
           # *branch* ("development"), not a tag, so preferring it would name
           # every dispatched artifact after the branch.
           VERSION="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          # A validate-only run of a branch such as feature/x names files after it.
+          VERSION="${VERSION//\//-}"
           mkdir -p dist
 
           case "${{ matrix.platform }}" in
@@ -326,6 +359,7 @@ jobs:
   publish:
     name: Sign checksums and publish release
     needs: build
+    if: github.event_name == 'push' || github.event.inputs.validate_only != 'true'
     runs-on: ubuntu-latest
     # Job-level env, deliberately: a step's own `env:` block is NOT visible to
     # that step's `if:` expression, so gating on it there silently evaluates to

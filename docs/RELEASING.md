@@ -89,10 +89,17 @@ git push origin v0.1.0
 The tag triggers `release.yml`, which for each of macOS (universal), Linux
 x86_64 and Windows x86_64:
 
-1. Builds the GDExtension from vendored source — both debug and release targets
+1. Builds both native extensions from source (godot-sqlite, debug and release;
+   `native/docket_native` with the pinned Rust)
 2. Runs preflight, then the full test suite; a failure stops the release
-3. Exports with the matching preset
+3. Exports with the matching preset, then checks that the exported native
+   library is the one just built and loads in Godot 4.7.1 and 4.6.2
 4. Packages, with `LICENSE` and a generated `THIRD-PARTY-LICENSES.txt` alongside
+
+The same workflow can be started by hand. With a tag it builds and publishes
+that tag (the build checks out the tag itself). With **validate_only** ticked it
+runs every step above for the chosen branch or tag on all three platforms and
+publishes nothing — the way to see a commit pass on Windows before tagging it.
 
 Then a single publish job generates `SHA256SUMS` and creates the GitHub release.
 It creates `SHA256SUMS.asc` only when `GPG_PRIVATE_KEY` is configured. A public
