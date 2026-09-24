@@ -759,26 +759,44 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 
 
 func delete_item(id: String) -> void:
-	## Cascading delete of an item and all related data (tags, events, links, comments, attachments, secrets).
-	## Foreign keys with ON DELETE CASCADE handle most of this, but we do it explicitly for safety.
-	_exec("DELETE FROM item_tags WHERE item_id=?;", [id])
-	_exec("DELETE FROM item_events WHERE item_id=?;", [id])
-	_exec("DELETE FROM item_links WHERE from_id=? OR to_id=?;", [id, id])
-	_exec("DELETE FROM comments WHERE item_id=?;", [id])
-	_exec("DELETE FROM attachments WHERE item_id=?;", [id])
-	# Clean up vault entries (secret value + encrypted notes + versions).
-	# Delete by recorded ownership as well as by convention: an entry attached to
-	# this item under some other handle would otherwise be left orphaned, with no
-	# item to reach it through and no listing that shows it.
-	for owned_handle in list_secrets_owned_by(id):
-		delete_secret(owned_handle)
-		_exec("DELETE FROM docket_secret_versions WHERE handle=?;", [owned_handle])
-	delete_secret(id)
-	delete_secret(id + ":notes")
-	_exec("DELETE FROM docket_secret_versions WHERE handle=?;", [id])
-	_exec("DELETE FROM docket_secret_versions WHERE handle=?;", [id + ":notes"])
-	if _exec_checked("DELETE FROM items WHERE id=?;", [id]).is_empty():
+	var error := delete_item_checked(id)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Deletes item `id` with everything attached to it (tags, events, links,
+## comments, attachments, and the vault entries it owns), in one transaction
+## within a step of `op` (or an operation of its own): "" or why not, and then
+## nothing is deleted.
+func delete_item_checked(id: String, op: RefCounted = null) -> String:
+	return _writing_text(op, _delete_item.bind(id))
+
+
+func _delete_item(step: RefCounted, id: String) -> String:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return txn.error
+	return _complete_transaction(step, txn.ticket, _delete_item_rows(step, id))
+
+
+# Foreign keys with ON DELETE CASCADE would remove most of these; they are
+# deleted explicitly all the same. A failed write fails the transaction.
+func _delete_item_rows(step: RefCounted, id: String) -> String:
+	_write(step, "DELETE FROM item_tags WHERE item_id=?;", [id])
+	_write(step, "DELETE FROM item_events WHERE item_id=?;", [id])
+	_write(step, "DELETE FROM item_links WHERE from_id=? OR to_id=?;", [id, id])
+	_write(step, "DELETE FROM comments WHERE item_id=?;", [id])
+	_write(step, "DELETE FROM attachments WHERE item_id=?;", [id])
+	# Vault entries go by recorded ownership as well as by convention: an entry
+	# attached under some other handle would otherwise be left orphaned, with
+	# no item to reach it through and no listing that shows it.
+	var handles := list_secrets_owned_by(id)
+	handles.append_array([id, id + ":notes"])
+	for handle: String in handles:
+		var removed := delete_secret_checked(handle, step)
+		if not str(removed.error).is_empty(): return removed.error
+		_write(step, "DELETE FROM docket_secret_versions WHERE handle=?;", [handle])
+	if _write_checked(step, "DELETE FROM items WHERE id=?;", [id]).is_empty():
 		_record_change(id, "deleted")
+	return ""
 
 
 func rewrite_refs(old_qualified: String, new_qualified: String, old_bare_id: String, new_qualified_for_bare: String, rewrite_bare: bool = true) -> int:
@@ -1531,11 +1549,26 @@ func list_secrets() -> Array:
 
 
 func delete_secret(handle: String) -> bool:
-	var rows := _exec_select("SELECT handle FROM docket_secrets WHERE handle=?;", [handle])
-	if rows.is_empty():
-		return false
-	_exec("DELETE FROM docket_secrets WHERE handle=?;", [handle])
-	return true
+	var result := delete_secret_checked(handle)
+	if not str(result.error).is_empty(): push_error("DocketDB: %s" % result.error)
+	return bool(result.deleted)
+
+
+## Deletes the vault entry `handle` (not its archived versions) within a step
+## of `op` (or an operation of its own): {deleted, error}, `deleted` false
+## when there was none or the deletion failed.
+func delete_secret_checked(handle: String, op: RefCounted = null) -> Dictionary:
+	var result: Variant = _writing(op, _delete_secret.bind(handle))
+	return result if result is Dictionary else {"deleted": false, "error": _last_sql_error}
+
+
+func _delete_secret(step: RefCounted, handle: String) -> Dictionary:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return {"deleted": false, "error": txn.error}
+	var found := not _exec_select("SELECT handle FROM docket_secrets WHERE handle=?;", [handle]).is_empty()
+	if found: _write(step, "DELETE FROM docket_secrets WHERE handle=?;", [handle])
+	var error := _complete_transaction(step, txn.ticket)
+	return {"deleted": found and error.is_empty(), "error": error}
 
 
 func get_all_secrets_raw() -> Array:

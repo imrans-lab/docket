@@ -179,11 +179,4 @@ func _import_checked(db: DocketDB, id: String, exported: Dictionary, registry: T
 	return error
 
 func _delete_checked(db: DocketDB, id: String) -> String:
-	if db is DocketDBJsonl: return (db as DocketDBJsonl).delete_item_checked(id)
-	db._last_sql_error = ""
-	db._exec_checked("BEGIN TRANSACTION;")
-	db.delete_item(id)
-	var error: String = db._last_sql_error
-	if error.is_empty(): error = db._exec_checked("COMMIT;")
-	else: db._rollback()
-	return error
+	return db.delete_item_checked(id)

@@ -36,6 +36,9 @@ var _mutation_operation: RefCounted = null
 # items_changed listener during a reload, say) is refused rather than let it
 # take over or drop the outer mutation's operation.
 var _mutation_busy := false
+# The step of the change through the transaction API (_canonical) that is
+# rewriting the file, so a failed write reloads within it.
+var _flushing_step: RefCounted = null
 # items_changed (DocketDB) is reported once a mutation is committed AND
 # saved to the file; a rollback or failed save reports nothing. A reload from
 # the file (a change made outside this process, or docket_reload) is reported
@@ -279,13 +282,15 @@ func get_storage_diagnostics() -> Array:
 	return parsed if parsed is Array else []
 
 
-func _mutation_precheck() -> String:
+# Before the outermost change: "" or why the project cannot be changed now.
+# A stale cache is reloaded first, within `step`.
+func _mutation_precheck(step: RefCounted) -> String:
 	if _write_blocked: return last_write_error
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
 		_write_blocked = true
 		last_write_error = "canonical source is missing; project is read-only"
 		return last_write_error
-	if is_stale() and not reload(true, _mutation_operation):
+	if is_stale() and not reload(true, step):
 		_write_blocked = true
 		if last_write_error.is_empty(): last_write_error = "canonical source could not be reloaded"
 		return last_write_error
@@ -309,7 +314,7 @@ func _begin_canonical_mutation() -> String:
 		if lease.has("error"): return lease.error
 		_mutation_busy = true
 		_mutation_operation = lease.operation
-		var precheck := _mutation_precheck()
+		var precheck := _mutation_precheck(_mutation_operation)
 		if not precheck.is_empty():
 			_close_mutation_operation()
 			return precheck
@@ -349,6 +354,56 @@ func _complete_canonical_mutation(error: String = "") -> String:
 	return flush_error
 
 
+# -- Canonical changes through the transaction API --------------------------
+#
+# A change runs `work` (called with its step, returning a Dictionary with an
+# "error" entry) within a step of `op`, in a transaction that the cache and
+# the canonical file share: the outermost change checks the file's freshness
+# first, and once the transaction has committed rewrites the file, still
+# within its step. A nested change (a call the outer one makes, such as
+# deleting an item's vault entries) joins the transaction and leaves the file
+# to the outermost. Changes are reported after the file is written and the
+# step given back; a rollback or a failed write reports none.
+
+func _canonical(op: RefCounted, work: Callable) -> Dictionary:
+	var result: Variant = _writing(op, _canonical_step.bind(work))
+	if not result is Dictionary: return {"error": _last_sql_error}
+	if not _change_in_progress():
+		if str(result.error).is_empty(): super._report_changes()
+		else: _pending_changes = []
+	return result
+
+
+func _canonical_step(step: RefCounted, work: Callable) -> Dictionary:
+	var outermost := not _change_in_progress()
+	if outermost:
+		# A listener of this change's own reload cannot start another one.
+		if _mutation_busy: return {"error": "another change to this project is in progress"}
+		_mutation_busy = true
+		var precheck := _mutation_precheck(step)
+		if not precheck.is_empty():
+			_mutation_busy = false
+			return {"error": precheck}
+	var txn := _begin_transaction(step)
+	if txn.has("error"):
+		if outermost: _mutation_busy = false
+		return {"error": txn.error}
+	var result: Dictionary = work.call(step)
+	result.error = _complete_transaction(step, txn.ticket, str(result.get("error", "")))
+	if not outermost: return result
+	if str(result.error).is_empty():
+		_flushing_step = step
+		result.error = _flush_jsonl()
+		_flushing_step = null
+	else:
+		# The cache is rebuilt from the file; only a newer file from another
+		# writer is reported.
+		reload(is_stale(), step)
+		last_write_error = result.error
+	_mutation_busy = false
+	return result
+
+
 func _close_mutation_operation() -> void:
 	if _mutation_operation != null:
 		_mutation_operation.close()
@@ -367,8 +422,8 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	return CoordLease.run(_apply_registry_change.bind(type_def, revision, item_bindings, events, expected_current_revision))
 
 
-func _apply_registry_change(_step: RefCounted, type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
-	var error := _mutation_precheck()
+func _apply_registry_change(step: RefCounted, type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
+	var error := _mutation_precheck(step)
 	if not error.is_empty(): return error
 	_last_sql_error = ""
 	if JSONLParser._parse_type_def(type_def).is_empty() or JSONLParser._parse_type_def_version(revision).is_empty(): return "incomplete type definition snapshot"
@@ -474,7 +529,7 @@ func _fail_flush(message: String) -> String:
 		# SQLite is disposable. Rebuilding it restores the last canonical state so
 		# a failed compound write cannot leak into a later successful flush. The
 		# failed change is not reported; another writer's change it adopts is.
-		reload(is_stale(), _mutation_operation)
+		reload(is_stale(), _flushing_step if _flushing_step != null else _mutation_operation)
 		last_write_error = message
 	else:
 		_write_blocked = true
@@ -523,8 +578,8 @@ func insert_item(id: String, item: Dictionary) -> String:
 	return CoordLease.run(_insert_item.bind(id, item))
 
 
-func _insert_item(_step: RefCounted, id: String, item: Dictionary) -> String:
-	var source_error := _mutation_precheck()
+func _insert_item(step: RefCounted, id: String, item: Dictionary) -> String:
+	var source_error := _mutation_precheck(step)
 	if not source_error.is_empty(): return source_error
 	var candidate := item.duplicate(true)
 	if super.get_meta_value("jsonl_version", "1.0.0") == "2.0.0" and (not candidate.has("type_id") or not candidate.has("type_revision")):
@@ -559,16 +614,14 @@ func set_item_field_checked(id: String, field: String, val) -> String:
 	return _complete_canonical_mutation()
 
 
-func delete_item(id: String) -> void:
-	delete_item_checked(id)
+func delete_item_checked(id: String, op: RefCounted = null) -> String:
+	return str(_canonical(op, _delete_item_in_cache.bind(id)).error)
 
 
-func delete_item_checked(id: String) -> String:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	# delete_item internally calls delete_secret (which we override).
-	super.delete_item(id)
-	return _complete_canonical_mutation()
+# The deletion's own vault-entry deletions come back through
+# delete_secret_checked below and join its transaction.
+func _delete_item_in_cache(step: RefCounted, id: String) -> Dictionary:
+	return {"error": super.delete_item_checked(id, step)}
 
 
 func import_item_full(new_id: String, exported: Dictionary) -> void:
@@ -800,16 +853,13 @@ func rekey_secret(old_handle: String, new_handle: String) -> String:
 	return _complete_canonical_mutation(err)
 
 
-func delete_secret(handle: String) -> bool:
-	var result := delete_secret_checked(handle)
-	return bool(result.deleted) and str(result.error).is_empty()
+func delete_secret_checked(handle: String, op: RefCounted = null) -> Dictionary:
+	var result := _canonical(op, _delete_secret_in_cache.bind(handle))
+	return {"deleted": bool(result.get("deleted", false)) and str(result.error).is_empty(), "error": result.error}
 
-func delete_secret_checked(handle: String) -> Dictionary:
-	var begin_error := _begin_canonical_mutation()
-	if not begin_error.is_empty(): return {"deleted": false, "error": begin_error}
-	var result := super.delete_secret(handle)
-	var error := _complete_canonical_mutation()
-	return {"deleted": result and error.is_empty(), "error": error}
+
+func _delete_secret_in_cache(step: RefCounted, handle: String) -> Dictionary:
+	return super.delete_secret_checked(handle, step)
 
 
 func rotate_secret(handle: String, new_ct: PackedByteArray, new_iv: PackedByteArray, new_mac: PackedByteArray, rotated_by: String = "", requires_2fa: bool = false) -> void:

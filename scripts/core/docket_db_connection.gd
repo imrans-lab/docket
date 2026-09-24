@@ -46,7 +46,9 @@ signal items_changed(changes: Array)
 ## `work` called with the step it must pass to every write (first argument,
 ## before any bound ones), within a step of `parent` or, when that is null, a
 ## SHARED operation of its own. Returns what `work` returns, or null after a
-## refusal (the reason in _last_sql_error). `work` must not await.
+## refusal (the reason in _last_sql_error). `work` must not await. Changes a
+## settled transaction left to report are reported once the step is given
+## back, so a listener that makes a change starts it separately.
 func _writing(parent: RefCounted, work: Callable) -> Variant:
 	var opened := CoordLease.shared(parent)
 	if opened.has("error"):
@@ -54,6 +56,7 @@ func _writing(parent: RefCounted, work: Callable) -> Variant:
 		return null
 	var result: Variant = work.call(opened.operation)
 	opened.operation.close()
+	if not _change_in_progress(): _report_changes()
 	return result
 
 
@@ -136,7 +139,8 @@ func _write_rows(step: RefCounted, sql: String, bindings: Array = []) -> Array:
 # that operation of its own until it is settled. Each scope admitted into it
 # gets a single-use ticket, which only a step of the owning operation can
 # complete; only the outermost completion commits (or rolls back after any
-# failure, which is sticky). Changes are reported once it is settled.
+# failure, which is sticky). The changes it made are reported only after it
+# commits, by _writing once the step that began it is given back.
 
 var _txn_owner: RefCounted = null
 var _txn_depth := 0
@@ -145,9 +149,10 @@ var _txn_tickets: Dictionary = {}
 var _txn_next_ticket := 1
 
 
-## {ticket} or {error}: admits a scope of `step` into the open transaction,
-## or begins one (BEGIN IMMEDIATE) owned by `step`'s operation. Refused,
-## changing nothing, while a change begun some other way is in progress.
+## {ticket, outermost} or {error}: admits a scope of `step` into the open
+## transaction, or begins one (BEGIN IMMEDIATE, `outermost` true) owned by
+## `step`'s operation. Refused, changing nothing, while a change begun some
+## other way is in progress.
 func _begin_transaction(step: RefCounted) -> Dictionary:
 	var refusal := _thread_refusal()
 	if not refusal.is_empty(): return {"error": refusal}
@@ -170,7 +175,7 @@ func _begin_transaction(step: RefCounted) -> Dictionary:
 	var ticket := _txn_next_ticket
 	_txn_next_ticket += 1
 	_txn_tickets[ticket] = true
-	return {"ticket": ticket}
+	return {"ticket": ticket, "outermost": _txn_depth == 1}
 
 
 ## Completes the scope admitted with `ticket`, recording `error` if it
@@ -202,9 +207,8 @@ func _complete_transaction(step: RefCounted, ticket: int, error: String = "") ->
 	_txn_owner.close()
 	_txn_owner = null
 	_txn_error = ""
-	if outcome.is_empty():
-		_pending_changes = changes
-		_report_changes()
+	# Committed changes wait for _writing to report them; rolled back ones go.
+	if outcome.is_empty(): _pending_changes = changes
 	return outcome
 
 
@@ -305,6 +309,8 @@ func _exec_select(sql: String, bindings: Array = []) -> Array:
 	if not ok:
 		var msg: String = _db.error_message if _db.error_message else "SQL query failed"
 		if _last_sql_error.is_empty(): _last_sql_error = msg
+		# A read inside a transaction is part of its change: failing, it fails it.
+		if _txn_depth > 0 and _txn_error.is_empty(): _txn_error = msg
 		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
 		return []
 	return _db.query_result if _db.query_result else []

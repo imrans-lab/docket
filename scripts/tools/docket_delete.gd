@@ -34,6 +34,8 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var type: String = str(item.get("type", ""))
 	var status: String = str(item.get("status", ""))
 
-	db.delete_item(id)
+	var error := db.delete_item_checked(id)
+	if not error.is_empty():
+		return {"error": "Could not delete %s: %s" % [id, error]}
 
 	return {"id": id, "deleted": true, "title": title, "type": type, "was_status": status}
