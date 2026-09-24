@@ -739,24 +739,27 @@ func add_link_checked(from_id: String, to_id: String, relation: String) -> Strin
 
 # -- Attachments --------------------------------------------------------------
 
-func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "") -> Dictionary:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return {"error": precheck}
-	var result := super.attach_file(item_id, filename, data, mime, desc)
-	var flush_error := _complete_canonical_mutation(str(result.get("error", "")))
-	if not flush_error.is_empty(): return {"error": flush_error}
+func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "", op: RefCounted = null) -> Dictionary:
+	# Refused before any change starts (DocketDB checks it too).
+	if data.size() > MAX_ATTACHMENT_BYTES: return super.attach_file(item_id, filename, data, mime, desc, op)
+	var result := _canonical(op, _attach_file_in_cache.bind(item_id, filename, data, mime, desc))
+	if not str(result.error).is_empty(): return {"error": result.error}
+	result.erase("error")
 	return result
 
 
-func detach_file(att_id: int) -> void:
-	detach_file_checked(att_id)
+func _attach_file_in_cache(step: RefCounted, item_id: String, filename: String, data: PackedByteArray, mime: String, desc: String) -> Dictionary:
+	var result := super.attach_file(item_id, filename, data, mime, desc, step)
+	if not result.has("error"): result["error"] = ""
+	return result
 
 
-func detach_file_checked(att_id: int) -> String:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	super.detach_file(att_id)
-	return _complete_canonical_mutation()
+func detach_file_checked(att_id: int, op: RefCounted = null) -> String:
+	return str(_canonical(op, _detach_file_in_cache.bind(att_id)).error)
+
+
+func _detach_file_in_cache(step: RefCounted, att_id: int) -> Dictionary:
+	return {"error": super.detach_file_checked(att_id, step)}
 
 
 # -- Comments -----------------------------------------------------------------
@@ -784,14 +787,12 @@ func resolve_comment(comment_id: int, resolution: String, resolved_by: String) -
 
 # -- Saved queries ------------------------------------------------------------
 
-func save_query(name: String, query_dict: Dictionary) -> void:
-	save_query_checked(name, query_dict)
+func save_query_checked(name: String, query_dict: Dictionary, op: RefCounted = null) -> String:
+	return str(_canonical(op, _save_query_in_cache.bind(name, query_dict)).error)
 
-func save_query_checked(name: String, query_dict: Dictionary) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.save_query(name, query_dict)
-	return _complete_canonical_mutation()
+
+func _save_query_in_cache(step: RefCounted, name: String, query_dict: Dictionary) -> Dictionary:
+	return {"error": super.save_query_checked(name, query_dict, step)}
 
 
 # -- Secrets ------------------------------------------------------------------
@@ -814,21 +815,20 @@ func set_secret_checked(handle: String, ciphertext: PackedByteArray, iv: PackedB
 	return _complete_canonical_mutation()
 
 
-func set_secret_owner(handle: String, owner_item_id: String) -> void:
-	set_secret_owner_checked(handle, owner_item_id)
-
-func set_secret_owner_checked(handle: String, owner_item_id: String) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_secret_owner(handle, owner_item_id)
-	return _complete_canonical_mutation()
+func set_secret_owner_checked(handle: String, owner_item_id: String, op: RefCounted = null) -> String:
+	return str(_canonical(op, _set_secret_owner_in_cache.bind(handle, owner_item_id)).error)
 
 
-func rekey_secret(old_handle: String, new_handle: String) -> String:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	var err := super.rekey_secret(old_handle, new_handle)
-	return _complete_canonical_mutation(err)
+func _set_secret_owner_in_cache(step: RefCounted, handle: String, owner_item_id: String) -> Dictionary:
+	return {"error": super.set_secret_owner_checked(handle, owner_item_id, step)}
+
+
+func rekey_secret(old_handle: String, new_handle: String, op: RefCounted = null) -> String:
+	return str(_canonical(op, _rekey_secret_in_cache.bind(old_handle, new_handle)).error)
+
+
+func _rekey_secret_in_cache(step: RefCounted, old_handle: String, new_handle: String) -> Dictionary:
+	return {"error": super.rekey_secret(old_handle, new_handle, step)}
 
 
 func delete_secret_checked(handle: String, op: RefCounted = null) -> Dictionary:
@@ -860,27 +860,23 @@ func _rewrap_vault_in_cache(step: RefCounted, old_key: PackedByteArray, new_key:
 
 # -- Retrieval bump -----------------------------------------------------------
 
-func bump_retrieval(id: String) -> void:
-	bump_retrieval_checked(id)
-
-func bump_retrieval_checked(id: String) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.bump_retrieval(id)
-	return _complete_canonical_mutation()
+func bump_retrieval_checked(id: String, op: RefCounted = null) -> String:
+	return str(_canonical(op, _bump_retrieval_in_cache.bind(id)).error)
 
 
-func bump_retrieval_many(ids: Array) -> void:
-	bump_retrieval_many_checked(ids)
+func _bump_retrieval_in_cache(step: RefCounted, id: String) -> Dictionary:
+	return {"error": super.bump_retrieval_checked(id, step)}
 
-func bump_retrieval_many_checked(ids: Array) -> String:
-	## The batch shares one cache transaction and one canonical serialization.
-	if ids.is_empty():
-		return ""
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.bump_retrieval_many(ids)
-	return _complete_canonical_mutation()
+
+
+## The batch shares one cache transaction and one file rewrite.
+func bump_retrieval_many_checked(ids: Array, op: RefCounted = null) -> String:
+	if ids.is_empty(): return ""
+	return str(_canonical(op, _bump_retrieval_many_in_cache.bind(ids)).error)
+
+
+func _bump_retrieval_many_in_cache(step: RefCounted, ids: Array) -> Dictionary:
+	return {"error": super.bump_retrieval_many_checked(ids, step)}
 
 
 # -- Transition/error logs (NOT serialized to JSONL per spec) -----------------

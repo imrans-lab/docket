@@ -96,10 +96,21 @@ func set_secret_owner(handle: String, owner_item_id: String) -> void:
 	## Attach an existing vault entry to a work item without touching ciphertext.
 	## This is what "promote to Secret item" does — no decrypt, no re-encrypt, so
 	## it needs no vault password.
-	_exec("UPDATE docket_secrets SET owner_item_id=? WHERE handle=?;", [owner_item_id, handle])
+	var error := set_secret_owner_checked(handle, owner_item_id)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
 
 
-func rekey_secret(old_handle: String, new_handle: String) -> String:
+## set_secret_owner within a step of `op` (or an operation of its own): "" or
+## why not.
+func set_secret_owner_checked(handle: String, owner_item_id: String, op: RefCounted = null) -> String:
+	return _writing_text(op, _set_secret_owner.bind(handle, owner_item_id))
+
+
+func _set_secret_owner(step: RefCounted, handle: String, owner_item_id: String) -> String:
+	return _write_checked(step, "UPDATE docket_secrets SET owner_item_id=? WHERE handle=?;", [owner_item_id, handle])
+
+
+func rekey_secret(old_handle: String, new_handle: String, op: RefCounted = null) -> String:
 	## Move a vault entry to a different handle. Returns "" on success.
 	##
 	## A pure rename: the handle is never part of the encryption (see
@@ -112,15 +123,26 @@ func rekey_secret(old_handle: String, new_handle: String) -> String:
 	## ownership while leaving the ciphertext elsewhere makes the metadata and
 	## the behaviour disagree, which is exactly how a promoted item became
 	## unreadable in the GUI.
+	##
+	## Checked and moved in one transaction, within a step of `op` (or an
+	## operation of its own).
 	if old_handle == new_handle:
 		return ""
+	return _writing_text(op, _rekey_secret.bind(old_handle, new_handle))
+
+
+func _rekey_secret(step: RefCounted, old_handle: String, new_handle: String) -> String:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return txn.error
+	var error := ""
 	if get_secret_raw(old_handle).is_empty():
-		return "No secret found with handle '%s'" % old_handle
-	if not get_secret_raw(new_handle).is_empty():
-		return "A secret already exists under handle '%s'" % new_handle
-	_exec("UPDATE docket_secrets SET handle=? WHERE handle=?;", [new_handle, old_handle])
-	_exec("UPDATE docket_secret_versions SET handle=? WHERE handle=?;", [new_handle, old_handle])
-	return ""
+		error = "No secret found with handle '%s'" % old_handle
+	elif not get_secret_raw(new_handle).is_empty():
+		error = "A secret already exists under handle '%s'" % new_handle
+	else:
+		_write(step, "UPDATE docket_secrets SET handle=? WHERE handle=?;", [new_handle, old_handle])
+		_write(step, "UPDATE docket_secret_versions SET handle=? WHERE handle=?;", [new_handle, old_handle])
+	return _complete_transaction(step, txn.ticket, error)
 
 
 func get_secret_handle_for_item(item_id: String, suffix: String = "") -> String:

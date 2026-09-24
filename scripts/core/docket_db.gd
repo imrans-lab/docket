@@ -839,8 +839,15 @@ func get_events(item_id: String) -> Array:
 
 func log_transition(item_type: String, from_state: String, attempted_to: String, succeeded: bool, valid_transitions: Array = []) -> void:
 	var ts := Time.get_datetime_string_from_system(true)
-	_exec("INSERT INTO transition_log (timestamp, item_type, from_state, attempted_to, succeeded, valid_transitions) VALUES (?, ?, ?, ?, ?, ?);",
+	_log("INSERT INTO transition_log (timestamp, item_type, from_state, attempted_to, succeeded, valid_transitions) VALUES (?, ?, ?, ?, ?, ?);",
 		[ts, item_type, from_state, attempted_to, 1 if succeeded else 0, ",".join(valid_transitions)])
+
+
+# A diagnostic log row, within an operation of its own; a failure is only
+# reported (push_error), as the logs are not project data.
+func _log(sql: String, bindings: Array) -> void:
+	var error := _writing_text(null, func(step: RefCounted) -> String: return _write_checked(step, sql, bindings))
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
 
 
 func get_transition_report() -> Array:
@@ -867,7 +874,7 @@ func get_transition_report() -> Array:
 
 func log_mcp_error(tool_name: String, error_message: String, arg_keys: String = "") -> void:
 	var ts := Time.get_datetime_string_from_system(true)
-	_exec("INSERT INTO mcp_error_log (timestamp, tool_name, error_message, arg_keys) VALUES (?, ?, ?, ?);",
+	_log("INSERT INTO mcp_error_log (timestamp, tool_name, error_message, arg_keys) VALUES (?, ?, ?, ?);",
 		[ts, tool_name, error_message, arg_keys])
 
 
@@ -1123,19 +1130,46 @@ func bump_retrieval(id: String) -> void:
 	## says when a hint's CONTENT was last revised. (Observed 2026-08-16: one
 	## unfiltered hint query rewrote updated_at on all 276 hints in a store,
 	## flattening months of history to a single date.)
-	_exec("UPDATE items SET retrieval_count=retrieval_count+1 WHERE id=?;", [id])
+	var error := bump_retrieval_checked(id)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## bump_retrieval within a step of `op` (or an operation of its own): "" or
+## why not.
+func bump_retrieval_checked(id: String, op: RefCounted = null) -> String:
+	return _writing_text(op, _bump_retrieval.bind(id))
+
+
+func _bump_retrieval(step: RefCounted, id: String) -> String:
+	return _write_checked(step, "UPDATE items SET retrieval_count=retrieval_count+1 WHERE id=?;", [id])
 
 
 func bump_retrieval_many(ids: Array) -> void:
 	## Batch form of bump_retrieval. Exists so a backend that persists on every
 	## mutation can persist ONCE for the whole batch — see
-	## DocketDBJsonl.bump_retrieval_many. Callers that bump more than one item
-	## (any query returning a result set) must use this, not a loop over
-	## bump_retrieval.
+	## DocketDBJsonl.bump_retrieval_many_checked. Callers that bump more than
+	## one item (any query returning a result set) must use this, not a loop
+	## over bump_retrieval.
+	var error := bump_retrieval_many_checked(ids)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## bump_retrieval for each of `ids` (empty ones skipped), all or none, within
+## a step of `op` (or an operation of its own): "" or why not.
+func bump_retrieval_many_checked(ids: Array, op: RefCounted = null) -> String:
+	if ids.is_empty(): return ""
+	return _writing_text(op, _bump_retrieval_many.bind(ids))
+
+
+func _bump_retrieval_many(step: RefCounted, ids: Array) -> String:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return txn.error
+	var error := ""
 	for id in ids:
 		var s := str(id)
-		if not s.is_empty():
-			bump_retrieval(s)
+		if not s.is_empty() and error.is_empty():
+			error = bump_retrieval_checked(s, step)
+	return _complete_transaction(step, txn.ticket, error)
 
 
 # -- Context ------------------------------------------------------------------
@@ -1178,8 +1212,18 @@ func query_context(tags: Array, include_types: Array = [], detail: String = "ful
 # -- Saved queries ------------------------------------------------------------
 
 func save_query(name: String, query_dict: Dictionary) -> void:
-	var json_str := JSON.stringify(query_dict)
-	_exec("INSERT OR REPLACE INTO saved_queries (name, query_json) VALUES (?, ?);", [name, json_str])
+	var error := save_query_checked(name, query_dict)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Saves `query_dict` as query `name`, replacing one of that name, within a
+## step of `op` (or an operation of its own): "" or why not.
+func save_query_checked(name: String, query_dict: Dictionary, op: RefCounted = null) -> String:
+	return _writing_text(op, _save_query.bind(name, query_dict))
+
+
+func _save_query(step: RefCounted, name: String, query_dict: Dictionary) -> String:
+	return _write_checked(step, "INSERT OR REPLACE INTO saved_queries (name, query_json) VALUES (?, ?);", [name, JSON.stringify(query_dict)])
 
 
 func load_query(name: String) -> Dictionary:
@@ -1208,21 +1252,30 @@ func list_queries() -> Array:
 
 const MAX_ATTACHMENT_BYTES: int = 5 * 1024 * 1024  # 5 MB
 
-func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "") -> Dictionary:
+## Attaches `data` to item `item_id`, within a step of `op` (or an operation
+## of its own): the attachment's record, or {error}.
+func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "", op: RefCounted = null) -> Dictionary:
 	var size_bytes: int = data.size()
 	if size_bytes > MAX_ATTACHMENT_BYTES:
 		push_error("DocketDB: attachment too large: %d bytes (max %d)" % [size_bytes, MAX_ATTACHMENT_BYTES])
 		return {"error": "File too large: %d bytes (max 5 MB)" % size_bytes}
-	var ts := Time.get_datetime_string_from_system(true)
+	var result: Variant = _writing(op, _attach_file.bind(item_id, filename, data, mime, desc))
+	return result if result is Dictionary else {"error": _last_sql_error}
 
-	var insert_error := _exec_checked(
+
+# The row and the id SQLite gives it are read in one transaction.
+func _attach_file(step: RefCounted, item_id: String, filename: String, data: PackedByteArray, mime: String, desc: String) -> Dictionary:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return {"error": txn.error}
+	var ts := Time.get_datetime_string_from_system(true)
+	var size_bytes: int = data.size()
+	var error := _write_checked(step,
 		"INSERT INTO attachments (item_id, filename, mime_type, size_bytes, data, created_at, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
 		[item_id, filename, mime, size_bytes, data, ts, desc])
-	if not insert_error.is_empty(): return {"error": insert_error}
-
-	# Get the inserted row id
-	var rows := _exec_select("SELECT last_insert_rowid() as lid;")
+	var rows := _exec_select("SELECT last_insert_rowid() as lid;") if error.is_empty() else []
 	var att_id: int = int(rows[0].lid) if rows.size() > 0 else 0
+	error = _complete_transaction(step, txn.ticket, error)
+	if not error.is_empty(): return {"error": error}
 
 	return {
 		"id": att_id,
@@ -1271,7 +1324,18 @@ func list_attachments(item_id: String) -> Array:
 
 
 func detach_file(att_id: int) -> void:
-	_exec("DELETE FROM attachments WHERE id=?;", [att_id])
+	var error := detach_file_checked(att_id)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Removes attachment `att_id` within a step of `op` (or an operation of its
+## own): "" or why not.
+func detach_file_checked(att_id: int, op: RefCounted = null) -> String:
+	return _writing_text(op, _detach_file.bind(att_id))
+
+
+func _detach_file(step: RefCounted, att_id: int) -> String:
+	return _write_checked(step, "DELETE FROM attachments WHERE id=?;", [att_id])
 
 
 # -- Comments -----------------------------------------------------------------

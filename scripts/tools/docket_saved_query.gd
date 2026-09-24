@@ -42,8 +42,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, registry: Type
 			if registry == null: registry = TypeRegistry.for_db(db, db.get_project_name())
 			var validation: Dictionary = RegistryQuery.compile(query, registry, db.item_columns())
 			if validation.has("error"): return {"error":"saved query is invalid: %s" % validation.error}
-			var error: String = (db as DocketDBJsonl).save_query_checked(name, query) if db is DocketDBJsonl else ""
-			if not db is DocketDBJsonl: db.save_query(name, query)
+			var error: String = db.save_query_checked(name, query)
 			return {"error":error} if not error.is_empty() else {"saved": name}
 		"load":
 			var name: String = args.get("name", "")
