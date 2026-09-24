@@ -639,14 +639,16 @@ func test_midmutation_flush_close_and_reload_cannot_publish_uncommitted_cache() 
 	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
 	var original := _read_file(path)
 	var db := DocketDBJsonl.open_jsonl(path)
+	# The guards are tried two changes deep.
 	var reloaded := {}
 	var error := db.run_change(null, func(step: RefCounted) -> String:
 		var nested := db.run_change(step, func(_inner: RefCounted) -> String:
-			return db._exec_checked("UPDATE items SET title='uncommitted' WHERE id='ORD-0001';"))
-		db.flush()
-		db.close()
-		reloaded.still_open = db.is_open()
-		reloaded.value = db.reload()
+			var updated := db._exec_checked("UPDATE items SET title='uncommitted' WHERE id='ORD-0001';")
+			db.flush()
+			db.close()
+			reloaded.still_open = db.is_open()
+			reloaded.value = db.reload()
+			return updated)
 		return nested if not nested.is_empty() else "forced outer failure")
 	var r = A.eq([error, reloaded.get("still_open"), reloaded.get("value")], ["forced outer failure", true, false], "reload and close are deferred while the change is open")
 	if r is String: db.close(); return r

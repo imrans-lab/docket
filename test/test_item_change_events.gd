@@ -77,6 +77,38 @@ func test_sqlite_changes_are_reported_when_durable() -> Variant:
 	return A.eq([error, seen.before_end, changes], ["", 0, [{"id": id, "event": "committed"}]], "reported at commit, not before")
 
 
+# One change, two ways it could leak: a nested write that fails is the
+# change's failure even when the change ignores it, and writes from another
+# operation (a change of its own, refused as it begins, and a bare write) are
+# refused without failing the change they tried to join.
+func test_a_change_keeps_all_or_nothing_and_only_its_own_writes() -> Variant:
+	var db := _sqlite("owned")
+	var id := _new_bug(_registry({"owned": db}), "owned", "Owned")
+	db._exec("CREATE TRIGGER reject_event BEFORE INSERT ON item_events WHEN NEW.event_type='rejected' BEGIN SELECT RAISE(ABORT, 'event rejected'); END;")
+	var events := func() -> Array: return db.get_events(id).map(func(event: Dictionary) -> String: return str(event.event_type))
+	var changes: Array = []
+	db.items_changed.connect(func(batch: Array): changes.append_array(batch))
+	var error := db.run_change(null, func(step: RefCounted) -> String:
+		db.add_event_checked(id, "kept", "test", "", step)
+		db.add_event_checked(id, "rejected", "test", "", step)
+		return "")
+	var r = A.is_true(error.contains("event rejected") and not events.call().has("kept") and changes.is_empty(),
+		"an ignored nested failure still rolls the whole change back: %s %s %s" % [error, events.call(), changes])
+	if r is String: return r
+
+	var foreign := {}
+	var retrievals := func() -> int: return int(db._exec_select("SELECT retrieval_count AS n FROM items WHERE id=?;", [id])[0].n)
+	var retrieved: int = retrievals.call()
+	error = db.run_change(null, func(step: RefCounted) -> String:
+		foreign.change = db.add_event_checked(id, "foreign", "other operation")
+		foreign.write = db.bump_retrieval_checked(id)
+		return db.add_event_checked(id, "owned", "test", "", step))
+	return A.is_true(error.is_empty() and str(foreign.change).contains("another operation's change") and str(foreign.write).contains("another operation's change")
+		and events.call().has("owned") and not events.call().has("foreign") and retrievals.call() == retrieved
+		and changes == [{"id": id, "event": "owned"}],
+		"another operation's writes are refused and the change still commits: %s %s %s %s" % [error, foreign, events.call(), changes])
+
+
 func test_move_reports_references_rewritten_in_another_project() -> Variant:
 	var alpha := _sqlite("alpha")
 	var beta := _sqlite("beta")
