@@ -15,6 +15,12 @@ extends RefCounted
 signal file_changed
 ## Items changed (the grid and form refresh).
 signal data_changed
+## Another client of the projects changed or deleted the item the shell has
+## open (watch_open_item), item `id` of `project`: a remote source reports
+## each version of it once.
+signal open_item_changed_elsewhere(project: String, id: String, deleted: bool)
+## The open item may have been changed elsewhere but could not be looked up.
+signal open_item_unchecked(project: String, id: String, error: String)
 signal load_failed(path: String, reason: String)
 signal open_item_requested(id: String, project: String)
 signal open_query_requested(filter: String, label: String)
@@ -163,6 +169,35 @@ func save_session(_paths: PackedStringArray) -> void:
 
 ## Item `id`'s current revision token, "" when it is gone.
 func item_token(_project: String, _id: String) -> String:
+	return ""
+
+
+## `open_item` () -> Dictionary is the item the shell has open, as {project,
+## id, token} (the token the form loaded), or {}: what changes made
+## elsewhere are compared with (open_item_changed_elsewhere) until
+## stop_watching.
+func watch_open_item(_open_item: Callable) -> void:
+	pass
+
+
+func stop_watching() -> void:
+	pass
+
+
+## While a form settles a change it made (from before the request until it
+## has shown the result), changes made elsewhere are not compared with the
+## open item: a comparison running is dropped and made again after. Every
+## hold is released once.
+func hold_reconciliation() -> void:
+	pass
+
+
+func release_reconciliation() -> void:
+	pass
+
+
+## The content token item `id` had when this source last saved it, or "".
+func committed_token(_project: String, _id: String) -> String:
 	return ""
 
 

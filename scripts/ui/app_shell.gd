@@ -24,6 +24,9 @@ var _save_dialog: FileDialog
 var _new_dialog: FileDialog
 var _info_dialog: AcceptDialog
 var _confirm_reload_dialog: ConfirmationDialog
+# The form's load generation when _confirm_reload_dialog asked about its
+# item: confirming acts only while the form still shows that load.
+var _reload_asked_generation := -1
 var _add_project_dialog: FileDialog
 var _open_query_dialog: FileDialog
 var _save_query_dialog: FileDialog
@@ -110,6 +113,8 @@ func _notification(what: int) -> void:
 		_save_current_work_state()
 		_persist_last_query()
 		get_tree().quit()
+	elif what == NOTIFICATION_PREDELETE and _src != null:
+		_src.stop_watching()
 
 
 func _persist_last_query() -> void:
@@ -280,6 +285,9 @@ func _build_ui() -> void:
 
 	# Listen for project changes to update menu and persist session
 	_src.file_changed.connect(_on_file_changed)
+	_src.open_item_changed_elsewhere.connect(_on_open_item_changed_elsewhere)
+	_src.open_item_unchecked.connect(_on_open_item_unchecked)
+	_src.watch_open_item(_open_item)
 	_src.open_item_requested.connect(func(id: String, project: String): _open_item_entry.call_deferred(id, project))
 	_src.open_query_requested.connect(_on_open_query_from_mcp)
 
@@ -468,6 +476,7 @@ func _poll_external_changes() -> void:
 	# affected what the user is looking at.
 	var open_id := _record_form.get_current_id() if _record_form else ""
 	var open_project := _record_form.get_current_project() if _record_form else ""
+	var generation: int = _record_form._load_generation if _record_form else -1
 	var before: String = await _item_revision(open_id, open_project)
 
 	var reloaded: Array = await _src.reload_stale()
@@ -485,19 +494,54 @@ func _poll_external_changes() -> void:
 	# edit is worth interrupting for — the user may have unsaved edits, and
 	# saving them would overwrite what just arrived.
 	var after: String = await _item_revision(open_id, open_project)
-	if after == before:
+	if after == before or not _record_form._still_showing(generation):
 		return
+	var where := ", ".join(PackedStringArray(reloaded))
+	_ask_about_open_item("The item you have open was deleted in %s on disk." % where if after.is_empty()
+		else "The item you have open changed on disk (%s)." % where, after.is_empty(), "Item changed on disk",
+		"Load from disk", generation)
 
-	if after.is_empty():
-		_confirm_reload_dialog.dialog_text = (
-			"The item you have open was deleted in %s on disk.\n\n" % ", ".join(PackedStringArray(reloaded))
-			+ "Discard it and go back to the list, or keep your copy open to re-save it?"
-		)
+
+## The form's open item as the source compares changes made elsewhere with
+## it: {project, id, token} (the token the form loaded), or {}.
+func _open_item() -> Dictionary:
+	var open_id := _record_form.get_current_id() if _record_form else ""
+	if open_id.is_empty():
+		return {}
+	return {"project": _record_form.get_current_project(), "id": open_id, "token": _record_form.get_loaded_token()}
+
+
+# Emitted right after the source saw the form still showing that item.
+func _on_open_item_changed_elsewhere(_project: String, _id: String, deleted: bool) -> void:
+	var generation: int = _record_form._load_generation
+	if deleted:
+		_ask_about_open_item("The item you have open was deleted elsewhere.", true,
+			"Item changed elsewhere", "Go back to the list", generation)
 	else:
-		_confirm_reload_dialog.dialog_text = (
-			"The item you have open changed on disk (%s).\n\n" % ", ".join(PackedStringArray(reloaded))
-			+ "Load the new version, or keep your unsaved edits?"
-		)
+		_ask_about_open_item("The item you have open was changed elsewhere.", false,
+			"Item changed elsewhere", "Load the new version", generation)
+
+
+func _on_open_item_unchecked(_project: String, _id: String, error: String) -> void:
+	_info_dialog.title = "Could not check the open item"
+	_info_dialog.dialog_text = ("It may have been changed elsewhere, but it could not be looked up: %s\n\n"
+		% error + "Your edits are kept.")
+	_info_dialog.popup_centered()
+
+
+## Ask about the open item as the form showed it at load `generation`.
+func _ask_about_open_item(what_happened: String, deleted: bool, title: String, load_text: String,
+		generation: int) -> void:
+	_confirm_reload_dialog.title = title
+	_confirm_reload_dialog.ok_button_text = load_text
+	_confirm_reload_dialog.dialog_text = what_happened + "\n\n" + (
+		"Discard it and go back to the list, or keep your copy open to re-save it?" if deleted
+		else "Load the new version, or keep your unsaved edits?")
+	_ask_to_reload(generation)
+
+
+func _ask_to_reload(generation: int) -> void:
+	_reload_asked_generation = generation
 	_confirm_reload_dialog.popup_centered()
 
 
@@ -509,17 +553,23 @@ func _on_reload_from_disk() -> void:
 	## File > Reload from Disk — unconditional re-read, discarding cache.
 	var open_id := _record_form.get_current_id() if _record_form else ""
 	var open_project := _record_form.get_current_project() if _record_form else ""
+	var generation: int = _record_form._load_generation if _record_form else -1
 	var reloaded: Array = await _src.reload_all()
 	_last_projects_token = await _src.change_token()
 
 	if _query_grid and _query_grid.is_visible_in_tree():
 		_query_grid.refresh()
 	if not open_id.is_empty():
-		if (await _item_revision(open_id, open_project)).is_empty():
+		var gone: bool = (await _item_revision(open_id, open_project)).is_empty()
+		if not _record_form._still_showing(generation):
+			pass  # the form moved on meanwhile; nothing to ask about
+		elif gone:
 			_on_back_pressed()  # the open item no longer exists on disk
 		else:
+			_confirm_reload_dialog.title = "Item changed on disk"
+			_confirm_reload_dialog.ok_button_text = "Load from disk"
 			_confirm_reload_dialog.dialog_text = "Reloaded project data is available. Load it and discard the current form edits, or keep reviewing the unsaved form?"
-			_confirm_reload_dialog.popup_centered()
+			_ask_to_reload(generation)
 
 	if reloaded.is_empty():
 		_info_dialog.title = "Reload from Disk"
@@ -527,13 +577,21 @@ func _on_reload_from_disk() -> void:
 		_info_dialog.popup_centered()
 
 
+## The person chose to take the stored version, discarding unsaved form
+## edits: of the item asked about, and only while the form still shows it as
+## it did then (it may have moved on, before or during the lookup).
 func _on_reload_open_item_confirmed() -> void:
-	## User chose to take the on-disk version, discarding unsaved form edits.
-	var open_id := _record_form.get_current_id() if _record_form else ""
-	var open_project := _record_form.get_current_project() if _record_form else ""
+	var generation := _reload_asked_generation
+	if not _record_form or not _record_form._still_showing(generation):
+		return
+	var open_id := _record_form.get_current_id()
+	var open_project := _record_form.get_current_project()
 	if open_id.is_empty():
 		return
-	if (await _item_revision(open_id, open_project)).is_empty():
+	var gone: bool = (await _item_revision(open_id, open_project)).is_empty()
+	if not _record_form._still_showing(generation):
+		return
+	if gone:
 		_on_back_pressed()  # item is gone — return to the list
 	else:
 		_record_form.load_item(open_id, open_project)

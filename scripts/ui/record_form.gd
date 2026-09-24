@@ -1170,6 +1170,11 @@ func get_current_id() -> String:
 func get_current_project() -> String:
 	return _current_project
 
+
+## The content token of the item as the form loaded it.
+func get_loaded_token() -> String:
+	return _loaded_item_token
+
 func attach_to_current(filename: String, data: PackedByteArray, mime: String = "application/octet-stream", description: String = "") -> Dictionary:
 	if _current_id.is_empty() or _current_project.is_empty():
 		return {"error":"no project-scoped item is open"}
@@ -1479,15 +1484,20 @@ func _save_shown() -> Variant:
 		else:
 			_prompt_transition_note(new_status, changes)
 		return ""
+	# Changes made elsewhere wait until the form has settled what it saved.
+	_src.hold_reconciliation()
 	var error: String = await _src.save_item(project, id, changes, _loaded_revision, _loaded_item_token, secret)
 	if not _still_showing(generation):
+		_src.release_reconciliation()
 		_report_moved_on_write(id, error)
 		return error
 	if not error.is_empty():
+		_src.release_reconciliation()
 		_id_label.text = "Save refused: %s" % error
 		_vault._show_vault_error(error)
 		return error
-	_after_shared_save()
+	await _after_shared_save()
+	_src.release_reconciliation()
 	return ""
 
 
@@ -1525,9 +1535,17 @@ func _report_moved_on_write(what: String, error: String) -> void:
 		_show_error("Change not saved", "The change to %s failed: %s" % [what, error])
 
 
+# The saved item shown again, with what was saved as the baseline a change
+# made elsewhere is measured against: the token the save committed, when the
+# source knows it, not whatever a later read finds.
 func _after_shared_save() -> void:
 	item_changed.emit()
-	load_item(_current_id, _current_project)
+	var id := _current_id
+	var project := _current_project
+	await load_item(id, project)
+	var committed: String = _src.committed_token(project, id)
+	if not committed.is_empty() and _current_id == id and _current_project == project:
+		_loaded_item_token = committed
 
 
 func _save_draft() -> Variant:
@@ -1740,16 +1758,20 @@ func _do_status_transition(target: String, note: String, changes: Dictionary = {
 	if secret.has("error"):
 		_show_transition_error(str(secret.error))
 		return false
+	_src.hold_reconciliation()
 	var error: String = await _src.transition_item(project, id, target, note, changes,
 		_loaded_revision, _loaded_item_token, secret)
 	if not _still_showing(generation):
+		_src.release_reconciliation()
 		_report_moved_on_write(id, error)
 		return error.is_empty()
 	if not error.is_empty():
+		_src.release_reconciliation()
 		_show_transition_error(error)
 		_vault._show_vault_error(error)
 		return false
-	_after_shared_save()
+	await _after_shared_save()
+	_src.release_reconciliation()
 	return true
 
 

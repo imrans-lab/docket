@@ -26,7 +26,8 @@ var _owner_thread: int = 0
 ## "comment_added"), "deleted", or "references_updated" for an item whose
 ## references were rewritten. Outside a transaction a change is reported at
 ## once; inside one, when it commits (nothing if it rolls back or its commit
-## fails). DocketDBJsonl reports only once its file is saved.
+## fails). DocketDBJsonl reports only once its file is saved. A change made
+## by an operation given a provenance also has it ("provenance").
 signal items_changed(changes: Array)
 
 
@@ -306,12 +307,45 @@ func _exec_checked(sql: String, bindings: Array = []) -> String:
 	return ""
 
 
-## Record that item `id` changed (`event`): reported now, or when the open
-## transaction commits (items_changed).
-func _record_change(id: String, event: String) -> void:
-	_pending_changes.append({"id": id, "event": event})
+## Record that item `id` changed (`event`) within `step`: reported now, or
+## when the open transaction commits (items_changed). When `step` belongs to
+## an operation given a provenance (with_provenance), the change carries it.
+func _record_change(step: RefCounted, id: String, event: String) -> void:
+	var change := {"id": id, "event": event}
+	var provenance := provenance_of(step)
+	if not provenance.is_empty():
+		change["provenance"] = provenance
+	_pending_changes.append(change)
 	if not _transaction_open:
 		_report_changes()
+
+
+# [operation, provenance] for each operation running with one.
+static var _provenances: Array = []
+
+
+## `work` (called with `operation`, a coordination operation the caller opened
+## for one request) with every change recorded within that operation, and
+## only that one, carrying `provenance` (a read-only copy): what `work`
+## returns. Another operation started meanwhile, by a listener say, has none.
+static func with_provenance(operation: RefCounted, provenance: Dictionary, work: Callable) -> Variant:
+	var fixed := provenance.duplicate(true)
+	fixed.make_read_only()
+	var entry := [operation, fixed]
+	_provenances.append(entry)
+	var result: Variant = work.call(operation)
+	_provenances.erase(entry)
+	return result
+
+
+## The provenance of the operation `step` belongs to, or {}.
+static func provenance_of(step: RefCounted) -> Dictionary:
+	if step == null:
+		return {}
+	for entry in _provenances:
+		if entry[0].same_operation(step):
+			return entry[1]
+	return {}
 
 
 ## Emit and forget the recorded changes (DocketDBJsonl reports them only once

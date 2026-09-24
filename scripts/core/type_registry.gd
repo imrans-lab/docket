@@ -281,8 +281,8 @@ func _install_historical_revision(step: RefCounted, type_record: Dictionary, rev
 func import_revision_and_item(type_record: Dictionary, revision: Dictionary, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
 	return import_revisions_and_item(type_record, [revision] if not revision.is_empty() else [], new_id, exported, author, reason)
 
-func import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String) -> String:
-	return _coordinated_text(_import_revisions_and_item.bind(type_record, revisions, new_id, exported, author, reason))
+func import_revisions_and_item(type_record: Dictionary, revisions: Array, new_id: String, exported: Dictionary, author: String, reason: String, op: RefCounted = null) -> String:
+	return _coordinated_text(_import_revisions_and_item.bind(type_record, revisions, new_id, exported, author, reason), op)
 
 
 # The revisions and the item in one change (one transaction, one file
@@ -623,8 +623,8 @@ func _mirror_item(step: RefCounted, id: String, changes: Dictionary, target: Str
 		return failed if not failed.is_empty() else _db.add_event_checked(id, "mirrored", actor, audit_text, change))
 	return {"error":error} if not error.is_empty() else {"comment_id":comment.get("id", 0)}
 
-func rewrite_move_references(old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> Dictionary:
-	var result := _coordinated_dict(_rewrite_move_references.bind(old_qualified, new_qualified, old_bare, new_for_bare, rewrite_bare))
+func rewrite_move_references(old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool, op: RefCounted = null) -> Dictionary:
+	var result := _coordinated_dict(_rewrite_move_references.bind(old_qualified, new_qualified, old_bare, new_for_bare, rewrite_bare), op)
 	if not result.has("count"): result["count"] = 0
 	return result
 
@@ -671,7 +671,7 @@ func _rewrite_references_in_change(step: RefCounted, counted: Dictionary, old_qu
 			error = _db.update_item_fields_checked(str(item.id), _storage_patch(changes, [], resolved.definition), step)
 			if not error.is_empty(): return error
 			counted.count += 1
-			_db._record_change(str(item.id), "references_updated")
+			_db._record_change(step, str(item.id), "references_updated")
 	return ""
 
 func _rewrite_reference(value: String, old_qualified: String, new_qualified: String, old_bare: String, new_for_bare: String, rewrite_bare: bool) -> String:
@@ -757,8 +757,8 @@ func _project_candidate(item: Dictionary, definition: Dictionary) -> Dictionary:
 		if item.has(key): result[key] = item[key]
 	return result
 
-func apply_evolution(preview: Dictionary, author: String, reason: String) -> String:
-	return _coordinated_text(_apply_evolution.bind(preview, author, reason))
+func apply_evolution(preview: Dictionary, author: String, reason: String, op: RefCounted = null) -> String:
+	return _coordinated_text(_apply_evolution.bind(preview, author, reason), op)
 
 
 func _apply_evolution(step: RefCounted, preview: Dictionary, author: String, reason: String) -> String:
@@ -790,7 +790,7 @@ func _evolve_in_change(step: RefCounted, new_revision: Dictionary, preview: Dict
 			if error.is_empty(): error = _db._write_checked(step, "UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [current.id, revision_id, id])
 			if error.is_empty(): error = _db._write_checked(step, "INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [id,"type_revision_changed",author,Time.get_datetime_string_from_system(true),reason])
 			if not error.is_empty(): return error
-			_db._record_change(id, "type_revision_changed")
+			_db._record_change(step, id, "type_revision_changed")
 		return ""
 	var revision := {"id":revision_id,"type_id":current.id,"parent_revision":current.current_revision,"definition":checked.definition,"author":author,"created_at":Time.get_datetime_string_from_system(true),"reason":reason}
 	var record: Dictionary = _definitions[checked.slug].duplicate(true)

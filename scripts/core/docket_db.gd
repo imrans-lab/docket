@@ -692,7 +692,7 @@ func _import_item_rows(step: RefCounted, new_id: String, exported: Dictionary) -
 		bindings.append(title)
 	var sql := "INSERT INTO items (%s) VALUES (%s);" % [",".join(cols), ",".join(placeholders)]
 	if _write_checked(step, sql, bindings).is_empty():
-		_record_change(new_id, "created")
+		_record_change(step, new_id, "created")
 
 	# Tags
 	var tags: Array = exported.get("tags", [])
@@ -791,7 +791,7 @@ func _delete_item_rows(step: RefCounted, id: String) -> String:
 		if not str(removed.error).is_empty(): return removed.error
 		_write(step, "DELETE FROM docket_secret_versions WHERE handle=?;", [handle])
 	if _write_checked(step, "DELETE FROM items WHERE id=?;", [id]).is_empty():
-		_record_change(id, "deleted")
+		_record_change(step, id, "deleted")
 	return ""
 
 
@@ -825,7 +825,7 @@ func _rewrite_refs(step: RefCounted, old_qualified: String, new_qualified: Strin
 			if not error.is_empty(): return {"error": error}
 			count += _get_changes_count()
 	for id in referencing:
-		_record_change(id, "references_updated")
+		_record_change(step, id, "references_updated")
 	return {"count": count, "error": ""}
 
 
@@ -856,7 +856,7 @@ func _add_event(step: RefCounted, item_id: String, event_type: String, actor: St
 	if error.is_empty():
 		error = _write_checked(step, "UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
 	if error.is_empty():
-		_record_change(item_id, event_type)
+		_record_change(step, item_id, event_type)
 	return error
 
 

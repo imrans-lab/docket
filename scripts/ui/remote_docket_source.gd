@@ -4,9 +4,14 @@ extends "docket_source.gd"
 ## MCP, and every call here is one or more of that process's tools.
 ##
 ## `connection` is the host's link to that process. It needs one method,
-## awaited: call_tool(name: String, arguments: Dictionary) -> Dictionary,
-## answering with the MCP tools/call result ({content: [{text}], isError}), or
-## {error} when the call itself failed. It may also offer list_tools() ->
+## awaited: call_tool(name: String, arguments: Dictionary, operation_id:
+## String) -> Dictionary, answering with the MCP tools/call result ({content:
+## [{text}], isError}), or {error} when the call itself failed. A host that
+## runs the calls as this panel's (the process's private docket/panel/call,
+## given the operation id of a change) offers panel_origin() -> String, the
+## origin the process reports for this panel's changes ("panel:<panel>"),
+## and answers a change with its operation id, the event stream and the
+## event_watermark; without it no change is taken as this source's own. It may also offer list_tools() ->
 ## Array (the MCP tools/list entries), for tool_count. The host passes each
 ## item_changed notification the process sends to handle_host_event, and
 ## awaits start() before showing the UI.
@@ -38,6 +43,40 @@ var _schema: Dictionary = {}
 var _refreshing := false
 var _refresh_again := false
 var _refresh_error := ""
+# This source's changes: the operation ids of those still waiting for their
+# reply, and of the last MAX_COMPLETED answered (whose events may come late).
+var _pending_operations: Dictionary = {}
+var _completed_operations: Array[String] = []
+const MAX_COMPLETED := 64
+# Changes made elsewhere are kept per project, as generations: every other
+# client's change to a project, and every doubt (a stream seen for the first
+# time, a gap in it, a restarted process, events a reply counted that never
+# come), makes the project's dirty
+# generation newer than its clean one. One worker (_work) looks at dirty
+# projects one at a time while nothing holds it, and a project is clean up
+# to a generation only once the open item was compared at it. A hold (a form
+# settling its save, or one of this source's changes waiting for its reply)
+# starts a new epoch: a lookup begun before it is dropped, not applied, and
+# its project stays dirty.
+var _dirty: Dictionary = {}
+var _clean: Dictionary = {}
+var _epoch := 0
+var _holds := 0
+var _working := false
+# The worker is to read the snapshot again (a project reloaded, a restart).
+var _refresh_due := false
+# The shell's open item as {project, id, token}, or {} (watch_open_item).
+var _open_item := Callable()
+# "project<US>id" → the version of it last asked about (its token, or
+# MISSING), so that one version is asked about once.
+var _asked: Dictionary = {}
+const MISSING := "<missing>"
+# The process's event stream (a restart starts a new one) and the last event
+# accounted for on it: received, or given up as lost (every project dirty).
+var _stream := ""
+var _received := 0
+# "project<US>id" → the content token this source's last save of it committed.
+var _committed_tokens: Dictionary = {}
 
 ## A snapshot refresh (and any asked for while it ran) finished.
 signal _snapshot_refreshed
@@ -62,19 +101,213 @@ func start() -> String:
 	return await _refresh_snapshot()
 
 
-## A minerva/plugin_event item_changed payload ({project, id, change, event})
-## from the Docket process.
+## A minerva/plugin_event item_changed payload ({project, id, change, event,
+## cause, origin, operation_id, stream, sequence}) from the Docket process.
+## A change this source made itself (a mutation from this panel's origin with
+## one of its operation ids) only refreshes; any other makes its project
+## dirty. A reloaded project has the snapshot read again.
 func handle_host_event(payload: Dictionary) -> void:
+	var operation := str(payload.get("operation_id", ""))
+	var own: bool = (str(payload.get("cause", "")) == "mutation" and not _origin().is_empty()
+		and str(payload.get("origin", "")) == _origin() and not operation.is_empty()
+		and (_pending_operations.has(operation) or _completed_operations.has(operation)))
+	_note_position(str(payload.get("stream", "")), int(payload.get("sequence", 0)))
 	if str(payload.get("change", "")) == "reloaded":
-		await _refresh_snapshot()
+		_refresh_due = true
+	if not own:
+		_mark_dirty(str(payload.get("project", "")))
 	data_changed.emit()
+	_work()
+
+
+func watch_open_item(open_item: Callable) -> void:
+	_open_item = open_item
+	_work()
+
+
+func stop_watching() -> void:
+	_open_item = Callable()
+	_epoch += 1
+
+
+func hold_reconciliation() -> void:
+	_holds += 1
+	_epoch += 1
+
+
+func release_reconciliation() -> void:
+	_holds = maxi(0, _holds - 1)
+	_work()
+
+
+func committed_token(project: String, id: String) -> String:
+	return str(_committed_tokens.get(_key(project, id), ""))
+
+
+static func _key(project: String, id: String) -> String:
+	return "%s\u001f%s" % [project, id]
+
+
+func _mark_dirty(project: String) -> void:
+	if not project.is_empty():
+		_dirty[project] = int(_dirty.get(project, 0)) + 1
+
+
+func _mark_all_dirty() -> void:
+	for project in project_names():
+		_mark_dirty(project)
+
+
+# Event `sequence` of `stream` came (0: a reply, which names only its
+# stream). A stream not seen before, the first or a restarted process's,
+# may have had changes this source never heard of, as may one that skips a
+# number: every project is then dirty. A restart also starts a new epoch and
+# has the snapshot read again.
+func _note_position(stream: String, sequence: int) -> void:
+	if stream.is_empty():
+		return
+	if stream != _stream:
+		if not _stream.is_empty():
+			_epoch += 1
+			_refresh_due = true
+			_completed_operations.clear()
+		_stream = stream
+		_received = sequence
+		_mark_all_dirty()
+		return
+	if sequence > _received + 1:
+		_mark_all_dirty()
+	_received = maxi(_received, sequence)
+
+
+# A reply left the event stream at `watermark` events: on a stream first
+# seen here that is where counting starts; on a known one, those events
+# should come (_expect_events).
+func _note_reply(stream: String, watermark: int) -> void:
+	var first := stream != _stream
+	_note_position(stream, 0)
+	if first:
+		_received = maxi(_received, watermark)
+	elif watermark > _received:
+		_expect_events(stream, watermark)
+
+
+## How long (s) the events a reply counted may take to come before they are
+## taken as lost.
+const EVENTS_GRACE := 2.0
+
+
+# The events of `stream` up to `awaited` should come; if they have not after
+# EVENTS_GRACE (and the stream is the same), some were lost, and every
+# project is dirty.
+func _expect_events(stream: String, awaited: int) -> void:
+	await (Engine.get_main_loop() as SceneTree).create_timer(EVENTS_GRACE).timeout
+	if stream != _stream or _received >= awaited:
+		return
+	_received = awaited
+	_mark_all_dirty()
+	_work()
+
+
+# The one worker: while nothing holds it and a shell watches, it reads the
+# snapshot again when that is due, then looks at the dirty projects in turn.
+# It stops at an item that could not be looked up, unless more changes came
+# during that lookup; the project stays dirty, and the next change or
+# release tries again.
+func _work() -> void:
+	if _working:
+		return
+	_working = true
+	while _holds == 0 and _open_item.is_valid():
+		if _refresh_due:
+			_refresh_due = false
+			await _refresh_snapshot()
+			data_changed.emit()
+			continue
+		var project := _next_dirty()
+		if project.is_empty() or not await _look_at(project):
+			break
+	_working = false
+
+
+func _next_dirty() -> String:
+	for project in _dirty:
+		if int(_dirty[project]) > int(_clean.get(project, 0)):
+			return project
+	return ""
+
+
+# Compare the open item, when it is in `project`, with the process's: gone,
+# or another version than the form loaded, is reported once per version. A
+# result that no longer holds (a new epoch, a hold, the form moved on) is
+# dropped, and the project looked at again. False when the item could not be
+# looked up.
+func _look_at(project: String) -> bool:
+	var generation: int = _dirty[project]
+	var epoch := _epoch
+	var open: Dictionary = _open_item.call()
+	var id := str(open.get("id", ""))
+	if id.is_empty() or str(open.get("project", "")) != project:
+		_clean[project] = generation
+		return true
+	var found := await item_state(project, id)
+	if epoch != _epoch or _holds > 0 or not _open_item.is_valid() or _open_item.call() != open:
+		return true
+	if found.state == "error":
+		# Changes that came during the lookup are tried for; an unchanged
+		# failure waits for the next change or release.
+		if int(_dirty[project]) != generation or _refresh_due:
+			return true
+		open_item_unchecked.emit(project, id, str(found.error))
+		return false
+	_clean[project] = generation
+	var version := MISSING if found.state == "missing" else str(found.token)
+	var key := _key(project, id)
+	if version != str(open.get("token", "")) and str(_asked.get(key, "")) != version:
+		_asked[key] = version
+		open_item_changed_elsewhere.emit(project, id, version == MISSING)
+	return true
+
+
+func _origin() -> String:
+	return str(_connection.panel_origin()) if _connection.has_method("panel_origin") else ""
+
+
+## `work` (called with a new operation id, and awaited) as one of this
+## source's changes, which holds reconciliation until its reply: what it
+## returns, {result, stream, watermark} — its result, and where the
+## process's event stream was when it replied.
+func _change(work: Callable) -> Dictionary:
+	var operation := Crypto.new().generate_random_bytes(16).hex_encode()
+	_pending_operations[operation] = true
+	hold_reconciliation()
+	var answered: Dictionary = await work.call(operation)
+	_pending_operations.erase(operation)
+	_completed_operations.append(operation)
+	if _completed_operations.size() > MAX_COMPLETED:
+		_completed_operations.pop_front()
+	_note_reply(str(answered.get("stream", "")), int(answered.get("watermark", 0)))
+	release_reconciliation()
+	return answered.get("result", {})
+
+
+## Tool `name` as one of this source's changes.
+func _mutate(name: String, arguments: Dictionary) -> Dictionary:
+	return await _change(func(operation: String) -> Dictionary:
+		var reply: Dictionary = await _connection.call_tool(name, arguments, operation)
+		return {"result": decode_tool_result(reply), "stream": reply.get("stream", ""),
+			"watermark": reply.get("event_watermark", 0)})
 
 
 # -- Calls ----------------------------------------------------------------------
 
-## Call tool `name`: its decoded result, or {error}.
+## Call tool `name`: its decoded result, or {error}. A reply that names the
+## event stream places this source on it (start's first read does, before
+## anything is open).
 func _call(name: String, arguments: Dictionary) -> Dictionary:
-	var reply: Dictionary = await _connection.call_tool(name, arguments)
+	var reply: Dictionary = await _connection.call_tool(name, arguments, "")
+	_note_reply(str(reply.get("stream", "")), int(reply.get("event_watermark", 0)))
+	_work()  # the reply may have shown a restart
 	return decode_tool_result(reply)
 
 
@@ -305,10 +538,11 @@ func save_all() -> void:
 	await _call("docket_flush", {})
 
 
-## The process reports each reloaded project as a host event, which refreshes
-## the snapshot.
+## The process reports each reloaded project as a host event, after which
+## the worker reads the snapshot again (once nothing holds it and a shell
+## watches).
 func reload_all() -> Array:
-	var reloaded := await _call("docket_reload", {})
+	var reloaded := await _mutate("docket_reload", {})
 	return reloaded.get("reloaded", [])
 
 
@@ -321,9 +555,13 @@ func save_item(project: String, id: String, changes: Dictionary, revision: Strin
 		return UNSUPPORTED
 	if not _connection.has_method("panel_call"):
 		return "Editing here needs the host's trusted panel channel, which this host does not provide."
-	var reply: Dictionary = await _connection.panel_call("update_item", {"project": project, "id": id,
-		"changes": changes, "expected_revision": revision, "expected_item_token": token})
+	var reply: Dictionary = await _change(func(operation: String) -> Dictionary:
+		var answered: Dictionary = await _connection.panel_call("update_item", {"project": project, "id": id,
+			"changes": changes, "expected_revision": revision, "expected_item_token": token, "operation_id": operation})
+		return {"result": answered, "stream": answered.get("stream", ""), "watermark": answered.get("event_watermark", 0)})
 	var error = reply.get("error", "")
+	if str(error).is_empty() and not str(reply.get("item_token", "")).is_empty():
+		_committed_tokens[_key(project, id)] = str(reply.item_token)
 	return str(error.get("message", error)) if error is Dictionary else str(error)
 
 
@@ -340,6 +578,21 @@ func item_view(project: String, id: String, refresh: bool = false) -> Dictionary
 func item_token(project: String, id: String) -> String:
 	var view := await item_view(project, id)
 	return "" if view.has("error") else str(view.get("token", ""))
+
+
+## Whether item `id` is there, as {state: "found", token}, {state:
+## "missing"}, or {state: "error", error} when that could not be told:
+## missing only when the process says the item is not there; any other
+## failure (the process unreachable, a malformed reply) is an error.
+func item_state(project: String, id: String) -> Dictionary:
+	var view := await item_view(project, id)
+	if not view.has("error"):
+		var token := str(view.get("token", ""))
+		return {"state": "found", "token": token} if not token.is_empty() \
+			else {"state": "error", "error": "the reply for %s had no token" % id}
+	if str(view.get("kind", "")) == "missing":
+		return {"state": "missing"}
+	return {"state": "error", "error": str(view.error)}
 
 
 func item_title(project: String, id: String) -> Dictionary:
@@ -381,7 +634,7 @@ func run_query(query: Dictionary) -> Dictionary:
 
 
 func move_item(project: String, id: String, target_project: String) -> Dictionary:
-	return await _call("docket_move", {"id": id, "source_project": project, "target_project": target_project})
+	return await _mutate("docket_move", {"id": id, "source_project": project, "target_project": target_project})
 
 
 # -- Comments -------------------------------------------------------------------------
@@ -393,15 +646,15 @@ func list_comments(project: String, id: String) -> Array:
 
 func add_comment(project: String, id: String, author: String, text: String, parent_id: int = 0) -> Dictionary:
 	if parent_id > 0:
-		return await _call("docket_comment", {"action": "reply", "comment_id": parent_id, "text": text,
+		return await _mutate("docket_comment", {"action": "reply", "comment_id": parent_id, "text": text,
 			"author": author, "project": project})
-	return await _call("docket_comment", {"action": "add", "item_id": id, "text": text, "author": author,
+	return await _mutate("docket_comment", {"action": "add", "item_id": id, "text": text, "author": author,
 		"project": project})
 
 
 func resolve_comment(project: String, comment_id: int, resolution: String, by: String) -> Dictionary:
 	var action := "accept" if resolution == "accepted" else "reject"
-	return await _call("docket_comment", {"action": action, "comment_id": comment_id, "addressed_by": by,
+	return await _mutate("docket_comment", {"action": action, "comment_id": comment_id, "addressed_by": by,
 		"project": project})
 
 
@@ -511,7 +764,7 @@ func define_type(project: String, slug: String, definition: Dictionary, author: 
 ## Apply a preview_type_evolution result; the process checks it again against
 ## the current revision before writing.
 func apply_type_evolution(project: String, preview: Dictionary, author: String, reason: String) -> String:
-	var applied := await _call("docket_type_evolve", {"project": project, "type": str(preview.get("slug", "")),
+	var applied := await _mutate("docket_type_evolve", {"project": project, "type": str(preview.get("slug", "")),
 		"definition": preview.get("definition", {}), "expected_revision": str(preview.get("expected_current", "")),
 		"item_ids": preview.get("items", []), "apply": true, "author": author, "reason": reason})
 	await _refresh_types(project)

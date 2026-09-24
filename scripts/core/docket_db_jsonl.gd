@@ -385,7 +385,7 @@ func _apply_registry_change(step: RefCounted, type_def: Dictionary, revision: Di
 	for event in events:
 		if not error.is_empty(): return error
 		error = _write_checked(step, "INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [event.item_id, event.event_type, event.get("actor", ""), event.timestamp, event.get("note", "")])
-		if error.is_empty(): _record_change(str(event.item_id), str(event.event_type))
+		if error.is_empty(): _record_change(step, str(event.item_id), str(event.event_type))
 	return error
 
 

@@ -21,7 +21,9 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, project_dbs: Dictionary = {}) -> Dictionary:
+## Within `op` when given (the operation of the request it serves), which
+## every project it writes to (target, references, source) is changed within.
+func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, project_dbs: Dictionary = {}, op: RefCounted = null) -> Dictionary:
 	var item_id: String = str(args.get("id", ""))
 	var target_project: String = str(args.get("target_project", ""))
 
@@ -121,7 +123,7 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 	new_id = item_id if DocketDB._is_uuid7(item_id) else target_db.next_uuid7_id()
 	var reference_prepare_error: String = _prepare_export_refs(exported, source_registry, source_name, canonical_target, item_id, new_id)
 	if not reference_prepare_error.is_empty(): return {"error":"Source reference semantics are unresolved; nothing was copied: %s" % reference_prepare_error}
-	var target_error: String = _import_checked(target_db, new_id, exported, target_registry, pending_type, pending_revisions, args)
+	var target_error: String = _import_checked(target_db, new_id, exported, target_registry, pending_type, pending_revisions, args, op)
 	if not target_error.is_empty(): return {"error":"Target write failed; source preserved: %s" % target_error}
 	var old_qualified: String = "%s:%s" % [source_name,item_id]
 	var new_qualified: String = "%s:%s" % [canonical_target,new_id]
@@ -131,10 +133,10 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 		# the moved item; another project may own an unrelated item with that ID.
 		var bare_target: String = new_qualified if str(proj_name) == source_name else item_id
 		var project_registry: TypeRegistry = TypeRegistry.for_db(pdb, str(proj_name))
-		var rewrite: Dictionary = project_registry.rewrite_move_references(old_qualified,new_qualified,item_id,bare_target,str(proj_name) == source_name)
+		var rewrite: Dictionary = project_registry.rewrite_move_references(old_qualified,new_qualified,item_id,bare_target,str(proj_name) == source_name,op)
 		if not str(rewrite.get("error", "")).is_empty(): return {"error":"Target copy is durable, but reference rewrite failed in '%s': %s" % [proj_name,rewrite.error],"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
 		refs_updated += int(rewrite.count)
-	var source_error: String = _delete_checked(source_db,item_id)
+	var source_error: String = _delete_checked(source_db,item_id,op)
 	if not source_error.is_empty(): return {"error":"Target copy is durable but source deletion failed: %s" % source_error,"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
 
 	return {
@@ -168,9 +170,9 @@ func _transfer_ref(reference: String, source_project: String, target_project: St
 	if reference == old_id or reference == "%s:%s" % [source_project,old_id]: return "%s:%s" % [target_project,new_id]
 	return reference if reference.contains(":") or reference.is_empty() else "%s:%s" % [source_project,reference]
 
-func _import_checked(db: DocketDB, id: String, exported: Dictionary, registry: TypeRegistry, type_record: Dictionary, revisions: Array, args: Dictionary) -> String:
-	if db is DocketDBJsonl: return registry.import_revisions_and_item(type_record, revisions, id, exported, str(args.get("author", "")), str(args.get("reason", "")))
-	return db.import_item_full_checked(id, exported)
+func _import_checked(db: DocketDB, id: String, exported: Dictionary, registry: TypeRegistry, type_record: Dictionary, revisions: Array, args: Dictionary, op: RefCounted) -> String:
+	if db is DocketDBJsonl: return registry.import_revisions_and_item(type_record, revisions, id, exported, str(args.get("author", "")), str(args.get("reason", "")), op)
+	return db.import_item_full_checked(id, exported, op)
 
-func _delete_checked(db: DocketDB, id: String) -> String:
-	return db.delete_item_checked(id)
+func _delete_checked(db: DocketDB, id: String, op: RefCounted) -> String:
+	return db.delete_item_checked(id, op)

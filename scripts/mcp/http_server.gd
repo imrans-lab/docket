@@ -486,15 +486,29 @@ func _watch_project(proj_name: String, pdb: DocketDB) -> void:
 
 
 ## One ITEM_CHANGED_EVENT per recorded change (an item can have several):
-## {project, id, change, event}, where `change` is created | updated |
-## transitioned | comment_added | deleted | reloaded (the whole project,
-## id ""), and `event` the item event recorded.
+## {project, id, change, event, cause, origin, operation_id, stream,
+## sequence}, where `change` is created | updated | transitioned | comment_added | deleted |
+## reloaded (the whole project, id ""), `event` the item event recorded,
+## `cause` "mutation" for a change a request made, with the origin and
+## operation id it was made with (its "provenance"), or "external_reload" for
+## a project read again from its file, which names neither, even when a
+## request's check for a changed file did it; `stream` and `sequence` place
+## the event on this process's event stream (McpHandler.event_sequence).
 func _on_items_changed(changes: Array, proj_name: String) -> void:
 	for change: Dictionary in changes:
 		_write_stdio({"jsonrpc": "2.0", "method": HOST_EVENT_METHOD, "params": {
-			"event": ITEM_CHANGED_EVENT,
-			"payload": {"project": proj_name, "id": str(change.id), "change": _change_kind(str(change.event)),
-				"event": str(change.event)}}})
+			"event": ITEM_CHANGED_EVENT, "payload": host_event(change, proj_name, _handler)}})
+
+
+## The next event of `handler`'s stream for `change` of `project` (see above).
+static func host_event(change: Dictionary, project: String, handler: McpHandler) -> Dictionary:
+	var reloaded := str(change.event) == "reloaded"
+	var provenance: Dictionary = {} if reloaded else change.get("provenance", {})
+	handler.event_sequence += 1
+	return {"project": project, "id": str(change.id), "change": _change_kind(str(change.event)),
+		"event": str(change.event), "cause": "external_reload" if reloaded else "mutation",
+		"origin": str(provenance.get("origin", "")), "operation_id": str(provenance.get("operation_id", "")),
+		"stream": handler.stream_id, "sequence": handler.event_sequence}
 
 
 static func _change_kind(event: String) -> String:

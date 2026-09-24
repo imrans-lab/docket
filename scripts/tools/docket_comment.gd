@@ -24,26 +24,27 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+## Within `op` when given (the operation of the request it serves).
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, op: RefCounted = null) -> Dictionary:
 	var action: String = args.get("action", "")
 	match action:
 		"add":
-			return _add(args, db)
+			return _add(args, db, op)
 		"list":
 			return _list(args, db)
 		"accept":
-			return _resolve(args, db, "accepted")
+			return _resolve(args, db, "accepted", op)
 		"reject":
-			return _resolve(args, db, "rejected")
+			return _resolve(args, db, "rejected", op)
 		"reply":
-			return _reply(args, db)
+			return _reply(args, db, op)
 		# Backward compat
 		"address":
-			return _resolve(args, db, "accepted")
+			return _resolve(args, db, "accepted", op)
 	return {"error": "Unknown action: %s. Use add, list, accept, reject, or reply." % action}
 
 
-func _add(args: Dictionary, db: DocketDB) -> Dictionary:
+func _add(args: Dictionary, db: DocketDB, op: RefCounted) -> Dictionary:
 	var item_id: String = args.get("item_id", "")
 	if item_id.is_empty() or not db.has_item(item_id):
 		return {"error": "Item not found: %s" % item_id}
@@ -51,7 +52,7 @@ func _add(args: Dictionary, db: DocketDB) -> Dictionary:
 	if text.is_empty():
 		return {"error": "Comment text is required"}
 	var author: String = args.get("author", "agent")
-	return db.add_comment(item_id, author, text)
+	return db.add_comment(item_id, author, text, 0, op)
 
 
 func _list(args: Dictionary, db: DocketDB) -> Dictionary:
@@ -61,15 +62,15 @@ func _list(args: Dictionary, db: DocketDB) -> Dictionary:
 	return {"item_id": item_id, "comments": db.list_comments(item_id)}
 
 
-func _resolve(args: Dictionary, db: DocketDB, resolution: String) -> Dictionary:
+func _resolve(args: Dictionary, db: DocketDB, resolution: String, op: RefCounted) -> Dictionary:
 	var comment_id: int = int(args.get("comment_id", 0))
 	if comment_id <= 0:
 		return {"error": "comment_id is required"}
 	var by: String = args.get("addressed_by", args.get("author", "agent"))
-	return db.resolve_comment(comment_id, resolution, by)
+	return db.resolve_comment(comment_id, resolution, by, op)
 
 
-func _reply(args: Dictionary, db: DocketDB) -> Dictionary:
+func _reply(args: Dictionary, db: DocketDB, op: RefCounted) -> Dictionary:
 	var comment_id: int = int(args.get("comment_id", 0))
 	if comment_id <= 0:
 		return {"error": "comment_id is required for reply"}
@@ -81,4 +82,4 @@ func _reply(args: Dictionary, db: DocketDB) -> Dictionary:
 	if text.is_empty():
 		return {"error": "Reply text is required"}
 	var author: String = args.get("author", "agent")
-	return db.add_comment(item_id, author, text, comment_id)
+	return db.add_comment(item_id, author, text, comment_id, op)

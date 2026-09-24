@@ -8,8 +8,11 @@ extends RefCounted
 ## the person, the project, the item and what may be done there. The host
 ## adds the grant to the panel's requests; the person making an edit (the
 ## local user the host identifies, recorded as "human:<person>") is taken
-## from the grant, never from a request. Tool calls may not carry the
-## reserved RESERVED_ARGUMENTS names. None of this is an MCP tool: it is
+## from the grant, never from a request. The host also opens a session for
+## each panel it shows (open_session), with which McpHandler runs the panel's
+## other calls as tools on the panel's behalf (docket/panel/call), so their
+## changes are known as the panel's. Tool calls may not carry the reserved
+## RESERVED_ARGUMENTS names. None of this is an MCP tool: it is
 ## absent from tools/list and cannot be reached through tools/call.
 
 const PREFIX := "docket/panel/"
@@ -20,12 +23,14 @@ const MIN_SECRET_LENGTH := 64
 const GRANT_TTL_MS := 15 * 60 * 1000
 const ACTIONS := ["update_item"]
 ## Argument names only this channel uses, refused in any tool call.
-const RESERVED_ARGUMENTS := ["panel_secret", "panel_grant"]
+const RESERVED_ARGUMENTS := ["panel_secret", "panel_grant", "panel_session"]
 
 var _secret: String
 var _registry  # ToolRegistry
 # grant → {panel, person, project, item, actions, expires_at}
 var _grants: Dictionary = {}
+# panel session → the panel it names (see open_session)
+var _sessions: Dictionary = {}
 
 
 ## The authority for `registry`'s projects, or null when this process was
@@ -42,15 +47,28 @@ static func from_environment(registry):
 
 
 ## A PREFIX method with its params: {result} or {error: {code, message}}.
-func handle(method: String, params: Dictionary) -> Dictionary:
+## `op` is the operation of the request, which its changes are made within.
+func handle(method: String, params: Dictionary, op: RefCounted = null) -> Dictionary:
 	match method.trim_prefix(PREFIX):
+		"open_session":
+			return _open_session(params)
 		"register":
 			return _register(params)
 		"revoke":
 			return _revoke(params)
 		"update_item":
-			return _update_item(params)
+			return _update_item(params, op)
 	return _failure(-32601, "Method not found: %s" % method)
+
+
+## The panel a panel call comes from, as this process knows it: the one
+## named by a live panel session (docket/panel/call) or grant (update_item),
+## "" for neither.
+func panel_of(session: String, grant: String) -> String:
+	if _sessions.has(session):
+		return _sessions[session]
+	var scope: Dictionary = _grants.get(grant, {})
+	return str(scope.get("panel", "")) if not scope.is_empty() and Time.get_ticks_msec() < scope.expires_at else ""
 
 
 ## Grants for `project` end with it (the project was closed).
@@ -58,6 +76,19 @@ func revoke_project(project: String) -> void:
 	for grant in _grants.keys():
 		if _grants[grant].project == project:
 			_grants.erase(grant)
+
+
+# Host: {panel_secret, panel} → {panel_session}, naming that panel while it
+# is shown (revoke ends it).
+func _open_session(params: Dictionary) -> Dictionary:
+	if not _is_host(params):
+		return _failure(-32001, "not the host")
+	var panel := str(params.get("panel", ""))
+	if panel.is_empty():
+		return _failure(-32602, "a panel is required")
+	var session := Crypto.new().generate_random_bytes(32).hex_encode()
+	_sessions[session] = panel
+	return {"result": {"panel_session": session}}
 
 
 # Host: {panel_secret, panel, person, project, item, actions} →
@@ -88,8 +119,9 @@ func _register(params: Dictionary) -> Dictionary:
 	return {"result": {"panel_grant": grant, "expires_in_ms": GRANT_TTL_MS}}
 
 
-# Host: {panel_secret, panel} ends every grant of that panel (it was
-# unloaded), or {panel_secret, panel_grant} that one. → {revoked}.
+# Host: {panel_secret, panel} ends every grant and session of that panel (it
+# was unloaded), or {panel_secret, panel_grant} that grant. → {revoked}
+# (grants).
 func _revoke(params: Dictionary) -> Dictionary:
 	if not _is_host(params):
 		return _failure(-32001, "not the host")
@@ -102,12 +134,15 @@ func _revoke(params: Dictionary) -> Dictionary:
 			if _grants[grant].panel == panel:
 				_grants.erase(grant)
 				revoked += 1
+		for session in _sessions.keys():
+			if _sessions[session] == panel:
+				_sessions.erase(session)
 	return {"result": {"revoked": revoked}}
 
 
 # Panel, through the host: {panel_grant, project, id, changes, expected_revision,
 # expected_item_token} → {id, item_token}. The edit is the grant's person's.
-func _update_item(params: Dictionary) -> Dictionary:
+func _update_item(params: Dictionary, op: RefCounted) -> Dictionary:
 	var scope := _granted(params, "update_item")
 	if scope.has("error"):
 		return _failure(-32001, scope.error)
@@ -120,7 +155,7 @@ func _update_item(params: Dictionary) -> Dictionary:
 	changes = changes.duplicate()
 	DocketUpdate.qualify_parent(changes, _registry.project_db(scope.project))
 	var error := registry.update_item(scope.item, changes, "human:%s" % scope.person,
-		str(params.get("expected_revision", "")), str(params.get("expected_item_token", "")))
+		str(params.get("expected_revision", "")), str(params.get("expected_item_token", "")), op)
 	if not error.is_empty():
 		return _failure(-32002, error)
 	return {"result": {"id": scope.item, "item_token": registry.item_token(scope.item)}}

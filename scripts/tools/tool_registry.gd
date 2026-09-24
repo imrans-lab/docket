@@ -121,7 +121,15 @@ func list_tools() -> Array:
 const _ID_FIELDS := ["id", "item_id", "from", "to", "source_id", "target_id"]
 
 
-func call_tool(name: String, arguments: Dictionary) -> Dictionary:
+## The tools that can run within a caller's coordination operation (`op` of
+## call_tool); any other opens its own.
+const _WITHIN_OPERATION := ["docket_comment", "docket_move", "docket_type_evolve"]
+
+
+## Tool `name` with `arguments`: its result, or {error}. `op`, for a tool in
+## _WITHIN_OPERATION, is the operation of the request it serves, its changes
+## being made within it.
+func call_tool(name: String, arguments: Dictionary, op: RefCounted = null) -> Dictionary:
 	if not _tools.has(name):
 		var err := {"error": "Unknown tool: %s" % name}
 		_log_error(name, arguments, err)
@@ -146,22 +154,24 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		_log_error(name, arguments, ierr)
 		return ierr
 	# These tools need access to all project DBs for cross-project operations
-	var result: Dictionary
+	var execute_args: Array
 	if name in ["docket_move", "docket_mirror", "docket_link"]:
-		result = _tools[name].execute(arguments, _schema, _db, _project_dbs)
+		execute_args = [arguments, _schema, _db, _project_dbs]
 	elif name.begins_with("docket_type_") or name in ["docket_saved_query", "docket_item_view"]:
 		var typed_db: DocketDB = _resolve_db(arguments)
-		result = _tools[name].execute(arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name()))
+		execute_args = [arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name())]
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
-		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn)
+		execute_args = [arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn]
 	elif name == "docket_query_view":
-		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, get_type_registry)
+		execute_args = [arguments, _schema, _db, _project_dbs, get_type_registry]
 	elif name == "docket_gui_open":
-		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, gui_open_fn)
+		execute_args = [arguments, _schema, _db, _project_dbs, gui_open_fn]
 	else:
-		var db := _resolve_db(arguments)
-		result = _tools[name].execute(arguments, _schema, db)
+		execute_args = [arguments, _schema, _resolve_db(arguments)]
+	if name in _WITHIN_OPERATION:
+		execute_args.append(op)
+	var result: Dictionary = _tools[name].callv("execute", execute_args)
 	if result.has("error"):
 		_log_error(name, arguments, result)
 	return result
