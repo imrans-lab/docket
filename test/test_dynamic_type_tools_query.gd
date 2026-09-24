@@ -102,6 +102,17 @@ func test_pinned_json_fields_distinguish_values_and_reject_incompatible_operator
 	r = A.contains(db.last_query_error, "array", "malformed boolean tree is refused without dropping its predicate")
 	db.close(); return r
 
+func test_empty_typed_in_matches_nothing_without_hiding_an_or_sibling() -> Variant:
+	var db: DocketDBJsonl = _db("EmptyIn"); var registry: TypeRegistry = _registry_with_widget(db)
+	var zero: Dictionary = registry.create_item({"type":"widget","title":"Zero","score":0}, "tester")
+	var empty_in := {"field_key":"score","type_id":registry.get_type("widget").id,"op":"in","value":[]}
+	var alone: Array = db.execute_registry_query({"filter":empty_in}, registry)
+	var r = A.is_true(alone.is_empty() and db.last_query_error.is_empty(), "an empty in matches nothing and is not an error: %s" % db.last_query_error)
+	if r is String: db.close(); return r
+	var either: Array = db.execute_registry_query({"filter":{"$or":[empty_in, {"field":"title","op":"eq","value":"Zero"}]}}, registry)
+	r = A.is_true(either.size() == 1 and either[0].id == zero.id and db.last_query_error.is_empty(), "the other branch of an or still matches: %s" % db.last_query_error)
+	db.close(); return r
+
 func test_same_slug_projects_and_branch_local_bindings_do_not_share_meaning() -> Variant:
 	var alpha: DocketDBJsonl = _db("Alpha"); var beta: DocketDBJsonl = _db("Beta")
 	var ar: TypeRegistry = _registry_with_widget(alpha, "Alpha Widget"); var br: TypeRegistry = _registry_with_widget(beta, "Beta Widget")

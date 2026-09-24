@@ -470,6 +470,14 @@ func test_import_and_delete_failures_roll_back_complete_operations() -> Variant:
 	var db := DocketDBJsonl.open_jsonl(path)
 	db.update_item_fields_checked("ORD-0001", {"tags":["must-survive"]})
 	db.add_event_checked("ORD-0001", "prepared", "tester")
+	# Vault entries the item owns: under its own handle (with an archived
+	# version) and under another one.
+	db.set_secret("ORD-0001", PackedByteArray([1]), PackedByteArray([2]), PackedByteArray([3]), false, "ORD-0001")
+	db.rotate_secret("ORD-0001", PackedByteArray([4]), PackedByteArray([5]), PackedByteArray([6]), "tester")
+	db.set_secret("owned-elsewhere", PackedByteArray([7]), PackedByteArray([8]), PackedByteArray([9]), false, "ORD-0001")
+	var vault_intact := func(check: DocketDB) -> bool:
+		return not check.get_secret_raw("ORD-0001").is_empty() and not check.get_secret_raw("owned-elsewhere").is_empty() \
+			and check.get_secret_versions("ORD-0001").size() == 1
 	var original := _read_file(path)
 	var expected_events := db.get_events("ORD-0001")
 	var exported := db.export_item_full("ORD-0001")
@@ -492,8 +500,15 @@ func test_import_and_delete_failures_roll_back_complete_operations() -> Variant:
 	r = A.eq(_read_file(path), original, "failed import and delete preserve canonical bytes")
 	if r is String: return r
 	db = DocketDBJsonl.open_jsonl(path)
-	r = A.is_true(db != null and db.has_item("ORD-0001") and not db.has_item("ORD-0002") and db.get_item("ORD-0001").tags == ["must-survive"] and db.get_events("ORD-0001") == expected_events, "canonical reopen observes the complete pre-failure item")
-	if db != null: db.close()
+	r = A.is_true(db != null and db.has_item("ORD-0001") and not db.has_item("ORD-0002") and db.get_item("ORD-0001").tags == ["must-survive"] and db.get_events("ORD-0001") == expected_events and vault_intact.call(db), "canonical reopen observes the complete pre-failure item")
+	if r is String:
+		if db != null: db.close()
+		return r
+	error = db.delete_item_checked("ORD-0001")
+	db.close()
+	db = DocketDBJsonl.open_jsonl(path)
+	r = A.is_true(error.is_empty() and not db.has_item("ORD-0001") and db.get_secret_raw("ORD-0001").is_empty() and db.get_secret_raw("owned-elsewhere").is_empty() and db.get_secret_versions("ORD-0001").is_empty(), "a successful deletion removes the item with its vault entries and archive: %s" % error)
+	db.close()
 	return r
 
 func test_event_failure_returns_error_and_restores_item_timestamp() -> Variant:
