@@ -21,7 +21,10 @@ func _load_secret_value() -> void:
 	_form._secret_vault_error_label.visible = false
 	var project: String = _form._current_project
 	var id: String = _form._current_id
+	var generation: int = _form._load_generation
 	var info: Dictionary = await _form._src.secret_info(project, id)
+	if not _form._still_showing(generation):
+		return
 	if info.vault != "ok":
 		_form._secret_value_edit.text = ""
 		_form._secret_value_decrypted = ""
@@ -37,12 +40,16 @@ func _load_secret_value() -> void:
 	var secondary_pw := ""
 	if info.requires_2fa:
 		secondary_pw = await _prompt_secondary_password()
+		if not _form._still_showing(generation):
+			return
 		if secondary_pw.is_empty():
 			_form._secret_value_edit.text = "********"
 			_form._secret_value_decrypted = ""
 			_show_vault_error("Secondary password required to view secret.")
 			return
 	var read: Dictionary = await _form._src.read_secret(project, id, secondary_pw, true)
+	if not _form._still_showing(generation):
+		return
 	if read.has("error"):
 		_show_vault_error(str(read.error))
 		return
@@ -56,7 +63,10 @@ func _load_secret_value() -> void:
 
 func _load_encrypted_notes(handle: String) -> void:
 	## Decrypt and display encrypted notes.
+	var generation: int = _form._load_generation
 	var read: Dictionary = await _form._src.read_secret(_form._current_project, handle)
+	if not _form._still_showing(generation):
+		return
 	if read.has("error") or str(read.value).is_empty():
 		_form._encrypted_notes_edit.text = ""
 		_form._encrypted_notes_decrypted = ""
@@ -67,10 +77,15 @@ func _load_encrypted_notes(handle: String) -> void:
 
 func _populate_secret_history() -> void:
 	## Show version history for current secret.
+	# Cleared before and after the reply, as in RecordForm._populate_children.
 	for child in _form._secret_history_container.get_children():
 		child.queue_free()
-
+	var generation: int = _form._load_generation
 	var versions: Array = await _form._src.secret_versions(_form._current_project, _form._current_id)
+	if not _form._still_showing(generation):
+		return
+	for child in _form._secret_history_container.get_children():
+		child.queue_free()
 	var toggle_prefix := "v" if _form._secret_history_container.visible else ">"
 	if versions.size() > 0:
 		_form._secret_history_toggle.text = "%s Version History (%d)" % [toggle_prefix, versions.size()]
@@ -107,6 +122,8 @@ func _populate_secret_history() -> void:
 
 func _on_history_show(ver: Dictionary, btn: Button) -> void:
 	var read: Dictionary = await _form._src.read_secret_version(_form._current_project, _form._current_id, int(ver.version))
+	if not is_instance_valid(btn):
+		return  # the history was rebuilt while the read waited
 	if str(read.get("kind", "")) == "no_key":
 		return
 	if read.has("error"):

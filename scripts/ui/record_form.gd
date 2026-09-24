@@ -8,11 +8,20 @@ signal back_pressed
 signal child_opened(id: String, project: String)
 
 const Vault := preload("res://scripts/ui/record_form_vault.gd")
+## What a write returns when the form moved to another item while it waited,
+## so nothing was written.
+const MOVED_ON := "the form moved to another item before saving"
 
 var _src  # DocketSource
 var _vault  # Vault: this form's vault controls' behaviour
-# Bumped by each load_item, so a slower earlier load is dropped.
+# Bumped whenever the form starts showing another item or draft; an async
+# step that finds it changed drops its result (see _still_showing).
 var _load_generation := 0
+# True while a save or transition is in flight, so a second click cannot
+# submit the same edits twice.
+var _writing := false
+# True while a comment is being added, for the same reason.
+var _commenting := false
 var _current_id: String = ""
 var _fields_grid: GridContainer
 var _title_edit: LineEdit
@@ -1175,12 +1184,21 @@ func attach_to_current(filename: String, data: PackedByteArray, mime: String = "
 	return await _src.attach_file(_current_project, _current_id, filename, data, mime, description)
 
 
+## Whether the form still shows what it showed at `generation` (a
+## _load_generation read before an await).
+func _still_showing(generation: int) -> bool:
+	return generation == _load_generation
+
+
 func load_item(id: String, project: String = "") -> void:
 	_load_generation += 1
 	var generation := _load_generation
 	var view: Dictionary = {"error": "", "kind": "closed"} if project.is_empty() else await _src.item_view(project, id)
 	if generation != _load_generation:
 		return
+	# The form switches items only now: steps begun while this load waited
+	# belong to the previous item.
+	_load_generation += 1
 	_loading = true
 	_current_id = id
 	_is_draft = false
@@ -1280,6 +1298,7 @@ func load_item(id: String, project: String = "") -> void:
 
 func load_draft(type_name: String, item: Dictionary, project: String = "") -> void:
 	## Load an unsaved draft item into the form. Will be inserted into DB on Save.
+	_load_generation += 1
 	_loading = true
 	_is_draft = true
 	_draft_item = item.duplicate(true)
@@ -1405,10 +1424,29 @@ func _populate_events(item: Dictionary) -> void:
 		_events_list.add_item("[%s] %s: %s" % [ts, etype, note])
 
 
+## Run the write `step` unless another is in flight: its result, or why not.
+func _write_once(step: Callable) -> Variant:
+	if _writing:
+		return "a save is already in progress"
+	_writing = true
+	var result = await step.call()
+	_writing = false
+	return result
+
+
 func _save_changes() -> Variant:
+	return await _write_once(_save_shown)
+
+
+func _save_shown() -> Variant:
 	if _is_draft:
 		return await _save_draft()
-	var view: Dictionary = await _src.item_view(_current_project, _current_id, true)
+	var generation := _load_generation
+	var project := _current_project
+	var id := _current_id
+	var view: Dictionary = await _src.item_view(project, id, true)
+	if not _still_showing(generation):
+		return MOVED_ON
 	match str(view.get("kind", "")):
 		"closed":
 			_id_label.text = "Save refused: the originating project is closed."
@@ -1419,13 +1457,18 @@ func _save_changes() -> Variant:
 		"refresh", "missing":
 			_id_label.text = "Save refused: %s." % view.error if view.kind == "missing" else "Save refused: %s" % view.error
 			return str(view.error)
+	if view.has("error"):
+		_id_label.text = "Save refused: %s" % view.error
+		return str(view.error)
 	var item: Dictionary = view.item
 	var old_status: String = str(item.get("status", ""))
 	var type_name: String = str(item.get("type", ""))
 	var protected: bool = type_name in ["secret", "encrypted_note"]
 	var secret: Dictionary = {}
 	if protected:
-		secret = await _vault._secret_input(_current_id, type_name)
+		secret = await _vault._secret_input(id, type_name)
+		if not _still_showing(generation):
+			return MOVED_ON
 	if secret.has("error"):
 		_id_label.text = "Save refused: %s" % secret.error
 		_vault._show_vault_error(str(secret.error))
@@ -1447,7 +1490,10 @@ func _save_changes() -> Variant:
 		else:
 			_prompt_transition_note(new_status, changes)
 		return ""
-	var error: String = await _src.save_item(_current_project, _current_id, changes, _loaded_revision, _loaded_item_token, secret)
+	var error: String = await _src.save_item(project, id, changes, _loaded_revision, _loaded_item_token, secret)
+	if not _still_showing(generation):
+		_report_moved_on_write(id, error)
+		return error
 	if not error.is_empty():
 		_id_label.text = "Save refused: %s" % error
 		_vault._show_vault_error(error)
@@ -1481,6 +1527,15 @@ func _collect_changes() -> Dictionary:
 			changes.surfaced_from = _identity_edit.text
 	return changes
 
+## A write for `what` finished after the form moved to another item: refresh
+## listeners if it succeeded, or say it failed.
+func _report_moved_on_write(what: String, error: String) -> void:
+	if error.is_empty():
+		item_changed.emit()
+	else:
+		_show_error("Change not saved", "The change to %s failed: %s" % [what, error])
+
+
 func _after_shared_save() -> void:
 	item_changed.emit()
 	load_item(_current_id, _current_project)
@@ -1498,13 +1553,19 @@ func _save_draft() -> Variant:
 		_id_label.text = "(new) Error: %s" % fields.error
 		return str(fields.error)
 	fields.type = type_name
+	var generation := _load_generation
 	var secret: Dictionary = {}
 	if type_name in ["secret", "encrypted_note"]:
 		secret = await _vault._secret_input("", type_name)
+		if not _still_showing(generation):
+			return MOVED_ON
 	if secret.has("error"):
 		_id_label.text = "(new) Error: %s" % secret.error
 		return str(secret.error)
 	var created: Dictionary = await _src.create_item(project, fields, secret)
+	if not _still_showing(generation):
+		_report_moved_on_write("the new item", str(created.get("error", "")))
+		return str(created.get("error", ""))
 	if bool(created.get("payload_failed", false)):
 		_id_label.text = "(new) Protected item unchanged: %s" % created.error
 		_vault._show_vault_error(str(created.error))
@@ -1558,10 +1619,13 @@ func _on_children_toggle() -> void:
 
 
 func _populate_children() -> void:
+	# Cleared now so no row of the previous item stays clickable, and again
+	# after the reply so two overlapping populates cannot both add rows.
 	_children_list.clear()
 	if _current_id.is_empty():
 		_children_toggle.text = "> Children"
 		return
+	var generation := _load_generation
 
 	# Build qualified ID for cross-project search
 	var qualified_id: String = _current_id
@@ -1569,6 +1633,9 @@ func _populate_children() -> void:
 		qualified_id = "%s:%s" % [_current_project, _current_id]
 
 	var children: Array = await _src.children_of(qualified_id)
+	if not _still_showing(generation):
+		return
+	_children_list.clear()
 
 	var toggle_prefix := "v" if _children_container.visible else ">"
 	if children.size() > 0:
@@ -1610,11 +1677,17 @@ func _on_move_pressed() -> void:
 		if proj_name != _current_project:
 			popup.add_item(proj_name, idx)
 			idx += 1
+	var project := _current_project
+	var id := _current_id
 	popup.id_pressed.connect(func(menu_id: int):
 		var target_name: String = popup.get_item_text(menu_id)
-		var result: Dictionary = await _src.move_item(_current_project, _current_id, target_name)
-		if result.has("error"):
-			_id_label.text = "%s — Move failed: %s" % [_current_id, str(result.error)]
+		var generation := _load_generation
+		var result: Dictionary = await _src.move_item(project, id, target_name)
+		if not _still_showing(generation):
+			if not result.has("error"):
+				item_changed.emit()
+		elif result.has("error"):
+			_id_label.text = "%s — Move failed: %s" % [id, str(result.error)]
 		else:
 			var new_id: String = str(result.new_id)
 			item_changed.emit()
@@ -1647,20 +1720,34 @@ func _on_add_comment() -> void:
 	var text := _comment_input.text.strip_edges()
 	if text.is_empty():
 		return
+	if _commenting:
+		return
+	_commenting = true
+	var generation := _load_generation
 	var added: Dictionary = await _src.add_comment(_current_project, _current_id, _src.prefs().get_display_name(), text)
+	_commenting = false
 	if added.has("error"):
-		return  # keep the typed text
-	_comment_input.text = ""
-	_refresh_comments_and_events()
+		_show_error("Comment not added", str(added.error))  # the typed text stays
+		return
+	if _comment_input.text.strip_edges() == text:
+		_comment_input.text = ""
+	if _still_showing(generation):
+		_refresh_comments_and_events()
 
 
 func _on_accept_comment(comment_id: int) -> void:
-	await _src.resolve_comment(_current_project, comment_id, "accepted", _src.prefs().get_display_name())
+	var resolved: Dictionary = await _src.resolve_comment(_current_project, comment_id, "accepted", _src.prefs().get_display_name())
+	if resolved.has("error"):
+		_show_error("Comment not resolved", str(resolved.error))
+		return
 	_refresh_comments_and_events()
 
 
 func _on_reject_comment(comment_id: int) -> void:
-	await _src.resolve_comment(_current_project, comment_id, "rejected", _src.prefs().get_display_name())
+	var resolved: Dictionary = await _src.resolve_comment(_current_project, comment_id, "rejected", _src.prefs().get_display_name())
+	if resolved.has("error"):
+		_show_error("Comment not resolved", str(resolved.error))
+		return
 	_refresh_comments_and_events()
 
 
@@ -1670,27 +1757,44 @@ func _on_reply_comment(comment_id: int) -> void:
 	var text := _comment_input.text.strip_edges()
 	if text.is_empty():
 		return
+	if _commenting:
+		return
+	_commenting = true
+	var generation := _load_generation
 	var added: Dictionary = await _src.add_comment(_current_project, _current_id, _src.prefs().get_display_name(), text, comment_id)
+	_commenting = false
 	if added.has("error"):
-		return  # keep the typed text
-	_comment_input.text = ""
-	_refresh_comments_and_events()
+		_show_error("Comment not added", str(added.error))  # the typed text stays
+		return
+	if _comment_input.text.strip_edges() == text:
+		_comment_input.text = ""
+	if _still_showing(generation):
+		_refresh_comments_and_events()
 
 
 func _refresh_comments_and_events() -> void:
+	var generation := _load_generation
 	await _populate_comments()
 	var events: Array = await _src.item_events(_current_project, _current_id)
+	if not _still_showing(generation):
+		return
 	if not events.is_empty():
 		_populate_events({"events": events})
 	item_changed.emit()
 
 
 func _populate_comments() -> void:
+	# Cleared before and after the reply, as in _populate_children.
 	for child in _comments_list.get_children():
 		child.queue_free()
 	if _current_id.is_empty():
 		return
+	var generation := _load_generation
 	var comments: Array = await _src.list_comments(_current_project, _current_id)
+	if not _still_showing(generation):
+		return
+	for child in _comments_list.get_children():
+		child.queue_free()
 
 	# Update toggle label with count
 	var prefix := "v" if _comments_container.visible else ">"
@@ -1795,23 +1899,33 @@ func _on_transition(target: String) -> void:
 	if changes.has("error"):
 		_show_transition_error(str(changes.error))
 		return
-	await _do_status_transition(target, "", changes)
+	await _write_once(_do_status_transition.bind(target, "", changes))
 
 
 func _do_status_transition(target: String, note: String, changes: Dictionary = {}) -> bool:
-	var view: Dictionary = await _src.item_view(_current_project, _current_id)
+	var generation := _load_generation
+	var project := _current_project
+	var id := _current_id
+	var view: Dictionary = await _src.item_view(project, id)
+	if not _still_showing(generation):
+		return false
 	if str(view.get("kind", "")) == "closed":
 		_show_transition_error("The originating project is closed.")
 		return false
 	var type_name: String = str(view.get("item", {}).get("type", ""))
 	var secret: Dictionary = {}
 	if type_name in ["secret", "encrypted_note"]:
-		secret = await _vault._secret_input(_current_id, type_name)
+		secret = await _vault._secret_input(id, type_name)
+		if not _still_showing(generation):
+			return false
 	if secret.has("error"):
 		_show_transition_error(str(secret.error))
 		return false
-	var error: String = await _src.transition_item(_current_project, _current_id, target, note, changes,
+	var error: String = await _src.transition_item(project, id, target, note, changes,
 		_loaded_revision, _loaded_item_token, secret)
+	if not _still_showing(generation):
+		_report_moved_on_write(id, error)
+		return error.is_empty()
 	if not error.is_empty():
 		_show_transition_error(error)
 		_vault._show_vault_error(error)
@@ -1852,15 +1966,19 @@ func _on_transition_note_confirmed() -> void:
 		return
 	_loaded_revision = _pending_revision
 	_loaded_item_token = _pending_item_token
-	await _do_status_transition(target, note, _pending_changes)
+	await _write_once(_do_status_transition.bind(target, note, _pending_changes))
 	_pending_changes = {}
 	_pending_revision = ""
 	_pending_item_token = ""
 
 
 func _show_transition_error(msg: String) -> void:
+	_show_error("Transition failed", msg)
+
+
+func _show_error(title: String, msg: String) -> void:
 	var dlg := AcceptDialog.new()
-	dlg.title = "Transition failed"
+	dlg.title = title
 	dlg.dialog_text = msg
 	dlg.confirmed.connect(dlg.queue_free)
 	dlg.close_requested.connect(dlg.queue_free)
