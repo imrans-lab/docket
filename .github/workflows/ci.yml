@@ -48,6 +48,37 @@ jobs:
       - name: Scan working tree
         run: gitleaks dir . -c .gitleaks.toml --no-banner --redact --verbose
 
+  ui-portable:
+    name: UI parses in hosts on Godot 4.6
+    runs-on: ubuntu-latest
+    env:
+      # The oldest Godot a host embedding the Docket UI runs (Minerva).
+      UI_HOST_GODOT_VERSION: "4.6.2"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Godot binary
+        id: godot-ui-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/godot-ui-bin
+          key: godot-${{ env.UI_HOST_GODOT_VERSION }}-ubuntu-latest
+
+      - name: Install Godot ${{ env.UI_HOST_GODOT_VERSION }}
+        if: steps.godot-ui-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/godot-ui-bin && cd ~/godot-ui-bin
+          curl -fSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${UI_HOST_GODOT_VERSION}-stable/Godot_v${UI_HOST_GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip && rm godot.zip
+
+      - name: Parse the UI without Docket's storage code
+        run: |
+          set -euo pipefail
+          GODOT_BIN="$(find "$HOME/godot-ui-bin" -maxdepth 1 -name 'Godot_v*' -type f | head -1)"
+          chmod +x "$GODOT_BIN"
+          ./scripts/build/check_ui_portable.sh "$GODOT_BIN"
+
   test:
     name: Build extension + run tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
