@@ -274,18 +274,24 @@ func _type_selected(index: int) -> void:
 		return
 	_load_type(str(_types.get_item_metadata(index)))
 
-func _load_type(slug: String) -> void:
+## Load type `slug` into the editor; `context` prefixes what it reports when
+## it cannot.
+func _load_type(slug: String, context: String = "") -> void:
 	var project := _project_name()
 	if project.is_empty():
 		_message("Open a project before selecting a type.", true)
 		return
 	_type_generation += 1
 	var generation := _type_generation
+	var shown := _editor_snapshot()
 	var type: Dictionary = await _src.type_with_history(project, slug)
 	if generation != _type_generation or project != _project_name():
 		return
+	if _editor_snapshot() != shown:
+		_message("%sThe editor changed while %s loaded, so it was not replaced. Select the type again to load it." % [context, slug], true)
+		return
 	if type.has("error"):
-		_message(str(type.error), true)
+		_message(context + str(type.error), true)
 		return
 	# The editor switches types only now: a preview begun while this load
 	# waited belongs to the previous one.
@@ -342,8 +348,12 @@ func _new_draft() -> void:
 		return
 	_type_generation += 1
 	var generation := _type_generation
+	var shown := _editor_snapshot()
 	var problem: String = await _src.types_problem(project)
 	if generation != _type_generation or project != _project_name():
+		return
+	if _editor_snapshot() != shown:
+		_message("The editor changed while the draft was prepared; it was not replaced.", true)
 		return
 	if not problem.is_empty():
 		_message(problem, true)
@@ -506,10 +516,11 @@ func _after_type_write(project: String, slug: String, owner: int, written: Strin
 		return
 	_type_generation += 1  # the editor now stands for `slug`
 	var reloading := _type_generation
-	_selected_slug = slug
 	await _refresh_list()
-	if project == _project_name() and reloading == _type_generation:
-		await _load_type(slug)
+	if project != _project_name() or reloading != _type_generation or _editor_snapshot() != written:
+		_message("%s was saved; the editor has changed since, so it was not reloaded." % slug, false)
+		return
+	await _load_type(slug, "%s was saved. " % slug)  # which keeps edits typed while it loads
 
 func _stale_message(error: String) -> String:
 	if error.contains("stale") or error.contains("source changed"):

@@ -23,6 +23,8 @@ var _projects: Array = []
 # reloads, and per project by this source's own type writes; changes another
 # client makes to types or projects show only after one of those.
 var _types: Dictionary = {}
+# Per project, the number of the latest type read started (_refresh_types).
+var _type_reads: Dictionary = {}
 var _schema: Dictionary = {}
 # A snapshot refresh is running, or another was asked for meanwhile.
 var _refreshing := false
@@ -111,20 +113,24 @@ func _refresh_snapshot() -> String:
 	return _refresh_error
 
 
+## Read the project list, then each project's types (_refresh_types): "" or
+## why not, including any project whose types could not be read.
 func _read_snapshot() -> String:
 	var listed := await _call("docket_project_list", {})
 	if listed.has("error"):
 		return str(listed.error)
 	var projects: Array = listed.get("projects", [])
 	projects.sort_custom(func(a, b) -> bool: return str(a.name).nocasecmp_to(str(b.name)) < 0)
-	var types := {}
-	for project in projects:
-		var read := await _read_types(str(project.name))
-		# A project whose types cannot be read keeps what was read before.
-		types[str(project.name)] = read.get("types", _types.get(str(project.name), []))
 	_projects = projects
-	_types = types
-	return ""
+	for name in _types.keys():
+		if not project_names().has(name):
+			_types.erase(name)
+	var problems: Array[String] = []
+	for name in project_names():
+		var read := await _refresh_types(name)
+		if read.has("error"):
+			problems.append(str(read.error))
+	return "; ".join(problems)
 
 
 ## Every type of `project` with its definition: {types} or {error}.
@@ -141,9 +147,14 @@ func _read_types(project: String) -> Dictionary:
 	return {"types": types}
 
 
+## Read `project`'s types and keep them, unless a read of the same project
+## started later has finished first, or this one failed (the project keeps
+## what was read before): {types} or {error}.
 func _refresh_types(project: String) -> Dictionary:
+	var ticket: int = _type_reads.get(project, 0) + 1
+	_type_reads[project] = ticket
 	var read := await _read_types(project)
-	if not read.has("error"):
+	if not read.has("error") and _type_reads.get(project, 0) == ticket and project_names().has(project):
 		_types[project] = read.types
 	return read
 
@@ -198,10 +209,15 @@ func open_project(path: String) -> void:
 			load_failed.emit(path, str(added.error))
 			return
 		keep = str(added.get("name", ""))
+	var still_open: Array[String] = []
 	for name in paths:
 		if name != keep:
-			await _call("docket_project_remove", {"name": name})
-	await _projects_changed()
+			var removed := await _call("docket_project_remove", {"name": name})
+			if removed.has("error"):
+				still_open.append("%s (%s)" % [name, removed.error])
+	if not still_open.is_empty():
+		load_failed.emit(path, "Opened, but these projects could not be closed: %s" % ", ".join(still_open))
+	await _projects_changed(path)
 
 
 func add_project(path: String) -> void:
@@ -209,7 +225,7 @@ func add_project(path: String) -> void:
 	if added.has("error"):
 		load_failed.emit(path, str(added.error))
 		return
-	await _projects_changed()
+	await _projects_changed(path)
 
 
 func create_project(path: String) -> void:
@@ -217,18 +233,25 @@ func create_project(path: String) -> void:
 	if added.has("error"):
 		load_failed.emit(path, str(added.error))
 		return
-	await _projects_changed()
+	await _projects_changed(path)
 
 
-## Unlike the standalone app, the process refuses to close its last project,
-## which then stays open.
+## Unlike the standalone app, the process refuses to close its last project;
+## the refusal is reported as a load_failed for its path.
 func remove_project(project: String) -> void:
-	await _call("docket_project_remove", {"name": project})
-	await _projects_changed()
+	var path := str(project_paths().get(project, project))
+	var removed := await _call("docket_project_remove", {"name": project})
+	if removed.has("error"):
+		load_failed.emit(path, "Could not close %s: %s" % [project, removed.error])
+	await _projects_changed(path)
 
 
-func _projects_changed() -> void:
-	await _refresh_snapshot()
+## Re-read the snapshot after a change to the project set made for `path`,
+## reporting a failed read as a load_failed for it.
+func _projects_changed(path: String) -> void:
+	var error := await _refresh_snapshot()
+	if not error.is_empty():
+		load_failed.emit(path, "Docket's projects could not be fully read: %s" % error)
 	file_changed.emit()
 
 
@@ -298,7 +321,11 @@ func resolve_comment(project: String, comment_id: int, resolution: String, by: S
 # -- Type snapshot ---------------------------------------------------------------------
 
 func cached_types(project: String) -> Array:
-	return _all_types(project).filter(func(type) -> bool: return str(type.get("lifecycle", "")) != "deprecated")
+	return _not_deprecated(_all_types(project))
+
+
+static func _not_deprecated(types: Array) -> Array:
+	return types.filter(func(type) -> bool: return str(type.get("lifecycle", "")) != "deprecated")
 
 
 func _all_types(project: String) -> Array:
@@ -324,7 +351,9 @@ func get_type(project: String, slug: String) -> Dictionary:
 
 func list_types(project: String) -> Dictionary:
 	var read := await _refresh_types(project)
-	return read if read.has("error") else {"types": cached_types(project)}
+	if read.has("error"):
+		return read
+	return {"types": _not_deprecated(read.types)}
 
 
 func types_problem(project: String) -> String:
