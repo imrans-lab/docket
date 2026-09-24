@@ -249,6 +249,17 @@ func _get_item(project: String, id: String, include: Array) -> Dictionary:
 	return await _call("docket_get", {"id": id, "project": project, "include": include})
 
 
+func item_view(project: String, id: String, refresh: bool = false) -> Dictionary:
+	if id.is_empty() or not project_names().has(project):
+		return {"error": "the originating project is closed", "kind": "closed"}
+	return await _call("docket_item_view", {"id": id, "project": project, "refresh": refresh})
+
+
+func item_token(project: String, id: String) -> String:
+	var view := await item_view(project, id)
+	return "" if view.has("error") else str(view.get("token", ""))
+
+
 func item_title(project: String, id: String) -> Dictionary:
 	var item := await _get_item(project, id, [])
 	return {} if item.has("error") else {"title": str(item.get("title", ""))}

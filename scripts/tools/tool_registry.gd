@@ -58,6 +58,7 @@ func _build_tools() -> Dictionary:
 		"docket_type_define": DocketTypeDefine.new(),
 		"docket_type_activate": DocketTypeActivate.new(),
 		"docket_type_evolve": DocketTypeEvolve.new(),
+		"docket_item_view": DocketItemView.new(),
 	}
 
 
@@ -141,7 +142,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	var result: Dictionary
 	if name in ["docket_move", "docket_mirror", "docket_link"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs)
-	elif name.begins_with("docket_type_") or name == "docket_saved_query":
+	elif name.begins_with("docket_type_") or name in ["docket_saved_query", "docket_item_view"]:
 		var typed_db: DocketDB = _resolve_db(arguments)
 		result = _tools[name].execute(arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name()))
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",

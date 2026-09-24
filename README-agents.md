@@ -309,6 +309,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 |------|-------------|
 | `docket_create` | Create a new work item |
 | `docket_get` | Get item by ID with full event history |
+| `docket_item_view` | Get an item with its type resolution, revision token and short ID, for any project format (read-only) |
 | `docket_update` | Update fields on an existing item |
 | `docket_transition` | Move item to a new state (off-flow moves require a note) |
 | `docket_query` | Filter, sort, and limit items |
