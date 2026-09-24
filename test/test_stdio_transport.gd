@@ -3,8 +3,9 @@ extends Node
 ## started with `--headless --no-header -- --serve --stdio --host-events`,
 ## fed requests on stdin until EOF. Its stdout must hold only JSON-RPC lines:
 ## the replies, and one item_changed for the item it creates; the process
-## must exit 0 once stdin closes, and the item must be in the file. A launch
-## with --quiet (which would silence every reply) must be refused.
+## must exit 0 once stdin closes, and the item must be in the file. The item
+## view the embedded UI reads crosses it whole, and an error keeps its kind.
+## A launch with --quiet (which would silence every reply) must be refused.
 ## Runs the child through bash (skipped on Windows, saying so), with its own
 ## HOME and XDG_DATA_HOME so it never opens the user's saved projects, and
 ## bounded to 120 s.
@@ -74,12 +75,24 @@ func test_child_process_answers_and_reports_on_stdout_only() -> Variant:
 	if OS.get_name() == "Windows":
 		print("  SKIPPED on Windows: test_stdio_transport needs bash; this is NOT coverage")
 		return true
+	# An item already in the file, for the item view the embedded UI reads.
+	var seed_db := DocketDBJsonl.open_jsonl(_path)
+	var seeding := ToolRegistry.new()
+	seeding.init(TypeRegistryBootstrap.load_shipped_schema(), seed_db, {"stdio": seed_db})
+	var seeded := str(seeding.call_tool("docket_create", {"type": "bug", "title": "Seeded", "project": "stdio"}).get("id", ""))
+	seed_db.close()
+	var r = A.is_true(not seeded.is_empty(), "the seeded item was created")
+	if r is String: return r
 	var requests := [
 		{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26",
 			"capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}},
 		{"jsonrpc": "2.0", "method": "notifications/initialized"},
 		{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "docket_create",
 			"arguments": {"type": "bug", "title": TITLE, "project": "stdio"}}},
+		{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "docket_item_view",
+			"arguments": {"id": seeded, "project": "stdio"}}},
+		{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "docket_item_view",
+			"arguments": {"id": "0190a0a0-0000-7000-8000-000000000000", "project": "stdio"}}},
 	]
 	var input := ""
 	for request in requests:
@@ -90,7 +103,7 @@ func test_child_process_answers_and_reports_on_stdout_only() -> Variant:
 	file.close()
 	# stdin is the request file, so it ends (EOF) once they are read.
 	var run := _run_child("--serve --stdio --host-events --file %s" % _shell_quoted(_path), input_path)
-	var r = A.eq(run[0], 0, "the child exits 0 once stdin ends (%s)" % _described(run))
+	r = A.eq(run[0], 0, "the child exits 0 once stdin ends (%s)" % _described(run))
 	if r is String: return r
 
 	var replies := {}
@@ -112,6 +125,16 @@ func test_child_process_answers_and_reports_on_stdout_only() -> Variant:
 	r = A.eq(created_events.size(), 1, "one item_changed created: %s" % [created_events])
 	if r is String: return r
 	r = A.eq([created_events[0].project, created_events[0].id], ["stdio", created.id], "the event names the new item")
+	if r is String: return r
+	# The item view crosses the transport whole, and a failure keeps its kind in _meta.
+	var view = JSON.parse_string(str(replies.get(3, {}).get("result", {}).get("content", [{}])[0].get("text", "")))
+	r = A.is_true(view is Dictionary and str(view.get("item", {}).get("id", "")) == seeded
+		and not str(view.get("token", "")).is_empty() and not str(view.get("short_id", "")).is_empty()
+		and view.get("resolved", {}).has("revision"), "docket_item_view answers item, token, short_id and resolution: %s" % [replies.get(3)])
+	if r is String: return r
+	var missing: Dictionary = replies.get(4, {}).get("result", {})
+	r = A.eq([missing.get("isError", false), missing.get("_meta", {}).get("docket/result", {}).get("kind", "")], [true, "missing"],
+		"a missing item is an error whose kind survives in _meta: %s" % [missing])
 	if r is String: return r
 
 	var reopened := DocketDBJsonl.open_jsonl(_path)
