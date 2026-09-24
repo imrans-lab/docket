@@ -42,3 +42,6 @@ strip = "debuginfo"
 
 [patch.crates-io]
 secret-service = { path = "../vendor/secret-service" }
+# godot-rust's load banner goes to stderr, keeping stdout for the stdio
+# server's JSON-RPC (native/vendor/godot-ffi/DOCKET-PATCH.md).
+godot-ffi = { path = "../vendor/godot-ffi" }
