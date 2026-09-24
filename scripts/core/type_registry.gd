@@ -380,7 +380,7 @@ func _set_type_lifecycle(slug: String, lifecycle: String, expected_current: Stri
 	return _coordinated_text(_set_type_lifecycle_coordinated.bind(slug, lifecycle, expected_current, author, reason))
 
 
-func _set_type_lifecycle_coordinated(_step: RefCounted, slug: String, lifecycle: String, expected_current: String, author: String, reason: String) -> String:
+func _set_type_lifecycle_coordinated(step: RefCounted, slug: String, lifecycle: String, expected_current: String, author: String, reason: String) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	if _legacy: return "type definitions are read-only until explicit JSONL 2.0 upgrade"
@@ -391,16 +391,18 @@ func _set_type_lifecycle_coordinated(_step: RefCounted, slug: String, lifecycle:
 	if record.current_revision != expected_current: return "stale expected current revision"
 	if record.lifecycle == lifecycle: return ""
 	record.lifecycle = lifecycle
-	var error := (_db as DocketDBJsonl)._begin_canonical_mutation()
-	if not error.is_empty(): return error
 	var provenance: Dictionary = record.provenance.duplicate(true)
 	var history: Array = provenance.get("lifecycle_history", []).duplicate(true)
 	history.append({"lifecycle":lifecycle,"author":author,"reason":reason,"timestamp":Time.get_datetime_string_from_system(true)})
 	provenance.lifecycle_history = history
-	error = _db._exec_checked("UPDATE type_defs SET lifecycle=?,provenance_json=? WHERE id=? AND current_revision=?;", [record.lifecycle,JSON.stringify(provenance,"",true,true),record.id,expected_current])
-	error = (_db as DocketDBJsonl)._complete_canonical_mutation(error)
+	var error := str((_db as DocketDBJsonl)._canonical(step, _record_type_lifecycle.bind(record, provenance, expected_current)).error)
 	if error.is_empty(): error = reload()
 	return error
+
+
+# The lifecycle change itself, within the change _set_type_lifecycle_coordinated runs.
+func _record_type_lifecycle(step: RefCounted, record: Dictionary, provenance: Dictionary, expected_current: String) -> Dictionary:
+	return {"error": _db._write_checked(step, "UPDATE type_defs SET lifecycle=?,provenance_json=? WHERE id=? AND current_revision=?;", [record.lifecycle,JSON.stringify(provenance,"",true,true),record.id,expected_current])}
 
 func validate_definition(definition: Dictionary) -> String:
 	for key in ["slug","label","description","fields","lifecycle","protected","protected_behavior"]:
@@ -773,6 +775,9 @@ func _repair_item_status(_step: RefCounted, id: String, target: String, actor: S
 	return (_db as DocketDBJsonl)._complete_canonical_mutation(error)
 
 func preview_evolution(slug: String, definition: Dictionary, expected_current: String, item_ids: Array = []) -> Dictionary:
+	# Reads only, but its freshness check touches shared registry state.
+	var refusal := _db._thread_refusal() if _db != null else ""
+	if not refusal.is_empty(): return {"error": refusal}
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}
 	var current := get_type(slug)
