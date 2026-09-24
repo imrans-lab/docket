@@ -13,11 +13,24 @@ func has_vault() -> bool:
 
 
 func init_vault(key: PackedByteArray, salt: PackedByteArray, iterations: int = VaultCrypto.PBKDF2_ITERATIONS) -> void:
-	## Store vault salt, verification hash, and the KDF cost this vault uses.
-	## Call once when creating the first secret.
-	set_meta_value("vault_salt", Marshalls.raw_to_base64(salt))
-	set_meta_value("vault_verify", Marshalls.raw_to_base64(VaultCrypto.compute_verify_hash(key)))
-	set_meta_value("vault_kdf_iterations", str(iterations))
+	var error := init_vault_checked(key, salt, iterations)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Stores the vault's salt, the check for `key`, and the KDF cost it uses,
+## all or none, within a step of `op` (or an operation of its own): "" or why
+## not. Called once, for the first secret, and by rewrap_vault.
+func init_vault_checked(key: PackedByteArray, salt: PackedByteArray, iterations: int = VaultCrypto.PBKDF2_ITERATIONS, op: RefCounted = null) -> String:
+	return _writing_text(op, _init_vault.bind(key, salt, iterations))
+
+
+func _init_vault(step: RefCounted, key: PackedByteArray, salt: PackedByteArray, iterations: int) -> String:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return txn.error
+	var error := set_meta_value_checked("vault_salt", Marshalls.raw_to_base64(salt), step)
+	if error.is_empty(): error = set_meta_value_checked("vault_verify", Marshalls.raw_to_base64(VaultCrypto.compute_verify_hash(key)), step)
+	if error.is_empty(): error = set_meta_value_checked("vault_kdf_iterations", str(iterations), step)
+	return _complete_transaction(step, txn.ticket, error)
 
 
 func get_vault_iterations() -> int:
@@ -277,25 +290,21 @@ func get_all_secret_versions_raw() -> Array:
 ## requires_2fa flag and owner. Only the outer layer is re-wrapped, which is
 ## right for 2FA values too. Returns "" or the error, and on an error nothing
 ## is changed — including when a value does not decrypt under `old_key`,
-## which the new key must not be installed over.
-func rewrap_vault(old_key: PackedByteArray, new_key: PackedByteArray) -> String:
-	_last_sql_error = ""
-	var error := _exec_checked("BEGIN TRANSACTION;")
-	if not error.is_empty():
-		return error
-	error = _rewrap_vault_rows(old_key, new_key)
-	if error.is_empty():
-		error = _last_sql_error
-	if error.is_empty():
-		error = _exec_checked("COMMIT;")
-	if not error.is_empty():
-		_rollback()
-	return error
+## which the new key must not be installed over. Within a step of `op` (or an
+## operation of its own).
+func rewrap_vault(old_key: PackedByteArray, new_key: PackedByteArray, op: RefCounted = null) -> String:
+	return _writing_text(op, _rewrap_vault.bind(old_key, new_key))
 
 
-## The rows are read here, inside the caller's transaction, so they are the
-## ones being replaced.
-func _rewrap_vault_rows(old_key: PackedByteArray, new_key: PackedByteArray) -> String:
+func _rewrap_vault(step: RefCounted, old_key: PackedByteArray, new_key: PackedByteArray) -> String:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return txn.error
+	return _complete_transaction(step, txn.ticket, _rewrap_vault_rows(step, old_key, new_key))
+
+
+# The rows are read here, inside the transaction, so they are the ones being
+# replaced. A failed write fails the transaction (see _write).
+func _rewrap_vault_rows(step: RefCounted, old_key: PackedByteArray, new_key: PackedByteArray) -> String:
 	if not verify_vault(old_key):
 		return "The vault password does not match."
 	for secret: Dictionary in get_all_secrets_raw():
@@ -303,15 +312,13 @@ func _rewrap_vault_rows(old_key: PackedByteArray, new_key: PackedByteArray) -> S
 		if opened.is_empty():
 			return "Secret '%s' does not decrypt with the current password." % secret.handle
 		var encrypted := VaultCrypto.encrypt(opened.value, new_key)
-		_exec("UPDATE docket_secrets SET ciphertext=?, iv=?, mac=? WHERE handle=?;",
+		_write(step, "UPDATE docket_secrets SET ciphertext=?, iv=?, mac=? WHERE handle=?;",
 			[encrypted.ciphertext, encrypted.iv, encrypted.mac, secret.handle])
 	for version: Dictionary in get_all_secret_versions_raw():
 		var opened := VaultCrypto.decrypt_checked(version.ciphertext, version.iv, version.mac, old_key)
 		if opened.is_empty():
 			return "Version %d of secret '%s' does not decrypt with the current password." % [version.version, version.handle]
 		var encrypted := VaultCrypto.encrypt(opened.value, new_key)
-		_exec("UPDATE docket_secret_versions SET ciphertext=?, iv=?, mac=? WHERE handle=? AND version=?;",
+		_write(step, "UPDATE docket_secret_versions SET ciphertext=?, iv=?, mac=? WHERE handle=? AND version=?;",
 			[encrypted.ciphertext, encrypted.iv, encrypted.mac, version.handle, version.version])
-	if _last_sql_error.is_empty():
-		init_vault(new_key, get_vault_salt(), get_vault_iterations())
-	return _last_sql_error
+	return init_vault_checked(new_key, get_vault_salt(), get_vault_iterations(), step)

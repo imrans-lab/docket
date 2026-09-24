@@ -177,15 +177,29 @@ func get_path() -> String:
 # -- ID generation ------------------------------------------------------------
 
 func next_id() -> String:
-	var rows := _exec_select("SELECT value FROM docket_meta WHERE key='counter';")
-	var counter: int = int(rows[0].value) if rows.size() > 0 else 0
-	counter += 1
-	_exec("UPDATE docket_meta SET value=? WHERE key='counter';", [str(counter)])
+	var result := next_id_checked()
+	if not str(result.error).is_empty(): push_error("DocketDB: %s" % result.error)
+	return str(result.id)
+
+
+## The next sequential item id (PREFIX-0001), counted, within a step of `op`
+## (or an operation of its own): {id, error}, `id` "" on failure. The counter
+## is read and advanced in one transaction, begun IMMEDIATE, so two writers
+## cannot take the same number.
+func next_id_checked(op: RefCounted = null) -> Dictionary:
+	var result: Variant = _writing(op, _next_id)
+	return result if result is Dictionary else {"id": "", "error": _last_sql_error}
+
+
+func _next_id(step: RefCounted) -> Dictionary:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return {"id": "", "error": txn.error}
+	var counter := get_counter() + 1
+	_write(step, "UPDATE docket_meta SET value=? WHERE key='counter';", [str(counter)])
 	var prefix := get_id_prefix()
-	if counter <= 9999:
-		return "%s-%04d" % [prefix, counter]
-	else:
-		return "%s-%d" % [prefix, counter]
+	var error := _complete_transaction(step, txn.ticket)
+	if not error.is_empty(): return {"id": "", "error": error}
+	return {"id": ("%s-%04d" if counter <= 9999 else "%s-%d") % [prefix, counter], "error": ""}
 
 
 func get_id_prefix() -> String:
@@ -194,6 +208,10 @@ func get_id_prefix() -> String:
 
 func set_id_prefix(prefix: String) -> void:
 	set_meta_value("id_prefix", prefix)
+
+
+func set_id_prefix_checked(prefix: String, op: RefCounted = null) -> String:
+	return set_meta_value_checked("id_prefix", prefix, op)
 
 
 static func _derive_prefix(name: String) -> String:
@@ -229,7 +247,16 @@ func get_counter() -> int:
 
 
 func set_counter(val: int) -> void:
-	_exec("UPDATE docket_meta SET value=? WHERE key='counter';", [str(val)])
+	var error := set_counter_checked(val)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+func set_counter_checked(val: int, op: RefCounted = null) -> String:
+	return _writing_text(op, _set_counter.bind(val))
+
+
+func _set_counter(step: RefCounted, val: int) -> String:
+	return _write_checked(step, "UPDATE docket_meta SET value=? WHERE key='counter';", [str(val)])
 
 
 # -- UUID7 generation ---------------------------------------------------------

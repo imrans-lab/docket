@@ -352,7 +352,18 @@ func get_meta_value(meta_key: String, default: String = "") -> String:
 
 
 func set_meta_value(meta_key: String, val: String) -> void:
-	_exec("INSERT OR REPLACE INTO docket_meta (key, value) VALUES (?, ?);", [meta_key, val])
+	var error := set_meta_value_checked(meta_key, val)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Sets project metadata `meta_key` to `val` within a step of `op` (or an
+## operation of its own): "" or why not.
+func set_meta_value_checked(meta_key: String, val: String, op: RefCounted = null) -> String:
+	return _writing_text(op, _set_meta_value.bind(meta_key, val))
+
+
+func _set_meta_value(step: RefCounted, meta_key: String, val: String) -> String:
+	return _write_checked(step, "INSERT OR REPLACE INTO docket_meta (key, value) VALUES (?, ?);", [meta_key, val])
 
 
 func get_all_meta() -> Dictionary:
@@ -376,6 +387,10 @@ func set_project_name(name: String) -> void:
 	set_meta_value("project", name)
 
 
+func set_project_name_checked(name: String, op: RefCounted = null) -> String:
+	return set_meta_value_checked("project", name, op)
+
+
 func get_project_meta() -> Dictionary:
 	## Return all project lifecycle metadata as a dict.
 	var d := {}
@@ -394,13 +409,27 @@ func get_project_meta() -> Dictionary:
 	return d
 
 
+const _PROJECT_META_KEYS := {"stage": "project_stage", "hypothesis": "project_hypothesis",
+	"success_criteria": "project_success_criteria", "promoted_to": "project_promoted_to"}
+
+
 func set_project_meta(meta: Dictionary) -> void:
-	## Update project lifecycle metadata. Only writes non-empty values.
-	if meta.has("stage"):
-		set_meta_value("project_stage", str(meta["stage"]))
-	if meta.has("hypothesis"):
-		set_meta_value("project_hypothesis", str(meta["hypothesis"]))
-	if meta.has("success_criteria"):
-		set_meta_value("project_success_criteria", str(meta["success_criteria"]))
-	if meta.has("promoted_to"):
-		set_meta_value("project_promoted_to", str(meta["promoted_to"]))
+	var error := set_project_meta_checked(meta)
+	if not error.is_empty(): push_error("DocketDB: %s" % error)
+
+
+## Sets the project lifecycle metadata `meta` has (stage, hypothesis,
+## success_criteria, promoted_to), all or none, within a step of `op` (or an
+## operation of its own): "" or why not.
+func set_project_meta_checked(meta: Dictionary, op: RefCounted = null) -> String:
+	return _writing_text(op, _set_project_meta.bind(meta))
+
+
+func _set_project_meta(step: RefCounted, meta: Dictionary) -> String:
+	var txn := _begin_transaction(step)
+	if txn.has("error"): return txn.error
+	var error := ""
+	for key: String in _PROJECT_META_KEYS:
+		if meta.has(key) and error.is_empty():
+			error = set_meta_value_checked(_PROJECT_META_KEYS[key], str(meta[key]), step)
+	return _complete_transaction(step, txn.ticket, error)

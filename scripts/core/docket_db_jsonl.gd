@@ -39,6 +39,7 @@ var _mutation_busy := false
 # The step of the change through the transaction API (_canonical) that is
 # rewriting the file, so a failed write reloads within it.
 var _flushing_step: RefCounted = null
+
 # items_changed (DocketDB) is reported once a mutation is committed AND
 # saved to the file; a rollback or failed save reports nothing. A reload from
 # the file (a change made outside this process, or docket_reload) is reported
@@ -47,6 +48,19 @@ var _flushing_step: RefCounted = null
 # Reason the most recent open_jsonl() returned null (e.g. unresolved conflict
 # markers). Read immediately after a null return.
 static var last_open_error: String = ""
+
+
+# The operation step a file write runs within: the change's (_canonical), or
+# the older mutations' own operation.
+func _flush_operation() -> RefCounted:
+	return _flushing_step if _flushing_step != null else _mutation_operation
+
+
+func _flush_within(step: RefCounted) -> String:
+	_flushing_step = step
+	var error := _flush_jsonl()
+	_flushing_step = null
+	return error
 
 
 # -- Lifecycle ----------------------------------------------------------------
@@ -150,7 +164,7 @@ static func _create_new_jsonl(path: String, step: RefCounted) -> DocketDBJsonl:
 		return null
 
 	# Write initial JSONL
-	var initial_write_error := wrapper._flush_jsonl()
+	var initial_write_error := wrapper._flush_within(step)
 	wrapper._allow_initial_write = false
 	if not initial_write_error.is_empty():
 		wrapper.close()
@@ -257,7 +271,7 @@ func flush() -> void:
 func flush_checked() -> String:
 	## An empty result inside a nested mutation means the flush is deferred; the
 	## outermost completion remains responsible for durable commit and errors.
-	var error := CoordLease.run(func(_step: RefCounted) -> String: return _flush_jsonl())
+	var error := CoordLease.run(_flush_within)
 	if not error.is_empty(): last_write_error = error
 	return error
 
@@ -392,9 +406,7 @@ func _canonical_step(step: RefCounted, work: Callable) -> Dictionary:
 	result.error = _complete_transaction(step, txn.ticket, str(result.get("error", "")))
 	if not outermost: return result
 	if str(result.error).is_empty():
-		_flushing_step = step
-		result.error = _flush_jsonl()
-		_flushing_step = null
+		result.error = _flush_within(step)
 	else:
 		# The cache is rebuilt from the file; only a newer file from another
 		# writer is reported.
@@ -507,8 +519,7 @@ func _flush_jsonl() -> String:
 	# Update cache fingerprint so it stays valid
 	var fingerprint := _file_fingerprint(_jsonl_path)
 	if not fingerprint.is_empty():
-		# Use super to avoid triggering another flush
-		super.set_meta_value("jsonl_hash", fingerprint)
+		super.set_meta_value_checked("jsonl_hash", fingerprint, _flush_operation())
 	last_write_error = ""
 	return ""
 
@@ -529,7 +540,7 @@ func _fail_flush(message: String) -> String:
 		# SQLite is disposable. Rebuilding it restores the last canonical state so
 		# a failed compound write cannot leak into a later successful flush. The
 		# failed change is not reported; another writer's change it adopts is.
-		reload(is_stale(), _flushing_step if _flushing_step != null else _mutation_operation)
+		reload(is_stale(), _flush_operation())
 		last_write_error = message
 	else:
 		_write_blocked = true
@@ -657,17 +668,13 @@ func rewrite_refs_checked(old_qualified: String, new_qualified: String, old_bare
 
 # -- ID generation (mutates counter) -----------------------------------------
 
-func next_id() -> String:
-	var checked := next_id_checked()
-	return str(checked.id) if str(checked.error).is_empty() else ""
+func next_id_checked(op: RefCounted = null) -> Dictionary:
+	var result := _canonical(op, _next_id_in_cache)
+	return {"id": str(result.get("id", "")) if str(result.error).is_empty() else "", "error": result.error}
 
 
-func next_id_checked() -> Dictionary:
-	var begin_error := _begin_canonical_mutation()
-	if not begin_error.is_empty(): return {"id": "", "error": begin_error}
-	var result := super.next_id()
-	var error := _complete_canonical_mutation()
-	return {"id": result if error.is_empty() else "", "error": error}
+func _next_id_in_cache(step: RefCounted) -> Dictionary:
+	return super.next_id_checked(step)
 
 
 # next_uuid7_id() does NOT mutate the counter — it's stateless. No override needed.
@@ -675,59 +682,33 @@ func next_id_checked() -> Dictionary:
 
 # -- Meta mutations -----------------------------------------------------------
 
-func set_meta_value(meta_key: String, val: String) -> void:
-	set_meta_value_checked(meta_key, val)
-
-func set_meta_value_checked(meta_key: String, val: String) -> String:
-	# Avoid infinite recursion: _flush_jsonl calls set_meta_value("jsonl_hash", ...)
+# set_project_name_checked and set_id_prefix_checked (DocketDB) come here too.
+func set_meta_value_checked(meta_key: String, val: String, op: RefCounted = null) -> String:
+	# The cache's fingerprint of the file, written while the file is being
+	# written: not a project change of its own.
 	if meta_key == "jsonl_hash":
-		super.set_meta_value(meta_key, val)
-		return _last_sql_error
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_meta_value(meta_key, val)
-	return _complete_canonical_mutation()
+		return super.set_meta_value_checked(meta_key, val, op)
+	return str(_canonical(op, _set_meta_value_in_cache.bind(meta_key, val)).error)
 
 
-func set_id_prefix(prefix: String) -> void:
-	set_id_prefix_checked(prefix)
-
-func set_id_prefix_checked(prefix: String) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_id_prefix(prefix)
-	return _complete_canonical_mutation()
+func _set_meta_value_in_cache(step: RefCounted, meta_key: String, val: String) -> Dictionary:
+	return {"error": super.set_meta_value_checked(meta_key, val, step)}
 
 
-func set_project_name(name: String) -> void:
-	set_project_name_checked(name)
-
-func set_project_name_checked(name: String) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_project_name(name)
-	return _complete_canonical_mutation()
+func set_project_meta_checked(meta: Dictionary, op: RefCounted = null) -> String:
+	return str(_canonical(op, _set_project_meta_in_cache.bind(meta)).error)
 
 
-func set_project_meta(meta: Dictionary) -> void:
-	set_project_meta_checked(meta)
+func _set_project_meta_in_cache(step: RefCounted, meta: Dictionary) -> Dictionary:
+	return {"error": super.set_project_meta_checked(meta, step)}
 
 
-func set_project_meta_checked(meta: Dictionary) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_project_meta(meta)
-	return _complete_canonical_mutation()
+func set_counter_checked(val: int, op: RefCounted = null) -> String:
+	return str(_canonical(op, _set_counter_in_cache.bind(val)).error)
 
 
-func set_counter(val: int) -> void:
-	set_counter_checked(val)
-
-func set_counter_checked(val: int) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.set_counter(val)
-	return _complete_canonical_mutation()
+func _set_counter_in_cache(step: RefCounted, val: int) -> Dictionary:
+	return {"error": super.set_counter_checked(val, step)}
 
 
 # -- Events -------------------------------------------------------------------
@@ -815,15 +796,12 @@ func save_query_checked(name: String, query_dict: Dictionary) -> String:
 
 # -- Secrets ------------------------------------------------------------------
 
-func init_vault(key: PackedByteArray, salt: PackedByteArray, iterations: int = VaultCrypto.PBKDF2_ITERATIONS) -> void:
-	init_vault_checked(key, salt, iterations)
+func init_vault_checked(key: PackedByteArray, salt: PackedByteArray, iterations: int = VaultCrypto.PBKDF2_ITERATIONS, op: RefCounted = null) -> String:
+	return str(_canonical(op, _init_vault_in_cache.bind(key, salt, iterations)).error)
 
 
-func init_vault_checked(key: PackedByteArray, salt: PackedByteArray, iterations: int = VaultCrypto.PBKDF2_ITERATIONS) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	super.init_vault(key, salt, iterations)
-	return _complete_canonical_mutation()
+func _init_vault_in_cache(step: RefCounted, key: PackedByteArray, salt: PackedByteArray, iterations: int) -> Dictionary:
+	return {"error": super.init_vault_checked(key, salt, iterations, step)}
 
 
 func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
@@ -872,10 +850,12 @@ func rotate_secret_checked(handle: String, new_ct: PackedByteArray, new_iv: Pack
 	return _complete_canonical_mutation()
 
 
-func rewrap_vault(old_key: PackedByteArray, new_key: PackedByteArray) -> String:
-	var error := _begin_canonical_mutation()
-	if not error.is_empty(): return error
-	return _complete_canonical_mutation(_rewrap_vault_rows(old_key, new_key))
+func rewrap_vault(old_key: PackedByteArray, new_key: PackedByteArray, op: RefCounted = null) -> String:
+	return str(_canonical(op, _rewrap_vault_in_cache.bind(old_key, new_key)).error)
+
+
+func _rewrap_vault_in_cache(step: RefCounted, old_key: PackedByteArray, new_key: PackedByteArray) -> Dictionary:
+	return {"error": super.rewrap_vault(old_key, new_key, step)}
 
 
 # -- Retrieval bump -----------------------------------------------------------
