@@ -18,8 +18,6 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # Pure helpers the UI may use; everything else in scripts/core stays out.
 HELPERS=(type_catalog query_type_scope docket_fields user_prefs)
 
-version="$("$GODOT" --headless --version)" || { echo "Godot did not run: $GODOT"; exit 1; }
-
 failed=0
 # Any res://scripts/ path in the UI must be the UI's own or an allowed helper.
 allowed="res://scripts/ui/[A-Za-z0-9_./-]*"
@@ -34,6 +32,10 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# Keeps Godot from reading or writing the user's own Godot data.
+export HOME="$WORK/home" XDG_DATA_HOME="$WORK/home/data" XDG_CONFIG_HOME="$WORK/home/config" XDG_CACHE_HOME="$WORK/home/cache"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+version="$("$GODOT" --headless --version)" || { echo "Godot did not run: $GODOT"; exit 1; }
 mkdir -p "$WORK/scripts/core"
 cp -r "$ROOT/scripts/ui" "$WORK/scripts/ui"
 for helper in "${HELPERS[@]}"; do
@@ -47,9 +49,6 @@ config_version=5
 config/name="DocketUIPortability"
 EOF
 
-# Keeps the import from reading or writing the user's own Godot data.
-export HOME="$WORK/home" XDG_DATA_HOME="$WORK/home/data" XDG_CONFIG_HOME="$WORK/home/config" XDG_CACHE_HOME="$WORK/home/cache"
-mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 
 if ! "$GODOT" --headless --path "$WORK" --import > "$WORK/import.log" 2>&1; then
 	echo "Import failed:"; cat "$WORK/import.log"; failed=1
