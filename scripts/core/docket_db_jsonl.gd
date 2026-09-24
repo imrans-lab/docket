@@ -734,6 +734,12 @@ func rotate_secret_checked(handle: String, new_ct: PackedByteArray, new_iv: Pack
 	return _complete_canonical_mutation()
 
 
+func rewrap_vault(old_key: PackedByteArray, new_key: PackedByteArray) -> String:
+	var error := _begin_canonical_mutation()
+	if not error.is_empty(): return error
+	return _complete_canonical_mutation(_rewrap_vault_rows(old_key, new_key))
+
+
 # -- Retrieval bump -----------------------------------------------------------
 
 func bump_retrieval(id: String) -> void:

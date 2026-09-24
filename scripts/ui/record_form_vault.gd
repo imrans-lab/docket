@@ -171,24 +171,35 @@ func _populate_secret_history() -> void:
 
 
 func _on_history_show(ver: Dictionary, btn: Button) -> void:
-	var read: Dictionary = await _form._src.read_secret_version(_form._current_project, _form._current_id, int(ver.version))
+	if btn.text != "Show":
+		btn.text = "Show"
+		return
+	var read: Dictionary = await _read_version(ver)
 	if not is_instance_valid(btn):
 		return  # the history was rebuilt while the read waited
-	if str(read.get("kind", "")) == "no_key":
+	if str(read.get("kind", "")) in ["no_key", "cancelled"]:
 		return
-	if read.has("error"):
-		btn.text = "(failed)"
-		return
-	if btn.text == "Show":
-		btn.text = str(read.value)
-	else:
-		btn.text = "Show"
+	btn.text = "(failed)" if read.has("error") else str(read.value)
 
 
 func _on_history_copy(ver: Dictionary) -> void:
-	var read: Dictionary = await _form._src.read_secret_version(_form._current_project, _form._current_id, int(ver.version))
+	var read: Dictionary = await _read_version(ver)
 	if read.has("value"):
 		DisplayServer.clipboard_set(str(read.value))
+
+
+## Archived version `ver` of the current item, asking for its secondary
+## password when it was stored with one: {value} or {error, kind}.
+func _read_version(ver: Dictionary) -> Dictionary:
+	var project: String = _form._current_project
+	var id: String = _form._current_id
+	var read: Dictionary = await _form._src.read_secret_version(project, id, int(ver.version))
+	if str(read.get("kind", "")) != "needs_secondary":
+		return read
+	var secondary_password := await _prompt_secondary_password()
+	if secondary_password.is_empty():
+		return {"error": "cancelled", "kind": "cancelled"}
+	return await _form._src.read_secret_version(project, id, int(ver.version), secondary_password)
 
 
 ## The vault input for saving a protected item (DocketSource.vault_problem):

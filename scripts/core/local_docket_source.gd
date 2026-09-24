@@ -494,15 +494,22 @@ func secret_versions(project: String, handle: String) -> Array:
 		return {"version": version.version, "created_at": version.created_at, "rotated_by": version.get("rotated_by", "")})
 
 
-func read_secret_version(project: String, handle: String, version: int) -> Dictionary:
+func read_secret_version(project: String, handle: String, version: int, secondary_password: String = "") -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	var key := _vault_key(db) if db != null else PackedByteArray()
 	if key.is_empty():
 		return {"error": "no vault key", "kind": "no_key"}
 	for row in db.get_secret_versions(handle):
-		if int(row.version) == version:
+		if int(row.version) != version:
+			continue
+		if not bool(row.requires_2fa):
 			var plaintext := VaultCrypto.decrypt(row.ciphertext, row.iv, row.mac, key)
 			return {"value": plaintext} if not plaintext.is_empty() else {"error": "decryption failed", "kind": "failed"}
+		if secondary_password.is_empty():
+			return {"error": "This version needs its secondary password.", "kind": "needs_secondary"}
+		var secondary_key := VaultCrypto.derive_key(secondary_password, db.get_vault_salt(), db.get_vault_iterations())
+		var inner := VaultCrypto.decrypt_2fa(row.ciphertext, row.iv, row.mac, key, secondary_key)
+		return {"value": inner} if not inner.is_empty() else {"error": "Wrong secondary password or corrupted data.", "kind": "failed"}
 	return {"error": "no such version", "kind": "failed"}
 
 func standalone_secrets() -> Dictionary:
@@ -518,77 +525,69 @@ func vault_settings() -> Dictionary:
 	return {"password": UserPrefs.load_vault_password(), "hint": UserPrefs.load_vault_password_hint()}
 
 
-func set_vault_settings(password: String, hint: String) -> void:
+func set_vault_settings(password: String, hint: String) -> String:
 	UserPrefs.save_vault_password_hint(hint)
 	var old_password := UserPrefs.load_vault_password()
-	if password != old_password:
-		_reencrypt_vault_secrets(old_password, password)
-		_forget_key()
-		if password.is_empty():
-			UserPrefs.clear_vault_password()
-		else:
-			UserPrefs.save_vault_password(password)
+	if password == old_password:
+		return ""
+	var error := _reencrypt_vault_secrets(old_password, password)
+	if not error.is_empty():
+		return error
+	_forget_key()
+	if password.is_empty():
+		UserPrefs.clear_vault_password()
+	else:
+		UserPrefs.save_vault_password(password)
+	return ""
 
 
-func _reencrypt_vault_secrets(old_password: String, new_password: String) -> void:
-	## Re-encrypt all secrets in all open dockets when vault password changes.
+## Re-encrypts every open project's vault, current and archived values alike,
+## when the vault password changes. Returns "" or why the password must stay
+## as it is: nothing is re-encrypted while an open vault does not open with
+## the old password, and when one project cannot be re-encrypted (a value in
+## it does not decrypt, or its file changed to another password meanwhile),
+## those already done are put back under the old password. Projects that are
+## not open are not reached.
+##
+## A dual-password (2FA) value is encrypted twice: an inner layer under a key
+## derived from the SECONDARY password, which is never stored, and an outer
+## layer under the vault key. Only the outer layer can be re-wrapped, which is
+## right for both kinds of value. The secondary key is derived from the vault's
+## salt and iteration count too, so both stay as they are: changing either
+## would leave every inner layer undecryptable, and an archived value may be
+## double-encrypted even where its flag was lost.
+func _reencrypt_vault_secrets(old_password: String, new_password: String) -> String:
 	if old_password.is_empty() or new_password.is_empty():
-		return
+		return ""
+	var vaults: Array[Dictionary] = []
 	for proj_name in _state.get_project_dbs():
 		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
+		# Whether it has a vault, and under which password, is decided on what
+		# the file holds now, not on what was last loaded from it.
+		if pdb is DocketDBJsonl:
+			(pdb as DocketDBJsonl).ensure_fresh()
+		if not pdb.is_open() or (pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_stale()):
+			return "The vault password was not changed: project '%s' could not be read again from disk." % proj_name
 		if not pdb.has_vault():
 			continue
-		var old_salt := pdb.get_vault_salt()
-		# Unwrap at whatever cost this vault was built with...
-		var old_key := VaultCrypto.derive_key(old_password, old_salt, pdb.get_vault_iterations())
+		var salt := pdb.get_vault_salt()
+		var iterations := pdb.get_vault_iterations()
+		var old_key := VaultCrypto.derive_key(old_password, salt, iterations)
 		if not pdb.verify_vault(old_key):
-			push_warning("Vault password mismatch for project '%s', skipping re-encryption" % proj_name)
+			return "The vault password was not changed: project '%s' does not open with the current password. Close it, or set the password it uses, first." % proj_name
+		vaults.append({"project": proj_name, "db": pdb, "old_key": old_key,
+			"new_key": VaultCrypto.derive_key(new_password, salt, iterations)})
+	for i in vaults.size():
+		var error := (vaults[i].db as DocketDB).rewrap_vault(vaults[i].old_key, vaults[i].new_key)
+		if error.is_empty():
 			continue
-		# A dual-password secret is encrypted twice: an inner layer under a key
-		# derived from the SECONDARY password, and an outer layer under the vault
-		# key. Only the outer layer can be re-wrapped here — the secondary
-		# password is not known, and is deliberately never stored.
-		#
-		# That constrains what a password change may alter. The secondary key is
-		# derived from (secondary password, vault salt, iteration count), so
-		# changing the salt or the cost silently re-defines a key nobody can
-		# reproduce, leaving the inner layer permanently undecryptable. The old
-		# code regenerated the salt, raised the cost, and dropped requires_2fa —
-		# any of which alone destroys a 2FA secret.
-		var has_2fa := false
-		for probe in pdb.get_all_secrets_raw():
-			if bool(probe.get("requires_2fa", false)):
-				has_2fa = true
-				break
-
-		# Reusing the salt is safe: a salt must be unique per vault, not per
-		# password change, and the new password already yields a different key.
-		var new_salt := old_salt
-		var new_iters := pdb.get_vault_iterations()
-		if not has_2fa:
-			# No inner layer to strand, so take the opportunity to re-salt and
-			# upgrade the KDF cost.
-			new_salt = VaultCrypto.generate_salt()
-			new_iters = VaultCrypto.PBKDF2_ITERATIONS
-		elif pdb.get_vault_iterations() < VaultCrypto.PBKDF2_ITERATIONS:
-			push_warning(
-				"Project '%s' holds dual-password secrets, so its KDF cost cannot be " % proj_name
-				+ "raised by a password change without their secondary passwords.")
-
-		var new_key := VaultCrypto.derive_key(new_password, new_salt, new_iters)
-		for secret in pdb.get_all_secrets_raw():
-			# Single-layer decrypt is correct for both kinds: for a 2FA secret it
-			# yields the still-encrypted inner blob, which is re-wrapped as-is.
-			var payload := VaultCrypto.decrypt(secret.ciphertext, secret.iv, secret.mac, old_key)
-			if payload.is_empty():
-				push_warning("Failed to decrypt secret '%s' in '%s', skipping" % [secret.handle, proj_name])
-				continue
-			var encrypted := VaultCrypto.encrypt(payload, new_key)
-			# requires_2fa must survive, or the reader will not know to peel the
-			# inner layer and will hand back ciphertext as though it were plaintext.
-			pdb.set_secret(secret.handle, encrypted.ciphertext, encrypted.iv, encrypted.mac,
-				bool(secret.get("requires_2fa", false)))
-		pdb.init_vault(new_key, new_salt, new_iters)
+		var message := "The vault password was not changed: project '%s' could not be re-encrypted (%s)." % [vaults[i].project, error]
+		for done: Dictionary in vaults.slice(0, i):
+			var undo_error := (done.db as DocketDB).rewrap_vault(done.new_key, done.old_key)
+			if not undo_error.is_empty():
+				message += "\nProject '%s' could not be put back and now opens only with the new password (%s)." % [done.project, undo_error]
+		return message
+	return ""
 
 
 # -- Queries ----------------------------------------------------------------------

@@ -47,19 +47,26 @@ static func encrypt(plaintext: String, key: PackedByteArray) -> Dictionary:
 
 
 static func decrypt(ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, key: PackedByteArray) -> String:
-	## Returns plaintext on success, "" on failure (bad MAC or padding).
+	## Returns plaintext on success, "" on failure (bad MAC or padding) — and
+	## for an empty value; decrypt_checked tells the two apart.
+	return str(decrypt_checked(ciphertext, iv, mac, key).get("value", ""))
+
+
+static func decrypt_checked(ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, key: PackedByteArray) -> Dictionary:
+	## {value} on success, even when the value is empty; {} on a bad MAC or padding.
 	# Verify HMAC (encrypt-then-MAC)
 	var expected_mac := _hmac_sha256(key, iv + ciphertext)
 	if not _constant_time_compare(mac, expected_mac):
-		return ""
+		return {}
 	var decrypted := _aes_cbc_decrypt(ciphertext, key, iv)
 	if decrypted.is_empty():
-		return ""
+		return {}
 	var unpadded := _unpad_pkcs7(decrypted)
-	if unpadded.is_empty() and not decrypted.is_empty():
-		# Padding was invalid
-		return ""
-	return unpadded.get_string_from_utf8()
+	# An empty value pads to one whole block of padding bytes.
+	var empty_value := decrypted.size() == BLOCK_SIZE and decrypted.count(BLOCK_SIZE) == BLOCK_SIZE
+	if unpadded.is_empty() and not empty_value:
+		return {}  # padding was invalid
+	return {"value": unpadded.get_string_from_utf8()}
 
 
 static func compute_verify_hash(key: PackedByteArray) -> PackedByteArray:

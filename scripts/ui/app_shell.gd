@@ -1034,7 +1034,11 @@ func _on_prefs_confirmed() -> void:
 	_src.prefs().last_name = _prefs_last.text.strip_edges()
 	_src.prefs().save()
 	# A changed password re-encrypts the vaults first (DocketSource).
-	await _src.set_vault_settings(_prefs_vault_pw.text, _prefs_vault_hint.text.strip_edges())
+	var error: String = await _src.set_vault_settings(_prefs_vault_pw.text, _prefs_vault_hint.text.strip_edges())
+	if not error.is_empty():
+		_info_dialog.title = "Vault password not changed"
+		_info_dialog.dialog_text = error
+		_info_dialog.popup_centered()
 
 
 func _on_viewport_resized() -> void:

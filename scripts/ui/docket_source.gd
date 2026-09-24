@@ -252,7 +252,11 @@ func secret_versions(_project: String, _handle: String) -> Array:
 	return []
 
 
-func read_secret_version(_project: String, _handle: String, _version: int) -> Dictionary:
+## Decrypt archived `version` of `handle`: {value} or {error, kind}. A version
+## stored with a secondary password needs `secondary_password`; without it,
+## kind is "needs_secondary". kind "no_key" means the vault is not unlocked.
+func read_secret_version(_project: String, _handle: String, _version: int,
+		_secondary_password: String = "") -> Dictionary:
 	return _unsupported()
 
 
@@ -262,9 +266,10 @@ func vault_settings() -> Dictionary:
 
 
 ## Store the vault password `password` (empty clears it) and `hint`; a
-## changed password re-encrypts every open project's vault first.
-func set_vault_settings(_password: String, _hint: String) -> void:
-	pass
+## changed password re-encrypts every open project's vault first. Returns ""
+## or why the password was not changed.
+func set_vault_settings(_password: String, _hint: String) -> String:
+	return ""
 
 
 ## The item schema (data/schema.json; answered at once).

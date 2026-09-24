@@ -1517,6 +1517,67 @@ func get_secret_versions(handle: String) -> Array:
 	return result
 
 
+func get_all_secret_versions_raw() -> Array:
+	## Every archived value, including those of deleted secrets: [{handle,
+	## version, ciphertext, iv, mac}].
+	var rows := _exec_select("SELECT handle, version, ciphertext, iv, mac FROM docket_secret_versions;")
+	var result: Array = []
+	for row in rows:
+		result.append({
+			"handle": str(row.handle),
+			"version": int(row.version),
+			"ciphertext": row.ciphertext as PackedByteArray,
+			"iv": row.iv as PackedByteArray,
+			"mac": row.mac as PackedByteArray,
+		})
+	return result
+
+
+## Re-encrypts this vault from `old_key` to `new_key`, current and archived
+## values alike, in one transaction, keeping its salt and cost and each value's
+## requires_2fa flag and owner. Only the outer layer is re-wrapped, which is
+## right for 2FA values too. Returns "" or the error, and on an error nothing
+## is changed — including when a value does not decrypt under `old_key`,
+## which the new key must not be installed over.
+func rewrap_vault(old_key: PackedByteArray, new_key: PackedByteArray) -> String:
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN TRANSACTION;")
+	if not error.is_empty():
+		return error
+	error = _rewrap_vault_rows(old_key, new_key)
+	if error.is_empty():
+		error = _last_sql_error
+	if error.is_empty():
+		error = _exec_checked("COMMIT;")
+	if not error.is_empty():
+		_rollback()
+	return error
+
+
+## The rows are read here, inside the caller's transaction, so they are the
+## ones being replaced.
+func _rewrap_vault_rows(old_key: PackedByteArray, new_key: PackedByteArray) -> String:
+	if not verify_vault(old_key):
+		return "The vault password does not match."
+	for secret: Dictionary in get_all_secrets_raw():
+		var opened := VaultCrypto.decrypt_checked(secret.ciphertext, secret.iv, secret.mac, old_key)
+		if opened.is_empty():
+			return "Secret '%s' does not decrypt with the current password." % secret.handle
+		var encrypted := VaultCrypto.encrypt(opened.value, new_key)
+		_exec("UPDATE docket_secrets SET ciphertext=?, iv=?, mac=? WHERE handle=?;",
+			[encrypted.ciphertext, encrypted.iv, encrypted.mac, secret.handle])
+	for version: Dictionary in get_all_secret_versions_raw():
+		var opened := VaultCrypto.decrypt_checked(version.ciphertext, version.iv, version.mac, old_key)
+		if opened.is_empty():
+			return "Version %d of secret '%s' does not decrypt with the current password." % [version.version, version.handle]
+		var encrypted := VaultCrypto.encrypt(opened.value, new_key)
+		_exec("UPDATE docket_secret_versions SET ciphertext=?, iv=?, mac=? WHERE handle=? AND version=?;",
+			[encrypted.ciphertext, encrypted.iv, encrypted.mac, version.handle, version.version])
+	if _last_sql_error.is_empty():
+		init_vault(new_key, get_vault_salt(), get_vault_iterations())
+	return _last_sql_error
+
+
 static func _has_column(col_rows: Array, col_name: String) -> bool:
 	for cr in col_rows:
 		if str(cr.get("name", "")) == col_name:
