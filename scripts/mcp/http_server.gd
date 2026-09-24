@@ -49,7 +49,9 @@ var _next_stale_check := 0
 
 func _ready() -> void:
 	if transport == "stdio":
-		if "--quiet" in OS.get_cmdline_args() or "-q" in OS.get_cmdline_args():
+		# --quiet/-q (or application/run/disable_stdout) turns print_to_stdout
+		# off; the engine strips the flag from OS.get_cmdline_args.
+		if not Engine.print_to_stdout:
 			printerr("Docket: --stdio cannot run with --quiet, which silences its replies; use --no-header")
 			set_process(false)
 			get_tree().quit(1)
