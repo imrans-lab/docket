@@ -6,9 +6,10 @@ extends "res://scripts/ui/docket_source.gd"
 ## `connection` is the host's link to that process. It needs one method,
 ## awaited: call_tool(name: String, arguments: Dictionary) -> Dictionary,
 ## answering with the MCP tools/call result ({content: [{text}], isError}), or
-## {error} when the call itself failed. The host passes each item_changed
-## notification the process sends to handle_host_event, and awaits start()
-## before showing the UI.
+## {error} when the call itself failed. It may also offer list_tools() ->
+## Array (the MCP tools/list entries), for tool_count. The host passes each
+## item_changed notification the process sends to handle_host_event, and
+## awaits start() before showing the UI.
 ##
 ## Methods with no exact tool yet answer UNSUPPORTED (see DocketSource),
 ## including every item write, attachments and the vault.
@@ -187,6 +188,15 @@ func project_paths() -> Dictionary:
 	return paths
 
 
+## Answered by the connection's optional list_tools() (the MCP tools/list
+## entries); 0 when it has none.
+func tool_count() -> int:
+	if not _connection.has_method("list_tools"):
+		return 0
+	var tools: Array = await _connection.list_tools()
+	return tools.size()
+
+
 func prefs():
 	return _prefs
 
@@ -291,6 +301,25 @@ func item_title(project: String, id: String) -> Dictionary:
 func item_events(project: String, id: String) -> Array:
 	var item := await _get_item(project, id, ["events"])
 	return [] if item.has("error") else item.get("events", [])
+
+
+## Items whose parent is `qualified_id` ("project:id") in every open project;
+## a bare parent id counts only in the parent's own project, as in the
+## standalone app.
+func children_of(qualified_id: String) -> Array:
+	var separator := qualified_id.find(":")
+	var owner := qualified_id.left(separator) if separator > 0 else ""
+	var bare_id := qualified_id.substr(separator + 1) if separator > 0 else qualified_id
+	var children: Array = []
+	for project in project_names():
+		var parents: Array = [{"field": "parent", "op": "eq", "value": qualified_id}]
+		if owner.is_empty() or project == owner:
+			parents.append({"field": "parent", "op": "eq", "value": bare_id})
+		var listed := await _call("docket_query", {"project": project, "filter": {"$or": parents}, "detail": "full"})
+		for item in listed.get("items", []):
+			item["project"] = project
+			children.append(item)
+	return children
 
 
 func run_query(query: Dictionary) -> Dictionary:

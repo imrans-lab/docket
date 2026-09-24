@@ -1275,7 +1275,7 @@ func load_item(id: String, project: String = "") -> void:
 	elif type_name == "encrypted_note":
 		_vault._load_encrypted_notes(id)
 
-	_build_transition_buttons(item)
+	_build_transition_buttons(item, resolved)
 	_populate_events(item)
 	_populate_children()
 	# For discussion items, auto-expand comments and enlarge description.
@@ -1382,12 +1382,12 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 	_loading = false
 
 
-func _build_transition_buttons(item: Dictionary) -> void:
+## The status buttons for `item`, from its type resolution `resolved`.
+func _build_transition_buttons(item: Dictionary, resolved: Dictionary) -> void:
 	for child in _transition_bar.get_children():
 		child.queue_free()
 
 	var status_str: String = str(item.get("status", ""))
-	var resolved: Dictionary = _src.cached_resolve(_current_project, item)
 	if resolved.has("error"):
 		return
 	var valid: Array = resolved.definition.lifecycle.transitions.get(status_str, [])
