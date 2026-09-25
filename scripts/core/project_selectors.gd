@@ -14,6 +14,9 @@ extends RefCounted
 ## DocketDB's instance id), which a reopen changes.
 
 
+const SelectorQuery := preload("selector_query.gd")
+
+
 ## The selector of the project open at `located` (from ProjectFile.locate)
 ## in `dbs`, or "". Open projects are identified afresh, since saving one
 ## replaces its file.
@@ -131,41 +134,17 @@ static func reference_checker(dbs: Dictionary) -> Callable:
 
 ## The query field naming open projects exactly by selector (for this session
 ## only), beside `project`, which names them by stored name.
-const SELECTOR_FIELD := "project_selector"
+const SELECTOR_FIELD := SelectorQuery.SELECTOR_FIELD
 
 
 ## The grid's catalog choices (a type or a type's status chosen from one
 ## project's catalog): each is that exact project's, a selector's scope.
-const CATALOG_OPERATORS := ["catalog_in", "catalog_status"]
+const CATALOG_OPERATORS := SelectorQuery.CATALOG_OPERATORS
 
 
-## Whether `query`'s filter picks a project exactly anywhere: a
-## SELECTOR_FIELD condition (or its flat form), or a catalog choice, which
-## compiles to one. Such a query cannot be saved, since a selector means
-## nothing in another session.
+## Whether `query`'s filter picks a project exactly anywhere (SelectorQuery).
 static func has_selector_condition(query: Dictionary) -> bool:
-	return _names_selector(query.get("filter"))
-
-
-static func _names_selector(node: Variant) -> bool:
-	if node is Array:
-		return node.any(func(child) -> bool: return _names_selector(child))
-	if not node is Dictionary:
-		return false
-	if str(node.get("field", "")) == SELECTOR_FIELD or node.has(SELECTOR_FIELD) or node.has(SELECTOR_FIELD + "__ne") \
-			or (str(node.get("op", "")) in CATALOG_OPERATORS and _makes_choice(node.get("value"))):
-		return true
-	for key in ["conditions", "$and", "$or"]:
-		if node.has(key) and _names_selector(node[key]):
-			return true
-	return false
-
-
-# A type chooser with nothing chosen yet compiles to no project guard.
-static func _makes_choice(value: Variant) -> bool:
-	if value is Array:
-		return value.any(func(v) -> bool: return not str(v).is_empty())
-	return value is Dictionary or not str(value).is_empty()
+	return SelectorQuery.has_selector_condition(query)
 
 
 ## How project `selector` of `dbs` is described to clients.

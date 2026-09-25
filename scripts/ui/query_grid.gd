@@ -4,6 +4,7 @@ extends VBoxContainer
 
 const DocketFields := preload("../core/docket_fields.gd")
 const QueryTypeScope := preload("../core/query_type_scope.gd")
+const SelectorQuery := preload("../core/selector_query.gd")
 const TypeChooser := preload("type_chooser.gd")
 
 signal item_selected(id: String, project: String)
@@ -33,7 +34,7 @@ var _user_has_modified: bool = false  # Track if user has interacted with the bu
 const _QUERY_FIELDS := [
 	"type", "status", "priority", "severity", "title", "description",
 	"assigned_to", "directed_to", "tags", "has_attachment", "id", "component", "key",
-	"resolution", "environment", "created_at", "updated_at", "project", ProjectSelectors.SELECTOR_FIELD,
+	"resolution", "environment", "created_at", "updated_at", "project", SelectorQuery.SELECTOR_FIELD,
 	"blocked_by", "parent",
 ]
 
@@ -71,7 +72,7 @@ var _refreshing_scope := false
 # selectors as listed. Reading, running, saving and restoring a row all go by
 # this, so a picked project is never read from the hidden text field.
 func _row_dropdowns() -> Dictionary:
-	return _dropdown_values().merged({ProjectSelectors.SELECTOR_FIELD: _src.project_names() if _src != null else []})
+	return _dropdown_values().merged({SelectorQuery.SELECTOR_FIELD: _src.project_names() if _src != null else []})
 
 
 func _dropdown_values() -> Dictionary:
@@ -672,7 +673,7 @@ func _get_ops_for_field(field_name: String) -> Array:
 			return _BOOL_OPS
 		"tags":
 			return _TAG_OPS
-		ProjectSelectors.SELECTOR_FIELD:
+		SelectorQuery.SELECTOR_FIELD:
 			return _SELECTOR_OPS
 		_:
 			return _TEXT_OPS
@@ -1434,7 +1435,7 @@ func save_dcq(path: String) -> String:
 	var ui_filter := _serialize_all_conditions()
 	var filter := _build_conditions_filter()
 	var saved_columns: Array = _dcq_columns.duplicate(true) if not _dcq_columns.is_empty() else _col_fields.duplicate()
-	if ProjectSelectors.has_selector_condition({"filter": filter}):
+	if SelectorQuery.has_selector_condition({"filter": filter}):
 		return "This query picks projects by project_selector, which lasts only this session; name them by Project (the stored name) to save it."
 	var dcq := {"filter": filter, "ui_filter": ui_filter, "columns":saved_columns}
 	# Include sort if active
