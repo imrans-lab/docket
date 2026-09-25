@@ -521,6 +521,8 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           body: |
+            ${{ contains(github.event.inputs.tag || github.ref_name, '-') && 'Integration candidate for Minerva plugin pinning and host integration testing; full host cutover and D1–D7 parity remain incomplete.' || '' }}
+
             ## Install
 
             Binaries are **unsigned**. Verify them before running:
