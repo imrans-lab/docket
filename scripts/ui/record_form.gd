@@ -1202,6 +1202,7 @@ func load_item(id: String, project: String = "") -> void:
 	_current_id = id
 	_is_draft = false
 	_draft_item = {}
+	_src.item_shown("", "")
 
 	if str(view.get("kind", "")) == "closed":
 		_id_label.text = "(item not found)"
@@ -1231,6 +1232,7 @@ func load_item(id: String, project: String = "") -> void:
 		return
 	_loaded_revision = str(item.get("type_revision", resolved.revision.id))
 	_loaded_item_token = str(view.token)
+	_src.item_shown(project, id)
 	# Display short ID for UUID7, full for legacy
 	if DocketFields.is_uuid7(id):
 		_id_label.text = str(view.short_id)
@@ -1304,6 +1306,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 	_is_draft = true
 	_draft_item = item.duplicate(true)
 	_current_id = ""
+	_src.item_shown("", "")
 	_current_project = ""
 	_loaded_revision = ""
 	_loaded_item_token = ""

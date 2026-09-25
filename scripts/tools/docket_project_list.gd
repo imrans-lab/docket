@@ -27,5 +27,8 @@ func execute(_args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: 
 		var meta := pdb.get_project_meta()
 		for key in meta:
 			entry[key] = meta[key]
+		# Differs each time the project is opened, so a host can tell the same
+		# opening from a later one under the same name.
+		entry["open_generation"] = str(pdb.get_instance_id())
 		projects.append(entry)
 	return {"projects": projects, "count": projects.size()}

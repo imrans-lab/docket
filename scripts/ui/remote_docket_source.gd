@@ -77,6 +77,16 @@ var _stream := ""
 var _received := 0
 # "project<US>id" → the content token this source's last save of it committed.
 var _committed_tokens: Dictionary = {}
+# The item the host has bound this panel's edits to (item_shown): {project,
+# id, binding} once the host has checked it, {} before or without one; and
+# the number of the latest item_shown, so an older answer is ignored.
+var _bound: Dictionary = {}
+# Why the host would not bind the shown item, when it would not: {project,
+# id, reason}.
+var _bind_refusal: Dictionary = {}
+var _showing := 0
+var _binding := false
+signal _bind_settled
 
 ## A snapshot refresh (and any asked for while it ran) finished.
 signal _snapshot_refreshed
@@ -550,15 +560,52 @@ func reload_all() -> Array:
 
 # -- Items --------------------------------------------------------------------------
 
-## Through the host's private panel channel, as the person the host names.
+## Tell the host's private channel which item the form shows, so it is the
+## one the panel may save (see save_item).
+func item_shown(project: String, id: String) -> void:
+	_showing += 1
+	var showing := _showing
+	_bound = {}
+	_bind_refusal = {}
+	if not _connection.has_method("panel_call") or _origin().is_empty():
+		_binding = false
+		_bind_settled.emit()
+		return
+	_binding = true
+	var answered: Dictionary = await _connection.panel_call("select_item", {"project": project, "id": id})
+	if showing != _showing:
+		return
+	_binding = false
+	# The host names the item as its project knows it (its full id).
+	if answered.has("error"):
+		_bind_refusal = {"project": project, "id": id, "reason": str(answered.error)}
+	elif not id.is_empty():
+		_bound = {"project": project, "id": id, "canonical": str(answered.get("id", id)),
+			"binding": int(answered.get("binding", -1))}
+	_bind_settled.emit()
+
+
+## Through the host's private panel channel, as the person the host names,
+## for the item the form shows (once the host has bound it).
 func save_item(project: String, id: String, changes: Dictionary, revision: String, token: String,
 		secret: Dictionary = {}) -> String:
 	if not secret.is_empty():
 		return UNSUPPORTED
-	if not _connection.has_method("panel_call"):
+	# No private channel (no panel_call, or no origin for this panel): refused
+	# before any change starts.
+	if not _connection.has_method("panel_call") or _origin().is_empty():
 		return "Editing here needs the host's trusted panel channel, which this host does not provide."
+	while _binding:
+		await _bind_settled  # the shown item's binding is on its way
+	if _bound.get("project") != project or _bound.get("id") != id:
+		if _bind_refusal.get("project") == project and _bind_refusal.get("id") == id:
+			return str(_bind_refusal.reason)
+		return "The host has not made %s ready for editing here; open it again." % id
+	var binding: int = _bound.binding
+	var canonical: String = _bound.canonical
 	var reply: Dictionary = await _change(func(operation: String) -> Dictionary:
-		var answered: Dictionary = await _connection.panel_call("update_item", {"project": project, "id": id,
+		var answered: Dictionary = await _connection.panel_call("update_item", {"binding": binding,
+			"project": project, "id": canonical,
 			"changes": changes, "expected_revision": revision, "expected_item_token": token, "operation_id": operation})
 		return {"result": answered, "stream": answered.get("stream", ""), "watermark": answered.get("event_watermark", 0)})
 	var error = reply.get("error", "")

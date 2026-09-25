@@ -196,6 +196,12 @@ func release_reconciliation() -> void:
 	pass
 
 
+## The form now shows item `id` of `project` (none when `id` is ""): the only
+## item a source whose host binds edits to the shown item lets it save.
+func item_shown(_project: String, _id: String) -> void:
+	pass
+
+
 ## The content token item `id` had when this source last saved it, or "".
 func committed_token(_project: String, _id: String) -> String:
 	return ""

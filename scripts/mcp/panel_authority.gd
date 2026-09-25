@@ -91,8 +91,8 @@ func _open_session(params: Dictionary) -> Dictionary:
 	return {"result": {"panel_session": session}}
 
 
-# Host: {panel_secret, panel, person, project, item, actions} →
-# {panel_grant, expires_in_ms}.
+# Host: {panel_secret, panel, person, project, item, actions[,
+# open_generation]} → {panel_grant, expires_in_ms}.
 func _register(params: Dictionary) -> Dictionary:
 	if not _is_host(params):
 		return _failure(-32001, "not the host")
@@ -111,6 +111,10 @@ func _register(params: Dictionary) -> Dictionary:
 	var db: DocketDB = _registry.project_db(project)
 	if db == null:
 		return _failure(-32602, "no open project %s" % project)
+	# The host may name the opening it checked (docket_project_list's
+	# open_generation): a project opened again since is not it.
+	if params.has("open_generation") and str(params.open_generation) != str(db.get_instance_id()):
+		return _failure(-32001, "%s was opened again since" % project)
 	if item.is_empty() or not db.has_item(item):
 		return _failure(-32602, "no item %s in %s" % [item, project])
 	var grant := Crypto.new().generate_random_bytes(32).hex_encode()
