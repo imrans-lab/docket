@@ -1,6 +1,8 @@
 extends Node
 
 var A := AssertHelpers
+const QueryTypeScope := preload("res://scripts/core/query_type_scope.gd")
+const TypeCatalog := preload("res://scripts/core/type_catalog.gd")
 var _handler: McpHandler
 
 
@@ -259,6 +261,339 @@ func _panel_attach_checks(handler: McpHandler, db: DocketDB, secret: String, ite
 		"filename": "log.txt", "data": Marshalls.raw_to_base64("log".to_utf8_buffer()), "project": "panel"}})
 	return A.is_true(not by_tool.get("result", {}).get("isError", false) and attached.call(other) == ["agent"],
 		"the same attach as a tool is the agent's, with one event: %s %s" % [by_tool, attached.call(other)])
+
+
+## Two files with one stored name and the same item IDs (a project and its
+## copy) open side by side in a host-managed server, through its own add and
+## remove: the first stays "work" (adding its path again answers it, opened
+## once), the copy is "work~2", and each selector reads and writes only its
+## own file; a name matching both, case aside, is refused. A reference from
+## another project to their shared stored name, or to a selector, is refused
+## unwritten, while the copy's reference to its own name is its own. A panel
+## grant for "work" outlives the copy's closing, but not a close and reopen
+## of "work".
+func test_copies_of_a_project_open_side_by_side() -> Variant:
+	var dir := OS.get_cache_dir().path_join("docket_copies_%d" % Time.get_ticks_usec())
+	DirAccess.make_dir_recursive_absolute(dir)
+	var original := dir.path_join("a.dct")
+	var copy := dir.path_join("b.dct")
+	var other := dir.path_join("c.dct")
+	# A project whose stored name is literally the copy's selector.
+	var lookalike := dir.path_join("d.dct")
+	var lookalike_db := DocketDBJsonl.create_new_jsonl(lookalike)
+	lookalike_db.set_project_name("work~2")
+	var lookalike_tools := ToolRegistry.new()
+	lookalike_tools.init(TypeRegistryBootstrap.load_shipped_schema(), lookalike_db, {"work~2": lookalike_db})
+	lookalike_tools.call_tool("docket_create", {"type": "bug", "title": "Lookalike"})
+	lookalike_db.close()
+	var seeded := DocketDBJsonl.create_new_jsonl(original)
+	seeded.set_project_name("work")
+	var seeding := ToolRegistry.new()
+	seeding.init(TypeRegistryBootstrap.load_shipped_schema(), seeded, {"work": seeded})
+	var item := str(seeding.call_tool("docket_create", {"type": "bug", "title": "Original"}).get("id", ""))
+	seeded.close()
+	DirAccess.copy_absolute(original, copy)
+	var other_db := DocketDBJsonl.create_new_jsonl(other)
+	other_db.set_project_name("other")
+	other_db.close()
+	var secret := Crypto.new().generate_random_bytes(32).hex_encode()
+	OS.set_environment(McpHandler.PanelAuthority.SECRET_VARIABLE, secret)
+	# The server's own project handling, without its transport.
+	var server := DocketHttpServer.new()
+	server.host_managed = true
+	server._schema = TypeRegistryBootstrap.load_shipped_schema()
+	server._registry = ToolRegistry.new()
+	server._registry.init(server._schema, null, server._project_dbs)
+	server._registry.allow_no_project = true
+	server._registry.add_project_fn = server._headless_add_project
+	server._registry.remove_project_fn = server._headless_remove_project
+	server._handler = McpHandler.new()
+	server._handler.init_with_registry(server._registry)
+	server._handler.panel_authority = McpHandler.PanelAuthority.from_environment(server._registry)
+	var result: Variant = _copies_checks(server._handler, server._project_dbs, secret, item, original, copy, other, lookalike)
+	for open_db: DocketDB in server._project_dbs.values():
+		open_db.close()
+	server.free()
+	for file in DirAccess.get_files_at(dir):
+		DirAccess.remove_absolute(dir.path_join(file))
+	DirAccess.remove_absolute(dir)
+	return result
+
+
+# Other spellings of the existing file `original`, at least one, each checked
+# to name it before it is used: a symbolic link to it (required except on
+# Windows, where creating one needs a privilege), and its name in another case
+# when its directory ignores case (as Windows directories do by default).
+# Which were used, and which not, is printed; a required spelling that could
+# not be made fails the test, never passes it.
+func _aliases_of(original: String) -> Variant:
+	var dir := original.get_base_dir()
+	var identity: String = str(ProjectFile.locate(original).get("id", ""))
+	var aliases: Array = []
+	var used: Array = []
+	var linked := dir.path_join("linked.dct")
+	var linking := DirAccess.open(dir).create_link(original, linked)
+	if linking == OK:
+		aliases.append(linked); used.append("symbolic link")
+	elif OS.get_name() != "Windows":
+		return "setup failed: could not create a symbolic link (error %d)" % linking
+	else:
+		print("alias: symbolic link not exercised, creating one failed (error %d)" % linking)
+	var other_case := dir.path_join(original.get_file().to_upper())
+	if FileAccess.file_exists(other_case):
+		aliases.append(other_case); used.append("letter case")
+	else:
+		print("alias: letter case not exercised, %s tells case apart" % dir)
+	if aliases.is_empty():
+		return "setup failed: %s neither ignores case nor allows a symbolic link, so no alias can be made here" % dir
+	for alias in aliases:
+		if identity.is_empty() or str(ProjectFile.locate(alias).get("id", "")) != identity:
+			return "setup failed: %s is not identified as %s" % [alias, original]
+	print("alias mechanisms exercised: %s" % ", ".join(PackedStringArray(used)))
+	return aliases
+
+
+func _copies_checks(handler: McpHandler, dbs: Dictionary, secret: String, item: String, original: String, copy: String, other: String, lookalike: String) -> Variant:
+	# A tool's answer; when it refused, its error: whole (with its kind) as the
+	# reply's _meta carries it, else {error} (its text); a JSON-RPC error as
+	# {error, protocol}.
+	var tool := func(name: String, arguments: Dictionary) -> Dictionary:
+		var reply: Dictionary = handler.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}})
+		if reply.has("error"):
+			return {"error": str(reply.error.get("message", reply.error)), "protocol": true}
+		var text := str(reply.result.get("content", [{}])[0].get("text", ""))
+		if bool(reply.result.get("isError", false)):
+			var whole = reply.result.get("_meta", {}).get(McpHandler.ERROR_RESULT_META)
+			return whole if whole is Dictionary else {"error": text}
+		var parsed = JSON.parse_string(text)
+		return parsed if parsed is Dictionary else {"error": "unreadable: %s" % text}
+	var panel := func(method: String, params: Dictionary) -> Dictionary:
+		var reply: Dictionary = handler.handle({"jsonrpc": "2.0", "id": 1, "method": "docket/panel/" + method, "params": params})
+		return reply.result if reply.has("result") else {"error": str(reply.get("error", {}).get("message", ""))}
+	var first: Dictionary = tool.call("docket_project_add", {"path": original})
+	var again: Dictionary = tool.call("docket_project_add", {"path": original})
+	var aliases = _aliases_of(original)
+	if aliases is String: return aliases
+	var through_aliases: Array = aliases.map(func(alias: String) -> Dictionary: return tool.call("docket_project_add", {"path": alias}))
+	var second: Dictionary = tool.call("docket_project_add", {"path": copy})
+	tool.call("docket_project_add", {"path": other})
+	var listed: Array = tool.call("docket_project_list", {}).get("projects", []).map(func(p: Dictionary) -> String: return str(p.name))
+	listed.sort()
+	var r = A.eq([first.get("name"), again.get("already_open"), again.get("open_generation") == first.get("open_generation"),
+		through_aliases.all(func(added: Dictionary) -> bool: return added.get("already_open") == true and added.get("open_generation") == first.get("open_generation")),
+		second.get("name"), second.get("display_name"), second.get("path") != first.get("path"), listed],
+		["work", true, true, true, "work~2", "work", true, ["other", "work", "work~2"]],
+		"the copy opens beside its original under a name of its own; adding the original again, or by another spelling, answers it: %s %s %s %s" % [first, again, through_aliases, second])
+	if r is String: return r
+
+	var edited: Dictionary = tool.call("docket_update", {"id": item, "title": "Copy edit", "project": "work~2"})
+	var titles := [str(tool.call("docket_get", {"id": item, "project": "work"}).get("title", "")),
+		str(tool.call("docket_get", {"id": item, "project": "work~2"}).get("title", ""))]
+	var ambiguous: Dictionary = tool.call("docket_get", {"id": item, "project": "WORK"})
+	r = A.is_true(not edited.has("error") and titles == ["Original", "Copy edit"] and str(ambiguous.get("error", "")).contains("ambiguous"),
+		"each selector reads and writes its own file, and a name matching both is refused: %s %s %s" % [edited, titles, ambiguous])
+	if r is String: return r
+
+	var to_both: Dictionary = tool.call("docket_create", {"type": "bug", "title": "Ambiguous", "parent": "work:" + item, "project": "other"})
+	var to_selector: Dictionary = tool.call("docket_create", {"type": "bug", "title": "Selector", "parent": "work~2:" + item, "project": "other"})
+	var own: Dictionary = tool.call("docket_create", {"type": "bug", "title": "Own", "parent": "work:" + item, "project": "work~2"})
+	var in_other := int(tool.call("docket_query", {"project": "other"}).get("count", -1))
+	r = A.is_true(to_both.has("error") and to_selector.has("error") and not own.has("error") and in_other == 0,
+		"references to the shared stored name, or to a selector, are refused unwritten; the copy's to itself is written: %s %s %s" % [to_both, to_selector, own])
+	if r is String: return r
+	# Read back as the owner reads children: the copy's "work:<id>" parent is
+	# the copy's own item, not the original's.
+	var state := AppState.new()
+	state._project_dbs = dbs
+	var children_of := func(project: String) -> Array:
+		return state.find_children_across_projects("%s:%s" % [project, item]).map(func(child: Dictionary) -> Array: return [child.project, child.title])
+	r = A.eq([children_of.call("work~2"), children_of.call("work")], [[["work~2", "Own"]], []],
+		"the copy's reference to its own stored name is a child in the copy only")
+	if r is String: return r
+
+	# Queries: `project` means a stored name, so "work" matches both copies and
+	# "work~2" the project stored under that name; project_selector means this
+	# session's selectors exactly. A query naming a selector cannot be saved.
+	var looked: Dictionary = tool.call("docket_project_add", {"path": lookalike})
+	var projects_of := func(filter: Dictionary) -> Variant:
+		var viewed: Dictionary = tool.call("docket_query_view", {"filter": filter})
+		if viewed.has("error"): return viewed.error
+		var names: Array = viewed.get("rows", []).map(func(row: Dictionary) -> String: return str(row.project))
+		names.sort()
+		return names
+	var by_name := {"field": "project", "op": "eq", "value": "work~2"}
+	var by_selector := {"field": "project_selector", "op": "eq", "value": "work~2"}
+	var queried := [projects_of.call({"conditions": [by_name]}), projects_of.call({"conditions": [by_selector]}), projects_of.call(by_selector),
+		projects_of.call({"conditions": [{"field": "project", "op": "eq", "value": "work"}]}),
+		projects_of.call({"$and": [{"field": "project", "op": "eq", "value": "work"}, {"field": "project_selector", "op": "neq", "value": "work"}]}),
+		projects_of.call({"conditions": [{"field": "project_selector", "op": "in", "value": ["work", "work~2~2"]}]}),
+		str(projects_of.call({"conditions": [{"field": "project_selector", "op": "eq", "value": "nowhere"}]})).contains("Unknown project_selector")]
+	var saved_selector: Dictionary = tool.call("docket_saved_query", {"action": "save", "name": "by selector", "project": "other",
+		"filter": {"conditions": [by_selector]}})
+	var saved_name: Dictionary = tool.call("docket_saved_query", {"action": "save", "name": "by name", "project": "other",
+		"filter": {"conditions": [by_name]}})
+	var loaded: Dictionary = tool.call("docket_saved_query", {"action": "load", "name": "by name", "project": "other"})
+	r = A.eq([looked.get("name"), queried, saved_selector.has("error"), saved_name.get("saved"), loaded.get("filter")],
+		["work~2~2", [["work~2~2"], ["work~2", "work~2"], ["work~2", "work~2"], ["work", "work~2", "work~2"], ["work~2", "work~2"], ["work", "work~2~2"], true],
+			true, "by name", {"conditions": [by_name]}],
+		"a stored name and a selector select different projects even when their text is the same; only the name is saved: %s %s %s %s" % [
+			queried, saved_selector, saved_name, loaded])
+	if r is String: return r
+	# A type and status chosen from the copy's catalog (the grid's compiler)
+	# select the copy's rows only, and such an exact choice is not saved.
+	var bug: Dictionary = tool.call("docket_get", {"id": item, "project": "work~2"})
+	var copy_bug := TypeCatalog.identity("work~2", str(bug.get("type_id", "")))
+	var catalog: Array = [{"id": str(bug.get("type_id", "")), "key": copy_bug, "slug": "bug", "project": "work~2"}]
+	var chosen: Dictionary = QueryTypeScope.compile_catalog_conditions([{"field": "status", "op": "catalog_status",
+		"value": {"key": copy_bug, "status": str(bug.get("status", ""))}}], catalog)
+	var saved_choice: Dictionary = tool.call("docket_saved_query", {"action": "save", "name": "chosen", "project": "work~2", "filter": chosen})
+	r = A.is_true(not str(bug.get("type_id", "")).is_empty() and projects_of.call(chosen) == ["work~2", "work~2"] and saved_choice.has("error"),
+		"a catalog choice from the copy selects only the copy, and is not saved: %s %s" % [projects_of.call(chosen), saved_choice])
+	if r is String: return r
+	tool.call("docket_project_remove", {"name": "work~2~2"})
+
+	var grant := str(panel.call("register", {"panel_secret": secret, "panel": "p1", "person": "imran", "project": "work", "item": item,
+		"actions": ["update_item"], "open_generation": first.get("open_generation")}).get("panel_grant", ""))
+	var save := func(title: String) -> Dictionary:
+		return panel.call("update_item", {"panel_grant": grant, "project": "work", "id": item, "changes": {"title": title}})
+	var before_close: Dictionary = save.call("Person edit")
+	# Saving replaced the original's file; its other spellings still reach it.
+	var after_save: Array = aliases.map(func(alias: String) -> Dictionary: return tool.call("docket_project_add", {"path": alias}))
+	var closed: Dictionary = tool.call("docket_project_remove", {"name": "work~2"})
+	var after_close: Dictionary = save.call("Person again")
+	tool.call("docket_project_remove", {"name": "work"})
+	var reopened: Dictionary = tool.call("docket_project_add", {"path": original})
+	var after_reopen: Dictionary = save.call("After reopening")
+	r = A.is_true(not before_close.has("error") and closed.has("closed") and not after_close.has("error")
+		and after_save.all(func(added: Dictionary) -> bool: return added.get("already_open") == true and added.get("open_generation") == first.get("open_generation"))
+		and reopened.get("name") == "work" and reopened.get("open_generation") != first.get("open_generation") and after_reopen.has("error"),
+		"the grant outlives the copy's closing, not the original's reopening: %s %s %s %s %s" % [before_close, after_save, after_close, reopened, after_reopen])
+	if r is String: return r
+
+	# Reading "other" again when its file changes: a read overtaken by an
+	# edit in place, or a failed rebuild, keeps the cache as it was and refuses
+	# reads until the file is read whole; a failed save over a file another
+	# writer replaced keeps the change here, unsaved, and the replacement as
+	# it is.
+	var other_db: DocketDBJsonl = dbs["other"]
+	var other_item := str(tool.call("docket_create", {"type": "bug", "title": "First", "project": "other"}).get("id", ""))
+	var rewrite := func(from: String, to: String) -> void:
+		var text := FileAccess.get_file_as_string(other)
+		var file := FileAccess.open(other, FileAccess.WRITE)
+		file.store_string(text.replace(from, to))
+		file.close()
+	var title_of := func() -> String: return str(tool.call("docket_get", {"id": other_item, "project": "other"}).get("title", ""))
+	var other_events: Array = []
+	var note_events := func(changes: Array) -> void: other_events.append_array(changes)
+	other_db.items_changed.connect(note_events)
+	rewrite.call("First", "Second")
+	JSONLCache.rebuild_failure_hook = func() -> String:
+		rewrite.call("Second", "Third")
+		return ""
+	var overtaken: Dictionary = tool.call("docket_get", {"id": other_item, "project": "other"})
+	JSONLCache.rebuild_failure_hook = Callable()
+	var after_overtaken := [other_db.get_item(other_item).get("title"), other_events.size(), title_of.call()]
+	rewrite.call("Third", "Fourth")
+	JSONLCache.rebuild_failure_hook = func() -> String: return "injected rebuild failure"
+	var failed_rebuild: Dictionary = tool.call("docket_query", {"project": "work"})
+	JSONLCache.rebuild_failure_hook = Callable()
+	var after_failed := [other_db.get_item(other_item).get("title"), title_of.call()]
+	var replacement := other + ".replacement"
+	other_db._atomic_write_hook = func(_path: String, _text: String, _staged: Dictionary) -> String:
+		DirAccess.copy_absolute(other, replacement)
+		DirAccess.rename_absolute(replacement, other)
+		return "injected write failure"
+	var before_unsaved := FileAccess.get_file_as_string(other)
+	var unsaved: Dictionary = tool.call("docket_update", {"id": other_item, "title": "Unsaved", "project": "other"})
+	other_db._atomic_write_hook = Callable()
+	var refused_read: Dictionary = tool.call("docket_query", {"project": "work"})
+	# As a client sees it: an error result with its text, and its kind in _meta.
+	var envelope: Dictionary = handler.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": {"name": "docket_query", "arguments": {"project": "work"}}}).get("result", {})
+	var raw_refusal := [envelope.get("isError"), not str(envelope.get("content", [{}])[0].get("text", "")).is_empty(),
+		envelope.get("_meta", {}).get(McpHandler.ERROR_RESULT_META, {}).get("kind")]
+	# The person's own reads refuse at once too, before any poll, and say why.
+	var local := LocalDocketSource.new(state)
+	var told: Array = []
+	local.unavailable.connect(func(failure: Dictionary) -> void: told.append(failure.kind))
+	var local_reads := [str(local.item_title("other", other_item).get("kind", "")), local.item_events("other", other_item),
+		str(local.children_of("other:" + other_item).get("kind", "")), told]
+	var kept := [other_db.get_item(other_item).get("title"), FileAccess.get_file_as_string(other) == before_unsaved]
+	other_db.items_changed.disconnect(note_events)
+	tool.call("docket_project_remove", {"name": "other"})
+	r = A.is_true(str(overtaken.get("kind", "")) == "stale" and after_overtaken == ["First", 0, "Third"]
+		and str(failed_rebuild.get("kind", "")) == "stale" and after_failed == ["Third", "Fourth"]
+		and str(unsaved.get("error", "")).contains("kept here") and str(refused_read.get("kind", "")) == "unsaved" and kept == ["Unsaved", true]
+		and local_reads[0] == "unsaved" and local.refusal(local_reads[1]).contains("not ready") and local_reads[2] == "unsaved"
+		and local_reads[3] == ["unsaved", "unsaved", "unsaved"] and raw_refusal == [true, true, "unsaved"],
+		"an overtaken or failed read refuses and keeps the cache; a failed save over a replacement keeps the change unsaved: %s %s %s %s %s %s %s %s %s" % [
+			overtaken, after_overtaken, failed_rebuild, after_failed, unsaved, refused_read, kept, local_reads, raw_refusal])
+	if r is String: return r
+
+	# A SQLite project with another file put in its place stays on the file it
+	# opened, so tools, the panel and the person's own reads are all refused
+	# until it is opened again.
+	var legacy := original.get_base_dir().path_join("legacy.dct")
+	var legacy_db := DocketDB.create_new(legacy)
+	legacy_db.set_project_name("legacy")
+	legacy_db.close()
+	tool.call("docket_project_add", {"path": legacy})
+	var swapped := legacy + ".swap"
+	if OS.get_name() == "Windows":
+		# Windows keeps an open file in its place, so this cannot happen there.
+		print("replacement: SQLite file replacement not exercised on Windows")
+		tool.call("docket_project_remove", {"name": "legacy"})
+	elif DirAccess.copy_absolute(legacy, swapped) != OK or DirAccess.rename_absolute(swapped, legacy) != OK:
+		DirAccess.remove_absolute(swapped)
+		return "setup failed: could not put another file in place of %s" % legacy
+	if OS.get_name() != "Windows":
+		var by_tool: Dictionary = tool.call("docket_query", {"project": "work"})
+		var by_panel: Dictionary = panel.call("register", {"panel_secret": secret, "panel": "p2", "person": "imran", "project": "work",
+			"item": item, "actions": ["update_item"]})
+		var by_person: Dictionary = LocalDocketSource.new(state).item_title("work", item)
+		tool.call("docket_project_remove", {"name": "legacy"})
+		r = A.is_true(str(by_tool.get("kind", "")) == "reopen_required" and str(by_panel.get("error", "")).contains("'legacy' is not ready")
+			and str(by_person.get("kind", "")) == "reopen_required", "a replaced SQLite file is refused everywhere: %s %s %s" % [by_tool, by_panel, by_person])
+		if r is String: return r
+
+	# Another writer's save (the same bytes in another file renamed over the
+	# open original) is read as the project, reported as a reload, and the
+	# next change is written into it. A link put in its place is never
+	# written through.
+	var events: Array = []
+	var record := func(changes: Array) -> void: events.append_array(changes)
+	(dbs["work"] as DocketDB).items_changed.connect(record)
+	var outside := original.get_base_dir().path_join("outside.tmp")
+	if DirAccess.copy_absolute(original, outside) != OK or DirAccess.rename_absolute(outside, original) != OK:
+		DirAccess.remove_absolute(outside)
+		return "setup failed: could not save the same bytes over %s from outside" % original
+	var over_save: Dictionary = tool.call("docket_update", {"id": item, "title": "After an outside save", "project": "work"})
+	(dbs["work"] as DocketDB).items_changed.disconnect(record)
+	var held := original.get_base_dir().path_join("held.dct")
+	if DirAccess.rename_absolute(original, held) != OK:
+		return "setup failed: could not move %s aside" % original
+	var substituted := DirAccess.open(original.get_base_dir()).create_link(held, original)
+	var through_link := {}
+	if substituted == OK:
+		through_link = tool.call("docket_update", {"id": item, "title": "Through a link", "project": "work"})
+		DirAccess.remove_absolute(original)
+	else:
+		print("replacement: link substitution not exercised, creating one failed (error %d)" % substituted)
+	var restored := DirAccess.rename_absolute(held, original)
+	if substituted != OK and OS.get_name() != "Windows":
+		return "setup failed: could not put a symbolic link in place of %s (error %d)" % [original, substituted]
+	r = A.is_true(restored == OK and not over_save.has("error") and events.has({"id": "", "event": "reloaded"})
+		and (substituted != OK or str(through_link.get("error", "")).contains("external replacement")),
+		"an outside save is read as the project and reported, a link in the file's place refused: %s %s %s" % [over_save, events, through_link])
+	if r is String: return r
+
+	var reader_a := DocketDBJsonl.open_jsonl(original)
+	var reader_b := DocketDBJsonl.open_jsonl(copy)
+	var files := [str(reader_a.get_item(item).get("title", "")), str(reader_b.get_item(item).get("title", "")),
+		reader_b.execute_query({"filter": {"parent": "work:" + item}}).size()]
+	reader_a.close()
+	reader_b.close()
+	return A.eq(files, ["After an outside save", "Copy edit", 1], "each file holds only its own changes")
 
 
 func _panel_channel_checks(handler: McpHandler, db: DocketDB, secret: String, item: String, other: String) -> Variant:
