@@ -79,7 +79,8 @@ func handle(request: Dictionary) -> Variant:
 			return _handle_tool_call(id, params)
 	if method == PanelAuthority.PREFIX + "call" and panel_authority != null:
 		return _handle_panel_tool_call(id, params)
-	if method == PanelAuthority.PREFIX + "update_item" and panel_authority != null:
+	if panel_authority != null and method.begins_with(PanelAuthority.PREFIX) \
+			and method.trim_prefix(PanelAuthority.PREFIX) in PanelAuthority.ACTIONS:
 		var granted: String = panel_authority.panel_of("", str(params.get("panel_grant", "")))
 		var edited: Dictionary = _as_panel(granted, params, func(operation: RefCounted) -> Dictionary:
 			return panel_authority.handle(method, params, operation)) if not granted.is_empty() \

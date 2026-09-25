@@ -20,11 +20,14 @@ extends "docket_source.gd"
 ## connection may offer panel_call(method, params) -> Dictionary, awaited,
 ## for its private channel to the process (the docket/panel/ methods), adding
 ## the grant that names the person itself and answering the method's result
-## or {error}. Methods with no tool or panel method
-## yet answer UNSUPPORTED (see DocketSource), including creating and
-## transitioning items, attachments and the vault.
+## or {error}: saving the shown item (update_item), moving it to another
+## status (transition_item) and creating a new item (create_item). Methods
+## with no tool or panel method yet answer UNSUPPORTED (see DocketSource),
+## including attachments and the vault, so a change carrying secret fields
+## is refused, not made without them.
 
 const TypeCatalog := preload("../core/type_catalog.gd")
+const NO_CHANNEL := "Editing here needs the host's trusted panel channel, which this host does not provide."
 
 var _connection
 var _prefs
@@ -345,8 +348,11 @@ static func decode_tool_result(reply: Dictionary) -> Dictionary:
 	return parsed if parsed is Dictionary else {"error": "unreadable reply from Docket: %s" % text.left(200)}
 
 
-func _error_text(result: Dictionary) -> String:
-	return str(result.get("error", ""))
+# The error of `result` as a message ("" for none); the private channel may
+# give it as {code, message}.
+static func _error_text(result: Dictionary) -> String:
+	var error = result.get("error", "")
+	return str(error.get("message", error)) if error is Dictionary else str(error)
 
 
 # -- Projects -------------------------------------------------------------------
@@ -591,27 +597,71 @@ func save_item(project: String, id: String, changes: Dictionary, revision: Strin
 		secret: Dictionary = {}) -> String:
 	if not secret.is_empty():
 		return UNSUPPORTED
-	# No private channel (no panel_call, or no origin for this panel): refused
-	# before any change starts.
-	if not _connection.has_method("panel_call") or _origin().is_empty():
-		return "Editing here needs the host's trusted panel channel, which this host does not provide."
+	return await _bound_change("update_item", project, id, {"changes": changes,
+		"expected_revision": revision, "expected_item_token": token})
+
+
+## Moves the item the form shows to status `target`, with `changes`, as one
+## change through the host's private panel channel (see save_item).
+func transition_item(project: String, id: String, target: String, note: String, changes: Dictionary,
+		revision: String, token: String, secret: Dictionary = {}) -> String:
+	if not secret.is_empty():
+		return UNSUPPORTED
+	return await _bound_change("transition_item", project, id, {"target": target, "note": note,
+		"changes": changes, "expected_revision": revision, "expected_item_token": token})
+
+
+## A new item through the host's private panel channel, as the person the
+## host names; the process chooses its id.
+func create_item(project: String, fields: Dictionary, secret: Dictionary = {}) -> Dictionary:
+	if not secret.is_empty():
+		return _unsupported()
+	if not _has_channel():
+		return {"error": NO_CHANNEL}
+	var reply := await _panel_change("create_item", {"project": project, "fields": fields})
+	var error := _error_text(reply)
+	if not error.is_empty():
+		return {"error": error}
+	var id := str(reply.get("id", ""))
+	if not str(reply.get("item_token", "")).is_empty():
+		_committed_tokens[_key(project, id)] = str(reply.item_token)
+	return {"id": id}
+
+
+# A private channel: panel_call, and an origin for this panel.
+func _has_channel() -> bool:
+	return _connection.has_method("panel_call") and not _origin().is_empty()
+
+
+# Panel method `method` for item `id` of `project`, the one the host bound
+# to the form, with `params` besides: "" or the error. Refused before any
+# change starts without a private channel or that binding.
+func _bound_change(method: String, project: String, id: String, params: Dictionary) -> String:
+	if not _has_channel():
+		return NO_CHANNEL
 	while _binding:
 		await _bind_settled  # the shown item's binding is on its way
 	if _bound.get("project") != project or _bound.get("id") != id:
 		if _bind_refusal.get("project") == project and _bind_refusal.get("id") == id:
 			return str(_bind_refusal.reason)
 		return "The host has not made %s ready for editing here; open it again." % id
-	var binding: int = _bound.binding
-	var canonical: String = _bound.canonical
-	var reply: Dictionary = await _change(func(operation: String) -> Dictionary:
-		var answered: Dictionary = await _connection.panel_call("update_item", {"binding": binding,
-			"project": project, "id": canonical,
-			"changes": changes, "expected_revision": revision, "expected_item_token": token, "operation_id": operation})
-		return {"result": answered, "stream": answered.get("stream", ""), "watermark": answered.get("event_watermark", 0)})
-	var error = reply.get("error", "")
-	if str(error).is_empty() and not str(reply.get("item_token", "")).is_empty():
+	var sent := params.duplicate()
+	sent.merge({"binding": _bound.binding, "project": project, "id": _bound.canonical})
+	var reply := await _panel_change(method, sent)
+	var error := _error_text(reply)
+	if error.is_empty() and not str(reply.get("item_token", "")).is_empty():
 		_committed_tokens[_key(project, id)] = str(reply.item_token)
-	return str(error.get("message", error)) if error is Dictionary else str(error)
+	return error
+
+
+# Panel method `method` with `params` as one of this source's changes: its
+# result, or {error}.
+func _panel_change(method: String, params: Dictionary) -> Dictionary:
+	return await _change(func(operation: String) -> Dictionary:
+		var sent := params.duplicate()
+		sent["operation_id"] = operation
+		var answered: Dictionary = await _connection.panel_call(method, sent)
+		return {"result": answered, "stream": answered.get("stream", ""), "watermark": answered.get("event_watermark", 0)})
 
 
 func _get_item(project: String, id: String, include: Array) -> Dictionary:

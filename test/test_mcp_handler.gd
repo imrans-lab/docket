@@ -72,6 +72,24 @@ func test_ping() -> Variant:
 ## a tool, a reserved argument on a tool, a grant revoked with its panel)
 ## changes nothing.
 func test_panel_channel_edits_only_as_the_granted_person() -> Variant:
+	return _on_panel_project(_panel_channel_checks)
+
+
+## Creating and moving items through the private channel, over a real
+## project. A create grant names a type and no item: it makes one item, with
+## an id the process chooses, as the person, and can neither name an
+## existing item nor move one. An item grant moves its item to another status
+## with a field edit as one committed change, the person's, which a second
+## client opening the file sees whole, and answers with the committed token;
+## a move with a stale, missing or empty token changes nothing.
+func test_panel_channel_creates_and_moves_items_as_the_person() -> Variant:
+	return _on_panel_project(_panel_create_and_transition_checks)
+
+
+# `checks` (handler, db, secret, item, other) over a new project "panel" with
+# two bugs, served by a handler with the private channel; the project is
+# removed afterwards.
+func _on_panel_project(checks: Callable) -> Variant:
 	var dir := OS.get_cache_dir().path_join("docket_panel_%d" % Time.get_ticks_usec())
 	DirAccess.make_dir_recursive_absolute(dir)
 	var db := DocketDBJsonl.create_new_jsonl(dir.path_join("panel.dct"))
@@ -85,12 +103,94 @@ func test_panel_channel_edits_only_as_the_granted_person() -> Variant:
 	var handler := McpHandler.new()
 	handler.init_with_registry(registry)
 	handler.panel_authority = McpHandler.PanelAuthority.from_environment(registry)
-	var result: Variant = _panel_channel_checks(handler, db, secret, item, other)
+	var result: Variant = checks.call(handler, db, secret, item, other)
 	db.close()
 	for file in DirAccess.get_files_at(dir):
 		DirAccess.remove_absolute(dir.path_join(file))
 	DirAccess.remove_absolute(dir)
 	return result
+
+
+func _panel_create_and_transition_checks(handler: McpHandler, db: DocketDB, secret: String, item: String, _other: String) -> Variant:
+	var send := func(method: String, params: Dictionary) -> Dictionary:
+		return handler.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	var host := {"panel_secret": secret, "panel": "panel-1", "person": "imran", "project": "panel"}
+	var misregistered := {
+		"a create grant naming an item": send.call("docket/panel/register", host.merged({"item": item, "type": "bug", "actions": ["create_item"]})),
+		"a create grant allowing more": send.call("docket/panel/register", host.merged({"type": "bug", "actions": ["create_item", "update_item"]})),
+		"a create grant with no type": send.call("docket/panel/register", host.merged({"actions": ["create_item"]})),
+	}
+	for why in misregistered:
+		var r = A.is_true(misregistered[why].has("error"), "%s is refused: %s" % [why, misregistered[why]])
+		if r is String: return r
+	var create_grant := str(send.call("docket/panel/register", host.merged({"type": "bug", "actions": ["create_item"]}))
+		.get("result", {}).get("panel_grant", ""))
+	var count_items := func() -> int:
+		return int(handler._registry.call_tool("docket_query", {"project": "panel"}).get("count", -1))
+	var count: int = count_items.call()
+	var before := [db.get_item(item).title, db.get_item(item).status, db.get_events(item).size()]
+	var misused := {
+		"creating over an existing item": send.call("docket/panel/create_item", {"panel_grant": create_grant, "project": "panel",
+			"id": item, "fields": {"title": "Over"}}),
+		"choosing the new item's id": send.call("docket/panel/create_item", {"panel_grant": create_grant, "project": "panel",
+			"fields": {"title": "Chosen", "id": item}}),
+		"moving an item with a create grant": send.call("docket/panel/transition_item", {"panel_grant": create_grant,
+			"project": "panel", "id": item, "target": "closed"}),
+	}
+	for why in misused:
+		var r = A.is_true(misused[why].has("error"), "%s is refused: %s" % [why, misused[why]])
+		if r is String: return r
+	var r = A.is_true(count_items.call() == count and [db.get_item(item).title, db.get_item(item).status,
+		db.get_events(item).size()] == before, "a refused create changes nothing")
+	if r is String: return r
+
+	var created: Dictionary = send.call("docket/panel/create_item", {"panel_grant": create_grant, "project": "panel",
+		"fields": {"title": "Made here"}, "operation_id": "op-create"}).get("result", {})
+	var id := str(created.get("id", ""))
+	var made := db.get_item(id)
+	r = A.is_true(not id.is_empty() and id != item and made.get("title") == "Made here"
+		and str(created.get("item_token", "")) == handler._registry.get_type_registry("panel").item_token(id)
+		and db.get_events(id).map(func(e: Dictionary) -> Array: return [e.event_type, e.actor]) == [["created", "human:imran"]],
+		"the create grant makes one new item, its id chosen here, as the person: %s %s" % [created, made])
+	if r is String: return r
+	var again: Dictionary = send.call("docket/panel/create_item", {"panel_grant": create_grant, "project": "panel", "fields": {"title": "Twice"}})
+	r = A.is_true(again.has("error") and count_items.call() == count + 1, "and only once: %s" % [again])
+	if r is String: return r
+
+	var lifecycle: Dictionary = handler._registry.get_type_registry("panel").get_type("bug").definition.lifecycle
+	var target := str(lifecycle.transitions.get(made.status, [""])[0])
+	var item_grant := str(send.call("docket/panel/register", host.merged({"item": id, "actions": ["update_item", "transition_item"]}))
+		.get("result", {}).get("panel_grant", ""))
+	var move := {"panel_grant": item_grant, "project": "panel", "id": id, "target": target}
+	before = [db.get_item(id).title, db.get_item(id).status, db.get_events(id).size()]
+	var unchecked := {
+		"a stale token": send.call("docket/panel/transition_item", move.merged({"changes": {"title": "Alternate"},
+			"expected_item_token": "stale"})),
+		"no token": send.call("docket/panel/transition_item", move.merged({"changes": {"title": "Alternate"}})),
+		"an empty token": send.call("docket/panel/transition_item", move.merged({"changes": {"title": "Alternate"},
+			"expected_item_token": ""})),
+	}
+	for why in unchecked:
+		r = A.is_true(unchecked[why].has("error") and [db.get_item(id).title, db.get_item(id).status, db.get_events(id).size()] == before,
+			"a move with %s changes nothing: %s" % [why, unchecked[why]])
+		if r is String: return r
+	var batches: Array = []
+	var note_batch := func(changes: Array) -> void: batches.append(changes)
+	db.items_changed.connect(note_batch)
+	var moved: Dictionary = send.call("docket/panel/transition_item", move.merged({"changes": {"title": "Moved here"},
+		"expected_item_token": str(created.item_token), "operation_id": "op-move"}))
+	db.items_changed.disconnect(note_batch)
+	var reader := DocketDBJsonl.open_jsonl(db.get_path())
+	var seen := reader.get_item(id)
+	reader.close()
+	var events := db.get_events(id).map(func(e: Dictionary) -> Array: return [e.event_type, e.actor])
+	var answer: Dictionary = moved.get("result", {})
+	return A.is_true(not target.is_empty() and answer.get("status") == target and answer.get("operation_id") == "op-move"
+		and answer.get("item_token") == handler._registry.get_type_registry("panel").item_token(id) and batches.size() == 1
+		and seen.get("status") == target and seen.get("title") == "Moved here"
+		and events == [["created", "human:imran"], ["transition", "human:imran"]],
+		"the move and the edit are one committed change, the person's, seen whole by another client: %s %s %s %s"
+		% [moved, batches, seen, events])
 
 
 func _panel_channel_checks(handler: McpHandler, db: DocketDB, secret: String, item: String, other: String) -> Variant:

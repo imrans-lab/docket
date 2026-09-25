@@ -5,15 +5,17 @@ extends RefCounted
 ## Only the host holds the bootstrap secret, handed to this process at start
 ## in the environment (SECRET_VARIABLE, removed once read). With it the host
 ## registers a panel and gets a grant: an opaque, short-lived token naming
-## the person, the project, the item and what may be done there. The host
-## adds the grant to the panel's requests; the person making an edit (the
-## local user the host identifies, recorded as "human:<person>") is taken
-## from the grant, never from a request. The host also opens a session for
-## each panel it shows (open_session), with which McpHandler runs the panel's
-## other calls as tools on the panel's behalf (docket/panel/call), so their
-## changes are known as the panel's. Tool calls may not carry the reserved
-## RESERVED_ARGUMENTS names. None of this is an MCP tool: it is
-## absent from tools/list and cannot be reached through tools/call.
+## the person, the project, the item and what may be done there (save it,
+## move it to another status), or naming no item but a type, to create one
+## new item of it once. The host adds the grant to the panel's requests; the
+## person making an edit (the local user the host identifies, recorded as
+## "human:<person>") is taken from the grant, never from a request. The host
+## also opens a session for each panel it shows (open_session), with which
+## McpHandler runs the panel's other calls as tools on the panel's behalf
+## (docket/panel/call), so their changes are known as the panel's. Tool
+## calls may not carry the reserved RESERVED_ARGUMENTS names. None of this is
+## an MCP tool: it is absent from tools/list and cannot be reached through
+## tools/call.
 
 const PREFIX := "docket/panel/"
 const SECRET_VARIABLE := "DOCKET_PANEL_SECRET"
@@ -21,13 +23,16 @@ const SECRET_VARIABLE := "DOCKET_PANEL_SECRET"
 const MIN_SECRET_LENGTH := 64
 ## How long a grant lasts (ms); the host registers again for a new one.
 const GRANT_TTL_MS := 15 * 60 * 1000
-const ACTIONS := ["update_item"]
+## The methods a grant allows (and is needed for); each runs within the
+## request's operation.
+const ACTIONS := ["update_item", "transition_item", "create_item"]
 ## Argument names only this channel uses, refused in any tool call.
 const RESERVED_ARGUMENTS := ["panel_secret", "panel_grant", "panel_session"]
 
 var _secret: String
 var _registry  # ToolRegistry
-# grant → {panel, person, project, item, actions, expires_at}
+# grant → {panel, person, project, item, type, actions, expires_at}; a
+# create_item grant has no item and is its only action.
 var _grants: Dictionary = {}
 # panel session → the panel it names (see open_session)
 var _sessions: Dictionary = {}
@@ -58,11 +63,15 @@ func handle(method: String, params: Dictionary, op: RefCounted = null) -> Dictio
 			return _revoke(params)
 		"update_item":
 			return _update_item(params, op)
+		"transition_item":
+			return _transition_item(params, op)
+		"create_item":
+			return _create_item(params, op)
 	return _failure(-32601, "Method not found: %s" % method)
 
 
 ## The panel a panel call comes from, as this process knows it: the one
-## named by a live panel session (docket/panel/call) or grant (update_item),
+## named by a live panel session (docket/panel/call) or grant (ACTIONS),
 ## "" for neither.
 func panel_of(session: String, grant: String) -> String:
 	if _sessions.has(session):
@@ -92,7 +101,8 @@ func _open_session(params: Dictionary) -> Dictionary:
 
 
 # Host: {panel_secret, panel, person, project, item, actions[,
-# open_generation]} → {panel_grant, expires_in_ms}.
+# open_generation]}, or for a new item {..., type, actions: ["create_item"]}
+# with no item → {panel_grant, expires_in_ms}.
 func _register(params: Dictionary) -> Dictionary:
 	if not _is_host(params):
 		return _failure(-32001, "not the host")
@@ -115,10 +125,21 @@ func _register(params: Dictionary) -> Dictionary:
 	# open_generation): a project opened again since is not it.
 	if params.has("open_generation") and str(params.open_generation) != str(db.get_instance_id()):
 		return _failure(-32001, "%s was opened again since" % project)
-	if item.is_empty() or not db.has_item(item):
+	var type := ""
+	if "create_item" in actions:
+		# Creating names no item, and only creating: the new item's id is
+		# this process's to choose.
+		if actions.size() != 1 or not item.is_empty():
+			return _failure(-32602, "a create_item grant names a type and no item, and allows nothing else")
+		type = str(params.get("type", ""))
+		var types: TypeRegistry = _registry.get_type_registry(project)
+		var resolved: Dictionary = types.get_type(type) if types != null and not type.is_empty() else {"error": "a type is required"}
+		if resolved.has("error"):
+			return _failure(-32602, str(resolved.error))
+	elif item.is_empty() or not db.has_item(item):
 		return _failure(-32602, "no item %s in %s" % [item, project])
 	var grant := Crypto.new().generate_random_bytes(32).hex_encode()
-	_grants[grant] = {"panel": panel, "person": person, "project": project, "item": item,
+	_grants[grant] = {"panel": panel, "person": person, "project": project, "item": item, "type": type,
 		"actions": actions.map(func(a): return str(a)), "expires_at": Time.get_ticks_msec() + GRANT_TTL_MS}
 	return {"result": {"panel_grant": grant, "expires_in_ms": GRANT_TTL_MS}}
 
@@ -163,6 +184,59 @@ func _update_item(params: Dictionary, op: RefCounted) -> Dictionary:
 	if not error.is_empty():
 		return _failure(-32002, error)
 	return {"result": {"id": scope.item, "item_token": registry.item_token(scope.item)}}
+
+
+# Panel, through the host: {panel_grant, project, id, target, note, changes,
+# expected_item_token[, expected_revision]} → {id, status, item_token}. The
+# status and the field changes are one change, the grant's person's, made
+# only to the item as the panel last saw it (its token is required); the
+# item's lifecycle decides which moves need a note or are refused.
+func _transition_item(params: Dictionary, op: RefCounted) -> Dictionary:
+	var scope := _granted(params, "transition_item")
+	if scope.has("error"):
+		return _failure(-32001, scope.error)
+	if str(params.get("expected_item_token", "")).is_empty():
+		return _failure(-32602, "a move names the item's token as the panel last saw it")
+	var changes = params.get("changes", {})
+	if not changes is Dictionary:
+		return _failure(-32602, "changes must be an object")
+	var registry: TypeRegistry = _registry.get_type_registry(scope.project)
+	if registry == null:
+		return _failure(-32602, "no open project %s" % scope.project)
+	changes = changes.duplicate()
+	DocketUpdate.qualify_parent(changes, _registry.project_db(scope.project))
+	var error := registry.transition_item(scope.item, str(params.get("target", "")), "human:%s" % scope.person,
+		str(params.get("note", "")), changes, str(params.get("expected_revision", "")),
+		str(params.get("expected_item_token", "")), op)
+	if not error.is_empty():
+		return _failure(-32002, error)
+	var item: Dictionary = _registry.project_db(scope.project).get_item(scope.item)
+	return {"result": {"id": scope.item, "status": str(item.get("status", "")), "item_token": registry.item_token(item)}}
+
+
+# Panel, through the host: {panel_grant, project, fields} → {id, item_token}.
+# One new item of the grant's type, with an id this process chooses, as the
+# grant's person's; the grant ends once it is made.
+func _create_item(params: Dictionary, op: RefCounted) -> Dictionary:
+	var scope := _granted(params, "create_item")
+	if scope.has("error"):
+		return _failure(-32001, scope.error)
+	var fields = params.get("fields", {})
+	if not fields is Dictionary:
+		return _failure(-32602, "fields must be an object")
+	if fields.has("id") or (fields.has("type") and str(fields.type) != scope.type):
+		return _failure(-32602, "a new item's id is chosen here, and its type is the grant's")
+	var registry: TypeRegistry = _registry.get_type_registry(scope.project)
+	if registry == null:
+		return _failure(-32602, "no open project %s" % scope.project)
+	fields = fields.duplicate()
+	fields["type"] = scope.type
+	DocketUpdate.qualify_parent(fields, _registry.project_db(scope.project))
+	var created := registry.create_item(fields, "human:%s" % scope.person, op)
+	if created.has("error"):
+		return _failure(-32002, str(created.error))
+	_grants.erase(str(params.panel_grant))
+	return {"result": {"id": str(created.id), "item_token": registry.item_token(str(created.id))}}
 
 
 # The grant's scope when it is live, allows `action`, and covers the project
