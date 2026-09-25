@@ -328,6 +328,13 @@ jobs:
           # files the package's SHA256SUMS does not list.
           COPYFILE_DISABLE=1 tar -czf "$ARCHIVE" -C build/plugin .
           "$PYTHON" scripts/build/check_plugin_package.py "$ARCHIVE" "$PLUGIN_VERSION"
+          # What the Intel check (macos-intel-runtime) must find: this commit,
+          # this version, this one archive and its digest.
+          if [ "${{ matrix.platform }}" = macos ]; then
+            mkdir -p plugin-check
+            "$PYTHON" -c 'import hashlib, json, sys; archive = sys.argv[1]; json.dump({"source": sys.argv[2], "version": sys.argv[3], "archive": archive.rsplit("/", 1)[-1], "sha256": hashlib.sha256(open(archive, "rb").read()).hexdigest()}, open("plugin-check/plugin.json", "w"))' \
+              "$ARCHIVE" "$(git rev-parse HEAD)" "$PLUGIN_VERSION"
+          fi
 
       - name: Package
         shell: bash
@@ -383,9 +390,71 @@ jobs:
           path: dist-plugin/*
           if-no-files-found: error
 
+      # Not a release asset: publish downloads only docket-* artifacts.
+      - name: Upload the macOS plugin's description for the Intel check
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v7
+        with:
+          name: intel-check-plugin-macos
+          path: plugin-check/plugin.json
+          if-no-files-found: error
+
+  # The universal macOS plugin runs on the arm64 build runner only; this
+  # starts the same archive, from this run, on an Intel Mac.
+  macos-intel-runtime:
+    name: macOS Intel (plugin runtime)
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.sha }}
+
+      - name: Download the macOS plugin
+        uses: actions/download-artifact@v8
+        with:
+          name: docket-plugin-macos
+          path: plugin
+
+      - name: Download its description
+        uses: actions/download-artifact@v8
+        with:
+          name: intel-check-plugin-macos
+          path: plugin-check
+
+      - name: Check the plugin on Intel
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(uname -m)" = x86_64 ] || { echo "this runner is $(uname -m), not an Intel Mac"; exit 1; }
+          python3 - <<'CHECK'
+          import hashlib, json, os, subprocess, sys, tempfile
+          described = json.load(open("plugin-check/plugin.json"))
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if described["source"] != head:
+              sys.exit("the plugin was built from %s, this checkout is %s" % (described["source"], head))
+          if sorted(os.listdir("plugin")) != [described["archive"]]:
+              sys.exit("expected only %s, found %s" % (described["archive"], sorted(os.listdir("plugin"))))
+          archive = os.path.join("plugin", described["archive"])
+          if hashlib.sha256(open(archive, "rb").read()).hexdigest() != described["sha256"]:
+              sys.exit("%s is not the archive the build made" % archive)
+          # The entrypoint must hold an x86_64 slice, not only run under Rosetta.
+          unpacked = tempfile.mkdtemp()
+          subprocess.check_call(["tar", "-xzf", os.path.abspath(archive), "-C", unpacked])
+          entrypoint = json.load(open(os.path.join(unpacked, "manifest.json")))["backend"]["entrypoint"]
+          archs = subprocess.check_output(["lipo", "-archs", os.path.join(unpacked, entrypoint)], text=True).split()
+          if "x86_64" not in archs:
+              sys.exit("%s has no x86_64 slice: %s" % (entrypoint, archs))
+          print("%s %s: %s, archs %s" % (described["archive"], described["version"], described["sha256"], archs))
+          CHECK
+          ARCHIVE="$(python3 -c 'import json; print(json.load(open("plugin-check/plugin.json"))["archive"])')"
+          PLUGIN_VERSION="$(python3 -c 'import json; print(json.load(open("plugin-check/plugin.json"))["version"])')"
+          python3 scripts/build/check_plugin_package.py "plugin/$ARCHIVE" "$PLUGIN_VERSION"
+
   publish:
     name: Sign checksums and publish release
-    needs: build
+    needs: [build, macos-intel-runtime]
     if: github.event_name == 'push' || github.event.inputs.validate_only != 'true'
     runs-on: ubuntu-latest
     # Job-level env, deliberately: a step's own `env:` block is NOT visible to
@@ -397,9 +466,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download all artifacts
+      - name: Download all release artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: docket-*
           path: artifacts
           merge-multiple: true
 
