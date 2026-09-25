@@ -88,9 +88,9 @@ func _open_projects() -> void:
 		_db = external_db
 		_schema = external_schema
 	else:
-		# Standalone headless mode — load schema and DB from files
-		var schema_file := FileAccess.open("res://data/schema.json", FileAccess.READ)
-		_schema = JSON.parse_string(schema_file.get_as_text())
+		# Standalone headless mode — the schema this process reads projects by
+		# (a host may declare its own before opening any), and DBs from files
+		_schema = TypeRegistryBootstrap.effective_schema()
 
 		var paths_to_load: Array = dct_paths.duplicate()
 		if not host_managed:
@@ -238,6 +238,7 @@ func _headless_add_project(path: String) -> Dictionary:
 	var registered := _register_project(loaded_db, located.path)
 	if registered.has("error"):
 		return registered
+	_schema = TypeRegistryBootstrap.effective_schema()
 	_registry.update_db(_schema, _db, _project_dbs)
 	_watch_project(registered.selector, loaded_db)
 	_persist_headless_session()
@@ -266,6 +267,7 @@ func _headless_remove_project(proj_name: String) -> Dictionary:
 			_db = _project_dbs.values()[0]
 		else:
 			_db = null
+	_schema = TypeRegistryBootstrap.effective_schema()
 	_registry.update_db(_schema, _db, _project_dbs)
 	_persist_headless_session()
 	return {"closed": proj_name, "remaining": _project_dbs.keys()}

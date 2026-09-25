@@ -13,7 +13,7 @@ static func preview(path: String, schema: Dictionary = {}) -> Dictionary:
 	result.from_version = str(parsed.meta.version)
 	result.source_hash = FileAccess.get_sha256(path)
 	if result.from_version != "1.0.0": result.error = "upgrade requires a 1.0.0 JSONL source"; return result
-	var effective := schema if not schema.is_empty() else TypeRegistryBootstrap.load_shipped_schema()
+	var effective := schema if not schema.is_empty() else TypeRegistryBootstrap.effective_schema()
 	if effective.is_empty(): result.error = "shipped schema is unavailable"; return result
 	var bootstrap := TypeRegistryBootstrap.records(effective)
 	result.definitions = bootstrap.type_defs.size()
@@ -64,7 +64,7 @@ static func _apply(path: String, expected_preview: Dictionary, schema: Dictionar
 	var backup_error := backup.get_error()
 	backup.close()
 	if backup_error != OK: lock.release(); return {"ok": false, "error": "rollback snapshot write failed", "backup_path": backup_path}
-	var bootstrap := TypeRegistryBootstrap.records(schema if not schema.is_empty() else TypeRegistryBootstrap.load_shipped_schema())
+	var bootstrap := TypeRegistryBootstrap.records(schema if not schema.is_empty() else TypeRegistryBootstrap.effective_schema())
 	var binding_by_id := {}
 	for binding in checked.bindings: binding_by_id[binding.item_id] = binding
 	var text := _upgrade_raw_records(original, bootstrap, binding_by_id)

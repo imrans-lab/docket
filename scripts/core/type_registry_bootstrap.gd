@@ -36,6 +36,50 @@ const STATE_CATEGORIES := {
 # complete. Production callers leave this invalid.
 static var seed_failure_hook: Callable
 
+# A host's schema (declare_schema), in place of the shipped one for this
+# process; empty until one is declared.
+static var _declared: Dictionary = {}
+static var _declared_version := ""
+
+
+## The schema this process reads legacy (1.0) projects by, seeds new ones
+## with and trusts built-in types from: the one its host declared, else the
+## one Docket ships. Projects that keep their own type definitions (2.0) are
+## read by those, whatever this is.
+static func effective_schema() -> Dictionary:
+	return _declared.duplicate(true) if not _declared.is_empty() else load_shipped_schema()
+
+
+## Makes `schema` (as data/schema.json is laid out), named `version` by the
+## host, the effective schema: "" or why not. Its types must compile into
+## starter definitions (records), each with a lifecycle state; the
+## shipped schema is never checked more than that. A host declares it before
+## opening any project, so no open one is read otherwise.
+static func declare_schema(schema: Dictionary, version: String) -> String:
+	if version.strip_edges().is_empty(): return "a declared schema needs a version"
+	if not schema.get("types") is Dictionary or (schema.types as Dictionary).is_empty(): return "a declared schema needs its types"
+	for slug in schema.types:
+		var source = schema.types[slug]
+		if not source is Dictionary: return "declared type '%s' is not an object" % slug
+		for key in ["states", "required_fields", "optional_fields", "terminal_states"]:
+			if source.has(key) and not source[key] is Array: return "declared type '%s' has a %s that is not a list" % [slug, key]
+		for key in ["field_definitions", "transitions", "transition_rules"]:
+			if source.has(key) and not source[key] is Dictionary: return "declared type '%s' has a %s that is not an object" % [slug, key]
+		for field in source.get("field_definitions", {}):
+			if not source.field_definitions[field] is Dictionary: return "declared type '%s' field '%s' is not an object" % [slug, field]
+	for revision in records(schema).type_def_versions:
+		if revision.definition.lifecycle.states.is_empty():
+			return "declared type '%s' has no states" % revision.definition.slug
+	_declared = schema.duplicate(true)
+	_declared_version = version
+	return ""
+
+
+## The version a host declared its schema as, or "" for the shipped one.
+static func declared_version() -> String:
+	return _declared_version
+
+
 static func load_shipped_schema() -> Dictionary:
 	var file := FileAccess.open("res://data/schema.json", FileAccess.READ)
 	if file == null: return {}
@@ -105,7 +149,7 @@ static func _definition_hash(definition: Dictionary) -> String:
 	return context.finish().hex_encode()
 
 static func seed_cache(db: DocketDB, schema: Dictionary = {}) -> String:
-	var effective := schema if not schema.is_empty() else load_shipped_schema()
+	var effective := schema if not schema.is_empty() else effective_schema()
 	if effective.is_empty(): return "shipped schema is unavailable"
 	var bootstrap := records(effective)
 	db._last_sql_error = ""
