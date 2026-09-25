@@ -16,7 +16,8 @@ func before_each() -> void:
 
 
 func _cleanup() -> void:
-	for p in [_dct, AuditLog.path_for(_dct)]:
+	var cache := _dct + ".v2.cache"
+	for p in [_dct, AuditLog.path_for(_dct), cache, cache + "-wal", cache + "-shm", _dct + ".lock"]:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
 
@@ -127,3 +128,42 @@ func test_empty_path_is_ignored() -> Variant:
 	## Auditing must never raise; a missing path is simply a no-op.
 	AuditLog.record("", AuditLog.READ, "h", true, "mcp")
 	return true
+
+
+# -- Coordination -------------------------------------------------------------
+
+func test_held_lock_skips_entry_not_secret_operation() -> Variant:
+	## While another holder keeps the audit lock, a second is refused once its
+	## deadline has passed, and a secret deletion still succeeds, its entry
+	## skipped.
+	## Once the lock is given back, a snapshot returns the sidecar's exact
+	## bytes, a torn last line included.
+	var db := DocketDBJsonl.create_new_jsonl(_dct)
+	db.set_secret("scratch", "CT".to_utf8_buffer(), "IV".to_utf8_buffer(), "MAC".to_utf8_buffer())
+	AuditLog.record(_dct, AuditLog.READ, "before", true, "mcp")
+	var torn := FileAccess.open(AuditLog.path_for(_dct), FileAccess.READ_WRITE)
+	torn.seek_end()
+	torn.store_string("{\"event\": \"torn")
+	torn.close()
+	var before := FileAccess.get_file_as_bytes(AuditLog.path_for(_dct))
+
+	var io: Object = ClassDB.instantiate("DocketFileIO")
+	var held: Dictionary = io.audit_lock(ProjectSettings.globalize_path(_dct), 0)
+	var started := Time.get_ticks_msec()
+	var second: Dictionary = io.audit_lock(ProjectSettings.globalize_path(_dct), 100)
+	var waited := Time.get_ticks_msec() - started
+	var deleted := DocketSecretDelete.new().execute({"handle": "scratch"}, {}, db)
+	if held.has("guard"):
+		held.guard.release()
+	db.close()
+	var snapshot := AuditLog.snapshot(_dct)
+
+	var r = A.is_true(held.has("guard") and second.get("kind") == "busy" and waited >= 100,
+		"a second holder is refused after the wait it asked for: %s after %d ms" % [second, waited])
+	if r != true:
+		return r
+	r = A.eq(deleted.get("deleted"), true, "the secret operation succeeds without its audit entry: %s" % deleted)
+	if r != true:
+		return r
+	return A.is_true(snapshot.get("present") == true and snapshot.get("bytes") == before,
+		"the snapshot is the sidecar's exact bytes, the torn line and no skipped entry: %s" % snapshot)
