@@ -64,6 +64,11 @@ func _build_tools() -> Dictionary:
 	}
 
 
+## The arguments that name a project, resolved to its selector before a tool
+## runs.
+const _PROJECT_ARGUMENTS := ["project", "source_project", "target_project"]
+
+
 func init(schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -> void:
 	_schema = schema
 	_db = db
@@ -198,9 +203,9 @@ func _dispatch(name: String, arguments: Dictionary, op: RefCounted) -> Dictionar
 		_log_error(name, arguments, nerr)
 		return nerr
 
-	# An unrecognised project name used to fall through to the primary project,
-	# silently answering from the wrong data.
-	var bad_project := _unknown_project(arguments)
+	# The projects a request names, as their selectors: an unknown or
+	# ambiguous name is refused rather than answered from another project.
+	var bad_project := _resolve_project_args(arguments)
 	if not bad_project.is_empty():
 		var perr := {"error": bad_project}
 		_log_error(name, arguments, perr)
@@ -218,7 +223,7 @@ func _dispatch(name: String, arguments: Dictionary, op: RefCounted) -> Dictionar
 		execute_args = [arguments, _schema, _db, _project_dbs]
 	elif name.begins_with("docket_type_") or name in ["docket_saved_query", "docket_item_view"]:
 		var typed_db: DocketDB = _resolve_db(arguments)
-		execute_args = [arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name())]
+		execute_args = [arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, _selector_of(typed_db))]
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
 		execute_args = [arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn]
@@ -293,9 +298,7 @@ func _resolve_id_args(tool_name: String, args: Dictionary) -> String:
 			elif field == "target_id": requested_project = str(args.get("target_project", requested_project))
 			var candidates: Dictionary = _project_dbs
 			if not requested_project.is_empty():
-				candidates = {}
-				for project_name in _project_dbs:
-					if str(project_name).to_lower() == requested_project.to_lower(): candidates[project_name] = _project_dbs[project_name]
+				candidates = {requested_project: _project_dbs[requested_project]} if _project_dbs.has(requested_project) else {}
 			for proj_name in candidates:
 				var pdb: DocketDB = candidates[proj_name]
 				var r := pdb.resolve_short_id(val)
@@ -318,37 +321,34 @@ func _resolve_id_args(tool_name: String, args: Dictionary) -> String:
 	return ""
 
 
+# The project `arguments` names (call_tool has made it a selector), or the
+# primary when it names none.
 func _resolve_db(arguments: Dictionary) -> DocketDB:
 	var proj_name: String = str(arguments.get("project", ""))
-	if proj_name.is_empty():
-		return _db
-	if _project_dbs.has(proj_name):
-		return _project_dbs[proj_name]
-	# Match case-insensitively, as docket_move does.
-	for name in _project_dbs:
-		if str(name).to_lower() == proj_name.to_lower():
-			return _project_dbs[name]
-	# Unknown name: the caller is validated in call_tool before we get here, so
-	# reaching this point means a routing bug rather than bad input.
-	return _db
+	return _db if proj_name.is_empty() else _project_dbs.get(proj_name)
 
 
-func _unknown_project(arguments: Dictionary) -> String:
-	## "" if the requested project exists (or none was requested).
-	var proj_name: String = str(arguments.get("project", ""))
-	if proj_name.is_empty():
-		return ""
-	if _project_dbs.has(proj_name):
-		return ""
-	for name in _project_dbs:
-		if str(name).to_lower() == proj_name.to_lower():
-			return ""
-	var known := PackedStringArray()
-	for name in _project_dbs:
-		known.append(str(name))
-	known.sort()
-	return "Unknown project '%s'. Loaded projects: %s" % [
-		proj_name, ", ".join(known) if known.size() > 0 else "(none)"]
+# The selector `db` is open under, or its stored name when it is not in the
+# project map (a single-project caller's).
+func _selector_of(db: DocketDB) -> String:
+	for selector in _project_dbs:
+		if _project_dbs[selector] == db:
+			return str(selector)
+	return db.get_project_name()
+
+
+# Replaces each project argument with the selector it names
+# (ProjectSelectors.resolve): "", or why one names no single open project.
+func _resolve_project_args(arguments: Dictionary) -> String:
+	for key in _PROJECT_ARGUMENTS:
+		var asked := str(arguments.get(key, ""))
+		if asked.is_empty():
+			continue
+		var resolved := ProjectSelectors.resolve(_project_dbs, asked)
+		if resolved.has("error"):
+			return str(resolved.error)
+		arguments[key] = resolved.selector
+	return ""
 
 
 func _init_schema_dependent_tools(schema: Dictionary) -> void:

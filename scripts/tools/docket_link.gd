@@ -26,34 +26,40 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB, project_dbs: Di
 
 	# Resolve the "from" item in the specified project DB
 	var from_db := _resolve_db(args, db, project_dbs)
-	if not from_db.has_item(from_id):
+	if from_db == null or not from_db.has_item(from_id):
 		return {"error": "Item not found: %s" % from_id}
 
-	# Parse cross-project qualifier on "to" (e.g. "otherproject:DKT-0002")
+	# Parse cross-project qualifier on "to" (e.g. "otherproject:DKT-0002"):
+	# a project the caller names as other tools take it; the link stores that
+	# project's stored name, which must name it again when read back from
+	# here (two open projects of that name cannot be told apart).
 	var to_id := to_id_raw
-	var to_project := ""
+	var stored_to := to_id_raw
 	if ":" in to_id_raw:
 		var parts := to_id_raw.split(":", true, 1)
-		to_project = parts[0]
 		to_id = parts[1]
-
-	# Validate the "to" item exists
-	if not to_project.is_empty():
-		if not project_dbs.has(to_project):
-			return {"error": "Unknown project: %s" % to_project}
-		var to_db: DocketDB = project_dbs[to_project]
+		var named := ProjectSelectors.resolve(project_dbs, parts[0])
+		if named.has("error"):
+			return {"error": named.error}
+		var to_db: DocketDB = project_dbs[named.selector]
 		if not to_db.has_item(to_id):
-			return {"error": "Item not found in project '%s': %s" % [to_project, to_id]}
-	else:
-		if not from_db.has_item(to_id):
-			return {"error": "Item not found: %s" % to_id}
+			return {"error": "Item not found in project '%s': %s" % [named.selector, to_id]}
+		var from_selector := ""
+		for selector in project_dbs:
+			if project_dbs[selector] == from_db:
+				from_selector = str(selector)
+		var read_back := ProjectSelectors.resolve_reference(project_dbs, to_db.get_project_name(), from_selector)
+		if read_back.has("error") or read_back.selector != named.selector:
+			return {"error": "A link to %s:%s could not be read back as that project: %s" % [named.selector, to_id,
+				read_back.get("error", "its stored name names %s from here" % read_back.get("selector", ""))]}
+		stored_to = "%s:%s" % [to_db.get_project_name(), to_id]
+	elif not from_db.has_item(to_id):
+		return {"error": "Item not found: %s" % to_id}
 
 	var valid_relations: Array = schema.get("link_relations", [])
 	if not valid_relations.has(relation):
 		return {"error": "Invalid relation '%s'. Valid: %s" % [relation, str(valid_relations)]}
 
-	# Store the link — use qualified ID for cross-project refs
-	var stored_to := to_id_raw if not to_project.is_empty() else to_id
 	from_db.add_link(from_id, stored_to, relation)
 	from_db.add_event(from_id, "linked", "agent",
 		"Linked %s → %s (%s)" % [from_id, stored_to, relation])
@@ -61,8 +67,8 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB, project_dbs: Di
 	return {"from": from_id, "to": stored_to, "relation": relation}
 
 
+# The project `args` names (ToolRegistry has made it a selector), or the
+# primary when it names none.
 func _resolve_db(args: Dictionary, default_db: DocketDB, project_dbs: Dictionary) -> DocketDB:
 	var proj_name: String = str(args.get("project", ""))
-	if not proj_name.is_empty() and project_dbs.has(proj_name):
-		return project_dbs[proj_name]
-	return default_db
+	return default_db if proj_name.is_empty() else project_dbs.get(proj_name)

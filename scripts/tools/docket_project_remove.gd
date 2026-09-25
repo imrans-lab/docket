@@ -23,8 +23,10 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	if proj_name.is_empty():
 		return {"error": "name is required"}
 
-	if not project_dbs.has(proj_name):
-		return {"error": "Project not found: %s" % proj_name}
+	var named := ProjectSelectors.resolve(project_dbs, proj_name)
+	if named.has("error"):
+		return {"error": named.error}
+	proj_name = named.selector
 
 	if project_dbs.size() <= 1 and not allow_last:
 		return {"error": "Cannot remove the last project"}

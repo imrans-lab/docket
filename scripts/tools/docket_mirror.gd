@@ -93,13 +93,8 @@ func execute(args: Dictionary, _schema: Dictionary, primary_db: DocketDB, projec
 
 
 func _resolve_project_db(name: String, primary_db: DocketDB, project_dbs: Dictionary) -> DocketDB:
-	if name.is_empty():
-		return primary_db
-	# Case-insensitive lookup
-	for proj_name in project_dbs:
-		if proj_name.to_lower() == name.to_lower():
-			return project_dbs[proj_name]
-	return null
+	# ToolRegistry has made `name` a selector.
+	return primary_db if name.is_empty() else project_dbs.get(name)
 
 
 func _primary_name(primary_db: DocketDB, project_dbs: Dictionary) -> String:
