@@ -79,7 +79,7 @@ func load_dct(path: String) -> void:
 		dct_path = ""
 		load_failed.emit(path, str(registered.error))
 		return
-	_type_registries[registered.selector] = TypeRegistry.for_db(db, registered.selector)
+	_type_registries[registered.selector] = _registry_for(db, registered.selector)
 
 	file_changed.emit()
 
@@ -183,13 +183,21 @@ func add_project(path: String) -> void:
 		push_error("AppState: %s" % registered.error)
 		load_failed.emit(path, str(registered.error))
 		return
-	_type_registries[registered.selector] = TypeRegistry.for_db(new_db, registered.selector)
+	_type_registries[registered.selector] = _registry_for(new_db, registered.selector)
 
 	file_changed.emit()
 
 
 func get_project_dbs() -> Dictionary:
 	return _project_dbs
+
+
+# The type registry of `project_db`, open under `selector`, checking the
+# references it writes against the open projects.
+func _registry_for(project_db: DocketDB, selector: String) -> TypeRegistry:
+	var registry := TypeRegistry.for_db(project_db, selector)
+	registry.references = ProjectSelectors.reference_checker(_project_dbs)
+	return registry
 
 
 ## The selector of the primary project, or "" when none is open.
@@ -204,7 +212,7 @@ func get_type_registry(project_name: String = "") -> TypeRegistry:
 	var key: String = project_name if not project_name.is_empty() else primary_selector()
 	var registry: TypeRegistry = _type_registries.get(key)
 	if registry == null and _project_dbs.has(key):
-		registry = TypeRegistry.for_db(_project_dbs[key], key)
+		registry = _registry_for(_project_dbs[key], key)
 		_type_registries[key] = registry
 	if registry != null:
 		var error: String = registry.refresh_if_changed()
@@ -254,7 +262,7 @@ func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: 
 		result["project_open"] = false
 		return result
 	_project_dbs[project_name] = reopened
-	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
+	_type_registries[project_name] = _registry_for(reopened, project_name)
 	if was_primary:
 		db = reopened
 		dct_path = path
@@ -293,7 +301,7 @@ func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, excl
 		result["project_open"] = false
 		return result
 	_project_dbs[project_name] = reopened
-	_type_registries[project_name] = TypeRegistry.for_db(reopened, project_name)
+	_type_registries[project_name] = _registry_for(reopened, project_name)
 	if was_primary:
 		db = reopened
 		dct_path = path
@@ -349,17 +357,28 @@ func remove_project(project_name: String) -> Dictionary:
 
 
 func find_children_across_projects(qualified_id: String) -> Array:
-	## Search ALL loaded projects for items whose parent matches the given qualified ref.
-	## Bare legacy parent IDs belong only to the project that owns the parent.
+	## Search ALL loaded projects for items whose parent is item `qualified_id`
+	## ("project:id", the project as its selector). A stored parent reference
+	## names the parent's project by its stored name, so it counts only where
+	## that name reads back as the parent's project; bare legacy parent IDs
+	## belong only to the project that owns the parent.
 	var parsed := DocketDB.parse_qualified_ref(qualified_id)
 	var bare_id: String = parsed.id
 	var owner_project: String = str(parsed.get("project", ""))
+	var stored_ref := qualified_id
+	if _project_dbs.has(owner_project):
+		stored_ref = "%s:%s" % [(_project_dbs[owner_project] as DocketDB).get_project_name(), bare_id]
 	var results: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		var parent_filters: Array = [{"field":"parent", "op":"eq", "value":qualified_id}]
+		var parent_filters: Array = []
+		var read_back := ProjectSelectors.resolve_reference(_project_dbs, str(DocketDB.parse_qualified_ref(stored_ref).project), str(proj_name))
+		if owner_project.is_empty() or read_back.get("selector", "") == owner_project:
+			parent_filters.append({"field":"parent", "op":"eq", "value":stored_ref})
 		if owner_project.is_empty() or str(proj_name) == owner_project:
 			parent_filters.append({"field":"parent", "op":"eq", "value":bare_id})
+		if parent_filters.is_empty():
+			continue
 		var rows: Array = pdb.execute_query({"filter":{"$or":parent_filters}})
 		for item in rows:
 			item["project"] = proj_name
@@ -393,7 +412,7 @@ func create_dct(path: String) -> void:
 		dct_path = ""
 		load_failed.emit(path, str(registered.error))
 		return
-	_type_registries[registered.selector] = TypeRegistry.for_db(db, registered.selector)
+	_type_registries[registered.selector] = _registry_for(db, registered.selector)
 	file_changed.emit()
 
 
@@ -423,7 +442,7 @@ func create_and_add_project(path: String) -> void:
 		push_error("AppState: %s" % registered.error)
 		load_failed.emit(path, str(registered.error))
 		return
-	_type_registries[registered.selector] = TypeRegistry.for_db(new_db, registered.selector)
+	_type_registries[registered.selector] = _registry_for(new_db, registered.selector)
 	file_changed.emit()
 
 

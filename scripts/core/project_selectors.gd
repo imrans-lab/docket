@@ -107,6 +107,28 @@ static func resolve_reference(dbs: Dictionary, stored_name: String, from: String
 	return {"error": "More than one open project is named '%s' (%s): the reference is ambiguous" % [stored_name, _listed(found)]}
 
 
+## A check for the stored references a project writes, for
+## TypeRegistry.references: given a reference's project name and the project
+## writing it, "" or why the reference cannot be written: it names a project
+## by a name only this session gives (a selector such as "name~2", never
+## stored), or by a stored name more than one open project has. A project not
+## open, or the writer's own name, is no concern of it.
+static func reference_checker(dbs: Dictionary) -> Callable:
+	return func(stored_name: String, writer: DocketDB) -> String:
+		if writer != null and writer.get_project_name() == stored_name:
+			return ""
+		var resolved := resolve_reference(dbs, stored_name)
+		if not resolved.has("error"):
+			return ""
+		if resolved.error.begins_with("More than one"):
+			return str(resolved.error)
+		for selector in dbs:
+			if str(selector).nocasecmp_to(stored_name) == 0:
+				return "'%s' is a name only this session gives; a reference names that project by its stored name, '%s'" % [
+					stored_name, (dbs[selector] as DocketDB).get_project_name()]
+		return ""
+
+
 ## How project `selector` of `dbs` is described to clients.
 static func describe(dbs: Dictionary, selector: String, primary: DocketDB = null) -> Dictionary:
 	var db: DocketDB = dbs[selector]

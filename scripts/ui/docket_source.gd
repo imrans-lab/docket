@@ -266,9 +266,16 @@ func attach_file(_project: String, _id: String, _filename: String, _data: Packed
 	return _unsupported()
 
 
-## Items in any open project whose parent is `qualified_id` ("project:id"):
-## {children, error} — error names the projects whose children could not be
-## read ("" when all were), so a partial list is never shown as complete.
+## The name project `project` (a selector) is stored under, which the
+## references its items and others' write name it by.
+func stored_name(project: String) -> String:
+	return project
+
+
+## Items in any open project whose parent is item `qualified_id` ("project:id",
+## the project as its selector): {children, error} — error names the projects
+## whose children could not be read ("" when all were), so a partial list is
+## never shown as complete.
 func children_of(_qualified_id: String) -> Dictionary:
 	return {"children": [], "error": UNSUPPORTED}
 

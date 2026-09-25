@@ -730,16 +730,31 @@ func item_events(project: String, id: String) -> Array:
 ## Items whose parent is `qualified_id` ("project:id") in every open project;
 ## a bare parent id counts only in the parent's own project, as in the
 ## standalone app.
+func stored_name(project: String) -> String:
+	for listed in _projects:
+		if str(listed.get("name", "")) == project:
+			return str(listed.get("display_name", project))
+	return project
+
+
 func children_of(qualified_id: String) -> Dictionary:
 	var separator := qualified_id.find(":")
 	var owner := qualified_id.left(separator) if separator > 0 else ""
 	var bare_id := qualified_id.substr(separator + 1) if separator > 0 else qualified_id
+	var stored := stored_name(owner)
 	var children: Array = []
 	var unread: Array[String] = []
 	for project in project_names():
-		var parents: Array = [{"field": "parent", "op": "eq", "value": qualified_id}]
+		# A stored parent reference names the parent's project by its stored
+		# name; it counts only where that name reads back as the parent's
+		# project (ProjectSelectors.resolve_reference, here from the list).
+		var parents: Array = []
+		if owner.is_empty() or _reads_back(stored, project) == owner:
+			parents.append({"field": "parent", "op": "eq", "value": "%s:%s" % [stored, bare_id] if not owner.is_empty() else qualified_id})
 		if owner.is_empty() or project == owner:
 			parents.append({"field": "parent", "op": "eq", "value": bare_id})
+		if parents.is_empty():
+			continue
 		var listed := await _call("docket_query", {"project": project, "filter": {"$or": parents}, "detail": "full"})
 		if listed.has("error"):
 			unread.append("%s (%s)" % [project, listed.error])
@@ -753,6 +768,19 @@ func children_of(qualified_id: String) -> Dictionary:
 
 func run_query(query: Dictionary) -> Dictionary:
 	return await _call("docket_query_view", query)
+
+
+# The project a reference to stored name `stored` means, read from project
+# `from`: its own when that is its stored name, else the one project listed
+# under it, or "" when none or several are.
+func _reads_back(stored: String, from: String) -> String:
+	if stored_name(from) == stored:
+		return from
+	var found: Array = []
+	for listed in _projects:
+		if str(listed.get("display_name", listed.get("name", ""))) == stored:
+			found.append(str(listed.get("name", "")))
+	return found[0] if found.size() == 1 else ""
 
 
 func move_item(project: String, id: String, target_project: String) -> Dictionary:

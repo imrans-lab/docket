@@ -91,6 +91,7 @@ func _rebuild_type_registries() -> void:
 	_type_registry_diagnostics.clear()
 	for project in _project_dbs:
 		_type_registries[project] = TypeRegistry.for_db(_project_dbs[project], str(project))
+		_type_registries[project].references = ProjectSelectors.reference_checker(_project_dbs)
 	if _db != null and not _db in _project_dbs.values():
 		var project_name := _db.get_project_name()
 		_type_registries[project_name] = TypeRegistry.for_db(_db, project_name)

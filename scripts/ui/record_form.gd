@@ -1520,7 +1520,7 @@ func _save_shown() -> Variant:
 func _collect_changes() -> Dictionary:
 	var parent_text := _parent_edit.text.strip_edges()
 	if not parent_text.is_empty() and not parent_text.contains(":"):
-		parent_text = "%s:%s" % [_current_project, parent_text]
+		parent_text = "%s:%s" % [_src.stored_name(_current_project), parent_text]
 	var changes := {"title":_title_edit.text, "description":_desc_edit.text, "priority":_priority_option.selected, "severity":_severity_option.selected, "assigned_to":_assigned_edit.text, "parent":parent_text}
 	var tags: Array = []
 	for part in _tags_edit.text.split(","):

@@ -64,6 +64,15 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 		return {"error": "Target project not found: %s" % target_project}
 	if source_db == target_db:
 		return {"error": "Item is already in project '%s'" % canonical_target}
+	# References name projects by their stored names: a move rewrites them
+	# from the source's to the target's, which must each name one open
+	# project, or references to the moved item could not be told apart.
+	var source_stored := source_db.get_project_name()
+	var target_stored := target_db.get_project_name()
+	for stored in [source_stored, target_stored]:
+		var named := ProjectSelectors.resolve_reference(project_dbs, stored)
+		if named.has("error"):
+			return {"error": "Nothing was moved: %s" % named.error}
 
 	# Refuse to move anything holding vault content.
 	#
@@ -121,12 +130,14 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 		source_item["type_id"] = builtin.id
 		source_item["type_revision"] = builtin.current_revision
 	new_id = item_id if DocketDB._is_uuid7(item_id) else target_db.next_uuid7_id()
-	var reference_prepare_error: String = _prepare_export_refs(exported, source_registry, source_name, canonical_target, item_id, new_id)
+	var reference_prepare_error: String = _prepare_export_refs(exported, source_registry, source_stored, target_stored, item_id, new_id)
 	if not reference_prepare_error.is_empty(): return {"error":"Source reference semantics are unresolved; nothing was copied: %s" % reference_prepare_error}
+	var reference_problem := _exported_reference_problem(exported, source_registry, ProjectSelectors.reference_checker(project_dbs), target_db)
+	if not reference_problem.is_empty(): return {"error":"Nothing was moved: %s" % reference_problem}
 	var target_error: String = _import_checked(target_db, new_id, exported, target_registry, pending_type, pending_revisions, args, op)
 	if not target_error.is_empty(): return {"error":"Target write failed; source preserved: %s" % target_error}
-	var old_qualified: String = "%s:%s" % [source_name,item_id]
-	var new_qualified: String = "%s:%s" % [canonical_target,new_id]
+	var old_qualified: String = "%s:%s" % [source_stored,item_id]
+	var new_qualified: String = "%s:%s" % [target_stored,new_id]
 	for proj_name in project_dbs:
 		var pdb: DocketDB = project_dbs[proj_name]
 		# Bare IDs are local. Only the source project's bare reference identifies
@@ -165,6 +176,17 @@ func _prepare_export_refs(exported: Dictionary, registry: TypeRegistry, source_p
 			for reference in custom[key]: refs.append(_transfer_ref(str(reference),source_project,target_project,old_id,new_id))
 			custom[key] = refs
 	return ""
+
+# Why a reference of `exported` (as _prepare_export_refs leaves it) could not
+# be written in `target_db`, as `check` (ProjectSelectors.reference_checker)
+# judges it there, or "".
+func _exported_reference_problem(exported: Dictionary, registry: TypeRegistry, check: Callable, target_db: DocketDB) -> String:
+	var item: Dictionary = exported.item
+	var values: Dictionary = item.get("fields", {}).merged({"parent": item.get("parent"), "blocked_by": item.get("blocked_by")}, true)
+	var refs := TypeRegistry.stored_references(values, registry.resolve_item(item).get("definition", {}))
+	for link in exported.get("links", []): refs.append(str(link.get("to", "")))
+	return TypeRegistry.reference_problem(refs, check, target_db)
+
 
 func _transfer_ref(reference: String, source_project: String, target_project: String, old_id: String, new_id: String) -> String:
 	if reference == old_id or reference == "%s:%s" % [source_project,old_id]: return "%s:%s" % [target_project,new_id]

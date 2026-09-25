@@ -295,6 +295,11 @@ func _attach_file_now(project: String, id: String, filename: String, data: Packe
 	return item_db.attach_file(id, filename, data, mime, description, null, "user")
 
 
+func stored_name(project: String) -> String:
+	var item_db: DocketDB = _state.get_db_for_project(project)
+	return item_db.get_project_name() if item_db != null else project
+
+
 func children_of(qualified_id: String) -> Dictionary:
 	# A refusal is an empty, incomplete list saying why (as a partial one does).
 	var found: Dictionary = _access(_children_of_now.bind(qualified_id), null)

@@ -17,6 +17,10 @@ var _definitions: Dictionary = {}
 var _revisions: Dictionary = {}
 var _generation: String = ""
 var _load_error: String = ""
+## Checks the project a stored reference ("name:id") names, given that name
+## and this registry's DB: "" or why it cannot be written
+## (ProjectSelectors.reference_checker); none checks nothing.
+var references: Callable
 
 static var _shared_by_db: Dictionary = {}
 
@@ -508,6 +512,9 @@ func _create_item(step: RefCounted, fields: Dictionary, actor: String) -> Dictio
 	var candidate: Dictionary = normalized.values
 	for descriptor in definition.fields:
 		if not candidate.has(descriptor.key) and descriptor.has("default"): candidate[descriptor.key] = descriptor.default
+	# The values written, defaults included.
+	var reference_error := _reference_problem(candidate, definition)
+	if not reference_error.is_empty(): return {"error": reference_error}
 	var error := validate_candidate(definition, candidate, true)
 	if not error.is_empty(): return {"error":error}
 	var item := {"type":slug,"type_id":resolved.id,"type_revision":resolved.current_revision,"status":definition.lifecycle.initial_state,"title":candidate.get("title", ""),"created_at":Time.get_datetime_string_from_system(true),"updated_at":Time.get_datetime_string_from_system(true),"created_by":actor,"fields":{}}
@@ -524,6 +531,34 @@ func _create_item(step: RefCounted, fields: Dictionary, actor: String) -> Dictio
 		var inserted := _db.insert_item(id, item, change)
 		return inserted if not inserted.is_empty() else _db.add_event_checked(id, "created", actor, "Item created", change))
 	return {"error":error} if not error.is_empty() else {"id":id,"item":_db.get_item(id)}
+
+# Why a stored reference among `values` (parent, blocked_by, and the item_ref
+# and reference_list fields of `definition`) could not be written, or "".
+func _reference_problem(values: Dictionary, definition: Dictionary) -> String:
+	if not references.is_valid(): return ""
+	return reference_problem(stored_references(values, definition), references, _db)
+
+## The references `values` hold (parent, blocked_by, and the item_ref and
+## reference_list fields of `definition`), as written.
+static func stored_references(values: Dictionary, definition: Dictionary) -> Array:
+	var refs: Array = []
+	for key in ["parent", "blocked_by"]:
+		if values.get(key) is String: refs.append(values[key])
+	for descriptor in definition.get("fields", []):
+		var value = values.get(str(descriptor.key))
+		if str(descriptor.type) == "item_ref" and value is String: refs.append(value)
+		elif str(descriptor.type) == "reference_list" and value is Array: refs.append_array(value)
+	return refs
+
+## Why one of `refs` could not be written by `writer`, as `check`
+## (ProjectSelectors.reference_checker) judges its project, or "".
+static func reference_problem(refs: Array, check: Callable, writer: DocketDB) -> String:
+	for ref in refs:
+		var project := str(DocketDB.parse_qualified_ref(str(ref)).project)
+		if project.is_empty(): continue
+		var problem: String = check.call(project, writer)
+		if not problem.is_empty(): return "reference %s: %s" % [ref, problem]
+	return ""
 
 func item_token(item_or_id) -> String:
 	var item: Dictionary = _db.get_item(str(item_or_id)) if item_or_id is String else item_or_id
@@ -546,6 +581,8 @@ func _update_item(step: RefCounted, id: String, changes: Dictionary, actor: Stri
 	if changes.has("type") or changes.has("type_id") or changes.has("type_revision") or changes.has("status"): return "registry-backed retype/status update is not allowed"
 	var normalized := _normalize_input(changes)
 	if normalized.has("error"): return normalized.error
+	var reference_error := _reference_problem(normalized.values, resolved.definition)
+	if not reference_error.is_empty(): return reference_error
 	var mutable_error := _validate_mutable_patch(resolved.definition, normalized.values, normalized.unset)
 	if not mutable_error.is_empty(): return mutable_error
 	# Validate one complete clone before staging either the item patch or its audit.
@@ -580,6 +617,8 @@ func _transition_item(step: RefCounted, id: String, target: String, actor: Strin
 	if lifecycle.enforcement == "guided" and not normal and note.strip_edges().is_empty(): return "off-flow transition requires a note"
 	var normalized := _normalize_input(extra)
 	if normalized.has("error"): return normalized.error
+	var reference_error := _reference_problem(normalized.values, definition)
+	if not reference_error.is_empty(): return reference_error
 	var mutable_error := _validate_mutable_patch(definition, normalized.values, normalized.unset)
 	if not mutable_error.is_empty(): return mutable_error
 	var candidate: Dictionary = _candidate_values(item, definition)
@@ -701,6 +740,8 @@ func _repair_item_status(step: RefCounted, id: String, target: String, actor: St
 	if _state(definition, target).is_empty(): return "repair target state '%s' is not declared" % target
 	var normalized := _normalize_input(fields)
 	if normalized.has("error"): return normalized.error
+	var reference_error := _reference_problem(normalized.values, definition)
+	if not reference_error.is_empty(): return reference_error
 	var mutable_error := _validate_mutable_patch(definition, normalized.values, normalized.unset)
 	if not mutable_error.is_empty(): return mutable_error
 	var candidate := _candidate_values(item, definition)
@@ -779,6 +820,10 @@ func _evolve_in_change(step: RefCounted, new_revision: Dictionary, preview: Dict
 	# Preview dictionaries are untrusted and can outlive their source snapshot.
 	var checked := preview_evolution(str(preview.get("slug", "")), preview.get("definition", {}), str(preview.get("expected_current", "")), preview.get("items", []))
 	if checked.has("error"): return str(checked.error)
+	# Every item's new defaults are checked before any is written.
+	for id in checked.items:
+		var reference_error := _reference_problem(_upgrade_defaults(_db.get_item(id), checked.definition), checked.definition)
+		if not reference_error.is_empty(): return "item %s: %s" % [id, reference_error]
 	var current: Dictionary = get_type(checked.slug)
 	var revision_id := "%s@%s" % [current.id, TypeRegistryBootstrap._definition_hash(checked.definition)]
 	if revision_id == current.current_revision:
