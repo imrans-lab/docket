@@ -86,6 +86,16 @@ func test_panel_channel_creates_and_moves_items_as_the_person() -> Variant:
 	return _on_panel_project(_panel_create_and_transition_checks)
 
 
+## A file attached through the private channel, over a real project: the
+## person's bytes and metadata (its name exactly as given), with one
+## "attached" event of theirs, in one committed change that a second client
+## opening the file sees exactly; a file too large (as base64 or as bytes),
+## data that is not base64, or an item the grant does not cover changes
+## nothing; the same attach as a tool is still the agent's.
+func test_panel_channel_attaches_files_as_the_person() -> Variant:
+	return _on_panel_project(_panel_attach_checks)
+
+
 # `checks` (handler, db, secret, item, other) over a new project "panel" with
 # two bugs, served by a handler with the private channel; the project is
 # removed afterwards.
@@ -191,6 +201,64 @@ func _panel_create_and_transition_checks(handler: McpHandler, db: DocketDB, secr
 		and events == [["created", "human:imran"], ["transition", "human:imran"]],
 		"the move and the edit are one committed change, the person's, seen whole by another client: %s %s %s %s"
 		% [moved, batches, seen, events])
+
+
+func _panel_attach_checks(handler: McpHandler, db: DocketDB, secret: String, item: String, other: String) -> Variant:
+	var send := func(method: String, params: Dictionary) -> Dictionary:
+		return handler.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	var grant := str(send.call("docket/panel/register", {"panel_secret": secret, "panel": "panel-1", "person": "imran",
+		"project": "panel", "item": item, "actions": ["attach_file"]}).get("result", {}).get("panel_grant", ""))
+	var attached := func(id: String) -> Array:
+		return db.get_events(id).filter(func(e: Dictionary) -> bool: return e.event_type == "attached") \
+			.map(func(e: Dictionary) -> String: return str(e.actor))
+	var state := func() -> Array:
+		return [db.list_attachments(item).size(), db.get_events(item).size(), db.list_attachments(other).size(), db.get_events(other).size()]
+	var before: Array = state.call()
+	var file := PackedByteArray()
+	for i in 70000:
+		file.append((i * 7919) % 256)  # binary, every byte value, across base64 padding boundaries
+	var attach := {"panel_grant": grant, "project": "panel", "id": item, "filename": " scan 1.bin ",
+		"mime_type": "application/octet-stream", "description": "a scan"}
+	var over_encoded := PackedByteArray()
+	over_encoded.resize(DocketDB.MAX_ATTACHMENT_BYTES + 3)  # its base64 is longer than the largest allowed
+	var over_decoded := PackedByteArray()
+	over_decoded.resize(DocketDB.MAX_ATTACHMENT_BYTES + 1)  # its base64 is not, the bytes are
+	var refused := {
+		"a file whose base64 is too long": send.call("docket/panel/attach_file", attach.merged({"data": Marshalls.raw_to_base64(over_encoded)}, true)),
+		"a file one byte too large": send.call("docket/panel/attach_file", attach.merged({"data": Marshalls.raw_to_base64(over_decoded)}, true)),
+		"data that is not base64": send.call("docket/panel/attach_file", attach.merged({"data": "not base64!"}, true)),
+		"another item": send.call("docket/panel/attach_file", attach.merged({"id": other, "data": Marshalls.raw_to_base64(file)}, true)),
+		"no grant": send.call("docket/panel/attach_file", attach.merged({"panel_grant": "", "data": Marshalls.raw_to_base64(file)}, true)),
+	}
+	for why in refused:
+		var r = A.is_true(refused[why].has("error") and state.call() == before, "attaching %s changes nothing: %s" % [why, str(refused[why]).left(300)])
+		if r is String: return r
+
+	var batches: Array = []
+	var note_batch := func(changes: Array) -> void: batches.append(changes)
+	db.items_changed.connect(note_batch)
+	var answer: Dictionary = send.call("docket/panel/attach_file", attach.merged({"data": Marshalls.raw_to_base64(file),
+		"operation_id": "op-attach"}, true)).get("result", {})
+	db.items_changed.disconnect(note_batch)
+	var reader := DocketDBJsonl.open_jsonl(db.get_path())
+	var seen: Array = reader.list_attachments(item)
+	var bytes: PackedByteArray = reader.get_attachment(int(seen[0].id)).get("data", PackedByteArray()) if seen.size() == 1 else PackedByteArray()
+	var kept: Array = reader.get_events(item).filter(func(e: Dictionary) -> bool: return e.event_type == "attached") \
+		.map(func(e: Dictionary) -> String: return str(e.actor))
+	reader.close()
+	var r = A.is_true(answer.get("size_bytes") == file.size() and answer.get("filename") == " scan 1.bin "
+		and answer.get("operation_id") == "op-attach"
+		and answer.get("item_token") == handler._registry.get_type_registry("panel").item_token(item)
+		and batches.size() == 1 and attached.call(item) == ["human:imran"]
+		and seen.size() == 1 and seen[0].filename == " scan 1.bin " and seen[0].mime_type == "application/octet-stream"
+		and seen[0].description == "a scan" and bytes == file and kept == ["human:imran"],
+		"the file, its record and one event of the person's are one committed change, seen exactly by another client: %s %s %s"
+		% [str(answer).left(300), batches, attached.call(item)])
+	if r is String: return r
+	var by_tool: Dictionary = send.call("tools/call", {"name": "docket_attach", "arguments": {"item_id": other,
+		"filename": "log.txt", "data": Marshalls.raw_to_base64("log".to_utf8_buffer()), "project": "panel"}})
+	return A.is_true(not by_tool.get("result", {}).get("isError", false) and attached.call(other) == ["agent"],
+		"the same attach as a tool is the agent's, with one event: %s %s" % [by_tool, attached.call(other)])
 
 
 func _panel_channel_checks(handler: McpHandler, db: DocketDB, secret: String, item: String, other: String) -> Variant:

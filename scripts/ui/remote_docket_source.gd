@@ -21,9 +21,10 @@ extends "docket_source.gd"
 ## for its private channel to the process (the docket/panel/ methods), adding
 ## the grant that names the person itself and answering the method's result
 ## or {error}: saving the shown item (update_item), moving it to another
-## status (transition_item) and creating a new item (create_item). Methods
+## status (transition_item), attaching a file to it (attach_file) and
+## creating a new item (create_item). Methods
 ## with no tool or panel method yet answer UNSUPPORTED (see DocketSource),
-## including attachments and the vault, so a change carrying secret fields
+## including the vault, so a change carrying secret fields
 ## is refused, not made without them.
 
 const TypeCatalog := preload("../core/type_catalog.gd")
@@ -633,25 +634,47 @@ func _has_channel() -> bool:
 	return _connection.has_method("panel_call") and not _origin().is_empty()
 
 
-# Panel method `method` for item `id` of `project`, the one the host bound
-# to the form, with `params` besides: "" or the error. Refused before any
-# change starts without a private channel or that binding.
+## Attaches `data` to the item the form shows, through the host's private
+## panel channel, as the person the host names (see save_item).
+func attach_file(project: String, id: String, filename: String, data: PackedByteArray, mime: String,
+		description: String) -> Dictionary:
+	var reply := await _bound_reply("attach_file", project, id, {"filename": filename,
+		"data": Marshalls.raw_to_base64(data), "mime_type": mime, "description": description})
+	if reply.has("error"):
+		return reply
+	var record := reply.duplicate()
+	for key in ["item_token", "operation_id", "stream", "event_watermark"]:
+		record.erase(key)
+	return record
+
+
+# Panel method `method` for item `id` of `project`: "" or the error (see
+# _bound_reply).
 func _bound_change(method: String, project: String, id: String, params: Dictionary) -> String:
+	return str((await _bound_reply(method, project, id, params)).get("error", ""))
+
+
+# Panel method `method` for item `id` of `project`, the one the host bound
+# to the form, with `params` besides: its result, or {error} (a message).
+# Refused before any change starts without a private channel or that binding.
+func _bound_reply(method: String, project: String, id: String, params: Dictionary) -> Dictionary:
 	if not _has_channel():
-		return NO_CHANNEL
+		return {"error": NO_CHANNEL}
 	while _binding:
 		await _bind_settled  # the shown item's binding is on its way
 	if _bound.get("project") != project or _bound.get("id") != id:
 		if _bind_refusal.get("project") == project and _bind_refusal.get("id") == id:
-			return str(_bind_refusal.reason)
-		return "The host has not made %s ready for editing here; open it again." % id
+			return {"error": str(_bind_refusal.reason)}
+		return {"error": "The host has not made %s ready for editing here; open it again." % id}
 	var sent := params.duplicate()
 	sent.merge({"binding": _bound.binding, "project": project, "id": _bound.canonical})
 	var reply := await _panel_change(method, sent)
 	var error := _error_text(reply)
-	if error.is_empty() and not str(reply.get("item_token", "")).is_empty():
+	if not error.is_empty():
+		return {"error": error}
+	if not str(reply.get("item_token", "")).is_empty():
 		_committed_tokens[_key(project, id)] = str(reply.item_token)
-	return error
+	return reply
 
 
 # Panel method `method` with `params` as one of this source's changes: its

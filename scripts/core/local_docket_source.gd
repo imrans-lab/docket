@@ -232,7 +232,7 @@ func attach_file(project: String, id: String, filename: String, data: PackedByte
 	var item_db: DocketDB = _state.get_db_for_project(project)
 	if item_db == null or not item_db.has_item(id):
 		return {"error":"originating project is closed or item is missing"}
-	return item_db.attach_file(id, filename, data, mime, description)
+	return item_db.attach_file(id, filename, data, mime, description, null, "user")
 
 
 func children_of(qualified_id: String) -> Dictionary:

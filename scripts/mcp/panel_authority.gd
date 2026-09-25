@@ -6,16 +6,16 @@ extends RefCounted
 ## in the environment (SECRET_VARIABLE, removed once read). With it the host
 ## registers a panel and gets a grant: an opaque, short-lived token naming
 ## the person, the project, the item and what may be done there (save it,
-## move it to another status), or naming no item but a type, to create one
-## new item of it once. The host adds the grant to the panel's requests; the
-## person making an edit (the local user the host identifies, recorded as
-## "human:<person>") is taken from the grant, never from a request. The host
-## also opens a session for each panel it shows (open_session), with which
-## McpHandler runs the panel's other calls as tools on the panel's behalf
-## (docket/panel/call), so their changes are known as the panel's. Tool
-## calls may not carry the reserved RESERVED_ARGUMENTS names. None of this is
-## an MCP tool: it is absent from tools/list and cannot be reached through
-## tools/call.
+## move it to another status, attach a file), or naming no item but a type,
+## to create one new item of it once. The host adds the grant to the panel's
+## requests; the person making an edit (the local user the host identifies,
+## recorded as "human:<person>") is taken from the grant, never from a
+## request. The host also opens a session for each panel it shows
+## (open_session), with which McpHandler runs the panel's other calls as
+## tools on the panel's behalf (docket/panel/call), so their changes are
+## known as the panel's. Tool calls may not carry the reserved
+## RESERVED_ARGUMENTS names. None of this is an MCP tool: it is absent from
+## tools/list and cannot be reached through tools/call.
 
 const PREFIX := "docket/panel/"
 const SECRET_VARIABLE := "DOCKET_PANEL_SECRET"
@@ -25,7 +25,9 @@ const MIN_SECRET_LENGTH := 64
 const GRANT_TTL_MS := 15 * 60 * 1000
 ## The methods a grant allows (and is needed for); each runs within the
 ## request's operation.
-const ACTIONS := ["update_item", "transition_item", "create_item"]
+const ACTIONS := ["update_item", "transition_item", "create_item", "attach_file"]
+## The longest base64 a file may be sent as: that of the largest attachment.
+const MAX_ATTACHMENT_BASE64 := (DocketDB.MAX_ATTACHMENT_BYTES + 2) / 3 * 4
 ## Argument names only this channel uses, refused in any tool call.
 const RESERVED_ARGUMENTS := ["panel_secret", "panel_grant", "panel_session"]
 
@@ -67,6 +69,8 @@ func handle(method: String, params: Dictionary, op: RefCounted = null) -> Dictio
 			return _transition_item(params, op)
 		"create_item":
 			return _create_item(params, op)
+		"attach_file":
+			return _attach_file(params, op)
 	return _failure(-32601, "Method not found: %s" % method)
 
 
@@ -237,6 +241,36 @@ func _create_item(params: Dictionary, op: RefCounted) -> Dictionary:
 		return _failure(-32002, str(created.error))
 	_grants.erase(str(params.panel_grant))
 	return {"result": {"id": str(created.id), "item_token": registry.item_token(str(created.id))}}
+
+
+# Panel, through the host: {panel_grant, project, id, filename, data (base64),
+# mime_type, description} → the attachment's record and the item's new
+# item_token. The file and its "attached" event are one change, the grant's
+# person's.
+func _attach_file(params: Dictionary, op: RefCounted) -> Dictionary:
+	var scope := _granted(params, "attach_file")
+	if scope.has("error"):
+		return _failure(-32001, scope.error)
+	# The name is kept exactly as given, like any attachment's.
+	var filename := str(params.get("filename", ""))
+	var encoded := str(params.get("data", ""))
+	if filename.strip_edges().is_empty():
+		return _failure(-32602, "an attachment is named")
+	if encoded.length() > MAX_ATTACHMENT_BASE64:
+		return _failure(-32602, "File too large (max %d bytes)" % DocketDB.MAX_ATTACHMENT_BYTES)
+	var data := Marshalls.base64_to_raw(encoded)
+	if data.is_empty() and not encoded.is_empty():
+		return _failure(-32602, "the file is not valid base64")
+	var db: DocketDB = _registry.project_db(scope.project)
+	var registry: TypeRegistry = _registry.get_type_registry(scope.project)
+	if db == null or registry == null:
+		return _failure(-32602, "no open project %s" % scope.project)
+	var attached := db.attach_file(scope.item, filename, data, str(params.get("mime_type", "application/octet-stream")),
+		str(params.get("description", "")), op, "human:%s" % scope.person)
+	if attached.has("error"):
+		return _failure(-32002, str(attached.error))
+	attached["item_token"] = registry.item_token(scope.item)
+	return {"result": attached}
 
 
 # The grant's scope when it is live, allows `action`, and covers the project

@@ -588,17 +588,17 @@ func _set_counter_in_cache(step: RefCounted, val: int) -> Dictionary:
 
 # -- Attachments --------------------------------------------------------------
 
-func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "", op: RefCounted = null) -> Dictionary:
+func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "", op: RefCounted = null, actor: String = "") -> Dictionary:
 	# Refused before any change starts (DocketDB checks it too).
-	if data.size() > MAX_ATTACHMENT_BYTES: return super.attach_file(item_id, filename, data, mime, desc, op)
-	var result := _canonical(op, _attach_file_in_cache.bind(item_id, filename, data, mime, desc))
+	if data.size() > MAX_ATTACHMENT_BYTES: return super.attach_file(item_id, filename, data, mime, desc, op, actor)
+	var result := _canonical(op, _attach_file_in_cache.bind(item_id, filename, data, mime, desc, actor))
 	if not str(result.error).is_empty(): return {"error": result.error}
 	result.erase("error")
 	return result
 
 
-func _attach_file_in_cache(step: RefCounted, item_id: String, filename: String, data: PackedByteArray, mime: String, desc: String) -> Dictionary:
-	var result := super.attach_file(item_id, filename, data, mime, desc, step)
+func _attach_file_in_cache(step: RefCounted, item_id: String, filename: String, data: PackedByteArray, mime: String, desc: String, actor: String) -> Dictionary:
+	var result := super.attach_file(item_id, filename, data, mime, desc, step, actor)
 	if not result.has("error"): result["error"] = ""
 	return result
 

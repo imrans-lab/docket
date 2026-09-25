@@ -1301,13 +1301,30 @@ func list_queries() -> Array:
 const MAX_ATTACHMENT_BYTES: int = 5 * 1024 * 1024  # 5 MB
 
 ## Attaches `data` to item `item_id`, within a step of `op` (or an operation
-## of its own): the attachment's record, or {error}.
-func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "", op: RefCounted = null) -> Dictionary:
+## of its own): the attachment's record, or {error}. Given an `actor`, the
+## attachment and an "attached" event by that actor are one change: both
+## are kept, or neither.
+func attach_file(item_id: String, filename: String, data: PackedByteArray, mime: String = "application/octet-stream", desc: String = "", op: RefCounted = null, actor: String = "") -> Dictionary:
 	var size_bytes: int = data.size()
 	if size_bytes > MAX_ATTACHMENT_BYTES:
 		push_error("DocketDB: attachment too large: %d bytes (max %d)" % [size_bytes, MAX_ATTACHMENT_BYTES])
 		return {"error": "File too large: %d bytes (max 5 MB)" % size_bytes}
-	return _refused(_writing(op, _attach_file.bind(item_id, filename, data, mime, desc)))
+	if actor.is_empty():
+		return _refused(_writing(op, _attach_file.bind(item_id, filename, data, mime, desc)))
+	var attached := _change(op, _attach_file_by.bind(item_id, filename, data, mime, desc, actor))
+	if str(attached.get("error", "")).is_empty():
+		attached.erase("error")
+	return attached
+
+
+func _attach_file_by(step: RefCounted, item_id: String, filename: String, data: PackedByteArray, mime: String, desc: String, actor: String) -> Dictionary:
+	if not has_item(item_id):
+		return {"error": "Item not found: %s" % item_id}
+	var attached := _attach_file(step, item_id, filename, data, mime, desc)
+	if attached.has("error"):
+		return attached
+	attached["error"] = add_event_checked(item_id, "attached", actor, "Attached %s (%d bytes)" % [filename, data.size()], step)
+	return attached
 
 
 # The row and the id SQLite gives it are read in one transaction.

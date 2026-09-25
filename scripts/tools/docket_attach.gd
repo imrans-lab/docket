@@ -41,7 +41,4 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if data.size() > MAX_ATTACHMENT_SIZE:
 		return {"error": "File too large: %d bytes (max %d bytes / 5 MB)" % [data.size(), MAX_ATTACHMENT_SIZE]}
 
-	var result := db.attach_file(item_id, filename, data, mime, desc)
-	db.add_event(item_id, "attached", "agent", "Attached %s (%d bytes)" % [filename, data.size()])
-
-	return result
+	return db.attach_file(item_id, filename, data, mime, desc, null, "agent")
