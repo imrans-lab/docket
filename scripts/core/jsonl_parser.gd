@@ -35,12 +35,17 @@ static func parse_file(path: String) -> Dictionary:
 		push_warning("JSONLParser: cannot open file: %s" % path)
 		empty["error"] = "cannot open file: %s" % path
 		return empty
+	var text := file.get_as_text()
+	file.close()
+	return parse_text(text, path)
 
+
+## parse_file for the contents `text` of the file at `path` (named in errors).
+static func parse_text(text: String, path: String) -> Dictionary:
 	var result := _empty_result()
 	var line_number := 0
 
-	while not file.eof_reached():
-		var raw_line: String = file.get_line()
+	for raw_line: String in text.split("\n"):
 		line_number += 1
 		var line: String = raw_line.strip_edges()
 		if line.is_empty():
@@ -51,7 +56,6 @@ static func parse_file(path: String) -> Dictionary:
 		# keeps the caller from building a cache that would later be flushed
 		# back over the conflicted file, erasing it.
 		if _is_conflict_marker(line):
-			file.close()
 			var conflicted := _empty_result()
 			conflicted["error"] = (
 				"unresolved git conflict marker at line %d: '%s'. " % [line_number, line.substr(0, 20)]
@@ -69,16 +73,13 @@ static func parse_file(path: String) -> Dictionary:
 		# Unknown record kinds are fatal for the same loss-prevention reason.
 		var parsed = _parse_json_line(line, line_number)
 		if parsed == null:
-			file.close()
 			return _corrupt(path, line_number, "not valid JSON", line)
 
 		if not parsed is Dictionary:
-			file.close()
 			return _corrupt(path, line_number, "not a JSON object", line)
 
 		var type_val = parsed.get("_type")
 		if type_val == null:
-			file.close()
 			return _corrupt(path, line_number, "missing the _type field", line)
 
 		var line_type: String = str(type_val)
@@ -88,7 +89,6 @@ static func parse_file(path: String) -> Dictionary:
 			# line the next flush deletes. Tolerating it was destructive, not
 			# lenient. A genuinely newer format must announce itself with a
 			# higher meta.version, which is refused separately and clearly.
-			file.close()
 			return _corrupt(path, line_number,
 				"unknown record type '%s' — written by a newer Docket?" % line_type, line)
 
@@ -102,7 +102,6 @@ static func parse_file(path: String) -> Dictionary:
 			"meta":
 				record = _parse_meta(parsed)
 				if record.is_empty():
-					file.close()
 					return _corrupt(path, line_number, "meta line is missing required fields", line)
 				result["meta"] = record
 			"item":
@@ -138,12 +137,10 @@ static func parse_file(path: String) -> Dictionary:
 
 		if not bucket.is_empty():
 			if record.is_empty():
-				file.close()
 				return _corrupt(path, line_number,
 					"%s record is missing required fields" % line_type, line)
 			result[bucket].append(record)
 
-	file.close()
 	var version := str(result.meta.get("version", ""))
 	if version not in SUPPORTED_VERSIONS:
 		return _corrupt(path, 0, "unsupported format version '%s'" % version, "")

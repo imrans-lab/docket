@@ -5,7 +5,7 @@ class_name DocketProjectAdd
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_project_add",
-		"description": "Load a docket project by file path. Creates the file if it doesn't exist and create=true.",
+		"description": "Load a docket project by file path. Creates the file if it doesn't exist and create=true. Answers the project as docket_project_list describes it; its `name` is the selector to pass as `project`. A file already open is not opened again: it answers that project, with already_open.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
@@ -24,16 +24,17 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	if path.is_empty():
 		return {"error": "path is required"}
 
-	# Check if already loaded
-	for proj_name in project_dbs:
-		var pdb: DocketDB = project_dbs[proj_name]
-		if pdb.get_path() == path:
-			return {"error": "Project already loaded: %s" % proj_name}
+	var located := ProjectFile.locate(path)
+	if located.has("error"):
+		return located
+	var open_as := ProjectSelectors.selector_for(project_dbs, located)
+	if not open_as.is_empty():
+		return ProjectSelectors.describe(project_dbs, open_as, _db).merged({"already_open": true})
 
-	if not FileAccess.file_exists(path) and not create:
+	if not located.has("id") and not create:
 		return {"error": "File not found: %s (pass create=true to create)" % path}
 
 	if not add_fn.is_valid():
 		return {"error": "Project management not available in this mode"}
 
-	return add_fn.call(path)
+	return add_fn.call(located.path)

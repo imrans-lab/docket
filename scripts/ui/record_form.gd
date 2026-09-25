@@ -1002,8 +1002,12 @@ func _get_type_name(idx: int) -> String:
 	return str(_type_option.get_item_metadata(idx)) if idx >= 0 and idx < _type_option.item_count else ""
 
 func _rebuild_type_options(project: String, selected_slug: String = "") -> void:
+	# A refused read (the shell says why) keeps the options shown.
+	var types: Array = _src.cached_types(project)
+	if not _src.refusal(types).is_empty():
+		return
 	_type_option.clear()
-	for type_value in _src.cached_types(project):
+	for type_value in types:
 		var type: Dictionary = type_value
 		if type.has("error") or (type.lifecycle != "active" and type.slug != selected_slug):
 			continue
@@ -1036,13 +1040,16 @@ func _select_type_by_name(type_name: String) -> void:
 
 
 func _rebuild_status_options(type_name: String) -> void:
-	_status_option.clear()
 	var project := _current_project
 	if project.is_empty() and _project_option.item_count > 0:
 		project = _project_option.get_item_text(_project_option.selected)
 	if project.is_empty():
 		project = _src.primary_project()
 	var type: Dictionary = _src.cached_type(project, type_name)
+	# A refused read (the shell says why) keeps the options shown.
+	if type.has("kind"):
+		return
+	_status_option.clear()
 	if type.has("error"):
 		return
 	for state_value in type.definition.lifecycle.states:
@@ -1421,11 +1428,17 @@ func _populate_events(item: Dictionary) -> void:
 		_events_list.add_item("[%s] %s: %s" % [ts, etype, note])
 
 
-## Run the write `step` unless another is in flight: its result, or why not.
+## Run the write `step` unless another is in flight, or a project cannot be
+## changed now (DocketSource.action_refusal): its result, or why not.
 func _write_once(step: Callable) -> Variant:
 	if _writing:
 		return "a save is already in progress"
 	_writing = true
+	var refused: String = await _src.action_refusal()
+	if not refused.is_empty():
+		_writing = false
+		_show_error("Not changed", refused)
+		return refused
 	var result = await step.call()
 	_writing = false
 	return result
@@ -1520,6 +1533,8 @@ func _collect_changes() -> Dictionary:
 	changes.fields = dynamic.fields
 	changes.unset_fields = dynamic.unset_fields
 	var type: Dictionary = _src.cached_type(_current_project, _get_type_name(_type_option.selected))
+	if type.has("kind"):
+		return type
 	if not type.has("error") and bool(type.definition.get("protected", false)):
 		for entry in _field_map:
 			if not entry[2].visible:
@@ -1695,6 +1710,10 @@ func _on_child_activated(idx: int) -> void:
 func _on_move_pressed() -> void:
 	## Show a popup to select target project, then move the item.
 	if _current_id.is_empty() or _src.project_names().size() < 2:
+		return
+	var refused: String = await _src.action_refusal()
+	if not refused.is_empty():
+		_show_error("Not moved", refused)
 		return
 	# Build list of other projects
 	var popup := PopupMenu.new()

@@ -181,7 +181,7 @@ func test_invalid_candidate_never_partially_mutates_item_or_audit() -> Variant:
 func test_typed_item_and_audit_rollback_together_on_durable_failure() -> Variant:
 	var path := DIR + "/item-failure.dct"; var db := DocketDBJsonl.create_new_jsonl(path); var registry := TypeRegistry.new(db); _define(registry)
 	var made := registry.create_item({"type":"widget","title":"Before"}, "tester"); var before_events := db.get_events(made.id)
-	db._atomic_write_hook = func(_path, _text): return "injected typed write failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected typed write failure"
 	var error := registry.update_item(made.id, {"title":"After"}, "tester")
 	db._atomic_write_hook = Callable()
 	var r = A.is_true(error.contains("injected") and db.get_item(made.id).title == "Before" and db.get_events(made.id) == before_events, "failed durable publish rolls back candidate and audit in the live cache")
@@ -463,7 +463,7 @@ func test_breaking_stale_and_injected_durable_evolution_failures_preserve_state(
 	if r is String: db.close(); return r
 	var additive: Dictionary = current.definition.duplicate(true); additive.fields.append({"key":"new_optional","type":"string","required":false,"nullable":true})
 	var preview := registry.preview_evolution("widget", additive, current.current_revision)
-	db._atomic_write_hook = func(_path, _text): return "injected evolution failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected evolution failure"
 	var error := registry.apply_evolution(preview, "tester", "failure")
 	db._atomic_write_hook = Callable(); registry.reload()
 	r = A.is_true(error.contains("injected") and registry.get_type("widget").current_revision == current.current_revision, "durable failure restores registry pointer")

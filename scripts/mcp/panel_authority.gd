@@ -33,8 +33,9 @@ const RESERVED_ARGUMENTS := ["panel_secret", "panel_grant", "panel_session"]
 
 var _secret: String
 var _registry  # ToolRegistry
-# grant → {panel, person, project, item, type, actions, expires_at}; a
-# create_item grant has no item and is its only action.
+# grant → {panel, person, project (its selector), item, type, open_generation,
+# path, actions, expires_at}; a create_item grant has no item and is
+# its only action.
 var _grants: Dictionary = {}
 # panel session → the panel it names (see open_session)
 var _sessions: Dictionary = {}
@@ -56,22 +57,24 @@ static func from_environment(registry):
 ## A PREFIX method with its params: {result} or {error: {code, message}}.
 ## `op` is the operation of the request, which its changes are made within.
 func handle(method: String, params: Dictionary, op: RefCounted = null) -> Dictionary:
-	match method.trim_prefix(PREFIX):
+	var name := method.trim_prefix(PREFIX)
+	match name:
 		"open_session":
 			return _open_session(params)
-		"register":
-			return _register(params)
 		"revoke":
 			return _revoke(params)
-		"update_item":
-			return _update_item(params, op)
-		"transition_item":
-			return _transition_item(params, op)
-		"create_item":
-			return _create_item(params, op)
-		"attach_file":
-			return _attach_file(params, op)
-	return _failure(-32601, "Method not found: %s" % method)
+		"register":
+			if not _is_host(params):
+				return _failure(-32001, "not the host")
+			return _admitted(_register.bind(params))
+	# A person's reads and changes, for a grant: each admitted as a tool's is.
+	var granted := {"update_item": _update_item, "transition_item": _transition_item,
+		"create_item": _create_item, "attach_file": _attach_file}
+	if not granted.has(name):
+		return _failure(-32601, "Method not found: %s" % method)
+	if not _grants.has(str(params.get("panel_grant", ""))):
+		return _failure(-32001, "no such grant")
+	return _admitted((granted[name] as Callable).bind(params, op), op)
 
 
 ## The panel a panel call comes from, as this process knows it: the one
@@ -84,10 +87,11 @@ func panel_of(session: String, grant: String) -> String:
 	return str(scope.get("panel", "")) if not scope.is_empty() and Time.get_ticks_msec() < scope.expires_at else ""
 
 
-## Grants for `project` end with it (the project was closed).
-func revoke_project(project: String) -> void:
+## Grants for the opening `open_generation` of a project end with it (it
+## was closed); another opening, even under the same selector, keeps its own.
+func revoke_opening(open_generation: String) -> void:
 	for grant in _grants.keys():
-		if _grants[grant].project == project:
+		if _grants[grant].open_generation == open_generation:
 			_grants.erase(grant)
 
 
@@ -104,12 +108,10 @@ func _open_session(params: Dictionary) -> Dictionary:
 	return {"result": {"panel_session": session}}
 
 
-# Host: {panel_secret, panel, person, project, item, actions[,
-# open_generation]}, or for a new item {..., type, actions: ["create_item"]}
-# with no item → {panel_grant, expires_in_ms}.
+# Host (handle checks it is): {panel_secret, panel, person, project, item,
+# actions[, open_generation]}, or for a new item {..., type, actions:
+# ["create_item"]} with no item → {panel_grant, expires_in_ms}.
 func _register(params: Dictionary) -> Dictionary:
-	if not _is_host(params):
-		return _failure(-32001, "not the host")
 	var panel := str(params.get("panel", ""))
 	var person := str(params.get("person", "")).strip_edges()
 	var project := str(params.get("project", ""))
@@ -144,6 +146,7 @@ func _register(params: Dictionary) -> Dictionary:
 		return _failure(-32602, "no item %s in %s" % [item, project])
 	var grant := Crypto.new().generate_random_bytes(32).hex_encode()
 	_grants[grant] = {"panel": panel, "person": person, "project": project, "item": item, "type": type,
+		"open_generation": str(db.get_instance_id()), "path": db.get_path(),
 		"actions": actions.map(func(a): return str(a)), "expires_at": Time.get_ticks_msec() + GRANT_TTL_MS}
 	return {"result": {"panel_grant": grant, "expires_in_ms": GRANT_TTL_MS}}
 
@@ -286,6 +289,13 @@ func _granted(params: Dictionary, action: String) -> Dictionary:
 		return {"error": "the grant does not allow %s" % action}
 	if str(params.get("project", "")) != scope.project or str(params.get("id", "")) != scope.item:
 		return {"error": "the grant does not cover that item"}
+	# Only the opening it was registered for: not a later one under the same
+	# selector, nor another file given that selector since.
+	var db: DocketDB = _registry.project_db(scope.project)
+	if db == null or str(db.get_instance_id()) != scope.open_generation \
+			or db.get_path() != scope.path:
+		_grants.erase(str(params.panel_grant))
+		return {"error": "the project the grant named is no longer open"}
 	return scope
 
 
@@ -299,6 +309,15 @@ func _is_host(params: Dictionary) -> bool:
 	for i in expected.size():
 		difference |= offered[i] ^ expected[i]
 	return difference == 0
+
+
+# `work` (returning a reply) run as a tool's work is, once every open
+# project's cache is its file as it is (ToolRegistry.admit); else the refusal.
+func _admitted(work: Callable, op: RefCounted = null) -> Dictionary:
+	var admitted: Dictionary = _registry.admit(func(_reloaded: Array) -> Dictionary: return work.call(), op)
+	if admitted.has("refused"):
+		return _failure(-32002, str(admitted.refused.error))
+	return admitted
 
 
 static func _failure(code: int, message: String) -> Dictionary:

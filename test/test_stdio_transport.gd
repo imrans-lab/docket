@@ -255,15 +255,15 @@ func test_host_managed_opens_only_what_it_is_given() -> Variant:
 	var failed := func(id: int) -> bool:
 		return not replies.has(id) or replies[id].has("error") or not replies[id].has("result") \
 			or bool(replies[id].result.get("isError", false))
-	# The tool itself refusing, saying the project is already open.
-	var tool_refused := func(id: int) -> bool:
-		return replies.has(id) and replies[id].has("result") and bool(replies[id].result.get("isError", false)) \
-			and str(replies[id].result.get("content", [{}])[0].get("text", "")).contains("already loaded")
+	# The tool answering the project already open, not opening it again.
+	var already_open := func(id: int) -> bool:
+		var added = JSON.parse_string(str(answer.call(id).get("content", [{}])[0].get("text", "")))
+		return not failed.call(id) and added is Dictionary and added.get("already_open") == true and added.get("name") == "opened"
 	var created = JSON.parse_string(str(answer.call(10).get("content", [{}])[0].get("text", "")))
-	r = A.eq([failed.call(4), tool_refused.call(5), paths.call(answer.call(6)), failed.call(7),
+	r = A.eq([failed.call(4), already_open.call(5), paths.call(answer.call(6)), failed.call(7),
 		paths.call(answer.call(8)), failed.call(9), failed.call(10), created is Dictionary and created.has("id")],
 		[false, true, [opened], false, [], false, false, true],
-		"a project opens once (a second open is refused); closing the last leaves an empty server, which opens it again and works in it: %s" % [replies])
+		"a project opens once (adding it again answers it, still open once); closing the last leaves an empty server, which opens it again and works in it: %s" % [replies])
 	if r is String: return r
 	return A.eq([[FileAccess.get_sha256(in_cwd), FileAccess.get_sha256(prefs), FileAccess.get_sha256(_path)],
 		FileAccess.file_exists(cwd.path_join("docket.dct"))], [before, false],

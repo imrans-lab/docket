@@ -2,9 +2,13 @@ extends Node
 ## items_changed, which the stdio transport forwards as item_changed: a change
 ## is reported once it is durable and only then — on a SQLite project at its
 ## statement or transaction commit (never after a rollback), on a JSONL
-## project once its file is saved (never for a failed save, though another
-## writer's state that a failed save adopts is reported as a reload) — and a
-## move reports the items in other projects whose references it rewrote.
+## project once its file is saved (never for a failed save, whose change is
+## undone, or kept unsaved when the file changed meanwhile) — and a move
+## reports the items in other projects whose references it rewrote. A JSONL
+## project's failed saves never lose a change, and one that cannot be read as
+## its file is refused, and read again when it can.
+
+const AppShell := preload("res://scripts/ui/app_shell.gd")
 
 var A := AssertHelpers
 var _schema: Dictionary
@@ -130,7 +134,7 @@ func test_move_reports_references_rewritten_in_another_project() -> Variant:
 		"the referencing item in the third project is reported: %s" % [gamma_changes])
 
 
-func test_jsonl_reports_only_saved_changes_and_adopted_outside_edits() -> Variant:
+func test_jsonl_reports_only_saved_changes_and_keeps_one_over_outside_edits() -> Variant:
 	var dir := OS.get_cache_dir().path_join("docket_changes_%d" % Time.get_ticks_usec())
 	DirAccess.make_dir_recursive_absolute(dir)
 	_dirs.append(dir)
@@ -145,14 +149,15 @@ func test_jsonl_reports_only_saved_changes_and_adopted_outside_edits() -> Varian
 	db.items_changed.connect(func(batch: Array): changes.append_array(batch))
 
 	# A change whose save fails is not reported.
-	db._atomic_write_hook = func(_path, _text): return "injected write failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected write failure"
 	var save_error := db.add_event_checked(id, "unsaved", "test")
 	db._atomic_write_hook = Callable()
 	var r = A.eq([save_error, changes], ["injected write failure", []], "the save failed, and reported nothing")
 	if r is String: return r
 
 	# Another writer changes the file while this one's mutation is open: the
-	# save fails, the outside state is adopted and reported; ours is not.
+	# save fails, and the change is kept here unsaved rather than read over or
+	# written over; nothing is reported, and the project takes no more changes.
 	DirAccess.copy_absolute(path, outside)
 	var other := DocketDBJsonl.open_jsonl(outside)
 	other.add_event(id, "outside_edit", "other writer")
@@ -162,11 +167,13 @@ func test_jsonl_reports_only_saved_changes_and_adopted_outside_edits() -> Varian
 		DirAccess.copy_absolute(outside, path)
 		return added)
 	var events: Array = db.get_events(id).map(func(event: Dictionary) -> String: return str(event.event_type))
-	r = A.is_false(error.is_empty(), "the save over another writer's change fails")
+	r = A.is_true(error.contains("kept here"), "the save over another writer's change fails, keeping the change: %s" % error)
 	if r is String: return r
-	r = A.eq(changes, [{"id": "", "event": "reloaded"}], "only the adopted outside state is reported")
+	r = A.eq(changes, [], "nothing is reported")
 	if r is String: return r
-	return A.is_true(events.has("outside_edit") and not events.has("local_edit"), "the outside edit is adopted: %s" % [events])
+	var next := db.add_event_checked(id, "later", "test")
+	return A.is_true(events.has("local_edit") and not events.has("outside_edit") and FileAccess.get_file_as_string(path).contains("outside_edit")
+		and not next.is_empty(), "the change is kept, the other writer's file is left as it is, and the project is refused: %s %s" % [events, next])
 
 
 func test_jsonl_deletion_is_reported_once_saved_and_its_step_released() -> Variant:
@@ -188,7 +195,7 @@ func test_jsonl_deletion_is_reported_once_saved_and_its_step_released() -> Varia
 
 	# A deletion whose save fails leaves file, cache and vault entry as they
 	# were, and reports nothing.
-	db._atomic_write_hook = func(_path, _text): return "injected write failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected write failure"
 	var error := db.delete_item_checked(id)
 	db._atomic_write_hook = Callable()
 	var r = A.eq([error, changes], ["injected write failure", []], "the save failed, and reported nothing")
@@ -258,3 +265,142 @@ func test_a_checked_change_from_another_thread_is_refused_and_changes_nothing() 
 	return A.is_true(error.contains("thread") and db._owner_thread == owner and FileAccess.get_file_as_string(path) == saved
 		and changes.is_empty() and db.get_project_name() == "threads",
 		"the change is refused with the thread as the reason, and nothing changed: %s" % error)
+
+
+# A JSONL project with one bug, open, its path and the bug: [db, path, id].
+func _jsonl(name: String) -> Array:
+	var dir := OS.get_cache_dir().path_join("docket_changes_%d" % Time.get_ticks_usec())
+	DirAccess.make_dir_recursive_absolute(dir)
+	_dirs.append(dir)
+	var path := dir.path_join(name + ".dct")
+	_paths.append(path)
+	var db := DocketDBJsonl.create_new_jsonl(path)
+	_open.append(db)
+	db.set_project_name(name)
+	return [db, path, _new_bug(_registry({name: db}), name, "First")]
+
+
+func test_failed_saves_undo_or_keep_the_change_and_never_lose_it() -> Variant:
+	var opened := _jsonl("fault")
+	var db: DocketDBJsonl = opened[0]
+	var path: String = opened[1]
+	var id: String = opened[2]
+	var event_types := func(of: DocketDB) -> Array: return of.get_events(id).map(func(event: Dictionary) -> String: return str(event.event_type))
+	var changes: Array = []
+	db.items_changed.connect(func(batch: Array): changes.append_array(batch))
+	var fail := func(_path: String, _text: String, _staged: Dictionary) -> String: return "injected write failure"
+
+	# A save that wrote nothing undoes the change in the cache, reporting nothing.
+	db._atomic_write_hook = fail
+	var undone := db.add_event_checked(id, "undone", "test")
+	db._atomic_write_hook = Callable()
+	var r = A.is_true(undone == "injected write failure" and not event_types.call(db).has("undone") and changes.is_empty(),
+		"the failed change is gone from the cache, and nothing is reported: %s %s" % [undone, changes])
+	if r is String: return r
+
+	# When the cache to undo it cannot be built, the change is kept, unsaved,
+	# and the project takes nothing more; opening it again reads the file.
+	db._atomic_write_hook = fail
+	JSONLCache.rebuild_failure_hook = func() -> String: return "injected rebuild failure"
+	var kept := db.add_event_checked(id, "kept", "test")
+	JSONLCache.rebuild_failure_hook = Callable()
+	db._atomic_write_hook = Callable()
+	var later := db.add_event_checked(id, "later", "test")
+	r = A.is_true(kept.contains("kept here") and event_types.call(db).has("kept") and not later.is_empty()
+		and not FileAccess.get_file_as_string(path).contains("\"kept\""), "the change is kept unsaved, the file untouched: %s %s" % [kept, later])
+	if r is String: return r
+	db.close()
+	var reopened := DocketDBJsonl.open_jsonl(path)
+	_open.append(reopened)
+	r = A.is_false(event_types.call(reopened).has("kept"), "a cache holding an unsaved change is not taken for its file's")
+	if r is String: return r
+
+	# A write that reached the file but cannot be confirmed as the bytes
+	# written is "commit uncertain": the project waits for a person, and its
+	# marked cache is not taken for the file's either.
+	reopened._atomic_write_hook = func(write_path: String, text: String, staged: Dictionary) -> String:
+		return DocketDBJsonl._atomic_write(write_path, text + "\n", staged)
+	var uncertain := reopened.add_event_checked(id, "uncertain", "test")
+	reopened._atomic_write_hook = Callable()
+	var cache_path := JSONLCache.cache_path_for(path)
+	r = A.is_true(uncertain.begins_with("commit uncertain") and not reopened.add_event_checked(id, "after", "test").is_empty()
+		and not JSONLCache.is_cache_valid(path, cache_path), "an unconfirmed write is commit uncertain, and its cache is not trusted: %s" % uncertain)
+	if r is String: return r
+	reopened.close()
+	var read_again := DocketDBJsonl.open_jsonl(path)
+	_open.append(read_again)
+	return A.eq([read_again.get_meta_value(JSONLCache.UNSAVED_META, ""), event_types.call(read_again).has("uncertain")], ["", true],
+		"opened again, the project is its file: what reached it, and no unsaved mark")
+
+
+func test_a_project_that_cannot_be_read_is_refused_then_read_again() -> Variant:
+	var opened := _jsonl("ready")
+	var db: DocketDBJsonl = opened[0]
+	var path: String = opened[1]
+	var id: String = opened[2]
+	db.close()
+	var state := AppState.new()
+	# The shell reads the schema and preferences a running app's state has.
+	state.schema = TypeRegistryBootstrap.load_shipped_schema()
+	state.prefs = UserPrefs.new()
+	state.load_dct(path)
+	var setup = A.is_true(not state.schema.get("types", {}).is_empty() and state.db != null and state.get_project_dbs().has("ready"),
+		"setup: the state has its schema and the project open")
+	if setup is String: return setup
+	var source := LocalDocketSource.new(state)
+	var shell := AppShell.new()
+	shell.init(source)
+	add_child(shell)
+	var rewrite := func(from: String, to: String) -> void:
+		var text := FileAccess.get_file_as_string(path)
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		file.store_string(text.replace(from, to))
+		file.close()
+
+	# A read the file cannot answer now is refused, and the shell says so and
+	# keeps it for a retry, even with the files as they were.
+	rewrite.call("First", "Second")
+	JSONLCache.rebuild_failure_hook = func() -> String: return "injected rebuild failure"
+	var refused: Dictionary = source.item_title("ready", id)
+	var action_refused := source.action_refusal()
+	await shell._poll_external_changes()
+	JSONLCache.rebuild_failure_hook = Callable()
+	var r = A.is_true(str(refused.get("kind", "")) == "stale" and action_refused.contains("not ready")
+		and bool(shell._unavailable.get("retryable", false)) and shell._unavailable_banner.visible,
+		"reads and actions are refused and the shell shows why: %s %s %s" % [refused, action_refused, shell._unavailable])
+	if r is String: shell.queue_free(); return r
+
+	# A later poll, with nothing new on disk, reads it again and clears it.
+	shell._retry_at_msec = 0
+	await shell._poll_external_changes()
+	r = A.is_true(shell._unavailable.is_empty() and not shell._unavailable_banner.visible and source.action_refusal().is_empty()
+		and str(source.item_title("ready", id).get("title", "")) == "Second", "the retry reads the file and clears the notice: %s" % [shell._unavailable])
+	if r is String: shell.queue_free(); return r
+
+	# An edit another read took in first still reaches the view: with no item
+	# open, the grid; with it open, the item, asked about once.
+	var grid_titles := func() -> Array:
+		return shell._query_grid._current_results.map(func(row: Dictionary) -> String: return str(row.get("title", "")))
+	rewrite.call("Second", "Third")
+	source.item_title("ready", id)
+	await shell._poll_external_changes()
+	await get_tree().process_frame
+	var grid_after: Array = grid_titles.call()
+	shell._on_item_activated(id, "ready")
+	rewrite.call("Third", "Fourth")
+	source.item_title("ready", id)
+	await shell._poll_external_changes()
+	var asked: bool = shell._confirm_reload_dialog.visible
+	shell._confirm_reload_dialog.hide()
+	# Read again with nothing new for the item: it is not asked about twice.
+	var asked_at: String = shell._reconciled_revision
+	var other_file := FileAccess.open(path, FileAccess.READ_WRITE)
+	other_file.seek_end()
+	other_file.store_string("\n")
+	other_file.close()
+	await shell._poll_external_changes()
+	r = A.is_true(grid_after.has("Third") and asked and shell._reconciled_revision != asked_at and not shell._confirm_reload_dialog.visible,
+		"an edit read in elsewhere refreshes the grid and asks about the open item once: %s %s" % [grid_after, asked])
+	shell.queue_free()
+	state.remove_project("ready")
+	return r

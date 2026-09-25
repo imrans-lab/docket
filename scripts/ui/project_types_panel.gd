@@ -454,6 +454,12 @@ func _write_once(step: Callable) -> void:
 	if _writing:
 		return
 	_writing = true
+	# Nothing is begun while a project cannot be changed (the reason shown).
+	var refused: String = await _src.action_refusal()
+	if not refused.is_empty():
+		_writing = false
+		_message(refused, true)
+		return
 	await step.call()
 	_writing = false
 

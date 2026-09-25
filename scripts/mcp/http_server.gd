@@ -41,7 +41,7 @@ var _handler: McpHandler
 var _registry: ToolRegistry
 var _clients: Array = []
 var _db: DocketDB
-var _project_dbs: Dictionary = {}  # project_name → DocketDB
+var _project_dbs: Dictionary = {}  # selector → DocketDB (ProjectSelectors)
 var _schema: Dictionary
 # stdio: lines read by the stdin thread, waiting for the main thread.
 var _stdin_thread: Thread
@@ -106,15 +106,17 @@ func _open_projects() -> void:
 			if host_managed and not FileAccess.file_exists(str(path)):
 				printerr("Docket: FAILED to load %s — no such file" % path)
 				continue
-			var loaded_db := _open_or_create_db(str(path))
+			var located := ProjectFile.locate(str(path))
+			if located.has("error"):
+				printerr("Docket: FAILED to load %s — %s" % [path, located.error])
+				continue
+			if not ProjectSelectors.selector_for(_project_dbs, located).is_empty():
+				continue  # the same file named twice
+			var loaded_db := _open_or_create_db(located.path)
 			if loaded_db:
-				var proj_name := loaded_db.get_project_name()
-				if proj_name.is_empty():
-					proj_name = str(path).get_file().get_basename()
-					loaded_db.set_project_name(proj_name)
-				_project_dbs[proj_name] = loaded_db
-				if _db == null:
-					_db = loaded_db  # First DB is primary
+				var registered := _register_project(loaded_db, located.path)
+				if registered.has("error"):
+					printerr("Docket: FAILED to load %s — %s" % [path, registered.error])
 			else:
 				# Never start up quietly serving nothing — an unopenable file
 				# (conflict markers, corruption) must be visible on stdout.
@@ -189,13 +191,18 @@ func _open_or_create_db(path: String) -> DocketDB:
 # -- Project management callables ------------------------------------------
 
 func _gui_add_project(path: String) -> Dictionary:
-	external_state.add_project(path)
+	var located := ProjectFile.locate(path)
+	if located.has("error"):
+		return located
+	var open_as := ProjectSelectors.selector_for(external_state.get_project_dbs(), located)
+	if not open_as.is_empty():
+		return ProjectSelectors.describe(external_state.get_project_dbs(), open_as, _db).merged({"already_open": true})
+	external_state.add_project(located.path)
 	# file_changed fires synchronously → _on_file_changed syncs registry
-	for proj_name in external_state.get_project_dbs():
-		var pdb: DocketDB = external_state.get_project_dbs()[proj_name]
-		if pdb.get_path() == path:
-			return {"name": proj_name, "path": path, "prefix": pdb.get_id_prefix()}
-	return {"name": path.get_file().get_basename(), "path": path}
+	var added := ProjectSelectors.selector_for(external_state.get_project_dbs(), {"path": located.path})
+	if added.is_empty():
+		return {"error": "Failed to open: %s" % path}
+	return ProjectSelectors.describe(external_state.get_project_dbs(), added, _db)
 
 
 func _gui_remove_project(proj_name: String) -> Dictionary:
@@ -215,35 +222,45 @@ func _gui_open(request: Dictionary) -> Dictionary:
 	return {"error": "Invalid request"}
 
 
+## Opens the project at `path` under a selector of its own (a file already
+## open is that project again, not a second opening): its description, with
+## already_open when it was open, or {error}.
 func _headless_add_project(path: String) -> Dictionary:
-	var loaded_db := _open_or_create_db(path)
+	var located := ProjectFile.locate(path)
+	if located.has("error"):
+		return located
+	var open_as := ProjectSelectors.selector_for(_project_dbs, located)
+	if not open_as.is_empty():
+		return ProjectSelectors.describe(_project_dbs, open_as, _db).merged({"already_open": true})
+	var loaded_db := _open_or_create_db(located.path)
 	if not loaded_db:
 		return {"error": "Failed to open: %s" % path}
-	var proj_name := loaded_db.get_project_name()
-	if proj_name.is_empty():
-		proj_name = path.get_file().get_basename()
-		loaded_db.set_project_name(proj_name)
-	# A project of the same name replaced: grants for the old one end, as its
-	# items are no longer what they named.
-	if _project_dbs.has(proj_name) and _handler.panel_authority != null:
-		_handler.panel_authority.revoke_project(proj_name)
-	_project_dbs[proj_name] = loaded_db
-	if _db == null:
-		_db = loaded_db
+	var registered := _register_project(loaded_db, located.path)
+	if registered.has("error"):
+		return registered
 	_registry.update_db(_schema, _db, _project_dbs)
-	_watch_project(proj_name, loaded_db)
+	_watch_project(registered.selector, loaded_db)
 	_persist_headless_session()
-	return {"name": proj_name, "path": path, "prefix": loaded_db.get_id_prefix()}
+	return ProjectSelectors.describe(_project_dbs, registered.selector, _db)
+
+
+# `loaded_db` under a new selector (see ProjectSelectors.register); the first
+# project is the primary.
+func _register_project(loaded_db: DocketDB, path: String) -> Dictionary:
+	var registered := ProjectSelectors.register(_project_dbs, loaded_db, path)
+	if not registered.has("error") and _db == null:
+		_db = loaded_db
+	return registered
 
 
 func _headless_remove_project(proj_name: String) -> Dictionary:
 	if not _project_dbs.has(proj_name):
 		return {"error": "Project not found: %s" % proj_name}
 	var closing_db: DocketDB = _project_dbs[proj_name]
+	if _handler.panel_authority != null:
+		_handler.panel_authority.revoke_opening(str(closing_db.get_instance_id()))
 	closing_db.close()
 	_project_dbs.erase(proj_name)
-	if _handler.panel_authority != null:
-		_handler.panel_authority.revoke_project(proj_name)
 	if closing_db == _db:
 		if _project_dbs.size() > 0:
 			_db = _project_dbs.values()[0]

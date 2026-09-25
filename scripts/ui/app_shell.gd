@@ -68,6 +68,24 @@ var _poll_timer: Timer
 var _last_projects_token: String = ""
 # True while an external-change poll is running, so timer ticks do not stack.
 var _polling := false
+# Why a project cannot be read as its file now (DocketSource.unavailable), as
+# shown; {} when all can be. A retryable one is read again by a poll at
+# _retry_at_msec, backing off to a minute; any other waits for the person
+# (Reload from Disk, closing the project) or another change to the files.
+var _unavailable: Dictionary = {}
+var _unavailable_banner: Label
+var _retry_at_msec := 0
+var _retry_backoff_msec := 0
+# How many refusals have been shown, so a poll knows whether one came in
+# while it looked at the open item.
+var _unavailable_shown := 0
+# Set by Reload from Disk: the next poll checks readiness whatever the token.
+var _recheck := false
+# The source's reload_revision the view was last brought up to.
+var _reconciled_revision := ""
+# The open item's changed version last asked about (project|id|token), so a
+# change is asked about once.
+var _prompted_for := ""
 # Bumped by each new-item catalog rebuild, so a slower earlier one is dropped.
 var _catalog_generation := 0
 
@@ -106,6 +124,7 @@ func _ready() -> void:
 	add_child(_poll_timer)
 	_poll_timer.start()
 	_last_projects_token = await _src.change_token()
+	_reconciled_revision = await _src.reload_revision()
 
 
 func _notification(what: int) -> void:
@@ -180,6 +199,12 @@ func _build_ui() -> void:
 
 	menu_panel.add_child(menu_row)
 	add_child(menu_panel)
+
+	_unavailable_banner = Label.new()
+	_unavailable_banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_unavailable_banner.add_theme_color_override("font_color", Color(1.0, 0.75, 0.35))
+	_unavailable_banner.visible = false
+	add_child(_unavailable_banner)
 
 	# Content area with margin
 	var margin := MarginContainer.new()
@@ -290,6 +315,7 @@ func _build_ui() -> void:
 	_src.watch_open_item(_open_item)
 	_src.open_item_requested.connect(func(id: String, project: String): _open_item_entry.call_deferred(id, project))
 	_src.open_query_requested.connect(_on_open_query_from_mcp)
+	_src.unavailable.connect(_show_unavailable)
 
 	# Preferences dialog
 	_prefs_dialog = ConfirmationDialog.new()
@@ -467,39 +493,55 @@ func _on_poll_external_changes() -> void:
 
 
 func _poll_external_changes() -> void:
+	# A change on disk is looked at once; a failure to read it stays shown and,
+	# when retryable, is tried again here though nothing has changed since.
+	# What was read again is known by the source's reload_revision, whichever
+	# read took it in, so a lookup that reloaded first does not hide it.
 	var current_token: String = await _src.change_token()
-	if current_token == _last_projects_token:
+	var retry_due := _recheck or (bool(_unavailable.get("retryable", false)) and Time.get_ticks_msec() >= _retry_at_msec)
+	var revision: String = await _src.reload_revision()
+	if current_token == _last_projects_token and not retry_due and revision == _reconciled_revision:
 		return
 	_last_projects_token = current_token
+	_recheck = false
 
-	# Snapshot the open item before reloading so we can tell whether the reload
-	# affected what the user is looking at.
-	var open_id := _record_form.get_current_id() if _record_form else ""
-	var open_project := _record_form.get_current_project() if _record_form else ""
+	# The open item as the form loaded it (its own token, never a fresh look).
+	var open_item := _open_item()
 	var generation: int = _record_form._load_generation if _record_form else -1
-	var before: String = await _item_revision(open_id, open_project)
 
 	var reloaded: Array = await _src.reload_stale()
-	if reloaded.is_empty():
+	var failure: Dictionary = await _src.readiness_failure()
+	if not failure.is_empty():
+		if bool(failure.get("retryable", false)):
+			_retry_backoff_msec = clampi(_retry_backoff_msec * 2, 3000, 60000)
+			_retry_at_msec = Time.get_ticks_msec() + _retry_backoff_msec
+		_show_unavailable(failure)
 		return
-
+	var recovered := not _unavailable.is_empty()
+	_clear_unavailable()
+	revision = await _src.reload_revision()
+	if revision == _reconciled_revision and reloaded.is_empty() and not recovered:
+		return
 	if _query_grid and _query_grid.is_visible_in_tree():
 		_query_grid.refresh()
-
-	if open_id.is_empty():
-		return
 
 	# Item-scoped policy: an external change to some *other* item is none of the
 	# open form's business, so reload silently. Only a change to the item under
 	# edit is worth interrupting for — the user may have unsaved edits, and
 	# saving them would overwrite what just arrived.
-	var after: String = await _item_revision(open_id, open_project)
-	if after == before or not _record_form._still_showing(generation):
-		return
-	var where := ", ".join(PackedStringArray(reloaded))
-	_ask_about_open_item("The item you have open was deleted in %s on disk." % where if after.is_empty()
-		else "The item you have open changed on disk (%s)." % where, after.is_empty(), "Item changed on disk",
-		"Load from disk", generation)
+	if not open_item.is_empty():
+		var shown := _unavailable_shown
+		var now: String = await _item_revision(str(open_item.id), str(open_item.project))
+		if _unavailable_shown != shown:
+			return  # not looked up: shown as unavailable, and looked at again
+		if now != str(open_item.token) and _record_form._still_showing(generation):
+			var seen := "%s|%s|%s" % [open_item.project, open_item.id, now]
+			if seen != _prompted_for:
+				_prompted_for = seen
+				_ask_about_open_item("The item you have open was deleted on disk." if now.is_empty()
+					else "The item you have open changed on disk.", now.is_empty(), "Item changed on disk",
+					"Load from disk", generation)
+	_reconciled_revision = revision
 
 
 ## The form's open item as the source compares changes made elsewhere with
@@ -549,13 +591,41 @@ func _item_revision(item_id: String, project: String = "") -> String:
 	return await _src.item_token(project, item_id)
 
 
+## Shows why a project cannot be read as its file (DocketSource.unavailable):
+## what is on screen stays, dimmed, and every change is refused (with this
+## reason) until it can be.
+func _show_unavailable(failure: Dictionary) -> void:
+	_unavailable_shown += 1
+	if bool(failure.get("retryable", false)) and _retry_backoff_msec == 0:
+		_retry_backoff_msec = 3000
+		_retry_at_msec = Time.get_ticks_msec() + _retry_backoff_msec
+	_unavailable = failure
+	_unavailable_banner.text = "%s. What is shown may not be current, and changes wait until %s" % [
+		str(failure.get("message", "")),
+		"it can be read again (retrying)" if bool(failure.get("retryable", false)) else "the project is reloaded from disk or opened again"]
+	_unavailable_banner.visible = true
+	_content_area.modulate = Color(1, 1, 1, 0.6)
+
+
+func _clear_unavailable() -> void:
+	_retry_backoff_msec = 0
+	if _unavailable.is_empty():
+		return
+	_unavailable = {}
+	_unavailable_banner.visible = false
+	_content_area.modulate = Color(1, 1, 1, 1)
+
+
 func _on_reload_from_disk() -> void:
 	## File > Reload from Disk — unconditional re-read, discarding cache.
+	_recheck = true
 	var open_id := _record_form.get_current_id() if _record_form else ""
 	var open_project := _record_form.get_current_project() if _record_form else ""
 	var generation: int = _record_form._load_generation if _record_form else -1
 	var reloaded: Array = await _src.reload_all()
 	_last_projects_token = await _src.change_token()
+	# What this reload brings is dealt with here, not asked about again by a poll.
+	_reconciled_revision = await _src.reload_revision()
 
 	if _query_grid and _query_grid.is_visible_in_tree():
 		_query_grid.refresh()
@@ -854,6 +924,11 @@ func _on_item_selected(id: String, project: String = "") -> void:
 
 func _create_and_edit_item(type_name: String, project: String = "", protected_path: bool = false, expected_type_id: String = "") -> void:
 	var type: Dictionary = await _src.get_type(project, type_name)
+	if type.has("kind"):
+		_info_dialog.title = "Not created"
+		_info_dialog.dialog_text = str(type.error)
+		_info_dialog.popup_centered()
+		return
 	if type.has("error") or type.lifecycle != "active":
 		return
 	if not expected_type_id.is_empty() and str(type.id) != expected_type_id:
@@ -1065,6 +1140,11 @@ func _show_vault() -> void:
 	var lines: PackedStringArray = []
 	var total := 0
 	var listed: Dictionary = await _src.standalone_secrets()
+	if listed.has("kind"):
+		_info_dialog.title = "Vault"
+		_info_dialog.dialog_text = str(listed.error)
+		_info_dialog.popup_centered()
+		return
 	for proj_name in listed:
 		var entries: Array = listed[proj_name]
 		lines.append("%s:" % proj_name)

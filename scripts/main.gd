@@ -321,6 +321,12 @@ func _run_jsonl_migration(opts: Dictionary) -> void:
 			print("Error: file not found: %s" % path)
 			all_ok = false
 			continue
+		var located := ProjectFile.locate(path)
+		if located.has("error"):
+			print("Error: %s" % located.error)
+			all_ok = false
+			continue
+		path = located.path
 		var fmt := JSONLMigration.detect_format(path)
 		if fmt == "jsonl":
 			print("Already JSONL: %s" % path)
@@ -348,6 +354,12 @@ func _run_migration(opts: Dictionary) -> void:
 		print("Error: file not found: %s" % path)
 		get_tree().quit(1)
 		return
+	var located := ProjectFile.locate(path)
+	if located.has("error"):
+		print("Error: %s" % located.error)
+		get_tree().quit(1)
+		return
+	path = located.path
 	if not DocketMigration.is_json_dct(path):
 		print("File is already SQLite format: %s" % path)
 		get_tree().quit(0)

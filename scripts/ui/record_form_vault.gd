@@ -34,6 +34,7 @@ func clear() -> void:
 	_form._encrypted_notes_show_btn.button_pressed = false
 	for child in _form._secret_history_container.get_children():
 		child.queue_free()
+	_form._secret_history_container.remove_meta("unavailable")
 	_loaded_generation = -1
 	_loaded_parts.clear()
 
@@ -66,6 +67,10 @@ func _load_secret_value() -> void:
 	var generation: int = _form._load_generation
 	var info: Dictionary = await _form._src.secret_info(project, id)
 	if not _form._still_showing(generation):
+		return
+	if info.has("error"):
+		_form._secret_vault_error_label.text = str(info.error)
+		_form._secret_vault_error_label.visible = true
 		return
 	if info.vault != "ok":
 		_form._secret_value_edit.text = ""
@@ -127,12 +132,24 @@ func _load_encrypted_notes(handle: String) -> void:
 
 func _populate_secret_history() -> void:
 	## Show version history for current secret.
-	# Cleared before and after the reply, as in RecordForm._populate_children.
+	# Cleared before and after the reply, as in RecordForm._populate_children,
+	# so another secret's history never shows; a refused read (the shell says
+	# why) says it is unavailable.
 	for child in _form._secret_history_container.get_children():
 		child.queue_free()
 	var generation: int = _form._load_generation
 	var versions: Array = await _form._src.secret_versions(_form._current_project, _form._current_id)
 	if not _form._still_showing(generation):
+		return
+	var refused: String = _form._src.refusal(versions)
+	_form._secret_history_container.remove_meta("unavailable")
+	if not refused.is_empty():
+		var unavailable := Label.new()
+		unavailable.text = "Version history is not available now: %s" % refused
+		unavailable.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_form._secret_history_container.add_child(unavailable)
+		_form._secret_history_container.set_meta("unavailable", true)
+		_label_secret_history()
 		return
 	for child in _form._secret_history_container.get_children():
 		child.queue_free()
@@ -268,7 +285,21 @@ func _wait_for_2fa_dialog() -> Array:
 	return [state.confirmed]
 
 
+# Whether a secret action is refused now, as a change is (the source's
+# action_refusal), saying why in the vault's error line. Values already
+# decrypted are neither shown nor copied while a project is not ready.
+func _refused() -> bool:
+	var refused: String = await _form._src.action_refusal()
+	if refused.is_empty():
+		return false
+	_show_vault_error(refused)
+	return true
+
+
 func _on_secret_show_toggle() -> void:
+	if _form._secret_show_btn.button_pressed and await _refused():
+		_form._secret_show_btn.set_pressed_no_signal(false)
+		return
 	if _form._secret_show_btn.button_pressed:
 		if not _form._secret_value_decrypted.is_empty():
 			_form._secret_value_edit.text = _form._secret_value_decrypted
@@ -282,6 +313,8 @@ func _on_secret_show_toggle() -> void:
 
 
 func _on_secret_copy() -> void:
+	if await _refused():
+		return
 	if not _form._secret_value_decrypted.is_empty():
 		DisplayServer.clipboard_set(_form._secret_value_decrypted)
 	elif not _form._secret_value_edit.text.is_empty() and _form._secret_value_edit.text != "********":
@@ -290,6 +323,8 @@ func _on_secret_copy() -> void:
 
 func _on_secret_generate() -> void:
 	## Generate a random password.
+	if await _refused():
+		return
 	var length := 24
 	var bytes := Crypto.new().generate_random_bytes(length)
 	var chars := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
@@ -304,6 +339,9 @@ func _on_secret_generate() -> void:
 
 
 func _on_encrypted_notes_show_toggle() -> void:
+	if _form._encrypted_notes_show_btn.button_pressed and await _refused():
+		_form._encrypted_notes_show_btn.set_pressed_no_signal(false)
+		return
 	if _form._encrypted_notes_show_btn.button_pressed:
 		if not _form._encrypted_notes_decrypted.is_empty():
 			_form._encrypted_notes_edit.text = _form._encrypted_notes_decrypted
@@ -315,15 +353,24 @@ func _on_encrypted_notes_show_toggle() -> void:
 
 
 func _on_encrypted_notes_copy() -> void:
+	if await _refused():
+		return
 	if not _form._encrypted_notes_decrypted.is_empty():
 		DisplayServer.clipboard_set(_form._encrypted_notes_decrypted)
 
 
 func _on_secret_history_toggle() -> void:
 	_form._secret_history_container.visible = not _form._secret_history_container.visible
+	_label_secret_history()
+
+
+# The history toggle's label: its count, or that it is unavailable.
+func _label_secret_history() -> void:
 	var count: int = _form._secret_history_container.get_child_count()
 	var prefix := "v" if _form._secret_history_container.visible else ">"
-	if count > 0:
+	if _form._secret_history_container.has_meta("unavailable"):
+		_form._secret_history_toggle.text = "%s Version History (unavailable)" % prefix
+	elif count > 0:
 		_form._secret_history_toggle.text = "%s Version History (%d)" % [prefix, count]
 	else:
 		_form._secret_history_toggle.text = "%s Version History" % prefix

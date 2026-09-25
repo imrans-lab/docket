@@ -14,10 +14,9 @@ func _init(form) -> void:
 
 func toggle() -> void:
 	_form._comments_container.visible = not _form._comments_container.visible
-	if _form._comments_container.visible:
-		_form._comments_toggle.text = "v Comments"
-	else:
-		_form._comments_toggle.text = "> Comments"
+	var prefix := "v" if _form._comments_container.visible else ">"
+	var unavailable := " (unavailable)" if _form._comments_list.has_meta("unavailable") else ""
+	_form._comments_toggle.text = "%s Comments%s" % [prefix, unavailable]
 
 
 ## Add the typed text as a comment on the shown item, or as a reply to comment
@@ -56,7 +55,7 @@ func _refresh() -> void:
 	var generation: int = _form._load_generation
 	await populate()
 	var events: Array = await _form._src.item_events(_form._current_project, _form._current_id)
-	if not _form._still_showing(generation):
+	if not _form._still_showing(generation) or not _form._src.refusal(events).is_empty():
 		return
 	if not events.is_empty():
 		_form._populate_events({"events": events})
@@ -64,14 +63,26 @@ func _refresh() -> void:
 
 
 func populate() -> void:
-	# Cleared before and after the reply, as in RecordForm._populate_children.
+	# Cleared before and after the reply, as in RecordForm._populate_children,
+	# so another item's comments never show; a refused read (the shell says
+	# why) says the list is unavailable.
 	for child in _form._comments_list.get_children():
 		child.queue_free()
+	_form._comments_list.remove_meta("unavailable")
 	if _form._current_id.is_empty():
 		return
 	var generation: int = _form._load_generation
 	var comments: Array = await _form._src.list_comments(_form._current_project, _form._current_id)
 	if not _form._still_showing(generation):
+		return
+	var refused: String = _form._src.refusal(comments)
+	if not refused.is_empty():
+		_form._comments_list.set_meta("unavailable", true)
+		var unavailable := Label.new()
+		unavailable.text = "Comments are not available now: %s" % refused
+		unavailable.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_form._comments_list.add_child(unavailable)
+		_form._comments_toggle.text = "%s Comments (unavailable)" % ("v" if _form._comments_container.visible else ">")
 		return
 	for child in _form._comments_list.get_children():
 		child.queue_free()

@@ -19,14 +19,22 @@ var db: DocketDB  # Primary DB (first loaded)
 var dct_path: String
 var prefs: UserPrefs
 
-# Multi-project support: project_name → DocketDB
+# Multi-project support: selector → DocketDB (see ProjectSelectors)
 var _project_dbs: Dictionary = {}
 var _type_registries: Dictionary = {}
 var registry_diagnostics: Dictionary = {}
 var last_cross_project_query_error: String = ""
+## Why a project could not be read as its file when reload_stale last looked
+## ({ok: false, kind, project, message, retryable}, ProjectAdmission), or {}:
+## for display only, never for admission.
+var readiness_failure: Dictionary = {}
 
 
 func load_dct(path: String) -> void:
+	var located := _located(path, false)
+	if located.is_empty():
+		return
+	path = located.path
 	dct_path = path
 	if db:
 		db.close()
@@ -64,19 +72,41 @@ func load_dct(path: String) -> void:
 		load_failed.emit(path, reason)
 		return
 
-	# Register in multi-project map
-	var proj_name := db.get_project_name()
-	if proj_name.is_empty():
-		proj_name = path.get_file().get_basename()
-		db.set_project_name(proj_name)
-	_project_dbs[proj_name] = db
-	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
+	var registered := ProjectSelectors.register(_project_dbs, db, path)
+	if registered.has("error"):
+		push_error("AppState: %s" % registered.error)
+		db = null
+		dct_path = ""
+		load_failed.emit(path, str(registered.error))
+		return
+	_type_registries[registered.selector] = TypeRegistry.for_db(db, registered.selector)
 
 	file_changed.emit()
 
 
+# `path` located (ProjectFile.locate), or {} when it cannot be, or when a
+# file to be created already exists there (creating never replaces a file):
+# load_failed then says why.
+func _located(path: String, creating: bool) -> Dictionary:
+	var located := ProjectFile.locate(path)
+	if not located.has("error") and creating and located.has("id"):
+		located = {"error": "%s already exists; open it instead" % path}
+	if located.has("error"):
+		push_error("AppState: %s" % located.error)
+		load_failed.emit(path, str(located.error))
+		return {}
+	return located
+
+
 func add_project(path: String) -> void:
-	## Load an additional .dct project without closing the primary.
+	## Load an additional .dct project without closing the primary; a file
+	## already open stays as it is.
+	var located := _located(path, false)
+	if located.is_empty():
+		return
+	path = located.path
+	if not ProjectSelectors.selector_for(_project_dbs, located).is_empty():
+		return
 	var new_db: DocketDB
 	if FileAccess.file_exists(path):
 		match JSONLMigration.detect_format(path):
@@ -103,17 +133,18 @@ func add_project(path: String) -> void:
 		load_failed.emit(path, reason)
 		return
 
+	if new_db.get_project_name().is_empty():
+		new_db.set_project_name(path.get_file().get_basename())
 	var proj_name := new_db.get_project_name()
-	if proj_name.is_empty():
-		proj_name = path.get_file().get_basename()
-		new_db.set_project_name(proj_name)
 
-	# Resolve ID prefix collisions by appending chars from project name
+	# Resolve ID prefix collisions by appending chars from project name. A
+	# project stored under the same name (a copy) keeps its prefix: opening it
+	# changes nothing in it.
 	var new_prefix := new_db.get_id_prefix()
 	var collides := func() -> bool:
 		for existing_name in _project_dbs:
 			var existing_db: DocketDB = _project_dbs[existing_name]
-			if existing_db.get_id_prefix() == new_prefix and existing_name != proj_name:
+			if existing_db.get_id_prefix() == new_prefix and existing_db.get_project_name() != proj_name:
 				return true
 		return false
 	if collides.call():
@@ -125,7 +156,7 @@ func add_project(path: String) -> void:
 			var still_collides := false
 			for existing_name in _project_dbs:
 				var existing_db: DocketDB = _project_dbs[existing_name]
-				if existing_db.get_id_prefix() == new_prefix and existing_name != proj_name:
+				if existing_db.get_id_prefix() == new_prefix and existing_db.get_project_name() != proj_name:
 					still_collides = true
 					break
 			if not still_collides:
@@ -138,7 +169,7 @@ func add_project(path: String) -> void:
 				var still_collides := false
 				for existing_name in _project_dbs:
 					var existing_db: DocketDB = _project_dbs[existing_name]
-					if existing_db.get_id_prefix() == new_prefix and existing_name != proj_name:
+					if existing_db.get_id_prefix() == new_prefix and existing_db.get_project_name() != proj_name:
 						still_collides = true
 						break
 				if not still_collides:
@@ -147,8 +178,12 @@ func add_project(path: String) -> void:
 		if new_prefix != new_db.get_id_prefix():
 			new_db.set_id_prefix(new_prefix)
 
-	_project_dbs[proj_name] = new_db
-	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
+	var registered := ProjectSelectors.register(_project_dbs, new_db, path)
+	if registered.has("error"):
+		push_error("AppState: %s" % registered.error)
+		load_failed.emit(path, str(registered.error))
+		return
+	_type_registries[registered.selector] = TypeRegistry.for_db(new_db, registered.selector)
 
 	file_changed.emit()
 
@@ -156,8 +191,17 @@ func add_project(path: String) -> void:
 func get_project_dbs() -> Dictionary:
 	return _project_dbs
 
+
+## The selector of the primary project, or "" when none is open.
+func primary_selector() -> String:
+	for selector in _project_dbs:
+		if _project_dbs[selector] == db:
+			return str(selector)
+	return ""
+
+
 func get_type_registry(project_name: String = "") -> TypeRegistry:
-	var key: String = project_name if not project_name.is_empty() else (db.get_project_name() if db != null else "")
+	var key: String = project_name if not project_name.is_empty() else primary_selector()
 	var registry: TypeRegistry = _type_registries.get(key)
 	if registry == null and _project_dbs.has(key):
 		registry = TypeRegistry.for_db(_project_dbs[key], key)
@@ -180,6 +224,9 @@ func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: 
 	var old_db: DocketDB = _project_dbs[project_name]
 	if old_db is DocketDBJsonl:
 		return {"success":false,"error":"project is already JSONL"}
+	var replaced := old_db.file_replacement()
+	if not replaced.is_empty():
+		return {"success":false,"error":replaced}
 	var path: String = old_db.get_path()
 	var was_primary: bool = old_db == db
 	old_db.close()
@@ -192,6 +239,9 @@ func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: 
 		reopened = DocketDB.new()
 		if not reopened.open(path):
 			reopened = null
+	if reopened != null and not reopened.bind_file(path).is_empty():
+		reopened.close()
+		reopened = null
 	if reopened == null:
 		_project_dbs.erase(project_name)
 		_type_registries.erase(project_name)
@@ -220,11 +270,17 @@ func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, excl
 	var old_db: DocketDB = _project_dbs[project_name]
 	if not old_db is DocketDBJsonl:
 		return {"ok":false,"error":"legacy SQLite must be explicitly promoted to JSONL first"}
+	var replaced := old_db.file_replacement()
+	if not replaced.is_empty():
+		return {"ok":false,"error":replaced}
 	var path: String = old_db.get_path()
 	var was_primary: bool = old_db == db
 	old_db.close()
 	var result: Dictionary = JSONLTypeUpgrade.apply(path, preview, schema, exclusive_writer_confirmed)
 	var reopened: DocketDBJsonl = DocketDBJsonl.open_jsonl(path)
+	if reopened != null and not reopened.bind_file(path).is_empty():
+		reopened.close()
+		reopened = null
 	if reopened == null:
 		_project_dbs.erase(project_name)
 		_type_registries.erase(project_name)
@@ -317,6 +373,10 @@ func move_item(item_id: String, target_project: String, source_project: String =
 
 
 func create_dct(path: String) -> void:
+	var located := _located(path, true)
+	if located.is_empty():
+		return
+	path = located.path
 	dct_path = path
 	if db:
 		db.close()
@@ -326,32 +386,44 @@ func create_dct(path: String) -> void:
 	registry_diagnostics.clear()
 	# Default new dockets to JSONL format
 	db = DocketDBJsonl.create_new_jsonl(path)
-	var proj_name := db.get_project_name()
-	_project_dbs[proj_name] = db
-	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
+	var registered := ProjectSelectors.register(_project_dbs, db, path)
+	if registered.has("error"):
+		push_error("AppState: %s" % registered.error)
+		db = null
+		dct_path = ""
+		load_failed.emit(path, str(registered.error))
+		return
+	_type_registries[registered.selector] = TypeRegistry.for_db(db, registered.selector)
 	file_changed.emit()
 
 
 func create_and_add_project(path: String) -> void:
 	## Create a new .dct and add it alongside existing projects (does NOT replace).
+	var located := _located(path, true)
+	if located.is_empty():
+		return
+	path = located.path
 	# Default new dockets to JSONL format
 	var new_db := DocketDBJsonl.create_new_jsonl(path)
 	if new_db == null:
 		return
+	if new_db.get_project_name().is_empty():
+		new_db.set_project_name(path.get_file().get_basename())
 	var proj_name := new_db.get_project_name()
-	if proj_name.is_empty():
-		proj_name = path.get_file().get_basename()
-		new_db.set_project_name(proj_name)
 
 	# Warn on prefix collision
 	var new_prefix := new_db.get_id_prefix()
 	for existing_name in _project_dbs:
 		var existing_db: DocketDB = _project_dbs[existing_name]
-		if existing_db.get_id_prefix() == new_prefix and existing_name != proj_name:
+		if existing_db.get_id_prefix() == new_prefix and existing_db.get_project_name() != proj_name:
 			push_warning("DocketDB: ID prefix '%s' in project '%s' collides with '%s'" % [new_prefix, proj_name, existing_name])
 
-	_project_dbs[proj_name] = new_db
-	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
+	var registered := ProjectSelectors.register(_project_dbs, new_db, path)
+	if registered.has("error"):
+		push_error("AppState: %s" % registered.error)
+		load_failed.emit(path, str(registered.error))
+		return
+	_type_registries[registered.selector] = TypeRegistry.for_db(new_db, registered.selector)
 	file_changed.emit()
 
 
@@ -371,20 +443,55 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 
 func reload_stale() -> Array:
 	## Reload any JSONL-backed project whose file changed on disk (git pull,
-	## another Docket instance, the MCP server). Returns names reloaded.
+	## another Docket instance, the MCP server). Returns names reloaded, or
+	## whose type definitions changed. One that cannot be (ProjectAdmission)
+	## is kept in readiness_failure, its type registry left as it was.
 	var reloaded: Array = []
+	readiness_failure = {}
 	for proj_name in _project_dbs:
-		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl:
-			var db_reloaded: bool = (pdb as DocketDBJsonl).ensure_fresh()
-			var registry: TypeRegistry = _type_registries[proj_name]
-			var previous_generation: String = registry.get_generation_token()
-			var error: String = registry.reload() if db_reloaded else registry.refresh_if_changed()
-			if not error.is_empty(): registry_diagnostics[proj_name] = error
-			else:
-				registry_diagnostics.erase(proj_name)
-				if db_reloaded or registry.get_generation_token() != previous_generation: reloaded.append(proj_name)
+		var access := ProjectAdmission.access({proj_name: _project_dbs[proj_name]}, func(read_again: Array) -> Array:
+			return _refresh_registries([proj_name], read_again))
+		if access.ok:
+			reloaded.append_array(access.value)
+		else:
+			registry_diagnostics[proj_name] = str(access.message)
+			if readiness_failure.is_empty(): readiness_failure = access
 	return reloaded
+
+
+## `work` run once every open project is admitted (ProjectAdmission), their
+## type registries refreshed first: ProjectAdmission.access's result.
+func access(work: Callable) -> Dictionary:
+	return ProjectAdmission.access(_project_dbs, func(read_again: Array) -> Variant:
+		_refresh_registries(_project_dbs.keys(), read_again)
+		return work.call() if work.is_valid() else null)
+
+
+# The type registries of `admitted` projects follow their databases: one
+# read again is reloaded, the others refreshed if their definitions
+# changed. The names whose registries changed.
+func _refresh_registries(admitted: Array, read_again: Array) -> Array:
+	var changed: Array = []
+	for proj_name in admitted:
+		var registry: TypeRegistry = _type_registries.get(proj_name)
+		if registry == null: continue
+		var previous_generation: String = registry.get_generation_token()
+		var error: String = registry.reload() if proj_name in read_again else registry.refresh_if_changed()
+		if not error.is_empty(): registry_diagnostics[proj_name] = error
+		else:
+			registry_diagnostics.erase(proj_name)
+			if proj_name in read_again or registry.get_generation_token() != previous_generation: changed.append(proj_name)
+	return changed
+
+
+## Changes whenever an open project is read again from its file, or a
+## project is opened or closed (DocketSource.reload_revision).
+func reload_revision() -> String:
+	var parts: PackedStringArray = []
+	for selector in _project_dbs:
+		var pdb: DocketDB = _project_dbs[selector]
+		parts.append("%s:%d:%d" % [selector, pdb.get_instance_id(), (pdb as DocketDBJsonl).reload_revision if pdb is DocketDBJsonl else 0])
+	return "|".join(parts)
 
 
 func reload_all() -> Array:

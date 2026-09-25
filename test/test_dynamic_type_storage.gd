@@ -243,7 +243,7 @@ func test_injected_lock_and_atomic_write_failures_restore_canonical_cache() -> V
 	DirAccess.remove_absolute(path + ".lock")
 	var r = A.is_true(not error.is_empty() and db.get_item("ORD-0001").title == "Before definition", "lock failure is reported and cache reconstructed")
 	if r is String: db.close(); return r
-	db._atomic_write_hook = func(_path, _text): return "injected temp write failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected temp write failure"
 	error = db.update_item_fields_checked("ORD-0001", {"title":"temp leak"})
 	r = A.is_true(error.contains("injected") and db.get_item("ORD-0001").title == "Before definition", "atomic failure is reported and cache reconstructed")
 	db._atomic_write_hook = Callable()
@@ -296,7 +296,7 @@ func test_checked_registry_compound_write_rolls_back_cache_after_canonical_failu
 	new_revision.id = "%s@%s" % [new_revision.type_id, TypeRegistryBootstrap._definition_hash(new_revision.definition)]
 	var new_definition := old_definition.duplicate(true)
 	new_definition.current_revision = new_revision.id
-	db._atomic_write_hook = func(_path, _text): return "injected canonical failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected canonical failure"
 	var error := db.apply_registry_change(new_definition, new_revision, [{"item_id":"ORD-0001","type_id":new_definition.id,"type_revision":new_revision.id}], [{"item_id":"ORD-0001","event_type":"type_revision_changed","timestamp":"2026-09-12T00:00:00Z"}], old_revision.id)
 	var revision_rows := db._exec_select("SELECT id FROM type_def_versions WHERE id=?;", [new_revision.id])
 	var r = A.is_true(error.contains("injected") and revision_rows.is_empty(), "failed canonical replacement reconstructs cache without staged revision")
@@ -623,9 +623,9 @@ func test_nested_project_metadata_completion_writes_canonical_once() -> Variant:
 	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
 	var db := DocketDBJsonl.open_jsonl(path)
 	var calls := {"count":0}
-	db._atomic_write_hook = func(write_path: String, text: String):
+	db._atomic_write_hook = func(write_path: String, text: String, staged: Dictionary):
 		calls.count += 1
-		return DocketDBJsonl._atomic_write(write_path, text)
+		return DocketDBJsonl._atomic_write(write_path, text, staged)
 	var error := db.set_project_meta_checked({"stage":"experiment","hypothesis":"one transaction","success_criteria":"one flush"})
 	db._atomic_write_hook = Callable()
 	var r = A.eq(error, "", "nested metadata mutation succeeds")
@@ -684,7 +684,7 @@ func test_checked_setters_return_sql_and_canonical_write_failures() -> Variant:
 	var error := db.set_counter_checked(99)
 	var r = A.is_true(not error.is_empty(), "checked metadata setter returns SQL failure")
 	if r is String: db.close(); return r
-	db._atomic_write_hook = func(_path, _text): return "injected setter write failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected setter write failure"
 	error = db.update_item_fields_checked("ORD-0001", {"title": "must roll back"})
 	db._atomic_write_hook = Callable()
 	r = A.contains(error, "injected setter write failure", "checked item setter returns canonical failure")
@@ -705,7 +705,7 @@ func test_next_id_checked_distinguishes_counter_and_canonical_failures() -> Vari
 	if r is String: db.close(); return r
 	r = A.eq(db.get_counter(), counter_before, "failed counter update rolls back")
 	if r is String: db.close(); return r
-	db._atomic_write_hook = func(_path, _text): return "injected next-id canonical failure"
+	db._atomic_write_hook = func(_path, _text, _staged): return "injected next-id canonical failure"
 	result = db.next_id_checked()
 	db._atomic_write_hook = Callable()
 	r = A.is_true(str(result.id).is_empty() and str(result.error).contains("canonical failure"), "checked ID allocation reports canonical replacement failure")

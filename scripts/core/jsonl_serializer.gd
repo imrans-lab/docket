@@ -10,7 +10,7 @@ const JSONL_VERSION := "1.0.0"
 ## docket_meta keys that must NOT be written to the shared file.
 ## jsonl_hash is this machine's cache fingerprint — writing it would make the
 ## file's own content depend on the cache built from it.
-const _EPHEMERAL_META_KEYS := ["jsonl_hash", "jsonl_version", "registry_diagnostics"]
+const _EPHEMERAL_META_KEYS := ["jsonl_hash", "jsonl_version", "registry_diagnostics", JSONLCache.UNSAVED_META]
 
 
 # -- Public API ---------------------------------------------------------------

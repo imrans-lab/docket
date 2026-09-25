@@ -4,8 +4,10 @@
 # an empty project, imports it, asks Godot whether the extension's classes
 # exist, and makes a few calls: DocketCredentialStore.status without an
 # operation, which must refuse and touches nothing, and one coordination
-# operation opened, nested and closed. That takes and gives back the shared
-# lock in the account's coordination directory, creating it if missing.
+# operation opened, nested and closed, and DocketFileIdentity of the project
+# file, which must resolve as one file with one link. The operation takes and
+# gives back the shared lock in the account's coordination directory,
+# creating it if missing.
 #
 # Use it on the library exactly as it ships (the one inside an exported app),
 # once per Godot a host runs: the extension targets an older API than
@@ -17,7 +19,7 @@ set -euo pipefail
 GODOT="${1:?usage: check_native_load.sh <godot-binary> <library-file>}"
 LIBRARY="${2:?usage: check_native_load.sh <godot-binary> <library-file>}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CLASSES=(DocketCoordLock DocketCoordOperation DocketCredentialStore)
+CLASSES=(DocketCoordLock DocketCoordOperation DocketCredentialStore DocketFileIdentity)
 
 test -s "$LIBRARY" || { echo "no library at $LIBRARY"; exit 1; }
 
@@ -61,6 +63,11 @@ EOF
 	echo "		var nested: Dictionary = opened.operation.nested(0) if opened.has(\"operation\") else {}"
 	echo "		if not nested.has(\"operation\") or nested.operation.close() != \"\" or opened.operation.close() != \"\" or opened.operation.is_open():"
 	echo "			print(\"NATIVE CALL FAILED: \", opened, \" \", nested)"
+	echo "			quit(1)"
+	echo "			return"
+	echo "		var identity: Dictionary = ClassDB.instantiate(\"DocketFileIdentity\").of(ProjectSettings.globalize_path(\"res://project.godot\"))"
+	echo "		if not identity.has(\"id\") or identity.get(\"links\") != 1 or not str(identity.get(\"path\")).ends_with(\"/project.godot\"):"
+	echo "			print(\"NATIVE CALL FAILED: \", identity)"
 	echo "			quit(1)"
 	echo "			return"
 	echo "		print(\"NATIVE LOAD OK\")"

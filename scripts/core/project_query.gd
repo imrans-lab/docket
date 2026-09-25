@@ -5,7 +5,7 @@ class_name ProjectQuery
 ## union; "project" conditions are decided outside each project's database.
 ## Shared by the standalone app (AppState) and the docket_query_view tool.
 
-var _project_dbs: Dictionary  # project name → DocketDB
+var _project_dbs: Dictionary  # selector → DocketDB (ProjectSelectors)
 var _registry_for: Callable  # func(project: String) -> TypeRegistry
 ## Why the last run failed, or "".
 var last_error := ""
@@ -27,7 +27,7 @@ func run_with_details(query: Dictionary, primary_db: DocketDB) -> Dictionary:
 		if not last_error.is_empty():
 			return {"error": last_error}
 	elif primary_db != null:
-		var registry: TypeRegistry = _registry_for.call(primary_db.get_project_name())
+		var registry: TypeRegistry = _registry_for.call(_selector_of(primary_db))
 		rows = primary_db.execute_registry_query(query, registry) if registry != null else primary_db.execute_query(query)
 		if not primary_db.last_query_error.is_empty():
 			return {"error": primary_db.last_query_error}
@@ -37,11 +37,20 @@ func run_with_details(query: Dictionary, primary_db: DocketDB) -> Dictionary:
 		var short := primary_db.short_id(full_id) if primary_db != null else full_id.substr(0, 7)
 		var project := _row_project(item)
 		if project.is_empty() and primary_db != null:
-			project = primary_db.get_project_name()  # a lone database, not in a project set
+			project = _selector_of(primary_db)
 		var registry: TypeRegistry = _registry_for.call(project)
 		details.append({"short_id": short,
 			"resolved": registry.resolve_item(item) if registry != null else {"error": "no type registry"}})
 	return {"rows": rows, "details": details}
+
+
+# The selector `db` is open under, or its stored name when it is not in the
+# project map (a lone database).
+func _selector_of(db: DocketDB) -> String:
+	for selector in _project_dbs:
+		if _project_dbs[selector] == db:
+			return str(selector)
+	return db.get_project_name()
 
 
 func _row_project(item: Dictionary) -> String:

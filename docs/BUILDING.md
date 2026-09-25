@@ -76,7 +76,8 @@ that look like unrelated SQLite bugs.
 
 `native/docket_native` is Docket's own native extension, written in Rust with
 [godot-rust](https://godot-rust.github.io). It provides `DocketCoordLock`, the
-cross-process lock Docket processes of one OS account coordinate through. It
+cross-process lock Docket processes of one OS account coordinate through,
+and `DocketFileIdentity`, which tells which file a project path really is. It
 builds with the exact Rust named in `rust-toolchain.toml`, installed with
 [rustup](https://rustup.rs), plus the target for your machine (both Apple
 targets on macOS, where the library is universal):

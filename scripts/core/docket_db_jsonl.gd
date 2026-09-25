@@ -21,6 +21,14 @@ class_name DocketDBJsonl
 var _jsonl_path: String
 var last_write_error: String = ""
 var _write_blocked: bool = false
+# True from the moment a change commits to the cache until its file holds it
+# too. A change that could not be saved stays so unless it is rolled back
+# (_roll_back); the cache is then never rebuilt from, nor written over, the
+# file until the project is opened again.
+var _unsaved := false
+# The file as the change in progress began from (_mutation_precheck):
+# {bytes, hash, id}, what a failed save rolls back to.
+var _baseline: Dictionary = {}
 var _allow_initial_write: bool = false
 var _lock_timeout_ms: int = 5000
 var _atomic_write_hook: Callable
@@ -28,6 +36,12 @@ var _atomic_write_hook: Callable
 # file. A change started meanwhile by something the change itself triggers
 # (an items_changed listener during a reload, say) is refused.
 var _mutation_busy := false
+# True while admission reads the file again, so what the reload reports does
+# not ask for admission of its own.
+var _admitting := false
+## How many times the cache has been read again from its file and found
+## changed (_reload), for views to notice whichever read did it.
+var reload_revision := 0
 # The step of the change or flush (_flush_within) that is rewriting the file,
 # so a failed write reloads within it; null when _flush_jsonl is called
 # directly, its writes then taking operations of their own.
@@ -189,6 +203,9 @@ func is_stale() -> bool:
 	## True if the JSONL file no longer matches what this cache was built from.
 	if not _is_open or _jsonl_path.is_empty():
 		return false
+	# Another file in its place is stale however alike its bytes.
+	if not _file_state().is_empty():
+		return true
 	var current := _file_fingerprint(_jsonl_path)
 	if current.is_empty():
 		return true
@@ -197,13 +214,41 @@ func is_stale() -> bool:
 
 func ensure_fresh() -> bool:
 	## Reload from JSONL if it changed underneath us. Returns true if reloaded.
-	## No-op mid-mutation: a compound write is not a safe point to swap the DB,
-	## nor is another thread than the connection's.
-	if not _thread_refusal().is_empty() or _change_in_progress():
-		return false
-	if not is_stale():
-		return false
-	return reload()
+	return admission(null).get("reloaded", false)
+
+
+## As DocketDBConnection.admission, reading the file again (_reload) when it
+## changed, another writer's file at its path included: kind "unsaved" while
+## the cache holds a change its file does not, "stale" (retryable) when the
+## file could not be read again. Mid-change, from another thread than the
+## connection's, and within its own reload, there is nothing to judge.
+func admission(step: RefCounted) -> Dictionary:
+	if not _thread_refusal().is_empty() or _change_in_progress() or _mutation_busy or _admitting:
+		return {}
+	if not _is_open:
+		return {"kind": "closed", "message": "it is closed", "retryable": false}
+	var refused := _refusal()
+	if not refused.is_empty() or not is_stale():
+		return refused
+	_admitting = true
+	var reloaded := reload(true, step)
+	_admitting = false
+	if reloaded:
+		return {"reloaded": true}
+	refused = _refusal()
+	if not refused.is_empty():
+		return refused
+	return {"kind": "stale", "message": "its file changed and could not be read again: %s" % last_write_error, "retryable": true}
+
+
+# {} or why this project is refused whatever its file says now.
+func _refusal() -> Dictionary:
+	var latched := _latched_admission()
+	if not latched.is_empty():
+		return latched
+	if _unsaved:
+		return {"kind": "unsaved", "message": last_write_error if not last_write_error.is_empty() else "it has a change not saved to %s" % _jsonl_path, "retryable": false}
+	return {}
 
 
 func reload(report_change: bool = true, parent: RefCounted = null) -> bool:
@@ -221,35 +266,105 @@ func reload(report_change: bool = true, parent: RefCounted = null) -> bool:
 	return reloaded
 
 
+# Reads the file into a candidate cache beside the current one, touching
+# neither the cache nor the binding until the candidate is complete and the
+# file is still exactly what was read (the same identity and bytes); then
+# installs both together (_install). A failed or overtaken read keeps the
+# cache as it was, stale. Another regular file at this project's path
+# (another writer's save, a git checkout) is read as the project, even with
+# the same bytes; anything else put there is never read. Nothing is read over
+# a change the cache holds unsaved.
 func _reload(step: RefCounted, report_change: bool) -> bool:
-	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
-
-	# Release our connection first so the rebuild can replace the cache file
-	# cleanly on platforms that refuse to unlink an open file.
-	# NOTE: super.close() (not close()) — the override would flush our stale
-	# state over the very file we are trying to read.
-	if _is_open:
-		super.close()
-
-	var fresh := JSONLCache.rebuild_cache(_jsonl_path, cache_path)
-	if fresh == null:
-		last_open_error = JSONLCache.last_error
+	var state := _file_state()
+	if _unsaved:
+		state = {"error": last_write_error if not last_write_error.is_empty() else "%s has a change not saved to its file" % _jsonl_path}
+	if state.has("error"):
+		_write_blocked = true
+		last_write_error = str(state.error)
+		return false
+	var read_as: String = str(state.replaced.id) if state.has("replaced") else str(_file_binding.get("id", ""))
+	var snapshot := JSONLCache.read_snapshot(_jsonl_path)
+	var candidate := JSONLCache.build_candidate(_jsonl_path, snapshot) if not snapshot.has("error") else snapshot
+	if candidate.has("error"):
+		last_open_error = str(candidate.error)
 		push_error("DocketDBJsonl: reload failed for %s — %s" % [_jsonl_path, last_open_error])
-		# rebuild_cache aborts before touching cache files when the JSONL itself
-		# is bad (conflict markers), so the old cache is usually still intact.
-		# Reopening it keeps the process usable and read-only-correct.
-		var fallback := DocketDB.new()
-		if fallback.open(cache_path, step):
-			_adopt(fallback)
 		_write_blocked = true
 		last_write_error = "canonical reload failed; cached data is read-only"
 		return false
-
-	_adopt(fresh)
+	if not _is_still(read_as, str(snapshot.hash)):
+		_discard(candidate)
+		_write_blocked = true
+		last_write_error = "%s changed while it was being read; it is read again before the next change" % _jsonl_path
+		return false
+	if not _install(candidate, step):
+		_write_blocked = true
+		last_write_error = "canonical reload failed; cached data is read-only"
+		return false
 	last_open_error = ""
+	if state.has("replaced"):
+		_file_binding.id = read_as
+		report_change = true
 	if report_change:
+		reload_revision += 1
 		items_changed.emit([{"id": "", "event": "reloaded"}])
 	return true
+
+
+# Whether the file is now the one identified as `id` (the bound one, for an
+# unbound connection "") holding bytes of fingerprint `hash`.
+func _is_still(id: String, hash: String) -> bool:
+	var state := ProjectFile.check(_file_binding) if not _file_binding.is_empty() else {}
+	var now_id: String = str(state.replaced.id) if state.has("replaced") else ("" if state.has("error") else str(_file_binding.get("id", "")))
+	return now_id == id and _file_fingerprint(_jsonl_path) == hash
+
+
+# Puts `candidate` (JSONLCache.build_candidate) in place of the current
+# cache, carrying over the diagnostics only the cache keeps: true, or false
+# with the current cache still in use.
+func _install(candidate: Dictionary, step: RefCounted) -> bool:
+	var candidate_db: DocketDB = candidate.db
+	for table in ["transition_log", "mcp_error_log"]:
+		for row in _exec_select("SELECT * FROM %s;" % table):
+			var keys: Array = row.keys()
+			var sql := "INSERT INTO %s (%s) VALUES (%s);" % [table, ", ".join(keys), ", ".join(keys.map(func(_k): return "?"))]
+			var carried := candidate_db._exec_checked(sql, keys.map(func(k): return row[k]))
+			if not carried.is_empty():
+				_discard(candidate)
+				return false
+	var previous := _path
+	# A checkpoint that could not finish still closes the connection, and then
+	# the candidate goes in (or the previous cache is opened again) as usual.
+	if not candidate_db.close_checked(step).is_empty() or (not close_checked(step).is_empty() and _is_open):
+		_discard(candidate)
+		return false
+	var cache_path := str(candidate.cache_path)
+	var installed := JSONLCache.install_candidate(str(candidate.path), cache_path)
+	var fresh := DocketDB.new()
+	if installed.is_empty() and fresh.open(cache_path, step):
+		var leftover := JSONLCache.discard_previous(cache_path)
+		if not leftover.is_empty():
+			push_warning("DocketDBJsonl: %s" % leftover)
+		_adopt(fresh)
+		return true
+	var restore_error := ""
+	if installed.is_empty():
+		restore_error = JSONLCache.restore_previous(cache_path)
+	else:
+		JSONLCache._delete_cache_files(str(candidate.path))
+		if not installed.intact: restore_error = str(installed.error)
+	# A cache whose files are not all back together is never opened.
+	var kept := DocketDB.new()
+	if restore_error.is_empty() and kept.open(previous, step):
+		_adopt(kept)
+	else:
+		_file_replaced = "the cache of %s could not be opened again%s; open the project again to continue" % [
+			_jsonl_path, "" if restore_error.is_empty() else " (%s)" % restore_error]
+	return false
+
+
+func _discard(candidate: Dictionary) -> void:
+	(candidate.db as DocketDB).close()
+	JSONLCache._delete_cache_files(str(candidate.path))
 
 
 func flush() -> void:
@@ -278,6 +393,18 @@ func _adopt(source: DocketDB) -> void:
 	if _write_blocked: last_write_error = "unresolved type definition data; project is read-only: %s" % diagnostics
 
 
+# Another writer's file at this project's path: read as the project (see
+# _reload), "" once it is, else why not.
+func _reconcile_replacement(_entry: Dictionary) -> String:
+	return "" if reload(true) else last_write_error
+
+
+# Mid-write, another writer's file is only refused; it is read afterwards
+# (a change's rollback, the next change or freshness check).
+func _replaced_refusal(_entry: Dictionary) -> String:
+	return "%s was replaced by another writer; it is read again first" % _jsonl_path
+
+
 func get_storage_diagnostics() -> Array:
 	var raw := super.get_meta_value("registry_diagnostics", "")
 	var parsed = JSON.parse_string(raw)
@@ -287,7 +414,11 @@ func get_storage_diagnostics() -> Array:
 # Before the outermost change: "" or why the project cannot be changed now.
 # A stale cache is reloaded first, within `step`.
 func _mutation_precheck(step: RefCounted) -> String:
-	if _write_blocked: return last_write_error
+	# Another file at the path makes the cache stale, so it is reconciled with
+	# below; anything else put there refuses the change.
+	var state := _file_state()
+	if state.has("error"): return str(state.error)
+	if _write_blocked and not state.has("replaced"): return last_write_error
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
 		_write_blocked = true
 		last_write_error = "canonical source is missing; project is read-only"
@@ -296,6 +427,13 @@ func _mutation_precheck(step: RefCounted) -> String:
 		_write_blocked = true
 		if last_write_error.is_empty(): last_write_error = "canonical source could not be reloaded"
 		return last_write_error
+	if _write_blocked: return last_write_error
+	_baseline = {}
+	if FileAccess.file_exists(_jsonl_path):
+		var snapshot := JSONLCache.read_snapshot(_jsonl_path)
+		if snapshot.has("error") or snapshot.hash != super.get_meta_value("jsonl_hash", ""):
+			return "%s changed as the change began; try it again" % _jsonl_path
+		_baseline = snapshot.merged({"id": _file_binding.get("id", "")})
 	return ""
 
 
@@ -334,15 +472,21 @@ func _canonical_step(step: RefCounted, work: Callable) -> Dictionary:
 		if outermost: _mutation_busy = false
 		return {"error": txn.error}
 	var result: Dictionary = work.call(step)
+	# The cache says so until its file holds the change, so a cache left
+	# behind unsaved is never opened as the file's (JSONLCache.is_cache_valid).
+	if outermost and str(result.get("error", "")).is_empty():
+		result.error = _set_meta_value(step, JSONLCache.UNSAVED_META, "1")
 	result.error = _complete_transaction(step, txn.ticket, str(result.get("error", "")))
 	if not outermost: return result
 	if str(result.error).is_empty():
+		_unsaved = true
 		result.error = _flush_within(step)
 	else:
 		# The cache is rebuilt from the file; only a newer file from another
 		# writer is reported.
 		reload(is_stale(), step)
 		last_write_error = result.error
+	_baseline = {}
 	_mutation_busy = false
 	return result
 
@@ -422,21 +566,39 @@ func _flush_jsonl() -> String:
 	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
 	if lock == null:
 		return _fail_flush("could not acquire advisory lock for %s" % _jsonl_path)
+	# Another file with the same bytes passes the hash check.
+	var source_problem := _source_problem()
+	if not source_problem.is_empty():
+		lock.release()
+		return _fail_flush(source_problem)
 	if not _allow_initial_write and _file_fingerprint(_jsonl_path) != expected_source_hash:
 		lock.release()
 		return _fail_flush("canonical source changed while acquiring write lock")
 
-	var write_error: String = str(_atomic_write_hook.call(_jsonl_path, jsonl_text)) if _atomic_write_hook.is_valid() else _atomic_write(_jsonl_path, jsonl_text)
+	var staged := {}
+	var write_error: String = str(_atomic_write_hook.call(_jsonl_path, jsonl_text, staged)) if _atomic_write_hook.is_valid() else _atomic_write(_jsonl_path, jsonl_text, staged)
 
 	if lock != null:
 		lock.release()
 	if not write_error.is_empty():
 		return _fail_flush(write_error)
 
-	# Update cache fingerprint so it stays valid
-	var fingerprint := _file_fingerprint(_jsonl_path)
-	if not fingerprint.is_empty():
-		super.set_meta_value_checked("jsonl_hash", fingerprint, _flushing_step)
+	# The file may now hold these bytes, so nothing after this is rolled back.
+	# The cache is fresh once the file is the one staged, holding exactly them.
+	var hashing := HashingContext.new()
+	hashing.start(HashingContext.HASH_SHA256)
+	hashing.update(jsonl_text.to_utf8_buffer())
+	var written_hash := hashing.finish().hex_encode()
+	var uncertain := _adopt_written(staged)
+	if uncertain.is_empty() and _file_fingerprint(_jsonl_path) != written_hash:
+		uncertain = "%s does not hold the bytes just written" % _jsonl_path
+	if uncertain.is_empty():
+		uncertain = super.set_meta_value_checked("jsonl_hash", written_hash, _flushing_step)
+	if uncertain.is_empty():
+		uncertain = super.set_meta_value_checked(JSONLCache.UNSAVED_META, "", _flushing_step)
+	if not uncertain.is_empty():
+		return _commit_uncertain(uncertain)
+	_unsaved = false
 	last_write_error = ""
 	return ""
 
@@ -451,17 +613,73 @@ func _validate_cache_for_flush() -> String:
 	return ""
 
 
+# A save that definitely wrote nothing: "" never; the error to report.
 func _fail_flush(message: String) -> String:
 	last_write_error = message
+	if _unsaved:
+		return _roll_back(message)
+	# Nothing unsaved (a save outside a change): the cache is its file as it
+	# was read, so the file is only read again if it changed.
 	if FileAccess.file_exists(_jsonl_path):
-		# SQLite is disposable. Rebuilding it restores the last canonical state so
-		# a failed compound write cannot leak into a later successful flush. The
-		# failed change is not reported; another writer's change it adopts is.
 		reload(is_stale(), _flushing_step)
 		last_write_error = message
 	else:
 		_write_blocked = true
 	return message
+
+
+# Undoes a change committed to the cache but not saved: a cache built from the
+# file as the change began (_baseline) is put in place, provided the file is
+# still exactly that, and `message` is reported as the change's failure, with
+# no event. Otherwise (no baseline, a failed build, a file changed or replaced
+# meanwhile) the change is kept here, unsaved, and the project takes nothing
+# more until opened again.
+func _roll_back(message: String) -> String:
+	if not _baseline.is_empty():
+		var candidate := JSONLCache.build_candidate(_jsonl_path, _baseline)
+		if not candidate.has("error"):
+			if not _is_still(str(_baseline.id), str(_baseline.hash)):
+				_discard(candidate)
+			elif _install(candidate, _flushing_step):
+				_unsaved = false
+				last_write_error = message
+				return message
+	_write_blocked = true
+	last_write_error = "%s; the change is kept here, not saved to %s, and the project takes no further change until it is opened again" % [message, _jsonl_path]
+	return last_write_error
+
+
+# A write that may have reached the file but could not be confirmed: the
+# change is kept, and the project refused until opened again, for only a
+# look at the file can tell whether it holds the change.
+func _commit_uncertain(reason: String) -> String:
+	_file_replaced = "commit uncertain: %s; it may or may not hold the change: open the project again and check it before repeating the change" % reason
+	_write_blocked = true
+	last_write_error = _file_replaced
+	return _file_replaced
+
+
+# "" while the file is the one the cache was read from, else why it is not
+# written over.
+func _source_problem() -> String:
+	var state := _file_state()
+	if state.has("replaced"):
+		return _replaced_refusal(state.replaced)
+	return str(state.get("error", ""))
+
+
+# After this owner has replaced its file: takes the identity of the file it
+# wrote (`staged`, as _atomic_write reports it) once the entry at its path is
+# that very file, a regular one with no other names; otherwise it cannot tell
+# what it wrote, and writes nothing more (file_replacement). "" or why.
+func _adopt_written(staged: Dictionary) -> String:
+	if _file_binding.is_empty():
+		return ""
+	var now := ProjectFile.entry(str(_file_binding.path))
+	if str(staged.get("id", "")).is_empty() or now.get("id") != staged.id or now.get("path") != _file_binding.path or int(now.get("links", 0)) != 1:
+		return "%s is not the file just written" % _file_binding.path
+	_file_binding.id = staged.id
+	return ""
 
 
 static func _file_fingerprint(path: String) -> String:
@@ -472,8 +690,9 @@ static func _file_fingerprint(path: String) -> String:
 	return FileAccess.get_sha256(path)
 
 
-static func _atomic_write(path: String, content: String) -> String:
-	## Write content to a file atomically: write to .tmp, then rename.
+static func _atomic_write(path: String, content: String, staged: Dictionary = {}) -> String:
+	## Write content to a file atomically: write to .tmp, then rename. `staged`
+	## gets the written file's identity (ProjectFile.entry) before the rename.
 	var tmp_path := path + ".tmp.%d" % OS.get_process_id()
 
 	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
@@ -486,6 +705,7 @@ static func _atomic_write(path: String, content: String) -> String:
 	if file_error != OK:
 		DirAccess.remove_absolute(tmp_path)
 		return "temp file write failed (error %d)" % file_error
+	staged.merge(ProjectFile.entry(tmp_path), true)
 
 	# Atomic rename
 	var err := DirAccess.rename_absolute(tmp_path, path)

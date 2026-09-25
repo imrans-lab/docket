@@ -142,12 +142,13 @@ func _on_file_changed() -> void:
 	refresh()
 
 
-## Load the type catalog; false if a newer load superseded this one.
+## Load the type catalog; false if a newer load superseded this one, or the
+## catalog could not be read (DocketSource.unavailable says why).
 func _rebuild_type_catalog() -> bool:
 	_catalog_generation += 1
 	var generation := _catalog_generation
 	var catalog: Dictionary = await _src.type_catalog()
-	if generation != _catalog_generation:
+	if generation != _catalog_generation or catalog.has("error"):
 		return false
 	_type_catalog = catalog.records
 	_catalog_diagnostic = str(catalog.diagnostic)

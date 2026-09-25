@@ -33,6 +33,29 @@ func _init(state: AppState) -> void:
 
 # -- Projects -------------------------------------------------------------------
 
+# The fallback of _access for a list: one {error, kind} entry, which
+# refusal (DocketSource) tells from a list.
+const REFUSED_LIST := [null]
+
+
+# `work` run once every open project is admitted (AppState.access): its
+# value. Else `fallback`, the refusal as {error, kind} when that is null, a
+# list of it alone for REFUSED_LIST, or its message when `message` (for
+# work reporting a problem as text); either way the view is told
+# (unavailable).
+func _access(work: Callable, fallback: Variant, message: bool = false) -> Variant:
+	var access := _state.access(func() -> Variant: return work.call())
+	if access.ok:
+		return access.value
+	unavailable.emit(access)
+	var refused := {"error": access.message, "kind": access.kind}
+	if message:
+		return str(access.message)
+	if fallback == null:
+		return refused
+	return [refused] if fallback is Array and fallback == REFUSED_LIST else fallback
+
+
 func project_names() -> Array[String]:
 	var names: Array[String] = []
 	for name in _state.get_project_dbs().keys():
@@ -46,7 +69,7 @@ func schema() -> Dictionary:
 
 
 func primary_project() -> String:
-	return _state.db.get_project_name() if _state.db != null else ""
+	return _state.primary_selector()
 
 
 func primary_path() -> String:
@@ -107,6 +130,22 @@ func change_token() -> String:
 
 func reload_stale() -> Array:
 	return _state.reload_stale()
+
+
+func readiness_failure() -> Dictionary:
+	return _state.readiness_failure
+
+
+func reload_revision() -> String:
+	return _state.reload_revision()
+
+
+func action_refusal() -> String:
+	var access := _state.access(Callable())
+	if access.ok:
+		return ""
+	unavailable.emit(access)
+	return str(access.message)
 
 
 func reload_all() -> Array:
@@ -183,6 +222,10 @@ func tool_count() -> int:
 # -- Items --------------------------------------------------------------------------
 
 func item_token(project: String, id: String) -> String:
+	return _access(_item_token_now.bind(project, id), "")
+
+
+func _item_token_now(project: String, id: String) -> String:
 	if id.is_empty():
 		return ""
 	var item_db: DocketDB = _state.get_db_for_project(project)
@@ -196,6 +239,10 @@ func item_token(project: String, id: String) -> String:
 
 
 func item_title(project: String, id: String) -> Dictionary:
+	return _access(_item_title_now.bind(project, id), null)
+
+
+func _item_title_now(project: String, id: String) -> Dictionary:
 	var item_db: DocketDB = _state.get_db_for_project(project)
 	if item_db == null or not item_db.has_item(id):
 		return {}
@@ -203,6 +250,10 @@ func item_title(project: String, id: String) -> Dictionary:
 
 
 func item_view(project: String, id: String, refresh: bool = false) -> Dictionary:
+	return _access(_item_view_now.bind(project, id, refresh), null)
+
+
+func _item_view_now(project: String, id: String, refresh: bool = false) -> Dictionary:
 	var item_db: DocketDB = _state.get_db_for_project(project) if not project.is_empty() else null
 	if id.is_empty() or item_db == null:
 		return {"error": "the originating project is closed", "kind": "closed"}
@@ -221,6 +272,10 @@ func item_view(project: String, id: String, refresh: bool = false) -> Dictionary
 
 
 func item_events(project: String, id: String) -> Array:
+	return _access(_item_events_now.bind(project, id), REFUSED_LIST)
+
+
+func _item_events_now(project: String, id: String) -> Array:
 	var item_db: DocketDB = _state.get_db_for_project(project)
 	if item_db == null or not item_db.has_item(id):
 		return []
@@ -229,6 +284,11 @@ func item_events(project: String, id: String) -> Array:
 
 func attach_file(project: String, id: String, filename: String, data: PackedByteArray, mime: String,
 		description: String) -> Dictionary:
+	return _access(_attach_file_now.bind(project, id, filename, data, mime, description), null)
+
+
+func _attach_file_now(project: String, id: String, filename: String, data: PackedByteArray, mime: String,
+		description: String) -> Dictionary:
 	var item_db: DocketDB = _state.get_db_for_project(project)
 	if item_db == null or not item_db.has_item(id):
 		return {"error":"originating project is closed or item is missing"}
@@ -236,14 +296,31 @@ func attach_file(project: String, id: String, filename: String, data: PackedByte
 
 
 func children_of(qualified_id: String) -> Dictionary:
+	# A refusal is an empty, incomplete list saying why (as a partial one does).
+	var found: Dictionary = _access(_children_of_now.bind(qualified_id), null)
+	if found.has("kind"):
+		found["children"] = []
+	return found
+
+
+func _children_of_now(qualified_id: String) -> Dictionary:
 	return {"children": _state.find_children_across_projects(qualified_id), "error": ""}
 
 
 func move_item(project: String, id: String, target_project: String) -> Dictionary:
+	return _access(_move_item_now.bind(project, id, target_project), null)
+
+
+func _move_item_now(project: String, id: String, target_project: String) -> Dictionary:
 	return _state.move_item(id, target_project, project)
 
 
 func save_item(project: String, id: String, changes: Dictionary, revision: String, token: String,
+		secret: Dictionary = {}) -> String:
+	return _access(_save_item_now.bind(project, id, changes, revision, token, secret), "", true)
+
+
+func _save_item_now(project: String, id: String, changes: Dictionary, revision: String, token: String,
 		secret: Dictionary = {}) -> String:
 	var item_db: DocketDB = _state.get_db_for_project(project)
 	var registry := _state.get_type_registry(project)
@@ -261,6 +338,10 @@ func save_item(project: String, id: String, changes: Dictionary, revision: Strin
 
 
 func create_item(project: String, fields: Dictionary, secret: Dictionary = {}) -> Dictionary:
+	return _access(_create_item_now.bind(project, fields, secret), null)
+
+
+func _create_item_now(project: String, fields: Dictionary, secret: Dictionary = {}) -> Dictionary:
 	var target_db: DocketDB = _state.get_db_for_project(project)
 	var registry := _state.get_type_registry(project)
 	if target_db == null or registry == null:
@@ -321,6 +402,11 @@ func _create_protected_draft(target_db: DocketDB, type_name: String, fields: Dic
 
 func transition_item(project: String, id: String, target: String, note: String, changes: Dictionary,
 		revision: String, token: String, secret: Dictionary = {}) -> String:
+	return _access(_transition_item_now.bind(project, id, target, note, changes, revision, token, secret), "", true)
+
+
+func _transition_item_now(project: String, id: String, target: String, note: String, changes: Dictionary,
+		revision: String, token: String, secret: Dictionary = {}) -> String:
 	var trans_db: DocketDB = _state.get_db_for_project(project)
 	var registry := _state.get_type_registry(project)
 	if trans_db == null or registry == null:
@@ -339,16 +425,28 @@ func transition_item(project: String, id: String, target: String, note: String, 
 # -- Comments -------------------------------------------------------------------------
 
 func list_comments(project: String, id: String) -> Array:
+	return _access(_list_comments_now.bind(project, id), REFUSED_LIST)
+
+
+func _list_comments_now(project: String, id: String) -> Array:
 	var db: DocketDB = _state.get_db_for_project(project)
 	return [] if db == null else db.list_comments(id)
 
 
 func add_comment(project: String, id: String, author: String, text: String, parent_id: int = 0) -> Dictionary:
+	return _access(_add_comment_now.bind(project, id, author, text, parent_id), null)
+
+
+func _add_comment_now(project: String, id: String, author: String, text: String, parent_id: int = 0) -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	return {"error": "the originating project is closed"} if db == null else db.add_comment(id, author, text, parent_id)
 
 
 func resolve_comment(project: String, comment_id: int, resolution: String, by: String) -> Dictionary:
+	return _access(_resolve_comment_now.bind(project, comment_id, resolution, by), null)
+
+
+func _resolve_comment_now(project: String, comment_id: int, resolution: String, by: String) -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	return {"error": "the originating project is closed"} if db == null else db.resolve_comment(comment_id, resolution, by)
 
@@ -356,6 +454,10 @@ func resolve_comment(project: String, comment_id: int, resolution: String, by: S
 # -- Type snapshot --------------------------------------------------------------------
 
 func cached_types(project: String) -> Array:
+	return _access(_cached_types_now.bind(project), REFUSED_LIST)
+
+
+func _cached_types_now(project: String) -> Array:
 	var registry := _state.get_type_registry(project)
 	if registry == null:
 		return []
@@ -363,11 +465,19 @@ func cached_types(project: String) -> Array:
 
 
 func cached_type(project: String, slug: String) -> Dictionary:
+	return _access(_cached_type_now.bind(project, slug), null)
+
+
+func _cached_type_now(project: String, slug: String) -> Dictionary:
 	var registry := _state.get_type_registry(project)
 	return {"error": "type registry unavailable"} if registry == null else registry.get_type(slug)
 
 
 func cached_resolve(project: String, item: Dictionary) -> Dictionary:
+	return _access(_cached_resolve_now.bind(project, item), null)
+
+
+func _cached_resolve_now(project: String, item: Dictionary) -> Dictionary:
 	var registry := _state.get_type_registry(project)
 	return {"error": "type registry unavailable"} if registry == null else registry.resolve_item(item)
 
@@ -375,6 +485,10 @@ func cached_resolve(project: String, item: Dictionary) -> Dictionary:
 # -- Vault ----------------------------------------------------------------------------
 
 func vault_problem(project: String) -> String:
+	return _access(_vault_problem_now.bind(project), "", true)
+
+
+func _vault_problem_now(project: String) -> String:
 	var db: DocketDB = _state.get_db_for_project(project)
 	if db == null:
 		return "the originating project is closed"
@@ -486,6 +600,10 @@ func _apply_vault_operations(db: DocketDB, operations: Array, step: RefCounted) 
 
 
 func secret_info(project: String, handle: String) -> Dictionary:
+	return _access(_secret_info_now.bind(project, handle), null)
+
+
+func _secret_info_now(project: String, handle: String) -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	if UserPrefs.load_vault_password().is_empty():
 		_forget_key()
@@ -497,6 +615,10 @@ func secret_info(project: String, handle: String) -> Dictionary:
 
 
 func read_secret(project: String, handle: String, secondary_password: String = "", audit: bool = false) -> Dictionary:
+	return _access(_read_secret_now.bind(project, handle, secondary_password, audit), null)
+
+
+func _read_secret_now(project: String, handle: String, secondary_password: String = "", audit: bool = false) -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	var key := _vault_key(db) if db != null else PackedByteArray()
 	if key.is_empty():
@@ -528,6 +650,10 @@ func read_secret(project: String, handle: String, secondary_password: String = "
 
 
 func secret_versions(project: String, handle: String) -> Array:
+	return _access(_secret_versions_now.bind(project, handle), REFUSED_LIST)
+
+
+func _secret_versions_now(project: String, handle: String) -> Array:
 	var db: DocketDB = _state.get_db_for_project(project)
 	if db == null:
 		return []
@@ -536,6 +662,10 @@ func secret_versions(project: String, handle: String) -> Array:
 
 
 func read_secret_version(project: String, handle: String, version: int, secondary_password: String = "") -> Dictionary:
+	return _access(_read_secret_version_now.bind(project, handle, version, secondary_password), null)
+
+
+func _read_secret_version_now(project: String, handle: String, version: int, secondary_password: String = "") -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	var key := _vault_key(db) if db != null else PackedByteArray()
 	if key.is_empty():
@@ -561,6 +691,10 @@ func read_secret_version(project: String, handle: String, version: int, secondar
 	return {"error": "no such version", "kind": "failed"}
 
 func standalone_secrets() -> Dictionary:
+	return _access(_standalone_secrets_now, null)
+
+
+func _standalone_secrets_now() -> Dictionary:
 	var listed := {}
 	for project in _state.get_project_dbs():
 		var entries: Array = (_state.get_project_dbs()[project] as DocketDB).list_standalone_secrets()
@@ -574,6 +708,10 @@ func vault_settings() -> Dictionary:
 
 
 func set_vault_settings(password: String, hint: String) -> String:
+	return _access(_set_vault_settings_now.bind(password, hint), "", true)
+
+
+func _set_vault_settings_now(password: String, hint: String) -> String:
 	UserPrefs.save_vault_password_hint(hint)
 	var old_password := UserPrefs.load_vault_password()
 	if password == old_password:
@@ -641,10 +779,18 @@ func _reencrypt_vault_secrets(old_password: String, new_password: String) -> Str
 # -- Queries ----------------------------------------------------------------------
 
 func run_query(query: Dictionary) -> Dictionary:
+	return _access(_run_query_now.bind(query), null)
+
+
+func _run_query_now(query: Dictionary) -> Dictionary:
 	return _state.project_query().run_with_details(query, _state.db)
 
 
 func type_catalog() -> Dictionary:
+	return _access(_type_catalog_now, null)
+
+
+func _type_catalog_now() -> Dictionary:
 	var projects: Array = _state.get_project_dbs().keys()
 	projects.sort()
 	if projects.is_empty():
@@ -670,6 +816,10 @@ func type_catalog() -> Dictionary:
 
 
 func resolve_type_ref(project: String, type_ref: String) -> Dictionary:
+	return _access(_resolve_type_ref_now.bind(project, type_ref), null)
+
+
+func _resolve_type_ref_now(project: String, type_ref: String) -> Dictionary:
 	var registry := _registry(project)
 	return {"error": "The selected project is no longer open."} if registry == null \
 		else registry.resolve_type_ref(type_ref)
@@ -682,6 +832,10 @@ func _registry(project: String) -> TypeRegistry:
 
 
 func list_types(project: String) -> Dictionary:
+	return _access(_list_types_now.bind(project), null)
+
+
+func _list_types_now(project: String) -> Dictionary:
 	var registry := _registry(project)
 	if registry == null:
 		return {"error": "Type registry unavailable for %s." % project}
@@ -692,11 +846,19 @@ func list_types(project: String) -> Dictionary:
 
 
 func get_type(project: String, slug: String) -> Dictionary:
+	return _access(_get_type_now.bind(project, slug), null)
+
+
+func _get_type_now(project: String, slug: String) -> Dictionary:
 	var registry := _state.get_type_registry(project)
 	return {"error": "Type registry unavailable for %s." % project} if registry == null else registry.get_type(slug)
 
 
 func types_overview(project: String, include_deprecated: bool) -> Dictionary:
+	return _access(_types_overview_now.bind(project, include_deprecated), null)
+
+
+func _types_overview_now(project: String, include_deprecated: bool) -> Dictionary:
 	var registry := _registry(project)
 	if registry == null:
 		return {"error": "Open a project to manage its types.", "kind": "no_project"}
@@ -707,11 +869,19 @@ func types_overview(project: String, include_deprecated: bool) -> Dictionary:
 
 
 func types_problem(project: String) -> String:
+	return _access(_types_problem_now.bind(project), "", true)
+
+
+func _types_problem_now(project: String) -> String:
 	var registry := _registry(project)
 	return "Open a project first." if registry == null else registry.get_diagnostic()
 
 
 func type_with_history(project: String, slug: String) -> Dictionary:
+	return _access(_type_with_history_now.bind(project, slug), null)
+
+
+func _type_with_history_now(project: String, slug: String) -> Dictionary:
 	var registry := _registry(project)
 	if registry == null:
 		return {"error": "Open a project before selecting a type."}
@@ -724,6 +894,10 @@ func type_with_history(project: String, slug: String) -> Dictionary:
 
 
 func type_revision(project: String, revision_id: String) -> Dictionary:
+	return _access(_type_revision_now.bind(project, revision_id), null)
+
+
+func _type_revision_now(project: String, revision_id: String) -> Dictionary:
 	var registry := _registry(project)
 	return {"error": "The selected project is no longer open."} if registry == null \
 		else registry.get_revision(revision_id)
@@ -738,6 +912,11 @@ func validate_type_definition(project: String, definition: Dictionary) -> String
 
 func preview_type_evolution(project: String, slug: String, definition: Dictionary,
 		expected_revision: String, item_ids: Array) -> Dictionary:
+	return _access(_preview_type_evolution_now.bind(project, slug, definition, expected_revision, item_ids), null)
+
+
+func _preview_type_evolution_now(project: String, slug: String, definition: Dictionary,
+		expected_revision: String, item_ids: Array) -> Dictionary:
 	var registry := _registry(project)
 	if registry == null:
 		return {"error": "The selected project is no longer open."}
@@ -746,6 +925,11 @@ func preview_type_evolution(project: String, slug: String, definition: Dictionar
 
 func define_type(project: String, slug: String, definition: Dictionary, author: String,
 		reason: String) -> Dictionary:
+	return _access(_define_type_now.bind(project, slug, definition, author, reason), null)
+
+
+func _define_type_now(project: String, slug: String, definition: Dictionary, author: String,
+		reason: String) -> Dictionary:
 	var registry := _registry(project)
 	if registry == null:
 		return {"error": "The selected project is no longer open."}
@@ -753,12 +937,21 @@ func define_type(project: String, slug: String, definition: Dictionary, author: 
 
 
 func apply_type_evolution(project: String, preview: Dictionary, author: String, reason: String) -> String:
+	return _access(_apply_type_evolution_now.bind(project, preview, author, reason), "", true)
+
+
+func _apply_type_evolution_now(project: String, preview: Dictionary, author: String, reason: String) -> String:
 	var registry := _registry(project)
 	return "The selected project is no longer open." if registry == null \
 		else registry.apply_evolution(preview, author, reason)
 
 
 func set_type_lifecycle(project: String, slug: String, lifecycle: String, expected_revision: String,
+		author: String, reason: String) -> String:
+	return _access(_set_type_lifecycle_now.bind(project, slug, lifecycle, expected_revision, author, reason), "", true)
+
+
+func _set_type_lifecycle_now(project: String, slug: String, lifecycle: String, expected_revision: String,
 		author: String, reason: String) -> String:
 	var registry := _registry(project)
 	if registry == null:
@@ -771,10 +964,18 @@ func set_type_lifecycle(project: String, slug: String, lifecycle: String, expect
 # -- Project format migrations ----------------------------------------------------
 
 func promote_project(project: String) -> Dictionary:
+	return _access(_promote_project_now.bind(project), null)
+
+
+func _promote_project_now(project: String) -> Dictionary:
 	return _state.promote_project_to_jsonl(project, true)
 
 
 func preview_project_upgrade(project: String) -> Dictionary:
+	return _access(_preview_project_upgrade_now.bind(project), null)
+
+
+func _preview_project_upgrade_now(project: String) -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	if db == null:
 		return {"ok": false, "error": "Open a project before previewing an upgrade."}
@@ -788,6 +989,10 @@ func preview_project_upgrade(project: String) -> Dictionary:
 
 
 func apply_project_upgrade(project: String, preview: Dictionary) -> Dictionary:
+	return _access(_apply_project_upgrade_now.bind(project, preview), null)
+
+
+func _apply_project_upgrade_now(project: String, preview: Dictionary) -> Dictionary:
 	var db: DocketDB = _state.get_db_for_project(project)
 	if preview.get("project") != project or db == null or preview.get("path") != db.get_path() \
 			or preview.get("source_hash") != FileAccess.get_sha256(db.get_path()):

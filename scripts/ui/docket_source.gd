@@ -8,8 +8,11 @@ extends RefCounted
 ## Await every method that returns something: a remote source answers
 ## asynchronously (one returning nothing may be sent without waiting).
 ## Failures come back as {"error": String} (or a non-empty error String where
-## a method returns one). The methods here are the contract; a source that
-## cannot do something returns UNSUPPORTED.
+## a method returns one). A read or change refused because a project cannot
+## be read as its file now also names its kind ({error, kind}, see
+## ProjectAdmission); a list comes back as that one entry (refusal). The
+## methods here are the contract; a source that cannot do something returns
+## UNSUPPORTED.
 
 ## A project was opened, closed, reloaded or changed on disk.
 signal file_changed
@@ -24,6 +27,10 @@ signal open_item_unchecked(project: String, id: String, error: String)
 signal load_failed(path: String, reason: String)
 signal open_item_requested(id: String, project: String)
 signal open_query_requested(filter: String, label: String)
+## A read or change was refused because a project cannot be read as its file
+## now: {kind, project, message, retryable} (ProjectAdmission). The view shows
+## it, marks what it shows as not current, and holds editing back.
+signal unavailable(failure: Dictionary)
 
 const UNSUPPORTED := "not supported by this data source"
 
@@ -96,6 +103,33 @@ func change_token() -> String:
 ## Reload projects whose files changed on disk: the names reloaded.
 func reload_stale() -> Array:
 	return []
+
+
+## The refusal a list reply stands for, or "": a list of one {error} entry
+## is a read refused (unavailable), not a list.
+static func refusal(list: Array) -> String:
+	if list.size() == 1 and list[0] is Dictionary and (list[0] as Dictionary).has("error"):
+		return str(list[0].error)
+	return ""
+
+
+## Changes whenever a project is read again from its file (by any read, a
+## poll's or not), or opened or closed; read without reading any project.
+func reload_revision() -> String:
+	return ""
+
+
+## Why a change cannot be made now, before any is begun (a prompt shown, a
+## secret touched): "" when every project can be read and changed as its
+## file, else the refusal (also reported through unavailable).
+func action_refusal() -> String:
+	return ""
+
+
+## Why a project could not be read as its file when reload_stale last looked
+## ({kind, project, message, retryable}), or {}.
+func readiness_failure() -> Dictionary:
+	return {}
 
 
 ## Reload every project from its file: the names reloaded.

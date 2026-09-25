@@ -833,9 +833,10 @@ func test_project_add() -> Variant:
 
 func test_project_add_already_loaded() -> Variant:
 	_setup_project_management()
-	# Try adding alpha's path again
+	# Adding alpha's path again answers alpha, opened once.
 	var result = _registry.call_tool("docket_project_add", {"path": _test_file})
-	return A.has_key(result, "error")
+	return A.eq([result.get("already_open"), result.get("name"), _registry.call_tool("docket_project_list", {}).count],
+		[true, "alpha", 2], "a file already open is that project, not a second one: %s" % [result])
 
 
 func test_project_add_file_not_found() -> Variant:

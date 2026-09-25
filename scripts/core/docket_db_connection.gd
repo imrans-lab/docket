@@ -20,6 +20,13 @@ var _transaction_open := false
 # and its result buffers are used from that thread only; a call from any
 # other is refused before it touches them.
 var _owner_thread: int = 0
+# The project file this connection's owner is bound to (bind_file): {path,
+# id}; {} for a connection no project owner holds (a cache being rebuilt, a
+# lone database), which is not checked.
+var _file_binding: Dictionary = {}
+# Why the bound file cannot be written as this project (ProjectFile), once it
+# cannot: kept until the project is opened again.
+var _file_replaced := ""
 
 ## Emitted once item changes are durable, in order: [{id, event}], `event`
 ## being the item event recorded (e.g. "created", "transition",
@@ -29,6 +36,85 @@ var _owner_thread: int = 0
 ## fails). DocketDBJsonl reports only once its file is saved. A change made
 ## by an operation given a provenance also has it ("provenance").
 signal items_changed(changes: Array)
+
+
+## Binds this connection, as its project's owner, to the project file at
+## `path` as it is now (ProjectFile): "" or why it cannot be, a file with
+## other names (hard links) included. Every change checks the file is still
+## that one first.
+func bind_file(path: String) -> String:
+	var found := ProjectFile.entry(path)
+	if found.has("error"): return str(found.error)
+	if int(found.links) != 1: return "%s has %d hard links; open it by a path that is its only name" % [path, int(found.links)]
+	_file_binding = {"path": found.path, "id": found.id}
+	return ""
+
+
+## "" while the bound project file can be written as this project (always,
+## for a connection not bound), else why not. A file another writer replaced
+## at the same path is reconciled with first where the owner can
+## (_reconcile_replacement).
+func file_replacement() -> String:
+	var state := _file_state()
+	if state.has("replaced"):
+		return _reconcile_replacement(state.replaced)
+	return str(state.get("error", ""))
+
+
+# For a write: "" while the bound file is still the one opened, else why not.
+# A replaced one is not reconciled with here, mid-write; a change does that
+# before it begins (_replaced_refusal).
+func _file_guard() -> String:
+	var state := _file_state()
+	if state.has("replaced"):
+		return _replaced_refusal(state.replaced)
+	return str(state.get("error", ""))
+
+
+## Whether this project may be read and changed now, as its file, judged
+## within `step` (ProjectAdmission): {} when it may, {reloaded: true} when it
+## may once its file has been read again, else {kind, message, retryable}. A
+## live SQLite connection stays on the file it opened, so another file at
+## its path needs the project opened again.
+func admission(_step: RefCounted) -> Dictionary:
+	if not _is_open:
+		return {"kind": "closed", "message": "it is closed", "retryable": false}
+	var state := _file_state()
+	if state.has("replaced"):
+		_reconcile_replacement(state.replaced)
+	return _latched_admission()
+
+
+# {} or the admission refusal a kept file problem makes.
+func _latched_admission() -> Dictionary:
+	if _file_replaced.is_empty():
+		return {}
+	var kind := "commit_uncertain" if _file_replaced.begins_with("commit uncertain") else "reopen_required"
+	return {"kind": kind, "message": _file_replaced, "retryable": false}
+
+
+# The bound file now, as ProjectFile.check sees it; an error is kept.
+func _file_state() -> Dictionary:
+	if not _file_replaced.is_empty():
+		return {"error": _file_replaced}
+	if _file_binding.is_empty():
+		return {}
+	var state := ProjectFile.check(_file_binding)
+	if state.has("error"):
+		_file_replaced = state.error
+	return state
+
+
+# A live SQLite connection stays on the file it opened, so another file put
+# in its place is a conflict until the project is opened again.
+func _reconcile_replacement(_entry: Dictionary) -> String:
+	_file_replaced = "external replacement: %s was replaced by another file; open the project again to continue" % _file_binding.path
+	return _file_replaced
+
+
+# Why a write is refused while the bound file is replaced (see _file_guard).
+func _replaced_refusal(entry: Dictionary) -> String:
+	return _reconcile_replacement(entry)
 
 
 # -- Internal SQL helpers -----------------------------------------------------
@@ -160,6 +246,8 @@ func _write_checked(step: RefCounted, sql: String, bindings: Array = []) -> Stri
 	var admission := _write_admission(step, sql)
 	if admission.get("foreign", false): return admission.error
 	var error: String = admission.get("error", "")
+	# A write in a transaction was checked when the transaction began.
+	if error.is_empty() and _txn_depth == 0: error = _file_guard()
 	if error.is_empty(): error = _exec_checked(sql, bindings)
 	if not error.is_empty(): _note_write_failure(error)
 	return error
@@ -202,6 +290,8 @@ func _begin_transaction(step: RefCounted) -> Dictionary:
 	if not admission.is_empty(): return {"error": admission.error}
 	if _txn_depth == 0:
 		if _change_in_progress(): return {"error": "%s already has a change in progress" % _path}
+		var replaced := _file_guard()
+		if not replaced.is_empty(): return {"error": replaced}
 		var hold := _joined(step)
 		if hold.has("error"): return {"error": hold.error}
 		_pending_changes = []

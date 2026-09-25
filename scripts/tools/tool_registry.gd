@@ -4,8 +4,8 @@ class_name ToolRegistry
 
 var _schema: Dictionary
 var _db: DocketDB
-var _project_dbs: Dictionary = {}  # project_name → DocketDB
-var _type_registries: Dictionary = {}  # project_name → project-owned semantics
+var _project_dbs: Dictionary = {}  # selector → DocketDB (ProjectSelectors)
+var _type_registries: Dictionary = {}  # selector → project-owned semantics
 var _type_registry_diagnostics: Dictionary = {}
 var _tools: Dictionary = {}
 var add_project_fn: Callable  # func(path: String) -> Dictionary
@@ -143,10 +143,56 @@ func call_tool(name: String, arguments: Dictionary, op: RefCounted = null) -> Di
 		_log_error(name, arguments, err)
 		return err
 	# Pick up external edits (git pull, another Docket instance) before doing
-	# anything. Serving from a stale cache is not just a stale read: the next
-	# write rewrites the entire JSONL from cache and would discard them.
-	refresh_stale_dbs()
+	# anything, and answer nothing from a cache that is not its file as it is
+	# (ProjectAdmission): the next write would rewrite the file from it. Only
+	# the tools that list, open, close or reread projects run without.
+	if name in _WITHOUT_PROJECT:
+		refresh_stale_dbs()
+		return _dispatch(name, arguments, op)
+	var admitted := admit(func(_reloaded: Array) -> Dictionary: return _dispatch(name, arguments, op), op)
+	if not admitted.has("refused"):
+		return admitted
+	var uerr: Dictionary = admitted.refused
+	_log_error(name, arguments, uerr)
+	return uerr
 
+
+## `work` (called with the selectors read again, returning a Dictionary) run
+## once every open project is admitted (ProjectAdmission), their type
+## registries refreshed first: its value, or {refused: {error, kind,
+## project, retryable}}.
+func admit(work: Callable, op: RefCounted = null) -> Dictionary:
+	var dbs := _admission_dbs()
+	var admitted_work := func(reloaded: Array) -> Dictionary:
+		_refresh_registries(dbs.keys(), reloaded)
+		return work.call(reloaded)
+	var access := ProjectAdmission.access(dbs, admitted_work, op)
+	if access.ok:
+		return access.value
+	return {"refused": {"error": access.message, "kind": access.kind, "project": access.project, "retryable": access.retryable}}
+
+
+# Every open database, a standalone one under its stored name.
+func _admission_dbs() -> Dictionary:
+	var dbs := _project_dbs.duplicate()
+	if _db != null and not _db in _project_dbs.values():
+		dbs[_db.get_project_name()] = _db
+	return dbs
+
+
+# The type registries of `admitted` projects follow their databases: one
+# read again (`reloaded`) is reloaded, the others refreshed if their
+# definitions changed.
+func _refresh_registries(admitted: Array, reloaded: Array) -> void:
+	for proj_name in admitted:
+		var registry: TypeRegistry = _type_registries.get(proj_name)
+		if registry == null: continue
+		var error: String = registry.reload() if proj_name in reloaded else registry.refresh_if_changed()
+		if error.is_empty(): _type_registry_diagnostics.erase(proj_name)
+		else: _type_registry_diagnostics[proj_name] = error
+
+
+func _dispatch(name: String, arguments: Dictionary, op: RefCounted) -> Dictionary:
 	if _db == null and _project_dbs.is_empty() and not name in _WITHOUT_PROJECT:
 		var nerr := {"error": "no project is open", "kind": "no_project"}
 		_log_error(name, arguments, nerr)
@@ -193,31 +239,19 @@ func call_tool(name: String, arguments: Dictionary, op: RefCounted = null) -> Di
 
 
 func refresh_stale_dbs() -> Array:
-	## Reload any JSONL-backed project whose file changed on disk.
-	## Returns the names of projects that were actually reloaded.
+	## Reload any JSONL-backed project whose file changed on disk, for those
+	## that watch for it: the names reloaded. A project that is not ready is
+	## refused again by the next admission; its registry is left as it was.
 	var reloaded: Array = []
-	for proj_name in _project_dbs:
-		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb is DocketDBJsonl:
-			var db_reloaded: bool = (pdb as DocketDBJsonl).ensure_fresh()
-			var registry: TypeRegistry = _type_registries.get(proj_name)
-			var previous_generation: String = registry.get_generation_token() if registry != null else ""
-			var error: String = registry.reload() if db_reloaded and registry != null else (registry.refresh_if_changed() if registry != null else "")
-			if not error.is_empty(): _type_registry_diagnostics[proj_name] = error
-			else:
-				_type_registry_diagnostics.erase(proj_name)
-				if db_reloaded or (registry != null and registry.get_generation_token() != previous_generation): reloaded.append(proj_name)
-	# Single-project callers may hold _db without it being in _project_dbs.
-	if _db is DocketDBJsonl and not _db in _project_dbs.values():
-		var project_name := _db.get_project_name()
-		var db_reloaded: bool = (_db as DocketDBJsonl).ensure_fresh()
-		var registry: TypeRegistry = _type_registries.get(project_name)
-		var previous_generation: String = registry.get_generation_token() if registry != null else ""
-		var error: String = registry.reload() if db_reloaded and registry != null else (registry.refresh_if_changed() if registry != null else "")
-		if not error.is_empty(): _type_registry_diagnostics[project_name] = error
+	var dbs := _admission_dbs()
+	for proj_name in dbs:
+		var access := ProjectAdmission.access({proj_name: dbs[proj_name]}, func(read_again: Array) -> Array:
+			_refresh_registries([proj_name], read_again)
+			return read_again)
+		if not access.ok:
+			_type_registry_diagnostics[proj_name] = str(access.message)
 		else:
-			_type_registry_diagnostics.erase(project_name)
-			if db_reloaded or (registry != null and registry.get_generation_token() != previous_generation): reloaded.append(project_name)
+			reloaded.append_array(access.value)
 	return reloaded
 
 

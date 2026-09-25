@@ -825,3 +825,77 @@ func test_is_cache_valid_false_for_missing_jsonl() -> Variant:
 	_close_db(db)
 	DirAccess.remove_absolute(jsonl_path)
 	return A.is_false(JSONLCache.is_cache_valid(jsonl_path, cache_path), "invalid when JSONL missing")
+
+
+# -- install_candidate: a cache is never taken apart ----------------------------
+
+func test_a_cache_moved_aside_only_in_part_keeps_what_its_wal_holds() -> Variant:
+	# A cache whose committed change and unsaved mark are still in its WAL
+	# alone, as a live cache's are until a checkpoint: its schema is
+	# checkpointed into the main file (closing does), then the change and mark
+	# are written with the cache open again, and copied before it closes.
+	var live := _test_dir + "/live.cache"
+	DocketDB.create_new(live).close()
+	var db := DocketDB.new()
+	var setup_ok := db.open(live)
+	db.set_meta_value("probe", "in the WAL")
+	db.set_meta_value(JSONLCache.UNSAVED_META, "1")
+	var cache := _test_dir + "/partial.dct.v2.cache"
+	for suffix in ["", "-wal"]:
+		setup_ok = setup_ok and DirAccess.copy_absolute(live + suffix, cache + suffix) == OK
+	db.close()
+	var main_only := _test_dir + "/main-only.cache"
+	setup_ok = setup_ok and DirAccess.copy_absolute(cache, main_only) == OK
+	var alone := DocketDB.new()
+	var in_main := [alone.get_meta_value("probe", ""), alone.get_meta_value(JSONLCache.UNSAVED_META, "")] if alone.open(main_only) else ["unopened"]
+	alone.close()
+	var candidate := cache + ".candidate.1"
+	_write_file(candidate, "CANDIDATE")
+	var main_bytes := FileAccess.get_file_as_bytes(cache)
+	var wal_bytes := FileAccess.get_file_as_bytes(cache + "-wal")
+
+	# The WAL will not move: the cache is left whole where it was, and opens
+	# with the change and its mark.
+	JSONLCache.move_hook = func(from: String, to: String) -> int:
+		return ERR_BUSY if from.ends_with("-wal") else DirAccess.rename_absolute(from, to)
+	var installed := JSONLCache.install_candidate(candidate, cache)
+	JSONLCache.move_hook = Callable()
+	var reopened := DocketDB.new()
+	var kept := [reopened.get_meta_value("probe", ""), reopened.get_meta_value(JSONLCache.UNSAVED_META, "")] if reopened.open(cache) else []
+	reopened.close()
+	# The main file alone opens without the change or its mark; with its WAL
+	# it has both.
+	var r = A.is_true(setup_ok and in_main == ["", ""] and not installed.is_empty() and installed.intact and kept == ["in the WAL", "1"],
+		"a WAL that would not move keeps its cache whole and readable: %s %s %s %s" % [setup_ok, in_main, installed, kept])
+	if r is String: return r
+
+	# Nor can it be put back: nothing is deleted, and no cache is built or
+	# installed over what is still aside. (Closing it above folded its WAL
+	# in, so the cache is laid out as it was again.)
+	for written in [[cache, main_bytes], [cache + "-wal", wal_bytes]]:
+		var file := FileAccess.open(str(written[0]), FileAccess.WRITE)
+		file.store_buffer(written[1])
+		file.close()
+	DirAccess.remove_absolute(cache + "-shm")
+	JSONLCache.move_hook = func(from: String, to: String) -> int:
+		return ERR_BUSY if from.ends_with("-wal") or from.ends_with(".previous") else DirAccess.rename_absolute(from, to)
+	installed = JSONLCache.install_candidate(candidate, cache)
+	JSONLCache.move_hook = Callable()
+	var again := JSONLCache.install_candidate(candidate, cache)
+	r = A.is_true(not installed.intact and FileAccess.get_file_as_bytes(cache + ".previous") == main_bytes
+		and FileAccess.get_file_as_bytes(cache + "-wal") == wal_bytes and str(again.get("error", "")).contains("still set aside"),
+		"a cache that cannot be put back is left whole where it is, and kept from: %s %s" % [installed, again])
+	if r is String: return r
+
+	# A project whose cache's main file came back but whose WAL is still
+	# aside is not opened from the main file alone, nor rebuilt over it.
+	var jsonl := _test_dir + "/stranded.dct"
+	_write_file(jsonl, _minimal_jsonl())
+	var built := JSONLCache.rebuild_cache(jsonl, JSONLCache.cache_path_for(jsonl))
+	_close_db(built)
+	var stranded_wal := JSONLCache.cache_path_for(jsonl) + ".previous-wal"
+	_write_file(stranded_wal, "WAL LEFT ASIDE")
+	var reopened_db := JSONLCache.open_or_rebuild(jsonl)
+	_close_db(reopened_db)
+	return A.is_true(reopened_db == null and JSONLCache.last_error.contains("still set aside")
+		and FileAccess.get_file_as_string(stranded_wal) == "WAL LEFT ASIDE", "a partly stranded cache keeps its project closed: %s" % JSONLCache.last_error)
