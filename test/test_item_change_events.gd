@@ -6,7 +6,8 @@ extends Node
 ## undone, or kept unsaved when the file changed meanwhile) — and a move
 ## reports the items in other projects whose references it rewrote. A JSONL
 ## project's failed saves never lose a change, and one that cannot be read as
-## its file is refused, and read again when it can.
+## its file is refused, and read again when it can; docket_flush reports a
+## project whose file it could not write as an error, not a count.
 
 const AppShell := preload("res://scripts/ui/app_shell.gd")
 
@@ -331,6 +332,20 @@ func test_failed_saves_undo_or_keep_the_change_and_never_lose_it() -> Variant:
 	_open.append(read_again)
 	return A.eq([read_again.get_meta_value(JSONLCache.UNSAVED_META, ""), event_types.call(read_again).has("uncertain")], ["", true],
 		"opened again, the project is its file: what reached it, and no unsaved mark")
+
+
+func test_a_flush_that_cannot_write_its_file_is_an_error() -> Variant:
+	var opened := _jsonl("settle")
+	var db: DocketDBJsonl = opened[0]
+	var tool := DocketFlush.new()
+	db._atomic_write_hook = func(_path: String, _text: String, _staged: Dictionary) -> String: return "injected write failure"
+	var failed: Dictionary = tool.execute({"project": "settle"}, {}, db, {"settle": db})
+	db._atomic_write_hook = Callable()
+	var r = A.is_true(str(failed.get("error", "")).contains("settle") and str(failed.get("error", "")).contains("injected write failure")
+		and failed.get("failed", []).size() == 1, "a flush whose file cannot be written names the project and why: %s" % [failed])
+	if r is String: return r
+	var settled: Dictionary = tool.execute({"project": "settle"}, {}, db, {"settle": db})
+	return A.is_true(not settled.has("error") and int(settled.get("count", 0)) == 1, "a flush that can write reports it: %s" % [settled])
 
 
 func test_a_project_that_cannot_be_read_is_refused_then_read_again() -> Variant:

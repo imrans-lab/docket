@@ -29,14 +29,23 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: D
 	if not target.is_empty() and not project_dbs.has(target):
 		return {"error": "Project not found: %s" % target}
 
+	# A project whose file could not be written is an error naming it (and
+	# why), not a count: its changes are not settled in the file.
 	var flushed: Array = []
+	var failed: Array = []
 	for proj_name in project_dbs:
 		if not target.is_empty() and proj_name != target:
 			continue
 		var pdb: DocketDB = project_dbs[proj_name]
 		if not pdb is DocketDBJsonl:
 			continue  # SQLite-backed project: nothing to serialize
-		(pdb as DocketDBJsonl).flush()
-		flushed.append({"project": proj_name, "path": pdb.get_path()})
+		var error := (pdb as DocketDBJsonl).flush_checked()
+		if error.is_empty():
+			flushed.append({"project": proj_name, "path": pdb.get_path()})
+		else:
+			failed.append({"project": proj_name, "path": pdb.get_path(), "error": error})
 
+	if not failed.is_empty():
+		return {"error": "could not write %s" % ", ".join(failed.map(func(f: Dictionary) -> String:
+			return "%s (%s)" % [f.project, f.error])), "failed": failed, "flushed": flushed}
 	return {"flushed": flushed, "count": flushed.size()}
