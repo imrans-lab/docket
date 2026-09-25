@@ -160,11 +160,11 @@ jobs:
           GODOT_BIN="$(./scripts/build/build_godot_editor.sh ${{ matrix.platform }} ${{ matrix.arch }} "$HOME/godot-editor" | tail -1)"
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
 
-      # First headless run imports assets and registers class_name globals.
-      # Without this, scripts using class_name fail to resolve and the run hangs.
+      # Importing registers class_name globals; without it, scripts using
+      # class_name fail to resolve and the test run hangs.
       - name: Import project
-        run: |
-          "$GODOT_BIN" --headless --path . --import 2>&1 | tail -20 || true
+        timeout-minutes: 20
+        run: ./scripts/build/import_project.sh "$GODOT_BIN"
 
       - name: Run test suite
         run: |

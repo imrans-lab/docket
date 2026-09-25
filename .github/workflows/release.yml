@@ -151,7 +151,8 @@ jobs:
 
       - name: Import project
         shell: bash
-        run: '"$GODOT_BIN" --headless --path . --import 2>&1 | tail -20 || true'
+        timeout-minutes: 20
+        run: ./scripts/build/import_project.sh "$GODOT_BIN"
 
       - name: Run tests before shipping
         shell: bash
@@ -167,7 +168,7 @@ jobs:
           mkdir -p build/${{ matrix.platform }}
           # --export-release fails the build on export errors; --headless keeps
           # it non-interactive. The preset name must match export_presets.cfg.
-          "$GODOT_BIN" --headless --path . --export-release "${{ matrix.preset }}" 2>&1 | tail -30
+          "$GODOT_BIN" --headless --path . --export-release "${{ matrix.preset }}"
 
       # A GDExtension library missing at export time is only logged, so check
       # that the app really contains Docket's native library.
