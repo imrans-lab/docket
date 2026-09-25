@@ -529,7 +529,7 @@ func _create_item(step: RefCounted, fields: Dictionary, actor: String) -> Dictio
 	if id.is_empty(): return {"error":"failed to allocate item ID"}
 	error = _db.run_change(step, func(change: RefCounted) -> String:
 		var inserted := _db.insert_item(id, item, change)
-		return inserted if not inserted.is_empty() else _db.add_event_checked(id, "created", actor, "Item created", change))
+		return inserted if not inserted.is_empty() else _db.add_event_checked(id, "created", actor, "Item created", change, {"item_type": slug}))
 	return {"error":error} if not error.is_empty() else {"id":id,"item":_db.get_item(id)}
 
 # Why a stored reference among `values` (parent, blocked_by, and the item_ref
@@ -640,7 +640,7 @@ func _transition_item(step: RefCounted, id: String, target: String, actor: Strin
 		if ":" in blocker: blocker = blocker.split(":", false, 1)[1]
 	return _db.run_change(step, func(change: RefCounted) -> String:
 		var failed := _db.update_item_fields_checked(id, patch, change)
-		if failed.is_empty(): failed = _db.add_event_checked(id, "transition", actor, event_note, change)
+		if failed.is_empty(): failed = _db.add_event_checked(id, "transition", actor, event_note, change, {"from_status": str(item.status), "to_status": target})
 		if failed.is_empty() and not blocker.is_empty() and _db.has_item(blocker): failed = _db.add_link_checked(blocker, id, "blocks", change)
 		return failed)
 

@@ -846,19 +846,19 @@ func add_event(item_id: String, event_type: String, actor: String, note: String 
 
 ## Records event `event_type` on item `item_id` and touches its updated_at,
 ## as one change within a step of `op` (or an operation of its own): "" or
-## why not.
-func add_event_checked(item_id: String, event_type: String, actor: String, note: String = "", op: RefCounted = null) -> String:
-	return run_change(op, _add_event.bind(item_id, event_type, actor, note))
+## why not. `detail` completes the change's descriptor (_record_change).
+func add_event_checked(item_id: String, event_type: String, actor: String, note: String = "", op: RefCounted = null, detail: Dictionary = {}) -> String:
+	return run_change(op, _add_event.bind(item_id, event_type, actor, note, detail))
 
 
-func _add_event(step: RefCounted, item_id: String, event_type: String, actor: String, note: String) -> String:
+func _add_event(step: RefCounted, item_id: String, event_type: String, actor: String, note: String, detail: Dictionary = {}) -> String:
 	var ts := Time.get_datetime_string_from_system(true)
 	var error := _write_checked(step, "INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 		[item_id, event_type, actor, ts, note])
 	if error.is_empty():
 		error = _write_checked(step, "UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
 	if error.is_empty():
-		_record_change(step, item_id, event_type)
+		_record_change(step, item_id, event_type, detail)
 	return error
 
 

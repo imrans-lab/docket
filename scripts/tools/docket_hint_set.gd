@@ -25,7 +25,8 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+## Within `op` when given (the operation of the request it serves).
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, op: RefCounted = null) -> Dictionary:
 	var comp: String = args.get("component", "")
 	var key: String = args.get("key", "")
 	var value: String = args.get("value", "")
@@ -45,7 +46,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 			changes["confidence"] = args.confidence
 		if args.has("research_cost"):
 			changes["research_cost"] = int(args.research_cost)
-		var update_error: String = TypeRegistry.for_db(db, db.get_project_name()).update_item(existing_id, changes, "agent")
+		var update_error: String = TypeRegistry.for_db(db, db.get_project_name()).update_item(existing_id, changes, "agent", "", "", op)
 		return {"error":update_error} if not update_error.is_empty() else db.get_item(existing_id)
 	else:
 		# Create new hint
@@ -63,5 +64,5 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 		if args.has("research_cost"):
 			fields["research_cost"] = int(args.research_cost)
 		fields["type"] = "hint"
-		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(fields, "agent")
+		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(fields, "agent", op)
 		return created if created.has("error") else db.get_item(str(created.id))

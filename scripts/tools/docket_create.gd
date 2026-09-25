@@ -78,7 +78,8 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
+## Within `op` when given (the operation of the request it serves).
+func execute(args: Dictionary, schema: Dictionary, db: DocketDB, op: RefCounted = null) -> Dictionary:
 	# Auto-qualify parent if bare ID
 	if args.has("parent") and not str(args.parent).is_empty():
 		var parent_str: String = str(args.parent)
@@ -94,7 +95,7 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 		# The longstanding flat API accepts one tag and normalizes it to the
 		# canonical array shape before typed candidate validation.
 		if typed_args.has("tags") and not typed_args.tags is Array: typed_args.tags = [str(typed_args.tags)]
-		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(typed_args, "agent")
+		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(typed_args, "agent", op)
 		if created.has("error"): return created
 		var typed_item: Dictionary = created.get("item", {})
 		return {"id":created.id,"type":typed_item.get("type", item_type),"type_id":typed_item.get("type_id", ""),"type_revision":typed_item.get("type_revision", ""),"item_token":TypeRegistry.for_db(db, db.get_project_name()).item_token(typed_item),"status":typed_item.get("status", ""),"title":typed_item.get("title", "")}

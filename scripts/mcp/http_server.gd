@@ -518,33 +518,46 @@ func _write_stdio(message: Dictionary) -> void:
 
 func _watch_project(proj_name: String, pdb: DocketDB) -> void:
 	if host_events and transport == "stdio" and pdb != null:
-		pdb.items_changed.connect(_on_items_changed.bind(proj_name))
+		pdb.items_changed.connect(_on_items_changed.bind(proj_name, pdb.get_path(), str(pdb.get_instance_id())))
 
 
 ## One ITEM_CHANGED_EVENT per recorded change (an item can have several):
-## {project, id, change, event, cause, origin, operation_id, stream,
-## sequence}, where `change` is created | updated | transitioned | comment_added | deleted |
-## reloaded (the whole project, id ""), `event` the item event recorded,
-## `cause` "mutation" for a change a request made, with the origin and
-## operation id it was made with (its "provenance"), or "external_reload" for
-## a project read again from its file, which names neither, even when a
-## request's check for a changed file did it; `stream` and `sequence` place
-## the event on this process's event stream (McpHandler.event_sequence).
-func _on_items_changed(changes: Array, proj_name: String) -> void:
+## {project, project_path, open_generation, id, change, event, cause, origin,
+## operation_id, stream, sequence[, baseline]}, where `project` is the
+## project's selector, `project_path` and `open_generation` the opening it
+## was made in (as docket_project_list names them), `change` is created |
+## updated | transitioned | comment_added | deleted | reloaded (the whole
+## project, id ""), `event` the item event recorded, `cause` "mutation" for a
+## change a request made, with the origin and operation id it was made with
+## (its "provenance"), or "external_reload" for a project read again from its
+## file, which names neither, even when a request's check for a changed file
+## did it; `stream` and `sequence` place the event on this process's event
+## stream (McpHandler.event_sequence). `baseline`, on the one change that
+## describes an ordinary call of a baseline tool, is that call's descriptor
+## (DocketDBConnection.with_baseline).
+func _on_items_changed(changes: Array, proj_name: String, project_path: String, open_generation: String) -> void:
 	for change: Dictionary in changes:
 		_write_stdio({"jsonrpc": "2.0", "method": HOST_EVENT_METHOD, "params": {
-			"event": ITEM_CHANGED_EVENT, "payload": host_event(change, proj_name, _handler)}})
+			"event": ITEM_CHANGED_EVENT, "payload": host_event(change, proj_name, _handler, project_path, open_generation)}})
 
 
-## The next event of `handler`'s stream for `change` of `project` (see above).
-static func host_event(change: Dictionary, project: String, handler: McpHandler) -> Dictionary:
+## The next event of `handler`'s stream for `change` of `project`, in the
+## opening `project_path` and `open_generation` name (see above; without
+## them, the opening is not named).
+static func host_event(change: Dictionary, project: String, handler: McpHandler, project_path: String = "", open_generation: String = "") -> Dictionary:
 	var reloaded := str(change.event) == "reloaded"
 	var provenance: Dictionary = {} if reloaded else change.get("provenance", {})
 	handler.event_sequence += 1
-	return {"project": project, "id": str(change.id), "change": _change_kind(str(change.event)),
+	var event := {"project": project, "id": str(change.id), "change": _change_kind(str(change.event)),
 		"event": str(change.event), "cause": "external_reload" if reloaded else "mutation",
 		"origin": str(provenance.get("origin", "")), "operation_id": str(provenance.get("operation_id", "")),
 		"stream": handler.stream_id, "sequence": handler.event_sequence}
+	if not project_path.is_empty():
+		event["project_path"] = project_path
+		event["open_generation"] = open_generation
+	if change.get("baseline") is Dictionary:
+		event["baseline"] = change.baseline.duplicate()
+	return event
 
 
 static func _change_kind(event: String) -> String:

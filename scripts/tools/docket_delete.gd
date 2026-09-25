@@ -20,7 +20,8 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+## Within `op` when given (the operation of the request it serves).
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, op: RefCounted = null) -> Dictionary:
 	var id: String = str(args.get("id", ""))
 	if id.is_empty():
 		return {"error": "Missing 'id'"}
@@ -34,7 +35,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var type: String = str(item.get("type", ""))
 	var status: String = str(item.get("status", ""))
 
-	var error := db.delete_item_checked(id)
+	var error := db.delete_item_checked(id, op)
 	if not error.is_empty():
 		return {"error": "Could not delete %s: %s" % [id, error]}
 

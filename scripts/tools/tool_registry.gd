@@ -135,6 +135,10 @@ const _WITHOUT_PROJECT := ["docket_project_list", "docket_project_add", "docket_
 var allow_no_project := false
 
 
+## The baseline tools whose `id` argument names the item their describing
+## change is on; the others' is found by its event alone.
+const _BASELINE_TARGETED := ["docket_transition", "docket_update", "docket_delete", "docket_quality"]
+
 ## The tools that can run within a caller's coordination operation (`op` of
 ## call_tool); any other opens its own.
 const _WITHIN_OPERATION := ["docket_comment", "docket_move", "docket_type_evolve"]
@@ -142,8 +146,11 @@ const _WITHIN_OPERATION := ["docket_comment", "docket_move", "docket_type_evolve
 
 ## Tool `name` with `arguments`: its result, or {error}. `op`, for a tool in
 ## _WITHIN_OPERATION, is the operation of the request it serves, its changes
-## being made within it.
-func call_tool(name: String, arguments: Dictionary, op: RefCounted = null) -> Dictionary:
+## being made within it. With `baseline`, `op` is the operation opened for an
+## ordinary call of a DocketDBConnection.BASELINE_EVENTS tool: the tool works
+## within it, and the change that describes the call carries its descriptor
+## (DocketDBConnection.with_baseline).
+func call_tool(name: String, arguments: Dictionary, op: RefCounted = null, baseline: bool = false) -> Dictionary:
 	if not _tools.has(name):
 		var err := {"error": "Unknown tool: %s" % name}
 		_log_error(name, arguments, err)
@@ -155,7 +162,7 @@ func call_tool(name: String, arguments: Dictionary, op: RefCounted = null) -> Di
 	if name in _WITHOUT_PROJECT:
 		refresh_stale_dbs()
 		return _dispatch(name, arguments, op)
-	var admitted := admit(func(_reloaded: Array) -> Dictionary: return _dispatch(name, arguments, op), op)
+	var admitted := admit(func(_reloaded: Array) -> Dictionary: return _dispatch(name, arguments, op, baseline), op)
 	if not admitted.has("refused"):
 		return admitted
 	var uerr: Dictionary = admitted.refused
@@ -198,7 +205,7 @@ func _refresh_registries(admitted: Array, reloaded: Array) -> void:
 		else: _type_registry_diagnostics[proj_name] = error
 
 
-func _dispatch(name: String, arguments: Dictionary, op: RefCounted) -> Dictionary:
+func _dispatch(name: String, arguments: Dictionary, op: RefCounted, baseline: bool = false) -> Dictionary:
 	if _db == null and _project_dbs.is_empty() and not name in _WITHOUT_PROJECT:
 		var nerr := {"error": "no project is open", "kind": "no_project"}
 		_log_error(name, arguments, nerr)
@@ -236,11 +243,16 @@ func _dispatch(name: String, arguments: Dictionary, op: RefCounted) -> Dictionar
 		execute_args = [arguments, _schema, _db, _project_dbs, gui_open_fn]
 	else:
 		execute_args = [arguments, _schema, _resolve_db(arguments)]
-	if name in _WITHIN_OPERATION:
+	if name in _WITHIN_OPERATION or baseline:
 		execute_args.append(op)
 	elif name == "docket_project_remove":
 		execute_args.append(allow_no_project)
-	var result: Dictionary = _tools[name].callv("execute", execute_args)
+	# A baseline call is described on the item its id names (resolved above)
+	# when it names one (_BASELINE_TARGETED).
+	var result: Dictionary = DocketDBConnection.with_baseline(op, name,
+		str(arguments.get("id", "")) if name in _BASELINE_TARGETED else "",
+		func() -> Dictionary: return _tools[name].callv("execute", execute_args)) \
+		if baseline else _tools[name].callv("execute", execute_args)
 	if result.has("error"):
 		_log_error(name, arguments, result)
 	return result

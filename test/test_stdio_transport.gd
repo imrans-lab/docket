@@ -2,7 +2,8 @@ extends Node
 ## The stdio MCP transport end to end, as a host runs it: a child Docket
 ## started with `--headless --no-header -- --serve --stdio --host-events`,
 ## fed requests on stdin until EOF. Its stdout must hold only JSON-RPC lines:
-## the replies, and one item_changed for the item it creates; the process
+## the replies, and one item_changed for the item it creates (naming its
+## opening, and described as the create it was); the process
 ## must exit 0 once stdin closes, and the item must be in the file. The item
 ## view the embedded UI reads crosses it whole, and an error keeps its kind.
 ## A launch with --quiet (which would silence every reply) must be refused.
@@ -133,6 +134,10 @@ func test_child_process_answers_and_reports_on_stdout_only() -> Variant:
 	r = A.eq(created_events.size(), 1, "one item_changed created: %s" % [created_events])
 	if r is String: return r
 	r = A.eq([created_events[0].project, created_events[0].id], ["stdio", created.id], "the event names the new item")
+	if r is String: return r
+	r = A.is_true(not str(created_events[0].get("project_path", "")).is_empty() and not str(created_events[0].get("open_generation", "")).is_empty()
+		and created_events[0].get("baseline") == {"kind": "created", "item_type": "bug"},
+		"the event names the opening and describes the create: %s" % [created_events[0]])
 	if r is String: return r
 	# The item view crosses the transport whole, and a failure keeps its kind in _meta.
 	var view = JSON.parse_string(str(replies.get(3, {}).get("result", {}).get("content", [{}])[0].get("text", "")))

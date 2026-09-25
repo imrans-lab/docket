@@ -123,7 +123,19 @@ func _handle_tool_call(id: Variant, params: Dictionary, op: RefCounted = null) -
 		if arguments.has(reserved):
 			return _make_error(id, -32602, "%s is not a tool argument" % reserved)
 
-	var result = _registry.call_tool(tool_name, arguments, op)
+	var result: Dictionary
+	if op == null and DocketDBConnection.BASELINE_EVENTS.has(tool_name):
+		# An ordinary call of a baseline tool runs within an operation of its
+		# own, which the change describing it is found by.
+		# Refused, it is answered as admission answers a busy project.
+		var lease := CoordLease.shared()
+		if lease.has("error"):
+			result = {"error": str(lease.error), "kind": "coordination", "project": "", "retryable": true}
+		else:
+			result = _registry.call_tool(tool_name, arguments, lease.operation, true)
+			lease.operation.close()
+	else:
+		result = _registry.call_tool(tool_name, arguments, op)
 
 	if result.has("error"):
 		var failed := {"content": [{"type": "text", "text": result.error}], "isError": true}

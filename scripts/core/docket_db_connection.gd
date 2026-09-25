@@ -34,7 +34,9 @@ var _file_replaced := ""
 ## references were rewritten. Outside a transaction a change is reported at
 ## once; inside one, when it commits (nothing if it rolls back or its commit
 ## fails). DocketDBJsonl reports only once its file is saved. A change made
-## by an operation given a provenance also has it ("provenance").
+## by an operation given a provenance also has it ("provenance"), and the
+## one change an ordinary call of a baseline tool made has its descriptor
+## ("baseline", see with_baseline).
 signal items_changed(changes: Array)
 
 
@@ -399,12 +401,18 @@ func _exec_checked(sql: String, bindings: Array = []) -> String:
 
 ## Record that item `id` changed (`event`) within `step`: reported now, or
 ## when the open transaction commits (items_changed). When `step` belongs to
-## an operation given a provenance (with_provenance), the change carries it.
-func _record_change(step: RefCounted, id: String, event: String) -> void:
+## an operation given a provenance (with_provenance), the change carries it;
+## when it is the change a baseline call is described by (with_baseline), it
+## carries that descriptor, completed from `detail` (item_type of a created
+## item, from_status and to_status of a transition).
+func _record_change(step: RefCounted, id: String, event: String, detail: Dictionary = {}) -> void:
 	var change := {"id": id, "event": event}
 	var provenance := provenance_of(step)
 	if not provenance.is_empty():
 		change["provenance"] = provenance
+	var baseline := _baseline_of(step, id, event, detail)
+	if not baseline.is_empty():
+		change["baseline"] = baseline
 	_pending_changes.append(change)
 	if not _transaction_open:
 		_report_changes()
@@ -435,6 +443,66 @@ static func provenance_of(step: RefCounted) -> Dictionary:
 	for entry in _provenances:
 		if entry[0].same_operation(step):
 			return entry[1]
+	return {}
+
+
+## The tools whose ordinary calls are described, each by one of the changes
+## it makes: tool -> [kind, the item events that change may be]. The kind is
+## what the call means to a host: created, transitioned, updated or
+## comment_added. A quality score's own typed_update is not its change; a
+## hint set is "created" whether it made the hint or updated it.
+const BASELINE_EVENTS := {
+	"docket_create": ["created", ["created"]],
+	"docket_transition": ["transitioned", ["transition"]],
+	"docket_update": ["updated", ["typed_update"]],
+	"docket_comment": ["comment_added", ["comment_added", "comment_reply", "comment_accepted", "comment_rejected"]],
+	"docket_delete": ["updated", ["deleted"]],
+	"docket_hint_set": ["created", ["created", "typed_update"]],
+	"docket_quality": ["updated", ["quality_scored"]],
+}
+
+# {operation, tool, target, described} for each ordinary baseline call
+# running (with_baseline).
+static var _baselines: Array = []
+
+
+## What `work` (called with no arguments) returns, `work` being one ordinary
+## call of `tool` (a BASELINE_EVENTS key) that makes its changes within
+## `operation`, the coordination operation opened for it. The first change
+## recorded within that operation that is one of the tool's events, on item
+## `target` when that is not "", carries the call's descriptor: {kind} and,
+## for a created item, item_type ("hint" for a hint set), for a transition,
+## from_status and to_status. No other change, nor one in another operation
+## (a listener's, say), carries it; one the change's transaction rolls back
+## is not reported, and the call is then described by none.
+static func with_baseline(operation: RefCounted, tool: String, target: String, work: Callable) -> Variant:
+	var entry := {"operation": operation, "tool": tool, "target": target, "described": false}
+	_baselines.append(entry)
+	var result: Variant = work.call()
+	_baselines.erase(entry)
+	return result
+
+
+# The descriptor the change (`id`, `event`, `detail`) recorded within `step`
+# carries (see with_baseline), or {}.
+static func _baseline_of(step: RefCounted, id: String, event: String, detail: Dictionary) -> Dictionary:
+	if step == null:
+		return {}
+	for entry: Dictionary in _baselines:
+		if entry.described or not entry.operation.same_operation(step):
+			continue
+		var rule: Array = BASELINE_EVENTS[entry.tool]
+		if not event in rule[1] or (not str(entry.target).is_empty() and id != entry.target):
+			return {}
+		entry.described = true
+		var descriptor := {"kind": rule[0]}
+		if rule[0] == "created":
+			descriptor["item_type"] = "hint" if entry.tool == "docket_hint_set" else str(detail.get("item_type", ""))
+		elif rule[0] == "transitioned":
+			descriptor["from_status"] = str(detail.get("from_status", ""))
+			descriptor["to_status"] = str(detail.get("to_status", ""))
+		descriptor.make_read_only()
+		return descriptor
 	return {}
 
 

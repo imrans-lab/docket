@@ -93,7 +93,8 @@ static func qualify_parent(changes: Dictionary, db: DocketDB) -> void:
 				changes["parent"] = "%s:%s" % [proj_name, parent_str]
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+## Within `op` when given (the operation of the request it serves).
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, op: RefCounted = null) -> Dictionary:
 	var id: String = args.get("id", "")
 	if not db.has_item(id):
 		return {"error": "Item not found: %s" % id}
@@ -108,5 +109,5 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var expected_item_token: String = str(changes.get("expected_item_token", ""))
 	changes.erase("expected_item_token")
 	var update_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
-	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token)
+	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token, op)
 	return {"error":typed_error} if not typed_error.is_empty() else {"id":id,"status":"updated","type_revision":db.get_item(id).get("type_revision", ""),"item_token":update_registry.item_token(id)}

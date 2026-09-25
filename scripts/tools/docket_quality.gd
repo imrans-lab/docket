@@ -21,7 +21,8 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+## Within `op` when given (the operation of the request it serves).
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, op: RefCounted = null) -> Dictionary:
 	var id: String = args.get("id", "")
 	var item = db.get_item(id)
 	if item == null:
@@ -47,7 +48,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if not reason.is_empty():
 		event_note += " (%s)" % reason
 	var registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
-	var error := db.run_change(null, func(change: RefCounted) -> String:
+	var error := db.run_change(op, func(change: RefCounted) -> String:
 		var updated := registry.update_item(id, {"quality":score_int,"last_reviewed":now}, "", "", "", change)
 		return updated if not updated.is_empty() else db.add_event_checked(id, "quality_scored", "", event_note, change))
 	if not error.is_empty(): return {"error":error}
