@@ -38,18 +38,22 @@ jobs:
             os: macos-latest
             platform: macos
             arch: universal
+            # The editor only runs on this arm64 runner; the package is universal.
+            editor_arch: arm64
             preset: macOS
             rust_targets: x86_64-apple-darwin,aarch64-apple-darwin
           - name: Linux (x86_64)
             os: ubuntu-latest
             platform: linux
             arch: x86_64
+            editor_arch: x86_64
             preset: Linux
             rust_targets: x86_64-unknown-linux-gnu
           - name: Windows (x86_64)
             os: windows-latest
             platform: windows
             arch: x86_64
+            editor_arch: x86_64
             preset: Windows
             rust_targets: x86_64-pc-windows-msvc
 
@@ -126,44 +130,24 @@ jobs:
         shell: bash
         run: ./scripts/build/preflight.sh
 
-      - name: Install Godot + export templates
+      # Official Godot 4.7.1 source with an editor-only patch, built for this
+      # runner; see scripts/build/build_godot_editor.sh.
+      - name: Cache the Godot editor
+        uses: actions/cache@v6
+        with:
+          path: ~/godot-editor
+          key: godot-editor-${{ matrix.platform }}-${{ matrix.editor_arch }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/godot/**', 'scripts/build/build_godot_editor.sh') }}
+
+      - name: Build or check the Godot editor
         shell: bash
         run: |
           set -euo pipefail
-          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
-          mkdir -p ~/godot-bin && cd ~/godot-bin
-
-          case "${{ runner.os }}" in
-            macOS)   curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip" ;;
-            Linux)   curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" ;;
-            Windows) curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_win64.exe.zip" ;;
-          esac
-          unzip -q godot.zip && rm godot.zip
-
-          # Export templates must sit where Godot looks for them, keyed by version.
-          curl -fSL -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-          case "${{ runner.os }}" in
-            macOS)   TPL_DIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable" ;;
-            Windows) TPL_DIR="$APPDATA/Godot/export_templates/${GODOT_VERSION}.stable" ;;
-            *)       TPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ;;
-          esac
-          mkdir -p "$TPL_DIR"
-          unzip -q templates.tpz -d /tmp/tpl
-          mv /tmp/tpl/templates/* "$TPL_DIR"/
-          rm -rf templates.tpz /tmp/tpl
-
-      - name: Resolve Godot path
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${{ runner.os }}" in
-            macOS)   GODOT_BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot" ;;
-            # The console build, so its output reaches the log.
-            Windows) GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*_console.exe' | head -1)" ;;
-            *)       GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*' -type f | head -1)" ;;
-          esac
-          chmod +x "$GODOT_BIN" || true
+          GODOT_BIN="$(./scripts/build/build_godot_editor.sh ${{ matrix.platform }} ${{ matrix.editor_arch }} "$HOME/godot-editor" | tail -1)"
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+
+      - name: Install the official export templates
+        shell: bash
+        run: ./scripts/build/install_godot_templates.sh
 
       - name: Import project
         shell: bash

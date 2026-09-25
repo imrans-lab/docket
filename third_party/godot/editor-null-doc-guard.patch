@@ -1,0 +1,16 @@
+diff --git a/editor/doc/editor_help.cpp b/editor/doc/editor_help.cpp
+index a469a509558f40d98a9bccf1ea8b414d115b3000..99813ad2a6de46a24966129aaa56f90365e072ab 100644
+--- a/editor/doc/editor_help.cpp
++++ b/editor/doc/editor_help.cpp
+@@ -3081,6 +3081,11 @@ void EditorHelp::_gen_doc_thread(void *p_udata) {
+ }
+ 
+ void EditorHelp::_gen_extensions_docs() {
++	// Queued by _load_doc_thread; the editor may have torn its docs down
++	// (cleanup_doc) before the queue is flushed on exit.
++	if (!doc) {
++		return;
++	}
+ 	doc->generate((DocTools::GENERATE_FLAG_SKIP_BASIC_TYPES | DocTools::GENERATE_FLAG_EXTENSION_CLASSES_ONLY));
+ 
+ 	// Append extra doc data, as it gets overridden by the generation step.

@@ -1,0 +1,16 @@
+# The Godot editor Docket's CI and release build from source
+# (scripts/build/build_godot_editor.sh), and the official export templates
+# they export with (scripts/build/install_godot_templates.sh). Read by bash.
+
+# Official Godot 4.7.1-stable.
+GODOT_SOURCE_REPO=https://github.com/godotengine/godot.git
+GODOT_SOURCE_COMMIT=a13da4feb8d8aefc283c3763d33a2f170a18d541
+# The source tree once editor-null-doc-guard.patch is applied to it.
+GODOT_PATCHED_TREE=91b75b702d6c46d32e755bdd6a190d57b2e9250d
+# Names the build as not the official one (godot --version).
+GODOT_BUILD_NAME=docket_null_doc_guard
+
+# The official 4.7.1-stable export templates; their SHA-512, as that
+# release's SHA512-SUMS.txt lists Godot_v4.7.1-stable_export_templates.tpz.
+GODOT_TEMPLATES_URL=https://github.com/godotengine/godot-builds/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz
+GODOT_TEMPLATES_SHA512=afcc83d8d3d298038f19c58744a0d660fa75dd4baa33cb55d1011bb2565a2a8c2381728924564cb909e37c205a23f21b521b23bd057993afd43ae4da0b2f9d47

@@ -146,35 +146,18 @@ jobs:
       - name: Preflight checks
         run: ./scripts/build/preflight.sh
 
-      - name: Cache Godot binary
-        id: godot-cache
+      # Official Godot 4.7.1 source with an editor-only patch, built for this
+      # runner; see scripts/build/build_godot_editor.sh.
+      - name: Cache the Godot editor
         uses: actions/cache@v6
         with:
-          path: ~/godot-bin
-          key: godot-${{ env.GODOT_VERSION }}-${{ matrix.os }}
+          path: ~/godot-editor
+          key: godot-editor-${{ matrix.platform }}-${{ matrix.arch }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/godot/**', 'scripts/build/build_godot_editor.sh') }}
 
-      - name: Install Godot ${{ env.GODOT_VERSION }}
-        if: steps.godot-cache.outputs.cache-hit != 'true'
+      - name: Build or check the Godot editor
         run: |
           set -euo pipefail
-          mkdir -p ~/godot-bin && cd ~/godot-bin
-          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
-          else
-            curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
-          fi
-          unzip -q godot.zip && rm godot.zip
-
-      - name: Resolve Godot path
-        run: |
-          set -euo pipefail
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            GODOT_BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot"
-          else
-            GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*' -type f | head -1)"
-          fi
-          chmod +x "$GODOT_BIN"
+          GODOT_BIN="$(./scripts/build/build_godot_editor.sh ${{ matrix.platform }} ${{ matrix.arch }} "$HOME/godot-editor" | tail -1)"
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
 
       # First headless run imports assets and registers class_name globals.
