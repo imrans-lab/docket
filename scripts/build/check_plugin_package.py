@@ -176,13 +176,22 @@ def check(archive, version, work):
                        check=True, timeout=TOOL_TIMEOUT_S)
     channels = manifest["ui"]["panels"][0]["ipc_channels"]
 
-    # The backend's own user data (and Godot's) stays in the work directory.
-    home = os.path.join(work, "home")
-    env = dict(os.environ, HOME=home, USERPROFILE=home, APPDATA=os.path.join(home, "appdata"),
-               LOCALAPPDATA=os.path.join(home, "localappdata"), XDG_DATA_HOME=os.path.join(home, "data"),
-               XDG_CONFIG_HOME=os.path.join(home, "config"), XDG_CACHE_HOME=os.path.join(home, "cache"))
-    for variable in ["APPDATA", "LOCALAPPDATA", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"]:
-        os.makedirs(env[variable], exist_ok=True)
+    # On Linux and macOS the backend's Godot user data stays in the work
+    # directory; its native coordination directory is found from the OS
+    # account, not the environment, so it stays in the account's home. On
+    # Windows the backend gets this environment as it is, so its user data
+    # goes to the account's own profile: the native coordinator asks Windows
+    # for the local application data folder (SHGetKnownFolderPath), and
+    # USERPROFILE, APPDATA and LOCALAPPDATA pointed into the work directory
+    # can make that fail (0x80070002).
+    env = dict(os.environ)
+    if sys.platform != "win32":
+        home = os.path.join(work, "home")
+        env.update(HOME=home, USERPROFILE=home, APPDATA=os.path.join(home, "appdata"),
+                   LOCALAPPDATA=os.path.join(home, "localappdata"), XDG_DATA_HOME=os.path.join(home, "data"),
+                   XDG_CONFIG_HOME=os.path.join(home, "config"), XDG_CACHE_HOME=os.path.join(home, "cache"))
+        for variable in ["APPDATA", "LOCALAPPDATA", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"]:
+            os.makedirs(env[variable], exist_ok=True)
     run_dir = os.path.join(work, "run")
     os.makedirs(run_dir)
     project = os.path.join(work, "projects", "check.dct")
