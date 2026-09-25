@@ -66,7 +66,8 @@ func prefs():
 	return null
 
 
-## Replace the open projects with the one at `path`.
+## Open the project at `path` (File > Open): the standalone app's source
+## replaces its open projects with it; a host's panel opens it beside them.
 func open_project(_path: String) -> void:
 	pass
 

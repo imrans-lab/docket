@@ -491,30 +491,11 @@ func schema() -> Dictionary:
 	return _schema
 
 
-## Replace the open projects with the one at `path` (kept if already open):
-## it is opened first, as a process not run host-managed refuses to close its
-## last project.
+## Open the project at `path` beside the others (answered, not opened again,
+## when it is open already). The process's host decides which projects stay
+## open, so opening one never closes another here; closing is remove_project.
 func open_project(path: String) -> void:
-	var keep := ""
-	var paths := project_paths()
-	for name in paths:
-		if paths[name] == path:
-			keep = name
-	if keep.is_empty():
-		var added := await _call("docket_project_add", {"path": path})
-		if added.has("error"):
-			load_failed.emit(path, str(added.error))
-			return
-		keep = str(added.get("name", ""))
-	var still_open: Array[String] = []
-	for name in paths:
-		if name != keep:
-			var removed := await _call("docket_project_remove", {"name": name})
-			if removed.has("error"):
-				still_open.append("%s (%s)" % [name, removed.error])
-	if not still_open.is_empty():
-		load_failed.emit(path, "Opened, but these projects could not be closed: %s" % ", ".join(still_open))
-	await _projects_changed(path)
+	await add_project(path)
 
 
 func add_project(path: String) -> void:
