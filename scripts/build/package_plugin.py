@@ -13,13 +13,15 @@ RemoteDocketSource calls must be one of the panel's IPC channels.
 A release package carries the whole release export of one target
 (plugin_export.py checks it: executable, native and SQLite libraries, and on
 macOS the bundle, copied intact), and the host starts its executable from
-there: there is no fallback to a Godot on PATH or to these sources.
+there: there is no fallback to a Godot on PATH or to these sources. Each
+--notice file (the licences and notices that must ship with its binaries)
+goes to the package's top level under its own name.
 --dev-godot and --dev-checkout instead write a package whose process is an
 explicit Godot running this checkout, named as a development build; it is
 never a release.
 
 Usage:
-  package_plugin.py --out DIR --version VERSION --target linux|windows|macos --export-root EXPORT
+  package_plugin.py --out DIR --version VERSION --target linux|windows|macos --export-root EXPORT [--notice FILE]...
   package_plugin.py --out DIR --dev-godot GODOT --dev-checkout CHECKOUT
 
 EXPORT is the directory Godot exported Linux or Windows into (build/linux,
@@ -94,9 +96,10 @@ def check(files, manifest):
         raise PackageError("tools the panel calls are not IPC channels of its manifest: %s" % ", ".join(missing))
 
 
-def stage(out, files, manifest, export):
+def stage(out, files, manifest, export, notices=()):
     """Write the package: `files` from the repository, the checked `export`
-    (if any), the manifest, and SHA256SUMS over every file in it."""
+    (if any), the `notices` files, the manifest, and SHA256SUMS over every
+    file in it."""
     os.makedirs(out)
     for path in files:
         target = os.path.join(out, path)
@@ -104,6 +107,11 @@ def stage(out, files, manifest, export):
         shutil.copy2(os.path.join(ROOT, path), target)
     if export is not None:
         plugin_export.copy(export, out)
+    for notice in notices:
+        target = os.path.join(out, os.path.basename(notice))
+        if os.path.lexists(target):
+            raise PackageError("notice %s would replace %s in the package" % (notice, os.path.basename(notice)))
+        shutil.copy2(notice, target)
     with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent="\t")
         handle.write("\n")
@@ -127,9 +135,10 @@ def main(argv):
     parser.add_argument("--export-root")
     parser.add_argument("--dev-godot")
     parser.add_argument("--dev-checkout")
+    parser.add_argument("--notice", action="append", default=[])
     args = parser.parse_args(argv)
     dev = args.dev_godot is not None or args.dev_checkout is not None
-    if dev and (args.target or args.export_root or args.version):
+    if dev and (args.target or args.export_root or args.version or args.notice):
         raise PackageError("a development package takes --dev-godot and --dev-checkout only")
     if dev and not (args.dev_godot and args.dev_checkout):
         raise PackageError("a development package needs both --dev-godot and --dev-checkout")
@@ -137,6 +146,11 @@ def main(argv):
         raise PackageError("a release package needs --target, --export-root (the release export) and --version")
     if os.path.exists(args.out):
         raise PackageError("%s already exists" % args.out)
+    for notice in args.notice:
+        if not os.path.isfile(notice):
+            raise PackageError("notice %s is not a file" % notice)
+        if os.path.basename(notice) in ("manifest.json", "SHA256SUMS"):
+            raise PackageError("notice %s has the name of a file the package writes itself" % notice)
 
     manifest = json.load(open(os.path.join(ROOT, MANIFEST_TEMPLATE), encoding="utf-8"))
     files = closure(ENTRY_SCENE)
@@ -169,7 +183,7 @@ def main(argv):
     manifest["backend"]["entrypoint"] = "./" + export.entrypoint
     manifest["backend"]["args"] = BACKEND_ARGS
     try:
-        stage(args.out, files, manifest, export)
+        stage(args.out, files, manifest, export, args.notice)
     except plugin_export.ExportError as error:
         raise PackageError(str(error))
     return 0

