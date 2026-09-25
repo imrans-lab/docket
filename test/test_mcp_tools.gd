@@ -841,8 +841,11 @@ func test_project_add_already_loaded() -> Variant:
 
 func test_project_add_file_not_found() -> Variant:
 	_setup_project_management()
-	var result = _registry.call_tool("docket_project_add", {"path": "/nonexistent/path.dct"})
-	return A.contains(str(result.get("error", "")), "not found", "error for missing file without create")
+	# A missing file in a directory that exists: refused, nothing opened or made.
+	var absent := ProjectSettings.globalize_path(_test_dir + "/absent.dct")
+	var result = _registry.call_tool("docket_project_add", {"path": absent})
+	return A.eq([str(result.get("error", "")).begins_with("File not found"), _registry.call_tool("docket_project_list", {}).count,
+		FileAccess.file_exists(absent)], [true, 2, false], "a missing file without create is refused: %s" % [result])
 
 
 func test_project_remove() -> Variant:
