@@ -116,6 +116,11 @@ func _ready() -> void:
 	else:
 		_add_work_entry("query", last_q.label, last_q.filter, "")
 	_activate_work_entry(0)
+	var not_restored: String = _src.last_query_refusal()
+	if not not_restored.is_empty():
+		_info_dialog.title = "Last query not restored"
+		_info_dialog.dialog_text = not_restored
+		_info_dialog.popup_centered.call_deferred()
 
 	# Poll for external DB changes (e.g. MCP writes) every 3 seconds
 	_poll_timer = Timer.new()
@@ -151,7 +156,9 @@ func _persist_last_query() -> void:
 				break
 	if entry.is_empty():
 		return
-	_src.save_last_query(entry.filter, entry.label)
+	var not_kept: String = _src.save_last_query(entry.filter, entry.label)
+	if not not_kept.is_empty():
+		print("Docket: %s" % not_kept)
 
 
 func _build_ui() -> void:
@@ -1046,7 +1053,11 @@ func _on_open_query_selected(path: String) -> void:
 
 
 func _on_save_query_selected(path: String) -> void:
-	_query_grid.save_dcq(path)
+	var error: String = _query_grid.save_dcq(path)
+	if not error.is_empty():
+		_info_dialog.title = "Query not saved"
+		_info_dialog.dialog_text = error
+		_info_dialog.popup_centered()
 
 
 # -- Zoom / Font size ------------------------------------------------------

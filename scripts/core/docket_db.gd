@@ -7,10 +7,11 @@ class_name DocketDB
 
 const DocketFields := preload("res://scripts/core/docket_fields.gd")
 
+## The columns a query may name: the items table's own, as the queries run
+## against it compile with (id included: project conditions are bound to id
+## conditions).
 func item_columns() -> Array:
-	var result: Array = []
-	for value in _ITEM_COLS: result.append(str(value))
-	return result
+	return _item_columns().duplicate()
 
 
 # -- Lifecycle ----------------------------------------------------------------
@@ -47,6 +48,7 @@ func _open(step: RefCounted, path: String) -> bool:
 # cannot be opened.
 func _connect(path: String, verb: String) -> bool:
 	if _db != null and _is_open: _db.close_db()
+	_items_columns_cache = []
 	_is_open = false
 	_path = path
 	_last_sql_error = ""
@@ -968,7 +970,8 @@ func get_links(item_id: String) -> Array:
 ## immediately after an empty result to distinguish "no matches" from "refused".
 var last_query_error: String = ""
 
-## Cached column names of the items table, for filter/sort field validation.
+## Cached column names of the items table, for filter/sort field validation;
+## emptied whenever the connection changes (_connect, DocketDBJsonl._adopt).
 var _items_columns_cache: Array = []
 
 

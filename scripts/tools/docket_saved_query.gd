@@ -39,8 +39,15 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, registry: Type
 				for column in args.columns:
 					if not column is String or str(column).strip_edges().is_empty(): return {"error":"saved query columns must be non-empty strings"}
 				query["columns"] = args.columns
+			if ProjectSelectors.has_selector_condition(query):
+				return {"error": "A saved query cannot name a project by project_selector, which lasts only this session; name it by `project` (its stored name)"}
 			if registry == null: registry = TypeRegistry.for_db(db, db.get_project_name())
-			var validation: Dictionary = RegistryQuery.compile(query, registry, db.item_columns())
+			# `project` conditions are evaluated outside the database
+			# (ProjectQuery), so the query is checked with them bound as for this
+			# project, and saved as given.
+			var checked: Dictionary = ProjectQuery.new({db.get_project_name(): db}, Callable()).bind(query, db.get_project_name())
+			if checked.has("error"): return {"error":"saved query is invalid: %s" % checked.error}
+			var validation: Dictionary = RegistryQuery.compile(checked.query, registry, db.item_columns())
 			if validation.has("error"): return {"error":"saved query is invalid: %s" % validation.error}
 			var error: String = db.save_query_checked(name, query)
 			return {"error":error} if not error.is_empty() else {"saved": name}

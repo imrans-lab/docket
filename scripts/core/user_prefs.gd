@@ -137,6 +137,24 @@ static func save_last_query(filter: String, label: String) -> void:
 	_save_data(data)
 
 
+## Why the last query was not remembered, for the next start to say ("" to
+## clear it).
+static func save_last_query_refusal(reason: String) -> void:
+	var data := _load_data()
+	data["last_query_refusal"] = reason
+	_save_data(data)
+
+
+## Why the last query was not remembered, once: it is cleared as it is read.
+static func take_last_query_refusal() -> String:
+	var data := _load_data()
+	var reason := str(data.get("last_query_refusal", ""))
+	if not reason.is_empty():
+		data.erase("last_query_refusal")
+		_save_data(data)
+	return reason
+
+
 static func load_last_query() -> Dictionary:
 	var data := _load_data()
 	var filter_val = data.get("last_query_filter", "")

@@ -228,6 +228,8 @@ func _dispatch(name: String, arguments: Dictionary, op: RefCounted) -> Dictionar
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
 		execute_args = [arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn]
+	elif name == "docket_query":
+		execute_args = [arguments, _schema, _resolve_db(arguments), _project_dbs]
 	elif name == "docket_query_view":
 		execute_args = [arguments, _schema, _db, _project_dbs, get_type_registry]
 	elif name == "docket_gui_open":

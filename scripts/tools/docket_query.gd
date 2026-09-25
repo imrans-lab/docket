@@ -19,7 +19,7 @@ func get_definition() -> Dictionary:
 	}
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -> Dictionary:
 	var query := {}
 	if args.has("filter"):
 		var filter = args.filter
@@ -29,15 +29,27 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 		if filter is Dictionary and filter.has("project"):
 			for structured_key: String in ["conditions", "$and", "$or", "field", "op", "type_id", "field_key"]:
 				if filter.has(structured_key): return {"error":"filter.project cannot be combined with structured query key '%s'; use project routing or a branch-preserving cross-project query" % structured_key}
-			var routed_project: String = str(args.get("project", db.get_project_name()))
 			if not filter.project is String: return {"error":"filter.project must be a project name"}
-			if str(filter.project).nocasecmp_to(routed_project) != 0 and str(filter.project).nocasecmp_to(db.get_project_name()) != 0: return {"error":"filter.project conflicts with the routed project '%s'" % routed_project}
+			if str(filter.project).nocasecmp_to(db.get_project_name()) != 0: return {"error":"filter.project conflicts with the routed project '%s'" % db.get_project_name()}
 			filter = filter.duplicate(true); filter.erase("project")
 		query["filter"] = filter
 	if args.has("sort"):
 		query["sort"] = args.sort
 	if args.has("limit"):
 		query["limit"] = args.limit
+	# Its other project conditions (structured ones, and any project_selector)
+	# are evaluated for the routed project, as for each of several.
+	var selector := str(args.get("project", ""))
+	if selector.is_empty():
+		for open_as in project_dbs:
+			if project_dbs[open_as] == db: selector = str(open_as)
+	var bound := ProjectQuery.new(project_dbs if not project_dbs.is_empty() else {db.get_project_name(): db}, Callable()).bind(query,
+		selector if not selector.is_empty() else db.get_project_name())
+	if bound.has("error"):
+		return {"error": bound.error}
+	if bool(bound.excluded):
+		return {"items": [], "count": 0}
+	query = bound.query
 
 	# Smart default: auto-hydrate only when filter narrows to ≤5 results.
 	# >5 results always lean (browse first, hydrate via docket_get).

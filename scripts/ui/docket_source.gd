@@ -170,8 +170,17 @@ func last_query() -> Dictionary:
 	return _remembered.get("last_query", {}).duplicate()
 
 
-func save_last_query(filter: String, label: String) -> void:
+## Why the last query of the previous session was not remembered, once; ""
+## when it was, or when nothing is remembered.
+func last_query_refusal() -> String:
+	return ""
+
+
+## Remembers query `filter` as the last one: "" or why it was not (see
+## LocalDocketSource).
+func save_last_query(filter: String, label: String) -> String:
 	_remembered["last_query"] = {"filter": filter, "label": label}
+	return ""
 
 
 ## The type chooser's shortcuts for `project_key`: {pinned, recent}.

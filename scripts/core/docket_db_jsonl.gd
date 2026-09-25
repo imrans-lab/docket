@@ -386,6 +386,8 @@ func _adopt(source: DocketDB) -> void:
 	_path = source._path
 	_owner_thread = source._owner_thread
 	_is_open = true
+	# Another cache may have other columns (another format version).
+	_items_columns_cache = []
 	source._db = null
 	source._is_open = false
 	var diagnostics := super.get_meta_value("registry_diagnostics", "")

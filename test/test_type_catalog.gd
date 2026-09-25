@@ -470,7 +470,8 @@ func test_shortcut_actions_enforce_caps_and_persist_recency_order() -> Variant:
 	chooser._activate_shortcut(catalog[5].key)
 	r = A.eq(chooser._recent[0], catalog[5].key, "shortcut activation moves entry to front")
 	if r is String: chooser.queue_free(); return r
-	r = A.eq(UserPrefs.load_type_shortcuts("shortcut-boundary").recent, chooser._recent, "action order persists")
+	# Remembered by project file, read back as this session's names.
+	r = A.eq(chooser._src.type_shortcuts("shortcut-boundary").recent, chooser._recent, "action order persists")
 	if r is String: chooser.queue_free(); return r
 	chooser._pinned = []
 	for i in UserPrefs.MAX_QUERY_TYPE_PINS: chooser._pinned.append(catalog[i].key)
@@ -493,24 +494,29 @@ func test_legacy_unqualified_filter_round_trips_without_rebinding() -> Variant:
 	var r = A.eq(saved, original, "legacy literal survives dcq save and load")
 	grid.queue_free(); reopened.queue_free(); return r
 
-func test_grouped_status_roundtrip_keeps_exact_project_identity() -> Variant:
+## A status chosen from one project's type is that exact project's (a
+## project_selector guard), so the query runs on it alone, and it is not saved:
+## a selector means nothing in another session.
+func test_grouped_status_choice_runs_exactly_and_is_not_saved() -> Variant:
 	var state := _two_project_state()
 	var grid := QueryGrid.new(); add_child(grid); grid.init(LocalDocketSource.new(state))
 	var alpha_key := ""
 	for record in grid._type_catalog:
 		if record.project == "Alpha" and record.slug == "code_review": alpha_key = record.key
-	var original := {"conditions": [{"field": "status", "op": "catalog_status", "value": {"key": alpha_key, "status": "requested"}}]}
-	grid.set_filter(JSON.stringify(original))
+	grid.set_filter(JSON.stringify({"conditions": [{"field": "status", "op": "catalog_status", "value": {"key": alpha_key, "status": "requested"}}]}))
+	grid.refresh()
+	var r = A.eq([grid._current_results.size(), grid._current_results[0].title if grid._current_results.size() == 1 else ""], [1, "Alpha review"],
+		"the chosen group runs on its own project; the same literal in another project stays excluded")
+	if r is String: grid.queue_free(); return r
 	var path := _db_dir + "/grouped-status.dcq"
-	grid.save_dcq(path)
-	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(LocalDocketSource.new(state)); reopened.load_dcq(path)
-	var saved = JSON.parse_string(reopened.get_filter())
-	var r = A.eq(saved, original, "group identity survives UI and dcq round trip")
-	if r is String: grid.queue_free(); reopened.queue_free(); return r
-	r = A.eq(reopened._current_results.size(), 1, "same literal in another project remains excluded")
-	if r is String: grid.queue_free(); reopened.queue_free(); return r
-	r = A.eq(reopened._current_results[0].title, "Alpha review", "reloaded query executes against original group")
-	grid.queue_free(); reopened.queue_free(); return r
+	var refused := grid.save_dcq(path)
+	r = A.is_true(refused.contains("project_selector") and not FileAccess.file_exists(path), "the exact choice is not saved, and says why: %s" % refused)
+	if r is String: grid.queue_free(); return r
+	grid.set_filter(JSON.stringify({"conditions": [{"field": "type", "op": "catalog_in", "value": []}, {"field": "priority", "op": "eq", "value": 1, "conj": "and"}]}))
+	var serialized := grid._serialize_all_conditions()
+	r = A.is_true(JSON.stringify(serialized).contains("catalog_in") and not ProjectSelectors.has_selector_condition({"filter": serialized}),
+		"a type chooser with nothing chosen does not make a query exact, so it can be remembered: %s" % serialized)
+	grid.queue_free(); return r
 
 func test_incompatible_status_remains_visible_in_query_grid() -> Variant:
 	var state := _two_project_state()

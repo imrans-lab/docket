@@ -27,10 +27,16 @@ func run_with_details(query: Dictionary, primary_db: DocketDB) -> Dictionary:
 		if not last_error.is_empty():
 			return {"error": last_error}
 	elif primary_db != null:
-		var registry: TypeRegistry = _registry_for.call(_selector_of(primary_db))
-		rows = primary_db.execute_registry_query(query, registry) if registry != null else primary_db.execute_query(query)
-		if not primary_db.last_query_error.is_empty():
-			return {"error": primary_db.last_query_error}
+		# One project's query is bound as each of several is (see bind).
+		var selector := _selector_of(primary_db)
+		var bound := bind(query, selector)
+		if bound.has("error"):
+			return {"error": bound.error}
+		if not bool(bound.excluded):
+			var registry: TypeRegistry = _registry_for.call(selector)
+			rows = primary_db.execute_registry_query(bound.query, registry) if registry != null else primary_db.execute_query(bound.query)
+			if not primary_db.last_query_error.is_empty():
+				return {"error": primary_db.last_query_error}
 	var details: Array = []
 	for item in rows:
 		var full_id := str(item.get("id", ""))
@@ -60,59 +66,35 @@ func _row_project(item: Dictionary) -> String:
 	return project
 
 
-func _extract_project_filter(query: Dictionary) -> Dictionary:
-	## Extract and remove "project" conditions from a query filter.
-	## Returns {op, value} if found, or {} if no project filter.
-	var filter = query.get("filter")
-	if not filter is Dictionary:
-		return {}
-
-	# Conditions-list format: {"conditions": [{field, op, value}, ...]}
-	if filter.has("conditions") and filter.conditions is Array:
-		var kept: Array = []
-		var result := {}
-		for cond in filter.conditions:
-			if cond is Dictionary and str(cond.get("field", "")) == "project":
-				result = {"op": str(cond.get("op", "eq")), "value": cond.get("value", "")}
-			else:
-				kept.append(cond)
-		filter["conditions"] = kept
-		if kept.is_empty():
-			query.erase("filter")
-		return result
-
-	# Flat dict format: {"project": "x"} or {"project__ne": "x"}
-	if filter.has("project"):
-		var val = filter["project"]
-		filter.erase("project")
-		if filter.is_empty():
-			query.erase("filter")
-		return {"op": "eq", "value": val}
-	if filter.has("project__ne"):
-		var val = filter["project__ne"]
-		filter.erase("project__ne")
-		if filter.is_empty():
-			query.erase("filter")
-		return {"op": "neq", "value": val}
-
-	return {}
-
-
-func _project_match(proj_name: String, pf: Dictionary) -> Dictionary:
+# Whether project `proj_name` (a selector) meets condition `pf` on `field`:
+# `project` compares its stored name, with the operators as they always were
+# (case matters, except to like); ProjectSelectors.SELECTOR_FIELD its
+# selector, exactly (eq, neq, in).
+func _project_match(proj_name: String, pf: Dictionary, field: String = "project") -> Dictionary:
 	var op: String = pf.get("op", "eq")
 	var raw_value = pf.get("value", "")
 	var val: String = str(raw_value)
+	if field == ProjectSelectors.SELECTOR_FIELD:
+		match op:
+			"eq": return {"matches": proj_name == val}
+			"neq": return {"matches": proj_name != val}
+			"in":
+				if not raw_value is Array: return {"error": "project_selector 'in' requires an array value"}
+				return {"matches": raw_value.has(proj_name)}
+		return {"error": "project_selector supports eq, neq and in, not '%s'" % op}
+	var project_db: DocketDB = _project_dbs.get(proj_name)
+	var name := project_db.get_project_name() if project_db != null else proj_name
 	match op:
-		"eq": return {"matches": proj_name == val}
-		"neq": return {"matches": proj_name != val}
-		"contains": return {"matches": proj_name.contains(val)}
-		"not_contains": return {"matches": not proj_name.contains(val)}
-		"like": return {"matches": _project_like(proj_name, val)}
-		"is_empty": return {"matches": proj_name.is_empty()}
-		"is_not_empty": return {"matches": not proj_name.is_empty()}
+		"eq": return {"matches": name == val}
+		"neq": return {"matches": name != val}
+		"contains": return {"matches": name.contains(val)}
+		"not_contains": return {"matches": not name.contains(val)}
+		"like": return {"matches": _project_like(name, val)}
+		"is_empty": return {"matches": name.is_empty()}
+		"is_not_empty": return {"matches": not name.is_empty()}
 		"in":
 			if not raw_value is Array: return {"error": "project 'in' requires an array value"}
-			return {"matches": raw_value.has(proj_name)}
+			return {"matches": raw_value.has(name)}
 	return {"error": "unsupported project query operator '%s'" % op}
 
 
@@ -150,7 +132,7 @@ func run_across(query: Dictionary, detail: String = "full") -> Array:
 	var query_detail: String = "full" if _sort_requires_registry_values(sort_spec) else detail
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		var project_query := _bind_project_conditions(db_query, proj_name)
+		var project_query := bind(db_query, proj_name)
 		if project_query.has("error"):
 			last_error = str(project_query.error)
 			push_error(last_error)
@@ -241,6 +223,41 @@ func _query_sort_value(item: Dictionary, spec: Dictionary):
 	return custom.get(field)
 
 
+## `query` for the project open as `project_name` (a selector): {query,
+## excluded} or {error}. Its project conditions (`project` and
+## ProjectSelectors.SELECTOR_FIELD, see _project_match) are evaluated here,
+## outside the project's database; excluded when a flat filter's conditions
+## rule it out. A selector naming no open project is an error, not a mismatch.
+func bind(query: Dictionary, project_name: String) -> Dictionary:
+	var unknown := _unknown_selector(query.get("filter"))
+	if not unknown.is_empty():
+		return {"error": "Unknown project_selector '%s'. Open projects: %s" % [unknown, ", ".join(PackedStringArray(_project_dbs.keys().map(func(k) -> String: return str(k))))]}
+	return _bind_project_conditions(query, project_name)
+
+
+# The first selector value in `node` naming no open project, or "".
+func _unknown_selector(node: Variant) -> String:
+	if node is Array:
+		for child in node:
+			var found := _unknown_selector(child)
+			if not found.is_empty(): return found
+		return ""
+	if not node is Dictionary:
+		return ""
+	var values: Array = []
+	if str(node.get("field", "")) == ProjectSelectors.SELECTOR_FIELD:
+		values = node.value if node.get("value") is Array else [node.get("value", "")]
+	for key in [ProjectSelectors.SELECTOR_FIELD, ProjectSelectors.SELECTOR_FIELD + "__ne"]:
+		if node.has(key) and not node.has("field"): values.append(node[key])
+	for value in values:
+		if not _project_dbs.has(str(value)): return str(value)
+	for key in ["conditions", "$and", "$or"]:
+		if node.has(key):
+			var nested := _unknown_selector(node[key])
+			if not nested.is_empty(): return nested
+	return ""
+
+
 func _bind_project_conditions(query: Dictionary, project_name: String) -> Dictionary:
 	## Project is evaluated outside each project's SQLite database. Replacing a
 	## project predicate with a per-database Boolean preserves AND/OR grouping;
@@ -249,20 +266,30 @@ func _bind_project_conditions(query: Dictionary, project_name: String) -> Dictio
 	var filter = bound.get("filter")
 	if not filter is Dictionary:
 		return {"query": bound, "excluded": false}
+	# A single condition at the root runs as a group of one, as structured
+	# conditions do everywhere.
+	if filter.has("field") and not (filter.has("conditions") or filter.has("$and") or filter.has("$or")):
+		filter = {"conditions": [filter]}
 	if filter.has("conditions") or filter.has("$and") or filter.has("$or"):
 		var replaced := _replace_project_predicates(filter, project_name)
 		if replaced.has("error"): return replaced
 		bound["filter"] = replaced.value
 		return {"query": bound, "excluded": false}
 	var flat_filter: Dictionary = filter.duplicate(true)
-	var flat_query := {"filter": flat_filter}
-	var project_filter := _extract_project_filter(flat_query)
-	if not project_filter.is_empty():
-		var project_match := _project_match(project_name, project_filter)
+	var excluded := false
+	for key in ["project", "project__ne", ProjectSelectors.SELECTOR_FIELD, ProjectSelectors.SELECTOR_FIELD + "__ne"]:
+		if not flat_filter.has(key):
+			continue
+		var field: String = key.trim_suffix("__ne")
+		var project_match := _project_match(project_name, {"op": "neq" if key.ends_with("__ne") else "eq", "value": flat_filter[key]}, field)
 		if project_match.has("error"): return project_match
-		if not project_match.matches: return {"query": bound, "excluded": true}
-	bound["filter"] = flat_query.get("filter", {})
-	return {"query": bound, "excluded": false}
+		excluded = excluded or not project_match.matches
+		flat_filter.erase(key)
+	if flat_filter.is_empty():
+		bound.erase("filter")
+	else:
+		bound["filter"] = flat_filter
+	return {"query": bound, "excluded": excluded}
 
 
 func _replace_project_predicates(node: Variant, project_name: String) -> Dictionary:
@@ -274,8 +301,9 @@ func _replace_project_predicates(node: Variant, project_name: String) -> Diction
 			replaced_array.append(replaced_child.value)
 		return {"value": replaced_array}
 	if not node is Dictionary: return {"value": node}
-	if str(node.get("field", "")) == "project":
-		var match_result := _project_match(project_name, node)
+	var field := str(node.get("field", ""))
+	if field in ["project", ProjectSelectors.SELECTOR_FIELD]:
+		var match_result := _project_match(project_name, node, field)
 		if match_result.has("error"): return match_result
 		var replacement := {"field": "id", "op": "is_not_empty", "value": ""} if match_result.matches else {"field": "id", "op": "in", "value": []}
 		if node.has("conj"): replacement["conj"] = node.conj

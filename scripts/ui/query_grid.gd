@@ -26,13 +26,14 @@ var _query_generation := 0
 # Visual query builder
 var _conditions_container: VBoxContainer
 var _condition_rows: Array = []  # Array of {conj, field, op, value, hbox, remove_btn}
+var _shortcut_key_moved := ""  # the last shortcut key legacy shortcuts were considered for
 var _user_has_modified: bool = false  # Track if user has interacted with the builder
 
 # Available fields for dropdown (ordered for usability)
 const _QUERY_FIELDS := [
 	"type", "status", "priority", "severity", "title", "description",
 	"assigned_to", "directed_to", "tags", "has_attachment", "id", "component", "key",
-	"resolution", "environment", "created_at", "updated_at", "project",
+	"resolution", "environment", "created_at", "updated_at", "project", ProjectSelectors.SELECTOR_FIELD,
 	"blocked_by", "parent",
 ]
 
@@ -42,6 +43,7 @@ const _NUMERIC_OPS := ["eq", "neq", "gt", "lt", "gte", "lte", "is_empty", "is_no
 const _DATE_OPS := ["eq", "neq", "before", "after", "is_empty", "is_not_empty"]
 const _BOOL_OPS := ["eq"]
 const _TAG_OPS := ["eq", "neq", "contains", "not_contains"]
+const _SELECTOR_OPS := ["eq", "neq"]
 
 # Op labels for display
 const _OP_LABELS := {
@@ -62,6 +64,14 @@ const _OP_LABELS := {
 var _dropdown_values_cache: Dictionary = {}
 var _type_catalog: Array = []
 var _refreshing_scope := false
+
+
+# The fields a condition row picks its value from a list for, with their
+# values: _dropdown_values, and project_selector with the open projects'
+# selectors as listed. Reading, running, saving and restoring a row all go by
+# this, so a picked project is never read from the hidden text field.
+func _row_dropdowns() -> Dictionary:
+	return _dropdown_values().merged({ProjectSelectors.SELECTOR_FIELD: _src.project_names() if _src != null else []})
 
 
 func _dropdown_values() -> Dictionary:
@@ -133,9 +143,7 @@ func init(source) -> void:
 func _on_file_changed() -> void:
 	if not await _rebuild_type_catalog():
 		return
-	var shortcut_projects: Array = _src.project_names().duplicate()
-	shortcut_projects.sort()
-	var project_key := ",".join(shortcut_projects)
+	var project_key := _shortcut_key()
 	for row in _condition_rows:
 		row.type_chooser.update_catalog(_type_catalog, project_key)
 	_refresh_scoped_controls()
@@ -538,9 +546,7 @@ func _add_condition_row(is_first: bool) -> void:
 	var type_chooser := TypeChooser.new()
 	type_chooser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	type_chooser.visible = false
-	var shortcut_projects: Array = _src.project_names().duplicate()
-	shortcut_projects.sort()
-	type_chooser.configure(_type_catalog, ",".join(shortcut_projects), _src)
+	type_chooser.configure(_type_catalog, _shortcut_key(), _src)
 	type_chooser.selection_changed.connect(func(_values):
 		_user_has_modified = true
 		_refresh_scoped_controls()
@@ -666,6 +672,8 @@ func _get_ops_for_field(field_name: String) -> Array:
 			return _BOOL_OPS
 		"tags":
 			return _TAG_OPS
+		ProjectSelectors.SELECTOR_FIELD:
+			return _SELECTOR_OPS
 		_:
 			return _TEXT_OPS
 
@@ -688,14 +696,15 @@ func _update_ops_for_row(row_idx: int) -> void:
 		op_option.add_item(_OP_LABELS.get(o, o))
 
 	# Determine if this field uses a dropdown
-	var use_dropdown: bool = _dropdown_values().has(field_name) and field_name != "type"
+	var dropdowns: Dictionary = _row_dropdowns()
+	var use_dropdown: bool = dropdowns.has(field_name) and field_name != "type"
 	type_chooser.visible = field_name == "type"
 
 	if use_dropdown:
 		# Populate dropdown with fixed values for this field
 		value_dropdown.clear()
 		value_dropdown.add_item("(any)")
-		var values: Array = _dropdown_values()[field_name]
+		var values: Array = dropdowns[field_name]
 		for v in values:
 			value_dropdown.add_item(str(v))
 		value_dropdown.visible = true
@@ -884,7 +893,7 @@ func _build_conditions_filter() -> Dictionary:
 		if field_name == "type" and row["type_chooser"].visible:
 			var selected_types: Array = row["type_chooser"].selected_values()
 			raw_value = str(selected_types[0]) if selected_types.size() == 1 else ""
-		elif _dropdown_values().has(field_name) and value_dropdown.visible:
+		elif _row_dropdowns().has(field_name) and value_dropdown.visible:
 			raw_value = str(_dropdown_stored_value(value_dropdown))
 		else:
 			raw_value = value_edit.text.strip_edges()
@@ -922,7 +931,7 @@ func _build_conditions_filter() -> Dictionary:
 		var only: Dictionary = conditions[0]
 		if only["op"] == "eq" and only.get("value", "") == "":
 			return {}
-	return QueryTypeScope.compile_catalog_conditions(conditions, _type_catalog, _src.project_names().size() > 1)
+	return QueryTypeScope.compile_catalog_conditions(conditions, _type_catalog)
 
 
 func _serialize_all_conditions() -> Dictionary:
@@ -944,7 +953,7 @@ func _serialize_all_conditions() -> Dictionary:
 		if field_name == "type" and row["type_chooser"].visible:
 			var chosen: Array = row["type_chooser"].selected_values()
 			raw_value = str(chosen[0]) if chosen.size() == 1 else ""
-		elif _dropdown_values().has(field_name) and value_dropdown.visible:
+		elif _row_dropdowns().has(field_name) and value_dropdown.visible:
 			raw_value = str(_dropdown_stored_value(value_dropdown))
 		else:
 			raw_value = value_edit.text.strip_edges()
@@ -1298,7 +1307,7 @@ func set_filter(text: String) -> void:
 					row["value"].text = val_str
 					row["value"].visible = true
 					row["type_chooser"].visible = false
-				elif _dropdown_values().has(field_name):
+				elif _row_dropdowns().has(field_name):
 					var dd: OptionButton = row["value_dropdown"]
 					if not _select_dropdown_metadata(dd, val_str):
 						# Keeping the literal makes legacy saved queries reviewable even
@@ -1338,7 +1347,7 @@ func set_filter(text: String) -> void:
 					row["value_dropdown"].visible = false
 					row["value"].visible = true
 					row["value"].text = kv[1]
-				elif _dropdown_values().has(kv_field):
+				elif _row_dropdowns().has(kv_field):
 					var dd: OptionButton = row["value_dropdown"]
 					for vi in dd.item_count:
 						if dd.get_item_text(vi) == kv[1]:
@@ -1377,7 +1386,7 @@ func get_filter_summary() -> String:
 		var val: String
 		if field_name == "type" and row["type_chooser"].visible:
 			val = ", ".join(row["type_chooser"].selected_values())
-		elif _dropdown_values().has(field_name) and value_dropdown.visible:
+		elif _row_dropdowns().has(field_name) and value_dropdown.visible:
 			val = str(_dropdown_stored_value(value_dropdown))
 		else:
 			val = value_edit.text.strip_edges()
@@ -1417,13 +1426,16 @@ func load_dcq(path: String) -> void:
 		_rebuild_columns()
 
 
-func save_dcq(path: String) -> void:
-	## Save current query builder state as a .dcq file.
+func save_dcq(path: String) -> String:
+	## Save current query builder state as a .dcq file: "" or why it was not
+	## saved.
 	# `filter` stays executable for other .dcq consumers while `ui_filter` keeps
 	# catalog identities needed to reconstruct the chooser without rebinding.
 	var ui_filter := _serialize_all_conditions()
 	var filter := _build_conditions_filter()
 	var saved_columns: Array = _dcq_columns.duplicate(true) if not _dcq_columns.is_empty() else _col_fields.duplicate()
+	if ProjectSelectors.has_selector_condition({"filter": filter}):
+		return "This query picks projects by project_selector, which lasts only this session; name them by Project (the stored name) to save it."
 	var dcq := {"filter": filter, "ui_filter": ui_filter, "columns":saved_columns}
 	# Include sort if active
 	if not _sort_field.is_empty():
@@ -1431,8 +1443,35 @@ func save_dcq(path: String) -> void:
 		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
 		dcq["sort"] = [sort_value]
 	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f:
-		f.store_string(JSON.stringify(dcq, "\t"))
+	if f == null:
+		return "Could not write %s." % path
+	f.store_string(JSON.stringify(dcq, "\t"))
+	return ""
+
+
+# The key the type shortcuts of the open projects are remembered under: their
+# files' paths, sorted, so a copy of a project never shares the
+# original's. Shortcuts remembered under the projects' names (as before) are
+# moved over once, when no open project is known by another name than its
+# stored one; the names' entry is then emptied, so it is not taken again.
+func _shortcut_key() -> String:
+	var paths: Array = _src.project_paths().values().map(func(p) -> String: return str(p))
+	paths.sort()
+	var key := "\n".join(PackedStringArray(paths))
+	var names: Array = _src.project_names().duplicate()
+	names.sort()
+	var legacy := ",".join(PackedStringArray(names))
+	var aliased: bool = names.any(func(n) -> bool: return _src.stored_name(str(n)) != str(n))
+	if key == _shortcut_key_moved:
+		return key
+	_shortcut_key_moved = key
+	var current: Dictionary = _src.type_shortcuts(key)
+	if not aliased and legacy != key and current.pinned.is_empty() and current.recent.is_empty():
+		var earlier: Dictionary = _src.type_shortcuts(legacy)
+		if not earlier.pinned.is_empty() or not earlier.recent.is_empty():
+			_src.save_type_shortcuts(key, earlier.pinned, earlier.recent)
+			_src.save_type_shortcuts(legacy, [], [])
+	return key
 
 
 func refresh() -> void:

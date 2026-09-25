@@ -6,7 +6,7 @@ class_name DocketQueryView
 ## (ProjectQuery.run_with_details).
 
 func get_definition() -> Dictionary:
-	return {"name":"docket_query_view","description":"Run a query over every open project as the Docket grid shows it (read-only): {rows, details}, details[i] being {short_id, resolved} for rows[i]. When several projects are open, sort and limit apply to the merged rows and a \"project\" condition selects projects.","inputSchema":{"type":"object","properties":{"filter":{"type":"object"},"sort":{"type":"array","items":{"type":"object"}},"limit":{"type":"integer"}}}}
+	return {"name":"docket_query_view","description":"Run a query over every open project as the Docket grid shows it (read-only): {rows, details}, details[i] being {short_id, resolved} for rows[i]. When several projects are open, sort and limit apply to the merged rows; a \"project\" condition selects projects by stored name (matching every open copy of one), and a \"project_selector\" condition (eq, neq, in) by this session's selector as docket_project_list names it.","inputSchema":{"type":"object","properties":{"filter":{"type":"object"},"sort":{"type":"array","items":{"type":"object"}},"limit":{"type":"integer"}}}}
 
 func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: Dictionary, registry_for: Callable) -> Dictionary:
 	var query := {}

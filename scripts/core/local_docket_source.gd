@@ -177,16 +177,63 @@ func last_query() -> Dictionary:
 	return UserPrefs.load_last_query()
 
 
-func save_last_query(filter: String, label: String) -> void:
+## Remembered unless it picks projects exactly (by selector, or by a type or
+## status chosen from one project's catalog), which the next session would
+## read as another project, or none: then nothing is, so an older query is not
+## restored in its place, and why is kept for the next start to say.
+func save_last_query(filter: String, label: String) -> String:
+	var parsed = JSON.parse_string(filter)
+	if parsed is Dictionary and ProjectSelectors.has_selector_condition({"filter": parsed}):
+		var reason := "The last query (%s) picked projects exactly, which only its session knew, so it was not restored." % label
+		UserPrefs.save_last_query("", "")
+		UserPrefs.save_last_query_refusal(reason)
+		return reason
 	UserPrefs.save_last_query(filter, label)
+	UserPrefs.save_last_query_refusal("")
+	return ""
 
 
+func last_query_refusal() -> String:
+	return UserPrefs.take_last_query_refusal()
+
+
+## Pinned and recent types are remembered by project FILE (a selector lasts
+## only the session, and two copies may swap theirs next time): each type
+## identity's project is its file's path in the preferences, and its
+## selector here.
 func type_shortcuts(project_key: String) -> Dictionary:
-	return UserPrefs.load_type_shortcuts(project_key)
+	var remembered := UserPrefs.load_type_shortcuts(project_key)
+	return {"pinned": _identities_by(remembered.pinned, _paths_to_selectors()),
+		"recent": _identities_by(remembered.recent, _paths_to_selectors())}
 
 
 func save_type_shortcuts(project_key: String, pinned: Array, recent: Array) -> void:
-	UserPrefs.save_type_shortcuts(project_key, pinned, recent)
+	var to_paths := {}
+	var dbs := _state.get_project_dbs()
+	for selector in dbs:
+		to_paths[selector] = (dbs[selector] as DocketDB).get_path()
+	UserPrefs.save_type_shortcuts(project_key, _identities_by(pinned, to_paths), _identities_by(recent, to_paths))
+
+
+func _paths_to_selectors() -> Dictionary:
+	var to_selectors := {}
+	var dbs := _state.get_project_dbs()
+	for selector in dbs:
+		to_selectors[(dbs[selector] as DocketDB).get_path()] = selector
+	return to_selectors
+
+
+# `identities` (TypeCatalog.identity strings) with each project replaced as
+# `names` maps it; one it does not map is kept as it is.
+static func _identities_by(identities: Array, names: Dictionary) -> Array:
+	var mapped: Array = []
+	for identity in identities:
+		var parts = JSON.parse_string(str(identity))
+		if parts is Array and parts.size() == 2 and names.has(str(parts[0])):
+			mapped.append(TypeCatalog.identity(str(names[str(parts[0])]), str(parts[1])))
+		else:
+			mapped.append(identity)
+	return mapped
 
 
 func recent_projects() -> PackedStringArray:

@@ -727,9 +727,6 @@ func item_events(project: String, id: String) -> Array:
 	return [] if item.has("error") else item.get("events", [])
 
 
-## Items whose parent is `qualified_id` ("project:id") in every open project;
-## a bare parent id counts only in the parent's own project, as in the
-## standalone app.
 func stored_name(project: String) -> String:
 	for listed in _projects:
 		if str(listed.get("name", "")) == project:
@@ -737,6 +734,9 @@ func stored_name(project: String) -> String:
 	return project
 
 
+## Items whose parent is `qualified_id` ("project:id", the project as its
+## selector) in every open project; a bare parent id counts only in the
+## parent's own project, as in the standalone app.
 func children_of(qualified_id: String) -> Dictionary:
 	var separator := qualified_id.find(":")
 	var owner := qualified_id.left(separator) if separator > 0 else ""

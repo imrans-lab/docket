@@ -1,11 +1,14 @@
 extends RefCounted
 ## Resolves catalog identities and query choices per OR branch. Project/type
 ## pairs stay coupled until compilation, preventing duplicate slugs in separate
-## projects from collapsing into one predicate.
+## projects from collapsing into one predicate. A catalog record's project is
+## the exact project it came from (its selector), so each pair is guarded by
+## a project_selector condition, never by a stored name, which would take in
+## copies of it: such a query runs only in this session and is not saved.
 
 const TypeCatalog := preload("type_catalog.gd")
 
-const UNIVERSAL_FIELDS := ["type", "status", "priority", "severity", "title", "description", "assigned_to", "directed_to", "tags", "has_attachment", "id", "created_at", "updated_at", "project", "blocked_by", "parent"]
+const UNIVERSAL_FIELDS := ["type", "status", "priority", "severity", "title", "description", "assigned_to", "directed_to", "tags", "has_attachment", "id", "created_at", "updated_at", "project", ProjectSelectors.SELECTOR_FIELD, "blocked_by", "parent"]
 
 static func branch_index(conditions: Array, row_index: int) -> int:
 	var branch := 0
@@ -111,7 +114,7 @@ static func compile_catalog_conditions(conditions: Array, catalog: Array, includ
 				if identities.size() == 1:
 					var single: Dictionary = TypeCatalog.find_by_key(catalog, str(identities[0]))
 					scoped_condition["type_id"] = single.id
-					if include_project and not str(single.project).is_empty(): scoped_condition = {"$and":[{"field":"project","op":"eq","value":single.project},scoped_condition]}
+					if include_project and not str(single.project).is_empty(): scoped_condition = {"$and":[{"field":ProjectSelectors.SELECTOR_FIELD,"op":"eq","value":single.project},scoped_condition]}
 				elif identities.size() > 1:
 					var kind: String = ""
 					var alternatives: Array = []
@@ -123,7 +126,7 @@ static func compile_catalog_conditions(conditions: Array, catalog: Array, includ
 							alternatives.clear(); break
 						kind = record_kind
 						var alternative: Dictionary = scoped_condition.duplicate(true); alternative["type_id"] = record.id
-						if include_project and not str(record.project).is_empty(): alternative = {"$and":[{"field":"project","op":"eq","value":record.project},alternative]}
+						if include_project and not str(record.project).is_empty(): alternative = {"$and":[{"field":ProjectSelectors.SELECTOR_FIELD,"op":"eq","value":record.project},alternative]}
 						alternatives.append(alternative)
 					if not alternatives.is_empty(): scoped_condition = {"$or":alternatives}
 			expanded.append(scoped_condition)
@@ -140,7 +143,7 @@ static func _compile_condition(cond: Dictionary, catalog: Array, include_project
 		var record := TypeCatalog.find_by_key(catalog, str(choice.get("key", "")))
 		if record.is_empty(): return {"field":"type","type_id":str(choice.get("key", "")),"op":"eq","value":""}
 		var predicates: Array = [{"field":"type","type_id":record.id,"op":"eq","value":record.slug}, {"field":"status","type_id":record.id,"op":"eq","value":choice.get("status", "")}]
-		if include_project and not str(record.project).is_empty(): predicates.push_front({"field": "project", "op": "eq", "value": record.project})
+		if include_project and not str(record.project).is_empty(): predicates.push_front({"field": ProjectSelectors.SELECTOR_FIELD, "op": "eq", "value": record.project})
 		return {"$and": predicates}
 	if cond.get("field", "") != "type" or cond.get("op", "") != "catalog_in": return cond
 	var alternatives: Array = []
@@ -149,7 +152,7 @@ static func _compile_condition(cond: Dictionary, catalog: Array, include_project
 		if record.is_empty(): alternatives.append({"field":"type","type_id":str(key),"op":"eq","value":""})
 		else:
 			var pair: Array = [{"field":"type","type_id":record.id,"op":"eq","value":record.slug}]
-			if include_project and not str(record.project).is_empty(): pair.push_front({"field": "project", "op": "eq", "value": record.project})
+			if include_project and not str(record.project).is_empty(): pair.push_front({"field": ProjectSelectors.SELECTOR_FIELD, "op": "eq", "value": record.project})
 			alternatives.append(pair[0] if pair.size() == 1 else {"$and": pair})
 	if alternatives.is_empty(): return {"field":"id","op":"in","value":[]}
 	return alternatives[0] if alternatives.size() == 1 else {"$or": alternatives}
