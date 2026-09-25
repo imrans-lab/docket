@@ -42,7 +42,9 @@ impl DocketFileIdentity {
     }
 
     /// Where a file not yet at `path` would be: {path}, its parent directory
-    /// resolved as it exists now; an existing entry there is an error.
+    /// resolved as it exists now. Any entry there (a link, dangling or not, a
+    /// directory) is an error, and so is one that cannot be looked at: only
+    /// a positive "no such entry" is absence.
     #[func]
     fn of_new(&self, path: GString) -> VarDictionary {
         let path = PathBuf::from(path.to_string());
@@ -58,8 +60,10 @@ impl DocketFileIdentity {
             Ok(resolved) => resolved.join(name),
             Err(error) => return failed(error),
         };
-        if resolved.symlink_metadata().is_ok() {
-            return failed(format!("{} already exists", resolved.display()));
+        match resolved.symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return failed(format!("{} already exists", resolved.display())),
+            Err(e) => return failed(format!("cannot inspect {}: {e}", resolved.display())),
         }
         let mut reply = VarDictionary::new();
         reply.set("path", godot_path(&resolved).as_str());

@@ -60,7 +60,7 @@ static func record(dct_path: String, event: String, handle: String, ok: bool, so
 	entry["pid"] = OS.get_process_id()
 
 	var line := JSON.stringify(entry) + "\n"
-	var written := _locked(dct_path, func(guard: RefCounted) -> Dictionary: return guard.append(line.to_utf8_buffer()))
+	var written := with_lock(dct_path, func(guard: RefCounted) -> Dictionary: return guard.append(line.to_utf8_buffer()))
 	if written.has("error"):
 		push_warning("Docket did not record %s in the audit log (%s)." % [event, written.get("kind", "unavailable")])
 
@@ -69,19 +69,24 @@ static func record(dct_path: String, event: String, handle: String, ok: bool, so
 ## audit lock: {present: true, bytes, identity}, {present: false} when there
 ## is none, or {error, kind}.
 static func snapshot(dct_path: String) -> Dictionary:
-	return _locked(dct_path, func(guard: RefCounted) -> Dictionary: return guard.snapshot())
+	return with_lock(dct_path, func(guard: RefCounted) -> Dictionary: return guard.snapshot())
 
 
-# `work` called with the held audit guard of `dct_path`, inside a SHARED
-# coordination operation: its result, or {error, kind} when either cannot be
-# had. `work` runs synchronously and must not await.
-static func _locked(dct_path: String, work: Callable) -> Dictionary:
+## `work` called with the held audit guard (DocketAuditGuard) of `dct_path`,
+## inside a SHARED coordination operation (a step of `parent` when given):
+## its result, or {error, kind} when either cannot be had. With `also`, the
+## guard holds that path's audit lock too (DocketFileIO.audit_lock_with).
+## `work` runs synchronously and must not await.
+static func with_lock(dct_path: String, work: Callable, parent: RefCounted = null, also: String = "") -> Dictionary:
 	if not ClassDB.class_exists("DocketFileIO"):
 		return {"error": "Docket's native extension is not loaded.", "kind": "no_extension"}
-	var opened := CoordLease.shared()
+	var opened := CoordLease.shared(parent)
 	if opened.has("error"):
 		return opened
-	var locked: Dictionary = ClassDB.instantiate("DocketFileIO").audit_lock(ProjectSettings.globalize_path(dct_path), LOCK_DEADLINE_MS)
+	var io: Object = ClassDB.instantiate("DocketFileIO")
+	var source := ProjectSettings.globalize_path(dct_path)
+	var locked: Dictionary = io.audit_lock(source, LOCK_DEADLINE_MS) if also.is_empty() \
+		else io.audit_lock_with(source, ProjectSettings.globalize_path(also), LOCK_DEADLINE_MS)
 	var result: Dictionary = locked if locked.has("error") else work.call(locked.guard)
 	if locked.has("guard"):
 		locked.guard.release()

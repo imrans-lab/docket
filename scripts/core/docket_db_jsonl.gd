@@ -432,11 +432,45 @@ func _mutation_precheck(step: RefCounted) -> String:
 	if _write_blocked: return last_write_error
 	_baseline = {}
 	if FileAccess.file_exists(_jsonl_path):
-		var snapshot := JSONLCache.read_snapshot(_jsonl_path)
-		if snapshot.has("error") or snapshot.hash != super.get_meta_value("jsonl_hash", ""):
+		var snapshot := _read_saved()
+		if snapshot.has("error"):
 			return "%s changed as the change began; try it again" % _jsonl_path
-		_baseline = snapshot.merged({"id": _file_binding.get("id", "")})
+		_baseline = snapshot
 	return ""
+
+
+## The project's file as saved, read once: {bytes, hash, id}, or {error}
+## mid-change, while the project is refused (ProjectAdmission) or its file is
+## not the one it opened, and when the bytes are not the ones its cache was
+## last read from or wrote. Asked within an admission, so a changed file was
+## read again first.
+func saved_snapshot() -> Dictionary:
+	var elsewhere := _thread_refusal()
+	if not elsewhere.is_empty():
+		return {"error": elsewhere}
+	if _change_in_progress() or _mutation_busy:
+		return {"error": "a change to %s is in progress" % _jsonl_path}
+	var refused := _refusal()
+	if not refused.is_empty():
+		return {"error": str(refused.message)}
+	if _write_blocked:
+		return {"error": last_write_error}
+	var state := _file_state()
+	if not state.is_empty():
+		return {"error": "%s is not the file this project opened" % _jsonl_path}
+	var snapshot := _read_saved()
+	if snapshot.has("error"):
+		return {"error": "%s is not as this project last read or saved it" % _jsonl_path}
+	return snapshot
+
+
+# The file's bytes read once, with the bound file's identity, when they are
+# the ones the cache was built from or last wrote: {bytes, hash, id} or {error}.
+func _read_saved() -> Dictionary:
+	var snapshot := JSONLCache.read_snapshot(_jsonl_path)
+	if snapshot.has("error") or snapshot.hash != super.get_meta_value("jsonl_hash", ""):
+		return {"error": "changed"}
+	return snapshot.merged({"id": _file_binding.get("id", "")})
 
 
 # -- Canonical changes through the transaction API --------------------------

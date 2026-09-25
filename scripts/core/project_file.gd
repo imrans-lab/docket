@@ -43,6 +43,15 @@ static func locate(path: String) -> Dictionary:
 	return {"path": found.path, "id": found.id}
 
 
+## Where a file not yet at `path` would be: {path}, its directory resolved,
+## or {error} when any entry is there (a link, dangling or not, a directory)
+## or none can be ruled out.
+static func vacant(path: String) -> Dictionary:
+	if _identity == null:
+		return {"error": _unavailable(path)}
+	return _identity.of_new(ProjectSettings.globalize_path(path))
+
+
 ## The identity of the file `path` leads to, or "".
 static func identity(path: String) -> String:
 	return "" if _identity == null else str(_identity.of(ProjectSettings.globalize_path(path)).get("id", ""))

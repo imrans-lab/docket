@@ -110,36 +110,73 @@ impl DocketFileIO {
     /// cannot be taken. Not reentrant: a holder asking again waits for itself.
     #[func]
     fn audit_lock(&self, source: GString, deadline_ms: i64) -> VarDictionary {
-        let source = match resolved(Path::new(&source.to_string())) {
-            Ok(path) => path,
-            Err(error) => return failed(error, "unavailable"),
-        };
-        let lock = match lock_file(&source) {
-            Ok(file) => file,
-            Err(error) => return failed(error, "unavailable"),
-        };
-        let deadline = Instant::now() + Duration::from_millis(deadline_ms.max(0) as u64);
-        loop {
-            match lock.try_lock() {
-                Ok(()) => break,
-                Err(TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(LOCK_POLL),
-                Err(TryLockError::WouldBlock) => return failed(format!("the audit of {} is locked by another writer", source.display()), "busy"),
-                Err(TryLockError::Error(e)) => return failed(format!("cannot lock the audit of {}: {e}", source.display()), "unavailable"),
-            }
-        }
-        let guard = DocketAuditGuard { lock: Some(lock), audit: PathBuf::from(format!("{}.audit.jsonl", source.display())) };
-        let mut reply = VarDictionary::new();
-        reply.set("guard", Gd::from_object(guard));
-        reply
+        lock_audits(&source.to_string(), None, deadline_ms)
+    }
+
+    /// As audit_lock, holding as well the audit lock of `other` (a project
+    /// file not yet written, say), both within `deadline_ms`. The two are
+    /// taken in one order by their lock keys, so two holders of the same pair
+    /// never wait on each other, and once when both paths share a key. The
+    /// guard is for `source`'s sidecar and holds both until released.
+    #[func]
+    fn audit_lock_with(&self, source: GString, other: GString, deadline_ms: i64) -> VarDictionary {
+        lock_audits(&source.to_string(), Some(&other.to_string()), deadline_ms)
     }
 }
 
-/// A held audit lock (DocketFileIO.audit_lock) and what it guards: the
-/// project's audit sidecar, appended to or read only while it is held.
+// The audit locks of `source` and `other`: {guard} or {error, kind}. Locks
+// already taken are given back on failure, as their files are dropped.
+fn lock_audits(source: &str, other: Option<&str>, deadline_ms: i64) -> VarDictionary {
+    let deadline = Instant::now() + Duration::from_millis(deadline_ms.max(0) as u64);
+    let source = match resolved(Path::new(source)) {
+        Ok(path) => path,
+        Err(error) => return failed(error, "unavailable"),
+    };
+    let source_key = lock_key(&source);
+    let mut wanted = vec![(source_key.clone(), source.clone())];
+    if let Some(other) = other {
+        match resolved(Path::new(other)) {
+            Ok(path) if lock_key(&path) != source_key => wanted.push((lock_key(&path), path)),
+            Ok(_) => {}
+            Err(error) => return failed(error, "unavailable"),
+        }
+    }
+    wanted.sort_by(|a, b| a.0.cmp(&b.0));
+    let (mut lock, mut also) = (None, None);
+    for (key, path) in wanted {
+        let file = match lock_file(&key) {
+            Ok(file) => file,
+            Err(error) => return failed(error, "unavailable"),
+        };
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(LOCK_POLL),
+                Err(TryLockError::WouldBlock) => return failed(format!("the audit of {} is locked by another writer", path.display()), "busy"),
+                Err(TryLockError::Error(e)) => return failed(format!("cannot lock the audit of {}: {e}", path.display()), "unavailable"),
+            }
+        }
+        if key == source_key {
+            lock = Some(file);
+        } else {
+            also = Some(file);
+        }
+    }
+    let guard = DocketAuditGuard { lock, also, audit: PathBuf::from(format!("{}.audit.jsonl", source.display())) };
+    let mut reply = VarDictionary::new();
+    reply.set("guard", Gd::from_object(guard));
+    reply
+}
+
+/// A held audit lock (DocketFileIO.audit_lock, or audit_lock_with and the
+/// other lock it took) and what it guards: the project's audit sidecar,
+/// appended to or read only while it is held.
 #[derive(GodotClass)]
 #[class(no_init, base = RefCounted)]
 pub struct DocketAuditGuard {
     lock: Option<File>,
+    // The other audit lock taken with this one (audit_lock_with), if any.
+    also: Option<File>,
     audit: PathBuf,
 }
 
@@ -201,6 +238,7 @@ impl DocketAuditGuard {
     #[func]
     fn release(&mut self) {
         self.lock = None;
+        self.also = None;
     }
 
     #[func]
@@ -330,14 +368,18 @@ fn resolved(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-// The audit lock file of `source` in the coordination directory, opened (and
-// created once, never removed; a link or a file with other names there is
-// refused, not replaced). Named by a stable hash of the path with its
-// case folded, as Windows and macOS file systems usually ignore it; where
-// case matters, two names differing only in case merely share a lock.
-fn lock_file(source: &Path) -> Result<File, String> {
+// The lock key of the project file at `source` (resolved): its path with
+// its case folded, as Windows and macOS file systems usually ignore it;
+// where case matters, two names differing only in case merely share a lock.
+fn lock_key(source: &Path) -> String {
+    godot_path(source).to_lowercase()
+}
+
+// The audit lock file for `key` (lock_key) in the coordination directory,
+// opened (and created once, never removed; a link or a file with other
+// names there is refused, not replaced), named by a stable hash of the key.
+fn lock_file(key: &str) -> Result<File, String> {
     let dir = coordination_dir()?;
-    let key = godot_path(source).to_lowercase();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
     for byte in key.as_bytes() {
         hash ^= u64::from(*byte);
