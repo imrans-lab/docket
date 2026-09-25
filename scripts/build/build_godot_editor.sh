@@ -79,8 +79,10 @@ git -C "$SRC" fetch -q --depth 1 "$GODOT_SOURCE_REPO" "$GODOT_SOURCE_COMMIT"
 git -C "$SRC" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
 [ "$(git -C "$SRC" rev-parse HEAD)" = "$GODOT_SOURCE_COMMIT" ] || { echo "the fetched source is not $GODOT_SOURCE_COMMIT" >&2; exit 1; }
 [ -z "$(git -C "$SRC" status --porcelain)" ] || { echo "the fetched source is not clean" >&2; exit 1; }
-# Applied to the index, then checked out, so line-ending conversion cannot
-# make it fail; the result must be exactly the pinned tree.
+# Applied to the index, then checked out, so the Godot checkout's line
+# endings do not matter (the patch's own are pinned LF by
+# third_party/godot/.gitattributes); the result must be exactly the pinned
+# tree.
 git -C "$SRC" apply --cached "$PATCH"
 [ "$(git -C "$SRC" write-tree)" = "$GODOT_PATCHED_TREE" ] || { echo "the patched source is not tree $GODOT_PATCHED_TREE" >&2; exit 1; }
 git -C "$SRC" diff --cached --name-only -z | xargs -0 git -C "$SRC" checkout --

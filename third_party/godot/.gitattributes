@@ -1,0 +1,5 @@
+# Read as committed (LF) on every platform, not as a Windows checkout
+# would convert them: `git apply` needs the patch's exact bytes, and PINS
+# is sourced by bash.
+editor-null-doc-guard.patch text eol=lf
+PINS text eol=lf
