@@ -236,7 +236,10 @@ jobs:
           esac
           chmod +x "$HOST_BIN" || true
           cd "$GITHUB_WORKSPACE"
-          ./scripts/build/check_native_load.sh "$HOST_BIN" "$NATIVE_LIB"
+          # The official host Godot's editor import crashes generating the
+          # extension's docs (the bug editor-null-doc-guard.patch fixes in
+          # Docket's own editor), so the library is loaded there at run time.
+          ./scripts/build/check_native_load.sh --runtime-only "$HOST_BIN" "$NATIVE_LIB"
 
       # macOS: Godot invokes Apple's native codesign tool with an empty identity,
       # which selects ad-hoc signing (codesign/codesign=3). Godot's built-in

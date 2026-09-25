@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks that a built Docket native library (native/docket_native) loads in a
 # given Godot: it puts the library, under the repository's .gdextension, into
-# an empty project, imports it, asks Godot whether the extension's classes
+# an empty project, loads it there, asks Godot whether the extension's classes
 # exist, and makes a few calls: DocketCredentialStore.status without an
 # operation, which must refuse and touches nothing, and one coordination
 # operation opened, nested and closed, and DocketFileIdentity of the project
@@ -13,11 +13,23 @@
 # once per Godot a host runs: the extension targets an older API than
 # Docket's own Godot, so each needs showing.
 #
-# Usage: check_native_load.sh <godot-binary> <library-file>
+# By default the project is imported first (--import) and the editor loads
+# the extension. --runtime-only skips the import, and with it the editor and
+# its extension cache: the check script itself loads the descriptor with
+# GDExtensionManager.load_extension, which must find it not yet loaded and
+# answer LOAD_STATUS_OK. This shows the library loads and works in a Godot
+# whose editor import is not being shown.
+#
+# Usage: check_native_load.sh [--runtime-only] <godot-binary> <library-file>
 set -euo pipefail
 
-GODOT="${1:?usage: check_native_load.sh <godot-binary> <library-file>}"
-LIBRARY="${2:?usage: check_native_load.sh <godot-binary> <library-file>}"
+RUNTIME_ONLY=false
+if [ "${1:-}" = --runtime-only ]; then
+	RUNTIME_ONLY=true
+	shift
+fi
+GODOT="${1:?usage: check_native_load.sh [--runtime-only] <godot-binary> <library-file>}"
+LIBRARY="${2:?usage: check_native_load.sh [--runtime-only] <godot-binary> <library-file>}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CLASSES=(DocketCoordLock DocketCoordOperation DocketCredentialStore DocketFileIdentity)
 
@@ -49,6 +61,19 @@ EOF
 {
 	echo "extends SceneTree"
 	echo "func _init() -> void:"
+	if [ "$RUNTIME_ONLY" = true ]; then
+		echo "	var descriptor := ProjectSettings.globalize_path(\"res://addons/docket_native/docket_native.gdextension\")"
+		# Loaded under any path, its classes would already exist.
+		echo "	if GDExtensionManager.is_extension_loaded(descriptor) or ClassDB.class_exists(\"${CLASSES[0]}\"):"
+		echo "		print(\"NATIVE LOAD FAILED: the extension was loaded before the check loaded it\")"
+		echo "		quit(1)"
+		echo "		return"
+		echo "	var loaded := GDExtensionManager.load_extension(descriptor)"
+		echo "	if loaded != GDExtensionManager.LOAD_STATUS_OK:"
+		echo "		print(\"NATIVE LOAD FAILED: load_extension answered \", loaded)"
+		echo "		quit(1)"
+		echo "		return"
+	fi
 	echo "	var missing := []"
 	for class in "${CLASSES[@]}"; do
 		echo "	if not ClassDB.class_exists(\"$class\"): missing.append(\"$class\")"
@@ -77,7 +102,7 @@ EOF
 	echo "		quit(1)"
 } > "$WORK/check.gd"
 
-if ! "$GODOT" --headless --path "$WORK" --import > "$WORK/import.log" 2>&1; then
+if [ "$RUNTIME_ONLY" = false ] && ! "$GODOT" --headless --path "$WORK" --import > "$WORK/import.log" 2>&1; then
 	echo "Import failed:"; cat "$WORK/import.log"; exit 1
 fi
 status=0
