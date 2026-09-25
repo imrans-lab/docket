@@ -14,8 +14,13 @@ class_name AuditLog
 ## So it is a sidecar next to the .dct, gitignored, one JSON object per line.
 ## It records that access happened — never what was accessed. No plaintext, no
 ## passwords, no key material.
+##
+## Every append, and every snapshot, is made inside a SHARED coordination
+## operation and under the project's audit lock (DocketFileIO.audit_lock, in
+## that order), so a snapshot never sees half of an append made through here.
 
-## Written next to the .dct as <path>.audit.jsonl
+## Written next to the .dct as <path>.audit.jsonl (DocketAuditGuard writes
+## the same name).
 const SUFFIX := ".audit.jsonl"
 
 # Event names, kept stable so the log stays greppable.
@@ -25,14 +30,18 @@ const DELETE := "secret_delete"
 const UNLOCK_FAILED := "vault_unlock_failed"
 const ROTATE := "secret_rotate"
 
+# How long an append or snapshot waits for another holder of the audit lock.
+const LOCK_DEADLINE_MS := 2000
+
 
 static func path_for(dct_path: String) -> String:
 	return dct_path + SUFFIX
 
 
 static func record(dct_path: String, event: String, handle: String, ok: bool, source: String = "", note: String = "") -> void:
-	## Append one audit entry. Best-effort: auditing must never break or block
-	## the operation it is recording, so all failures here are swallowed.
+	## Append one audit entry. Best-effort: auditing must never break the
+	## operation it is recording, so an entry that cannot be written is skipped
+	## with a warning naming only the event and why.
 	if dct_path.is_empty():
 		return
 
@@ -51,21 +60,33 @@ static func record(dct_path: String, event: String, handle: String, ok: bool, so
 	entry["pid"] = OS.get_process_id()
 
 	var line := JSON.stringify(entry) + "\n"
+	var written := _locked(dct_path, func(guard: RefCounted) -> Dictionary: return guard.append(line.to_utf8_buffer()))
+	if written.has("error"):
+		push_warning("Docket did not record %s in the audit log (%s)." % [event, written.get("kind", "unavailable")])
 
-	# FileAccess has no append mode that creates the file when missing, so open
-	# READ_WRITE when it exists and WRITE when it does not.
-	var target := path_for(dct_path)
-	var f: FileAccess
-	if FileAccess.file_exists(target):
-		f = FileAccess.open(target, FileAccess.READ_WRITE)
-		if f != null:
-			f.seek_end()
-	else:
-		f = FileAccess.open(target, FileAccess.WRITE)
-	if f == null:
-		return
-	f.store_string(line)
-	f.close()
+
+## The sidecar's exact bytes, a partial last line included, read under the
+## audit lock: {present: true, bytes, identity}, {present: false} when there
+## is none, or {error, kind}.
+static func snapshot(dct_path: String) -> Dictionary:
+	return _locked(dct_path, func(guard: RefCounted) -> Dictionary: return guard.snapshot())
+
+
+# `work` called with the held audit guard of `dct_path`, inside a SHARED
+# coordination operation: its result, or {error, kind} when either cannot be
+# had. `work` runs synchronously and must not await.
+static func _locked(dct_path: String, work: Callable) -> Dictionary:
+	if not ClassDB.class_exists("DocketFileIO"):
+		return {"error": "Docket's native extension is not loaded.", "kind": "no_extension"}
+	var opened := CoordLease.shared()
+	if opened.has("error"):
+		return opened
+	var locked: Dictionary = ClassDB.instantiate("DocketFileIO").audit_lock(ProjectSettings.globalize_path(dct_path), LOCK_DEADLINE_MS)
+	var result: Dictionary = locked if locked.has("error") else work.call(locked.guard)
+	if locked.has("guard"):
+		locked.guard.release()
+	opened.operation.close()
+	return result
 
 
 static func read_entries(dct_path: String, limit: int = 100) -> Array:

@@ -5,6 +5,7 @@ use godot::prelude::*;
 mod coord_dir;
 mod coord_lock;
 mod file_identity;
+mod file_io;
 mod store;
 
 struct DocketNative;

@@ -67,10 +67,10 @@ impl DocketFileIdentity {
     }
 }
 
-struct Found {
-    path: PathBuf,
-    id: String,
-    links: u64,
+pub(crate) struct Found {
+    pub(crate) path: PathBuf,
+    pub(crate) id: String,
+    pub(crate) links: u64,
 }
 
 fn found(result: Result<Found, String>) -> VarDictionary {
@@ -94,7 +94,7 @@ fn failed(error: String) -> VarDictionary {
 
 // Windows' verbatim prefixes dropped ("\\?\C:\…" is "C:\…", "\\?\UNC\…" is
 // "\\…") and separators turned to "/".
-fn godot_path(path: &Path) -> String {
+pub(crate) fn godot_path(path: &Path) -> String {
     let text = path.to_string_lossy();
     let plain = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
@@ -105,10 +105,15 @@ fn godot_path(path: &Path) -> String {
 }
 
 #[cfg(unix)]
-mod platform {
+pub(crate) mod platform {
     use super::Found;
     use std::os::unix::fs::MetadataExt;
     use std::path::{Path, PathBuf};
+
+    /// The identity `meta` (of a file, not followed) gives: device and inode.
+    pub(crate) fn identity(meta: &std::fs::Metadata) -> String {
+        format!("{}:{}", meta.dev(), meta.ino())
+    }
 
     // `follow`: the file a link at `path` leads to; else the entry itself,
     // which must not be a link.
@@ -133,7 +138,7 @@ mod platform {
         if !meta.is_file() {
             return Err(format!("{} is not a file", resolved.display()));
         }
-        Ok(Found { id: format!("{}:{}", meta.dev(), meta.ino()), links: meta.nlink(), path: resolved })
+        Ok(Found { id: identity(&meta), links: meta.nlink(), path: resolved })
     }
 
     pub fn directory(path: &Path) -> Result<PathBuf, String> {
@@ -146,7 +151,7 @@ mod platform {
 }
 
 #[cfg(windows)]
-mod platform {
+pub(crate) mod platform {
     use super::Found;
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -216,42 +221,67 @@ mod platform {
         }
     }
 
-    pub fn existing(path: &Path, follow: bool) -> Result<Found, String> {
-        let (resolved, info, handle) = open(path, follow)?;
+    /// What an open handle is: its identity (volume serial and the full
+    /// 128-bit file ID), its hard link count, and whether it is a directory
+    /// or a link (a reparse point naming another file; others, such as a
+    /// synced cloud file's, are the file itself).
+    pub(crate) struct Facts {
+        pub(crate) id: String,
+        pub(crate) links: u64,
+        pub(crate) directory: bool,
+        pub(crate) link: bool,
+    }
+
+    pub(crate) fn facts(handle: HANDLE) -> Result<Facts, String> {
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is written by the call.
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+            return Err(format!("cannot inspect a file: {}", std::io::Error::last_os_error()));
+        }
+        let mut link = false;
         if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            // Only a reparse point naming another file (a symbolic link, a
-            // junction) is a link; others, such as a synced cloud file's,
-            // are the file itself.
             let mut tag: FILE_ATTRIBUTE_TAG_INFO = unsafe { std::mem::zeroed() };
             // SAFETY: `tag` is written by the call, with its size.
             let read = unsafe {
                 GetFileInformationByHandleEx(
-                    handle.0,
+                    handle,
                     FileAttributeTagInfo,
                     (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
                     std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
                 )
             };
-            if read == 0 || tag.ReparseTag & NAME_SURROGATE != 0 {
-                return Err(format!("{} is a link", resolved.display()));
-            }
-        }
-        if resolved.to_str().is_none() {
-            return Err(format!("{} is not a Unicode path", resolved.display()));
-        }
-        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-            return Err(format!("{} is not a file", resolved.display()));
+            link = read == 0 || tag.ReparseTag & NAME_SURROGATE != 0;
         }
         let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
         // SAFETY: `id` is written by the call, with its size.
         if unsafe {
-            GetFileInformationByHandleEx(handle.0, FileIdInfo, (&mut id as *mut FILE_ID_INFO).cast(), std::mem::size_of::<FILE_ID_INFO>() as u32)
+            GetFileInformationByHandleEx(handle, FileIdInfo, (&mut id as *mut FILE_ID_INFO).cast(), std::mem::size_of::<FILE_ID_INFO>() as u32)
         } == 0
         {
-            return Err(format!("cannot identify {}: {}", resolved.display(), std::io::Error::last_os_error()));
+            return Err(format!("cannot identify a file: {}", std::io::Error::last_os_error()));
         }
         let file: String = id.FileId.Identifier.iter().map(|b| format!("{b:02x}")).collect();
-        Ok(Found { id: format!("{:016x}:{file}", id.VolumeSerialNumber), links: info.nNumberOfLinks as u64, path: resolved })
+        Ok(Facts {
+            id: format!("{:016x}:{file}", id.VolumeSerialNumber),
+            links: info.nNumberOfLinks as u64,
+            directory: info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+            link,
+        })
+    }
+
+    pub fn existing(path: &Path, follow: bool) -> Result<Found, String> {
+        let (resolved, _, handle) = open(path, follow)?;
+        let facts = facts(handle.0)?;
+        if facts.link {
+            return Err(format!("{} is a link", resolved.display()));
+        }
+        if resolved.to_str().is_none() {
+            return Err(format!("{} is not a Unicode path", resolved.display()));
+        }
+        if facts.directory {
+            return Err(format!("{} is not a file", resolved.display()));
+        }
+        Ok(Found { id: facts.id, links: facts.links, path: resolved })
     }
 
     pub fn directory(path: &Path) -> Result<PathBuf, String> {

@@ -19,7 +19,7 @@ set -euo pipefail
 GODOT="${1:?usage: check_native_load.sh <godot-binary> <library-file>}"
 LIBRARY="${2:?usage: check_native_load.sh <godot-binary> <library-file>}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CLASSES=(DocketCoordLock DocketCoordOperation DocketCredentialStore DocketFileIdentity)
+CLASSES=(DocketCoordLock DocketCoordOperation DocketCredentialStore DocketFileIdentity DocketFileIO DocketAuditGuard)
 
 test -s "$LIBRARY" || { echo "no library at $LIBRARY"; exit 1; }
 

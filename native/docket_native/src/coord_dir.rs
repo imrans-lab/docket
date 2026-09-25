@@ -198,7 +198,7 @@ fn create_private(dir: &PathBuf) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-mod windows_owner {
+pub(crate) mod windows_owner {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, INVALID_HANDLE_VALUE};
@@ -229,7 +229,7 @@ mod windows_owner {
     pub struct User(Vec<usize>);
 
     impl User {
-        fn sid(&self) -> PSID {
+        pub(crate) fn sid(&self) -> PSID {
             // SAFETY: the buffer was filled by GetTokenInformation(TokenUser).
             unsafe { (*(self.0.as_ptr() as *const TOKEN_USER)).User.Sid }
         }
