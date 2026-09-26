@@ -239,8 +239,9 @@ func _on_add_recent_pressed(id: int) -> void:
 
 var _close_project_names: PackedStringArray = []
 
-func set_project_list(names: PackedStringArray) -> void:
-	## Update the Close Project submenu with current project names.
+func set_project_list(names: PackedStringArray, labels: PackedStringArray = PackedStringArray()) -> void:
+	## Update the Close Project submenu. `labels` (same order as `names`) is the
+	## displayed text; the emitted action always carries the bare name.
 	_close_project_sub.clear()
 	_close_project_names = names
 	if names.is_empty():
@@ -248,7 +249,7 @@ func set_project_list(names: PackedStringArray) -> void:
 		_close_project_sub.set_item_disabled(0, true)
 		return
 	for i in range(names.size()):
-		_close_project_sub.add_item(names[i], i)
+		_close_project_sub.add_item(labels[i] if i < labels.size() else names[i], i)
 
 
 func _on_close_project_pressed(id: int) -> void:

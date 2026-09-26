@@ -25,6 +25,7 @@ func _ready() -> void:
 	if err != OK:
 		push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
 		return
+	SessionProject.set_endpoint(port)
 
 	if external_state != null:
 		# GUI mode — track AppState, stay in sync on file changes
@@ -49,7 +50,11 @@ func _ready() -> void:
 				paths_to_load.append(sp)
 		for path in paths_to_load:
 			var loaded_db := _open_or_create_db(str(path))
-			if loaded_db:
+			var refusal: String = SessionProject.admit(loaded_db) if loaded_db else ""
+			if not refusal.is_empty():
+				loaded_db.close()
+				printerr("Docket: %s" % refusal)
+			elif loaded_db:
 				var proj_name := loaded_db.get_project_name()
 				if proj_name.is_empty():
 					proj_name = str(path).get_file().get_basename()
@@ -88,6 +93,10 @@ func _ready() -> void:
 		Engine.max_fps = 30
 
 
+func _exit_tree() -> void:
+	SessionProject.release_all()
+
+
 func _on_file_changed() -> void:
 	if external_state == null:
 		return
@@ -121,13 +130,8 @@ func _open_or_create_db(path: String) -> DocketDB:
 # -- Project management callables ------------------------------------------
 
 func _gui_add_project(path: String) -> Dictionary:
-	external_state.add_project(path)
 	# file_changed fires synchronously → _on_file_changed syncs registry
-	for proj_name in external_state.get_project_dbs():
-		var pdb: DocketDB = external_state.get_project_dbs()[proj_name]
-		if pdb.get_path() == path:
-			return {"name": proj_name, "path": path, "prefix": pdb.get_id_prefix()}
-	return {"name": path.get_file().get_basename(), "path": path}
+	return external_state.add_project_result(path)
 
 
 func _gui_remove_project(proj_name: String) -> Dictionary:
@@ -151,6 +155,10 @@ func _headless_add_project(path: String) -> Dictionary:
 	var loaded_db := _open_or_create_db(path)
 	if not loaded_db:
 		return {"error": "Failed to open: %s" % path}
+	var refusal := SessionProject.admit(loaded_db)
+	if not refusal.is_empty():
+		loaded_db.close()
+		return {"error": refusal}
 	var proj_name := loaded_db.get_project_name()
 	if proj_name.is_empty():
 		proj_name = path.get_file().get_basename()
@@ -160,7 +168,7 @@ func _headless_add_project(path: String) -> Dictionary:
 		_db = loaded_db
 	_registry.update_db(_schema, _db, _project_dbs)
 	_persist_headless_session()
-	return {"name": proj_name, "path": path, "prefix": loaded_db.get_id_prefix()}
+	return {"name": proj_name, "path": path, "prefix": loaded_db.get_id_prefix(), "storage_mode": SessionProject.mode_of(loaded_db)}
 
 
 func _headless_remove_project(proj_name: String) -> Dictionary:
@@ -168,6 +176,7 @@ func _headless_remove_project(proj_name: String) -> Dictionary:
 		return {"error": "Project not found: %s" % proj_name}
 	var closing_db: DocketDB = _project_dbs[proj_name]
 	closing_db.close()
+	SessionProject.release(closing_db.get_path())
 	_project_dbs.erase(proj_name)
 	if closing_db == _db:
 		if _project_dbs.size() > 0:

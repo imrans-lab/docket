@@ -338,9 +338,12 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_secret_delete` | Delete a vault entry |
 | `docket_audit_log` | Read the local metadata-only vault access audit log |
 | `docket_secret_promote` | Wrap a standalone vault entry in a tracked Secret item, without re-entering the value |
-| `docket_project_list` | List loaded projects |
-| `docket_project_add` | Load or create another project |
+| `docket_project_list` | List loaded projects with `storage_mode` (durable / session_file) beside the lifecycle `stage` |
+| `docket_project_add` | Load or create another project; `mode=session_file` creates one outside any Git checkout (default `<user data dir>/docket/sessions/<name>.dct`), served by one owning server at a time |
 | `docket_project_remove` | Close a loaded project |
+| `docket_project_close` | Close a project and keep its file |
+| `docket_project_archive` | Mark a session_file project archived, close it, keep its file |
+| `docket_project_discard` | Delete a session_file project; without `confirm=true` it only lists outstanding items |
 | `docket_project_meta` | Get or set project lifecycle metadata |
 | `docket_gui_open` | Ask the running GUI to open an item or query |
 | `docket_get_state_machine` | Inspect one or all schema-defined state machines |

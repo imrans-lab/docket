@@ -31,6 +31,7 @@ func load_dct(path: String) -> void:
 	if db:
 		db.close()
 		db = null
+	_release_all_claims()
 	_project_dbs.clear()
 	_type_registries.clear()
 	registry_diagnostics.clear()
@@ -64,6 +65,15 @@ func load_dct(path: String) -> void:
 		load_failed.emit(path, reason)
 		return
 
+	var refusal := SessionProject.admit(db)
+	if not refusal.is_empty():
+		db.close()
+		db = null
+		dct_path = ""
+		push_error("AppState: %s" % refusal)
+		load_failed.emit(path, refusal)
+		return
+
 	# Register in multi-project map
 	var proj_name := db.get_project_name()
 	if proj_name.is_empty():
@@ -75,8 +85,21 @@ func load_dct(path: String) -> void:
 	file_changed.emit()
 
 
-func add_project(path: String) -> void:
+func add_project_result(path: String) -> Dictionary:
+	## add_project as a tool reply: the loaded project, or the refusal.
+	var error := add_project(path)
+	if not error.is_empty():
+		return {"error": error}
+	for proj_name in _project_dbs:
+		var pdb: DocketDB = _project_dbs[proj_name]
+		if pdb.get_path() == path:
+			return {"name": proj_name, "path": path, "prefix": pdb.get_id_prefix(), "storage_mode": SessionProject.mode_of(pdb)}
+	return {"error": "Project did not load: %s" % path}
+
+
+func add_project(path: String) -> String:
 	## Load an additional .dct project without closing the primary.
+	## Returns "" on success, else the reason it was refused (also emitted).
 	var new_db: DocketDB
 	if FileAccess.file_exists(path):
 		match JSONLMigration.detect_format(path):
@@ -90,7 +113,7 @@ func add_project(path: String) -> void:
 			_:
 				push_error("AppState: unknown file format for %s" % path)
 				load_failed.emit(path, "Unknown file format.")
-				return
+				return "Unknown file format: %s" % path
 	else:
 		# Default new files to JSONL format
 		new_db = DocketDBJsonl.create_new_jsonl(path)
@@ -101,7 +124,14 @@ func add_project(path: String) -> void:
 			reason = "Could not open %s." % path
 		push_error("AppState: %s" % reason)
 		load_failed.emit(path, reason)
-		return
+		return reason
+
+	var refusal := SessionProject.admit(new_db)
+	if not refusal.is_empty():
+		new_db.close()
+		push_error("AppState: %s" % refusal)
+		load_failed.emit(path, refusal)
+		return refusal
 
 	var proj_name := new_db.get_project_name()
 	if proj_name.is_empty():
@@ -151,6 +181,7 @@ func add_project(path: String) -> void:
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 
 	file_changed.emit()
+	return ""
 
 
 func get_project_dbs() -> Dictionary:
@@ -274,6 +305,7 @@ func remove_project(project_name: String) -> Dictionary:
 
 	var closing_db: DocketDB = _project_dbs[project_name]
 	closing_db.close()
+	SessionProject.release(closing_db.get_path())
 	_project_dbs.erase(project_name)
 	_type_registries.erase(project_name)
 	registry_diagnostics.erase(project_name)
@@ -290,6 +322,11 @@ func remove_project(project_name: String) -> Dictionary:
 
 	file_changed.emit()
 	return {"closed": project_name, "remaining": _project_dbs.keys()}
+
+
+func _release_all_claims() -> void:
+	for pdb: DocketDB in _project_dbs.values():
+		SessionProject.release(pdb.get_path())
 
 
 func find_children_across_projects(qualified_id: String) -> Array:
@@ -321,6 +358,7 @@ func create_dct(path: String) -> void:
 	if db:
 		db.close()
 		db = null
+	_release_all_claims()
 	_project_dbs.clear()
 	_type_registries.clear()
 	registry_diagnostics.clear()

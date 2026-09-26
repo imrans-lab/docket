@@ -698,11 +698,16 @@ func _update_window_title() -> void:
 
 
 func _update_project_menu() -> void:
-	## Update the Close Project submenu with current project names.
+	## Update the Close Project submenu: each entry shows the project's storage
+	## mode beside its lifecycle stage, e.g. "scratch — session_file · stage: none".
 	var names := PackedStringArray()
+	var labels := PackedStringArray()
 	for proj_name in _state.get_project_dbs():
+		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
+		var stage := str(pdb.get_project_meta().get("stage", ""))
 		names.append(proj_name)
-	_menu_builder.set_project_list(names)
+		labels.append("%s — %s · stage: %s" % [proj_name, SessionProject.mode_of(pdb), stage if not stage.is_empty() else "none"])
+	_menu_builder.set_project_list(names, labels)
 
 
 func _save_session() -> void:

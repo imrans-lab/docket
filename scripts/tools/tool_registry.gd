@@ -48,6 +48,9 @@ func _build_tools() -> Dictionary:
 		"docket_project_list": DocketProjectList.new(),
 		"docket_project_add": DocketProjectAdd.new(),
 		"docket_project_remove": DocketProjectRemove.new(),
+		"docket_project_close": DocketProjectClose.new(),
+		"docket_project_archive": DocketProjectArchive.new(),
+		"docket_project_discard": DocketProjectDiscard.new(),
 		"docket_gui_open": DocketGuiOpen.new(),
 		"docket_get_state_machine": DocketGetStateMachine.new(),
 		"docket_quality": DocketQuality.new(),
@@ -151,6 +154,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		var typed_db: DocketDB = _resolve_db(arguments)
 		result = _tools[name].execute(arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name()))
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
+			"docket_project_close", "docket_project_archive", "docket_project_discard",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn)
 	elif name == "docket_gui_open":

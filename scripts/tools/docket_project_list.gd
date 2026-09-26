@@ -5,7 +5,7 @@ class_name DocketProjectList
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_project_list",
-		"description": "List all currently loaded docket projects.",
+		"description": "List all currently loaded docket projects with storage_mode (durable | session_file) beside the lifecycle stage.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {},
@@ -27,5 +27,10 @@ func execute(_args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: 
 		var meta := pdb.get_project_meta()
 		for key in meta:
 			entry[key] = meta[key]
+		# Storage mode is reported beside the lifecycle stage, never folded into it.
+		entry["storage_mode"] = SessionProject.mode_of(pdb)
+		entry["stage"] = str(meta.get("stage", ""))
+		if entry.storage_mode == SessionProject.MODE_SESSION_FILE:
+			entry["owner"] = SessionProject.read_owner(pdb.get_path())
 		projects.append(entry)
 	return {"projects": projects, "count": projects.size()}

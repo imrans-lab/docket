@@ -189,6 +189,9 @@ func _start_gui(opts: Dictionary) -> void:
 
 	var files: Array = opts.get("files", [])
 
+	# Owner records written while this GUI loads files name it as the GUI host.
+	SessionProject.role = "gui"
+
 	# Create and attach shell BEFORE loading .dct files so that
 	# file_changed signals reach the RecordForm (which connects in init).
 	var shell := AppShell.new()

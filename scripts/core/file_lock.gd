@@ -71,6 +71,11 @@ func is_locked() -> bool:
 	return _locked
 
 
+static func is_pid_running(pid: int) -> bool:
+	## Liveness check shared with owner records; errs toward "running".
+	return _is_pid_running(pid)
+
+
 # -- Destructor (safety net) --------------------------------------------------
 
 func _notification(what: int) -> void:
