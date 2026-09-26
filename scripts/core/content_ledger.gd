@@ -169,8 +169,7 @@ static func read_page(current: String, field: String, ledger: Array[Dictionary],
 		var continued: bool = size > budget
 		if continued:
 			if not out.is_empty(): break
-			# Removing k characters removes at least k bytes, so one cut fits the budget.
-			text = text.substr(0, maxi(1, text.length() - (size - budget)))
+			text = _prefix_within(text, budget)
 		out.append({"entry_id":part.entry_id, "offset":start, "length":text.length(), "text":text, "revision":part.revision, "continued":continued})
 		budget -= text.to_utf8_buffer().size()
 		next_offset = start + text.length()
@@ -178,6 +177,20 @@ static func read_page(current: String, field: String, ledger: Array[Dictionary],
 		if continued: break
 		index += 1
 	return {"entries":out, "next_cursor":encode_cursor(field, next_offset, current, next_segment), "reset":false, "reset_reason":""}
+
+
+## The longest prefix of `text` whose UTF-8 encoding fits `budget` bytes, and
+## at least one character so a page always advances.
+static func _prefix_within(text: String, budget: int) -> String:
+	var used: int = 0
+	var count: int = 0
+	while count < text.length():
+		var code: int = text.unicode_at(count)
+		var width: int = 1 if code < 0x80 else (2 if code < 0x800 else (3 if code < 0x10000 else 4))
+		if used + width > budget: break
+		used += width
+		count += 1
+	return text.substr(0, maxi(1, count))
 
 
 ## Index of the segment to read next for a prefix-valid cursor at `offset`, or

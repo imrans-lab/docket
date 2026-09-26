@@ -23,7 +23,7 @@ var _tools: ToolRegistry
 var _foreign_pid: int = 0
 
 
-func setup() -> void:
+func before_each() -> void:
 	_remove_tree(DIR)
 	DirAccess.make_dir_recursive_absolute(REPO + "/.git")
 	DirAccess.make_dir_recursive_absolute(DIR + "/sessions")
@@ -39,9 +39,10 @@ func setup() -> void:
 	_state.file_changed.connect(func() -> void: _tools.update_db(_state.schema, _state.db, _state.get_project_dbs()))
 
 
-func teardown() -> void:
+func after_each() -> void:
 	if _foreign_pid > 0:
 		OS.kill(_foreign_pid)
+		_foreign_pid = 0
 	for name in _state.get_project_dbs().keys():
 		_state.remove_project(str(name))
 	OS.unset_environment(SessionProject.SESSION_DIR_ENV)

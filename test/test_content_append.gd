@@ -53,7 +53,7 @@ func _on_disk(id: String) -> Dictionary:
 
 func _append(tools: ToolRegistry, id: String, text: String, request_id: String, extra: Dictionary = {}) -> Dictionary:
 	var args: Dictionary = {"project":PROJECT, "id":id, "field":"article", "text":text, "request_id":request_id}
-	args.merge(extra)
+	args.merge(extra, true)  # extra overrides the defaults above (field, for one)
 	return tools.call_tool("docket_append", args)
 
 func test_append_interleaves_losslessly_dedups_retries_and_honours_if_revision() -> Variant:
