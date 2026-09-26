@@ -256,6 +256,10 @@ One line per lifecycle event. Events are separate from items to minimize merge c
 | `timestamp`  | string  | yes      | ISO 8601 UTC timestamp |
 | `actor`      | string  | no       | Who triggered the event |
 | `note`       | string  | no       | Human-readable note |
+| `eid`        | integer | no       | Project event id, present on work-relevant events (see below) |
+| `fields`     | array   | no       | Tracked fields the event changed (present with `eid`; kept after `eid` expires) |
+
+**`eid` / `fields` (project event log):** Work-relevant events carry a project-scoped `eid` that strictly increases within the project and is never reused; the next id is one past the larger of meta `event_counter` and the largest stored `eid`. Stamped events: `created`, `moved`, `promoted`, `comment_added`, `comment_reply`, `claimed`, `claim_released`, `claim_reassigned`, `transition`, `status_repaired`, and any other revision-bearing event whose mutation changed a tracked field (`status`, `resolution`, `assigned_to`, `directed_to`, `parent`, `blocked_by`, `title`, `description`, or a tag in the `wr:`, `role:`, `base:`, `head:`, `result:`, `requires:`, `outcome:`, `deferred:` namespaces). One mutation is one event, listing every tracked field it changed. Retention: meta `event_retention` (default 10000, set with `docket_project_meta`) is how many of the newest stamped events keep their `eid`; older events lose it and remain as item history. Readers that do not know these keys ignore them.
 
 **`seq` field:** The SQLite `item_events` table uses an autoincrement `id` column. When serializing to JSONL, events for each item are numbered sequentially starting at 1. This provides a stable, item-local ordering without exposing database-internal IDs. On import, `seq` determines insertion order and the database assigns its own autoincrement IDs.
 

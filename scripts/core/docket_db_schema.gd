@@ -196,6 +196,12 @@ static func migrate_schema(db: DocketDB) -> void:
 		var column_name := str(column_sql).get_slice(" ", 0)
 		if not DocketDB._has_column(col_rows, column_name):
 			db._exec("ALTER TABLE items ADD COLUMN %s;" % column_sql)
+	# Project event id and changed fields of work-relevant events (ProjectEvents).
+	var event_cols := db._exec_select("PRAGMA table_info(item_events);")
+	if not event_cols.is_empty():
+		if not DocketDB._has_column(event_cols, "eid"): db._exec("ALTER TABLE item_events ADD COLUMN eid INTEGER;")
+		if not DocketDB._has_column(event_cols, "fields"): db._exec("ALTER TABLE item_events ADD COLUMN fields TEXT DEFAULT '';")
+		db._exec("CREATE INDEX IF NOT EXISTS idx_events_eid ON item_events(eid);")
 	db._exec("""CREATE TABLE IF NOT EXISTS type_defs (
 		id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, lifecycle TEXT NOT NULL,
 		current_revision TEXT NOT NULL, provenance_json TEXT NOT NULL

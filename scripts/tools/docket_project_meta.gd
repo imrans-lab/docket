@@ -51,6 +51,11 @@ func get_definition() -> Dictionary:
 					"type": "string",
 					"description": "Free-text note explaining this change",
 				},
+				"event_retention": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "How many of the newest project events keep their event id (default %d). May be set without a stage." % ProjectEvents.DEFAULT_RETENTION,
+				},
 			},
 			"required": ["action"],
 		},
@@ -82,14 +87,20 @@ func _handle_get(target_db: DocketDB) -> Dictionary:
 	var name: String = target_db.get_project_name()
 	var meta: Dictionary = target_db.get_project_meta()
 	if meta.is_empty():
-		return {"project": name, "stage": "", "note": "No metadata set"}
-	var result := {"project": name}
+		return {"project": name, "stage": "", "note": "No metadata set", "event_retention": ProjectEvents.retention(target_db)}
+	var result := {"project": name, "event_retention": ProjectEvents.retention(target_db)}
 	result.merge(meta)
 	return result
 
 
 func _handle_set(args: Dictionary, target_db: DocketDB) -> Dictionary:
 	var new_stage: String = str(args.get("stage", ""))
+	if args.has("event_retention"):
+		var raw: Variant = args.event_retention
+		if not (raw is int or (raw is float and float(raw) == floorf(float(raw)))): return {"error": "event_retention must be a positive integer"}
+		var retention_error: String = ProjectEvents.set_retention(target_db, int(raw))
+		if not retention_error.is_empty(): return {"error": retention_error}
+		if new_stage.is_empty(): return {"project": target_db.get_project_name(), "event_retention": ProjectEvents.retention(target_db)}
 	if new_stage.is_empty():
 		return {"error": "Missing required field: stage"}
 	if not new_stage in VALID_STAGES:

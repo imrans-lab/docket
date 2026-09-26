@@ -406,6 +406,12 @@ static func _parse_event(d: Dictionary) -> Dictionary:
 	out["timestamp"] = _str_field(d, "timestamp", "")
 	_copy_str_opt(d, out, "actor")
 	_copy_str_opt(d, out, "note")
+	# Project event id and changed fields (ProjectEvents); both optional.
+	if d.get("eid") is int or d.get("eid") is float: out["eid"] = int(d.eid)
+	if d.get("fields") is Array:
+		var fields: Array[String] = []
+		for field in d.fields: fields.append(str(field))
+		out["fields"] = fields
 	return out
 
 

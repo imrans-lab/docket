@@ -7,6 +7,9 @@ var _db: SQLite
 var _path: String
 var _is_open: bool = false
 var _last_sql_error: String = ""
+## Tracked fields changed in the current mutation, per item id, awaiting the
+## item's next event row (ProjectEvents).
+var _work_fields: Dictionary = {}
 
 func item_columns() -> Array:
 	var result: Array = []
@@ -445,6 +448,7 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 		if extra_changes.has(key) or (changes.has(key) and key not in ["fields", "unset_fields"]): return "item key '%s' belongs to fields" % key
 	for key in existing_extras:
 		if field_changes.has(key): return "item key '%s' belongs to extras" % key
+	var work: Array[String] = ProjectEvents.tracked_changes(self, id, changes)
 	var sets := PackedStringArray()
 	var bindings: Array = []
 	var stored_changes := changes.duplicate(true)
@@ -483,6 +487,7 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 		for tag in tags:
 			error = _exec_checked("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [id, str(tag)])
 			if not error.is_empty(): return error
+	note_work_fields(id, work)
 	return ""
 
 
@@ -632,6 +637,7 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 	var arrival: Dictionary = exported.get("arrival_event", {}) if exported.get("arrival_event", {}) is Dictionary else {}
 	_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 		[new_id, str(arrival.get("event_type", "moved")), str(arrival.get("actor", "")), ts, str(arrival.get("note", "Moved to this project as %s" % new_id))])
+	if _last_sql_error.is_empty(): ProjectEvents.stamp_last(self, new_id, str(arrival.get("event_type", "moved")))
 
 	# Links
 	var links: Array = exported.get("links", [])
@@ -742,7 +748,25 @@ func add_event(item_id: String, event_type: String, actor: String, note: String 
 	var ts := Time.get_datetime_string_from_system(true)
 	_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 		[item_id, event_type, actor, ts, note])
+	if _last_sql_error.is_empty(): ProjectEvents.stamp_last(self, item_id, event_type)
 	_exec("UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
+
+
+## Records tracked fields a mutation changed on `id`, for its next event row.
+func note_work_fields(id: String, fields: Array[String]) -> void:
+	if fields.is_empty(): return
+	var pending: Array[String] = take_work_fields(id)
+	for field in fields:
+		if not pending.has(field): pending.append(field)
+	_work_fields[id] = pending
+
+
+## Returns and forgets the tracked fields noted for `id`.
+func take_work_fields(id: String) -> Array[String]:
+	var pending: Array[String] = []
+	if _work_fields.has(id): pending.assign(_work_fields[id])
+	_work_fields.erase(id)
+	return pending
 
 
 func get_events(item_id: String) -> Array:
@@ -1560,6 +1584,7 @@ func _commit() -> void:
 
 
 func _rollback() -> void:
+	_work_fields.clear()
 	_exec("ROLLBACK;")
 
 

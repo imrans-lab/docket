@@ -700,8 +700,12 @@ func rewrite_move_references(old_qualified: String, new_qualified: String, old_b
 	var olds: Array = [old_qualified, old_bare] if rewrite_bare else [old_qualified]
 	var marks: String = "?,?" if rewrite_bare else "?"
 	if json_db == null: _db._last_sql_error = ""
-	for row in _db._exec_select("SELECT id FROM items WHERE parent IN (%s) OR blocked_by IN (%s);" % [marks, marks], olds + olds):
+	for row in _db._exec_select("SELECT id, parent, blocked_by FROM items WHERE parent IN (%s) OR blocked_by IN (%s);" % [marks, marks], olds + olds):
 		touched[str(row.id)] = true
+		var moved: Array[String] = []
+		if olds.has(str(row.parent)): moved.append("parent")
+		if olds.has(str(row.blocked_by)): moved.append("blocked_by")
+		_db.note_work_fields(str(row.id), moved)
 	error = _db._last_sql_error
 	if error.is_empty() and json_db != null:
 		var rewritten: Dictionary = json_db.rewrite_refs_checked(old_qualified,new_qualified,old_bare,new_for_bare,rewrite_bare)
@@ -859,6 +863,7 @@ func apply_evolution(preview: Dictionary, author: String, reason: String) -> Str
 			if not bind_error.is_empty(): break
 			bind_error = _db._exec_checked("UPDATE items SET type_id=?,type_revision=? WHERE id=?;", [current.id, revision_id, id])
 			if bind_error.is_empty(): bind_error = _db._exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [id,"type_revision_changed",author,Time.get_datetime_string_from_system(true),reason])
+			if bind_error.is_empty(): bind_error = ProjectEvents.stamp_last(_db, id, "type_revision_changed")
 		return (_db as DocketDBJsonl)._complete_canonical_mutation(bind_error)
 	var revision := {"id":revision_id,"type_id":current.id,"parent_revision":current.current_revision,"definition":checked.definition,"author":author,"created_at":Time.get_datetime_string_from_system(true),"reason":reason}
 	var record: Dictionary = _definitions[checked.slug].duplicate(true)

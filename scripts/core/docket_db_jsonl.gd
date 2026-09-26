@@ -252,6 +252,7 @@ func _complete_canonical_mutation(error: String = "") -> String:
 	if not _last_sql_error.is_empty() and _mutation_error.is_empty(): _mutation_error = _last_sql_error
 	_mutation_depth -= 1
 	if _mutation_depth > 0: return _mutation_error
+	_work_fields.clear()
 	if _mutation_error.is_empty(): _mutation_error = _exec_checked("COMMIT;")
 	if not _mutation_error.is_empty():
 		var failed := _mutation_error
@@ -301,6 +302,7 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 	for event in events:
 		if not error.is_empty(): break
 		error = _exec_checked("INSERT INTO item_events (item_id,event_type,actor,timestamp,note) VALUES (?,?,?,?,?);", [event.item_id, event.event_type, event.get("actor", ""), event.timestamp, event.get("note", "")])
+		if error.is_empty(): error = ProjectEvents.stamp_last(self, str(event.item_id), str(event.event_type))
 	return _complete_canonical_mutation(error)
 
 

@@ -254,9 +254,11 @@ static func _insert_events(db: DocketDB, events: Array) -> void:
 		if not valid_ids.has(item_id):
 			db._last_sql_error = "invalid canonical record: orphaned event for missing item %s" % item_id
 			continue
+		# eid / fields: the project event id and changed fields (ProjectEvents).
+		var fields: Variant = ev.get("fields")
 		db._exec(
-			"INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
-			[item_id, event_type, actor, timestamp, note]
+			"INSERT INTO item_events (item_id, event_type, actor, timestamp, note, eid, fields) VALUES (?, ?, ?, ?, ?, ?, ?);",
+			[item_id, event_type, actor, timestamp, note, ev.get("eid"), JSON.stringify(fields) if fields is Array else ""]
 		)
 
 

@@ -55,6 +55,7 @@ func _ready() -> void:
 		preload("res://test/test_functional_roundtrip.gd"),
 		preload("res://test/test_item_revision.gd"),
 		preload("res://test/test_item_claim.gd"),
+		preload("res://test/test_project_events.gd"),
 		preload("res://test/test_content_append.gd"),
 		preload("res://test/test_session_project.gd"),
 	]

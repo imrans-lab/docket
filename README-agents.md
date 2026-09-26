@@ -255,6 +255,11 @@ godot --path . -- --file minerva.dct --file services.dct --query bugs.dcq
 - **Atomic writes:** temp file + rename, with a best-effort advisory `.dct.lock`
 - **Determinism:** stable record/key order; 2.0 JSON envelopes preserve empty and null values
 
+### Project event log
+- Every work-relevant mutation (assignment or direction change, comment added, status transition, claim change, or a change to a claim-protected field or tag) records exactly one event on the item's `event` line with a project-scoped `eid` and the `fields` it changed; ids strictly increase and survive restart
+- Retention: the newest `event_retention` events keep their id (default 10000; `docket_project_meta` action `set` with `event_retention`)
+- Details: `data/jsonl_format.md` section 5.3
+
 ### SQLite Cache
 - **File:** `.dct.v2.cache` for 2.0 or `.dct.cache` for legacy 1.0 (auto-generated, gitignored)
 - **Auto-rebuilt:** from `.dct` on first access or after modification
@@ -347,7 +352,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_project_close` | Close a project and keep its file (refuses a memory project) |
 | `docket_project_archive` | Mark a session_file project archived, close it, keep its file |
 | `docket_project_discard` | Delete a session_file or memory project; without `confirm=true` it only lists outstanding items |
-| `docket_project_meta` | Get or set project lifecycle metadata |
+| `docket_project_meta` | Get or set project lifecycle metadata and the event log's `event_retention` |
 | `docket_gui_open` | Ask the running GUI to open an item or query |
 | `docket_get_state_machine` | Inspect one or all schema-defined state machines |
 | `docket_quality` | Score and review a knowledge item |

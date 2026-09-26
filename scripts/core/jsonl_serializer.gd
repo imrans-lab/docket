@@ -149,7 +149,7 @@ static func serialize_events(db: DocketDB) -> String:
 	# Chronological within each item — see DocketDB.get_events. This is what
 	# normalizes event order back to truth after a merge interleaved the lines.
 	var rows := db._exec_select(
-		"SELECT item_id, event_type, actor, timestamp, note FROM item_events ORDER BY item_id ASC, timestamp ASC, id ASC;"
+		"SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events ORDER BY item_id ASC, timestamp ASC, id ASC;"
 	)
 	if rows.is_empty():
 		return ""
@@ -179,6 +179,13 @@ static func serialize_events(db: DocketDB) -> String:
 		var note := str(row.get("note", ""))
 		if not note.is_empty():
 			d["note"] = note
+		# Project event id and changed fields (ProjectEvents): only on stamped rows.
+		if row.get("eid") != null:
+			d["eid"] = int(row.eid)
+		var fields_text: String = str(row.fields) if row.get("fields") != null else ""
+		var fields: Variant = JSON.parse_string(fields_text) if not fields_text.is_empty() else null
+		if fields is Array:
+			d["fields"] = fields
 
 		lines.append(_to_ordered_json(d))
 
