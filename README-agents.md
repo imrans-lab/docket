@@ -314,7 +314,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_claim` | Claim an item's protected fields for a declared holder; lasts until released or reassigned (survives restart and disconnect) |
 | `docket_release` | Release your claim |
 | `docket_reassign` | Move a claim to a new holder; a non-holder must pass `override` with a reason, recorded in the item's events |
-| `docket_authorized` | Is an actor authorized for an action on an item (its project, ancestors and tags) or a project; reads active `policy` items tagged `authorization` |
+| `docket_authorized` | Is an actor authorized for an action on an item (its project, ancestors and tags) or a project; reads active `policy` items tagged `authorization`. Saved queries take no parameters, so this is the per-actor, per-item "authorized-for" query; the saved query `wr-authorized-for` lists every authorization in force |
 | `docket_query` | Filter, sort, and limit items |
 | `docket_link` | Link two items with a typed relation |
 | `docket_context` | Get a curated briefing by tags |
@@ -326,7 +326,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_detach` | List, download, or delete attachments |
 | `docket_comment` | Add, list, reply to, accept, or reject comments |
 | `docket_move` | Move an item between loaded projects |
-| `docket_mirror` | Copy selected fields between items and optionally transition the target |
+| `docket_mirror` | Copy selected fields between items and optionally transition the target; on a claimed target, protected changes need the claim `holder` |
 | `docket_delete` | Permanently delete an item and its dependent data |
 | `docket_transition_report` | Aggregate failed transition attempts |
 | `docket_error_report` | Aggregate MCP tool errors |

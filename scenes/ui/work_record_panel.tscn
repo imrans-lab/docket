@@ -1,0 +1,65 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/work_record_panel.gd" id="1"]
+
+[node name="WorkRecordPanel" type="VBoxContainer"]
+size_flags_horizontal = 3
+script = ExtResource("1")
+
+[node name="SectionLabel" type="Label" parent="."]
+theme_override_font_sizes/font_size = 14
+text = "Work record"
+
+[node name="HolderRow" type="HBoxContainer" parent="."]
+
+[node name="HolderLabel" type="Label" parent="HolderRow"]
+unique_name_in_owner = true
+size_flags_horizontal = 3
+text = "Claim holder: (unclaimed)"
+
+[node name="OverrideButton" type="Button" parent="HolderRow"]
+unique_name_in_owner = true
+tooltip_text = "Reassign the claim to you. A reason is required and recorded in the item's events."
+text = "Override..."
+
+[node name="ReleaseButton" type="Button" parent="HolderRow"]
+unique_name_in_owner = true
+tooltip_text = "Give up your claim on this item."
+text = "Release"
+
+[node name="StateLabel" type="Label" parent="."]
+unique_name_in_owner = true
+autowrap_mode = 3
+
+[node name="AttemptsLabel" type="Label" parent="."]
+unique_name_in_owner = true
+text = "Attempts"
+
+[node name="AttemptsList" type="ItemList" parent="."]
+unique_name_in_owner = true
+size_flags_horizontal = 3
+auto_height = true
+
+[node name="ErrorLabel" type="Label" parent="."]
+unique_name_in_owner = true
+visible = false
+theme_override_colors/font_color = Color(0.9, 0.3, 0.3, 1)
+autowrap_mode = 3
+
+[node name="OverrideDialog" type="ConfirmationDialog" parent="."]
+unique_name_in_owner = true
+title = "Override claim"
+ok_button_text = "Override"
+
+[node name="DialogBox" type="VBoxContainer" parent="OverrideDialog"]
+offset_right = 380.0
+offset_bottom = 60.0
+
+[node name="PromptLabel" type="Label" parent="OverrideDialog/DialogBox"]
+text = "Reassign this claim to you. Reason (required, recorded in the item's events):"
+autowrap_mode = 3
+custom_minimum_size = Vector2(380, 0)
+
+[node name="ReasonEdit" type="LineEdit" parent="OverrideDialog/DialogBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(380, 0)

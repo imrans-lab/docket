@@ -585,13 +585,14 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 				error = _db._last_sql_error
 	return _complete_item_mutation(error)
 
-func mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String = "", expected_item_token: String = "") -> Dictionary:
+func mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String = "", expected_item_token: String = "", holder: String = "") -> Dictionary:
 	## The outer mutation makes the candidate patch, transition and audit records
 	## one canonical unit while the ordinary typed operations retain validation.
+	## `holder` reaches the same claim gate as update_item / transition_item.
 	var error := _begin_item_mutation()
 	if not error.is_empty(): return {"error":error}
-	if not target.is_empty(): error = transition_item(id, target, actor, note, changes, expected_revision, expected_item_token)
-	else: error = update_item(id, changes, actor, expected_revision, expected_item_token)
+	if not target.is_empty(): error = transition_item(id, target, actor, note, changes, expected_revision, expected_item_token, ItemRevision.ABSENT, holder)
+	else: error = update_item(id, changes, actor, expected_revision, expected_item_token, ItemRevision.ABSENT, holder)
 	var comment: Dictionary = {}
 	if error.is_empty():
 		comment = _db.add_comment(id, actor, audit_text)

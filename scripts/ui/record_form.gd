@@ -152,6 +152,7 @@ var _children_toggle: Button
 var _children_container: VBoxContainer
 var _children_list: ItemList
 var _authorizations: AuthorizationPanel
+var _work_record: WorkRecordPanel
 
 var _comments_toggle: Button
 var _comments_container: VBoxContainer
@@ -845,6 +846,13 @@ func _build_ui() -> void:
 	_authorizations.record_opened.connect(func(policy_id: String) -> void: child_opened.emit(policy_id, _current_project))
 	_body_vbox.add_child(_authorizations)
 
+	_work_record = (load("res://scenes/ui/work_record_panel.tscn") as PackedScene).instantiate() as WorkRecordPanel
+	_work_record.record_opened.connect(func(attempt_id: String) -> void: child_opened.emit(attempt_id, _current_project))
+	_work_record.claim_changed.connect(func() -> void:
+		load_item(_current_id, _current_project)
+		item_changed.emit())
+	_body_vbox.add_child(_work_record)
+
 	# Comments (collapsible)
 	_comments_toggle = Button.new()
 	_comments_toggle.text = "> Comments"
@@ -1267,6 +1275,7 @@ func load_item(id: String, project: String = "") -> void:
 	_populate_events(item)
 	_populate_children()
 	_authorizations.show_for(item_db, id)
+	_work_record.show_for(item_db, id, item)
 	# For discussion items, auto-expand comments and enlarge description.
 	_desc_edit.custom_minimum_size.y = 200 if type_name == "discussion" else 80
 	if type_name == "discussion":
@@ -1365,6 +1374,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 		child.queue_free()
 	_events_list.clear()
 	_authorizations.show_for(null, "")
+	_work_record.show_for(null, "", {})
 
 	# For discussion drafts, auto-expand comments and enlarge description.
 	if type_name == "discussion":
@@ -1457,7 +1467,7 @@ func _save_changes() -> Variant:
 		return ""
 	var error := registry._begin_item_mutation() if protected else ""
 	if error.is_empty():
-		error = registry.update_item(_current_id, changes, "user", _loaded_revision, _loaded_item_token)
+		error = registry.update_item(_current_id, changes, "user", _loaded_revision, _loaded_item_token, ItemRevision.ABSENT, GuiPrincipal.id())
 	if error.is_empty() and protected:
 		error = _apply_prepared_payload(item_db, prepared_payload.operations)
 	if protected:
@@ -1884,7 +1894,7 @@ func _do_status_transition(target: String, note: String, changes: Dictionary = {
 		return false
 	var error := registry._begin_item_mutation() if protected else ""
 	if error.is_empty():
-		error = registry.transition_item(_current_id, target, "user", note, changes, _loaded_revision, _loaded_item_token)
+		error = registry.transition_item(_current_id, target, "user", note, changes, _loaded_revision, _loaded_item_token, ItemRevision.ABSENT, GuiPrincipal.id())
 	if error.is_empty() and protected:
 		error = _apply_prepared_payload(trans_db, prepared_payload.operations)
 	if protected:

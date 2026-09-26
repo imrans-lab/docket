@@ -21,6 +21,7 @@ func get_definition() -> Dictionary:
 				"note": {"type": "string", "description": "Optional audit note"},
 				"expected_revision": {"type":"string","description":"Expected pinned target type revision"},
 				"expected_item_token": {"type":"string","description":"Expected target content token"},
+				"holder": {"type":"string","description":"Your declared claim holder on the target. Required when the target is claimed and the mirror changes a protected field or transitions it; otherwise refused with \"not the holder: <current>\". Recorded as the actor."},
 			},
 			"required": ["source_id", "target_id", "fields"],
 		},
@@ -87,7 +88,8 @@ func execute(args: Dictionary, _schema: Dictionary, primary_db: DocketDB, projec
 	var target_registry: TypeRegistry = TypeRegistry.for_db(target_db, target_db.get_project_name())
 	var audit: String = "Mirrored from %s:%s [%s]" % [source_proj_label,source_id,", ".join(field_list)]
 	if not note.is_empty(): audit += ": %s" % note
-	var mirror_result: Dictionary = target_registry.mirror_item(target_id, {"fields":payload}, transition_to, "agent", note, audit, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")))
+	var holder: String = str(args.get("holder", ""))
+	var mirror_result: Dictionary = target_registry.mirror_item(target_id, {"fields":payload}, transition_to, holder if not holder.is_empty() else "agent", note, audit, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")), holder)
 	if mirror_result.has("error"): return mirror_result
 	return {"target_id":target_id,"target_project":target_db.get_project_name(),"pushed_fields":Array(field_list),"transitioned_to":transition_to,"comment_id":mirror_result.get("comment_id", 0)}
 
