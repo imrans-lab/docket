@@ -591,7 +591,8 @@ func export_item_full_checked(id: String) -> Dictionary:
 
 
 func import_item_full(new_id: String, exported: Dictionary) -> void:
-	## Import a full item export under a new ID. Adds a "moved" event.
+	## Import a full item export under a new ID. Adds an arrival event: "moved",
+	## or exported.arrival_event {event_type, actor, note} when present.
 	var item_data: Dictionary = exported.get("item", {})
 	item_data["id"] = new_id
 	for envelope in ["fields", "extras"]:
@@ -626,10 +627,11 @@ func import_item_full(new_id: String, exported: Dictionary) -> void:
 		_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
 			[new_id, str(ev.get("event_type", "")), str(ev.get("actor", "")),
 			 str(ev.get("timestamp", "")), str(ev.get("note", ""))])
-	# Add "moved" event
+	# Arrival event: "moved" unless the export names its own (a promotion does).
 	var ts := Time.get_datetime_string_from_system(true)
+	var arrival: Dictionary = exported.get("arrival_event", {}) if exported.get("arrival_event", {}) is Dictionary else {}
 	_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
-		[new_id, "moved", "", ts, "Moved to this project as %s" % new_id])
+		[new_id, str(arrival.get("event_type", "moved")), str(arrival.get("actor", "")), ts, str(arrival.get("note", "Moved to this project as %s" % new_id))])
 
 	# Links
 	var links: Array = exported.get("links", [])

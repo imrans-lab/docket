@@ -95,33 +95,14 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 	var new_id: String
 	var refs_updated: int = 0
 	var source_item: Dictionary = exported.get("item", {})
-	var pending_type: Dictionary = {}
-	var pending_revisions: Array = []
 	var target_registry: TypeRegistry = TypeRegistry.for_db(target_db, canonical_target)
 	var source_registry: TypeRegistry = TypeRegistry.for_db(source_db, source_name)
-	if not str(source_item.get("type_revision", "")).is_empty():
-		if target_registry.is_legacy(): return {"error":"Target must be explicitly upgraded before moving a pinned v2 item"}
-		var revision: Dictionary = source_registry.get_revision(str(source_item.type_revision))
-		if revision.has("error"): return revision
-		if target_registry.get_revision(str(source_item.type_revision)).has("error"):
-			if not bool(args.get("import_definition", false)): return {"error":"Target lacks exact pinned revision '%s'; explicit definition import is required" % source_item.type_revision}
-			pending_type = source_registry.resolve_type_ref(str(source_item.get("type_id", "")))
-			var ancestry: Dictionary = source_registry.revision_ancestry(str(source_item.type_revision))
-			if ancestry.has("error"): return ancestry
-			for ancestor in ancestry.revisions:
-				if target_registry.get_revision(str(ancestor.id)).has("error"): pending_revisions.append(ancestor)
-	elif target_db is DocketDBJsonl and target_db.get_meta_value("jsonl_version", "1.0.0") == "2.0.0":
-		# A legacy builtin gains the target project's explicit compatible pin before
-		# import; leaving it unbound would make an otherwise valid v2 file read-only.
-		var legacy_target_registry: TypeRegistry = TypeRegistry.for_db(target_db, canonical_target)
-		var builtin: Dictionary = legacy_target_registry.get_type(str(source_item.get("type", "")))
-		if builtin.has("error") or not bool(builtin.definition.get("protected", false)): return {"error":"Legacy item type has no compatible protected builtin in target"}
-		source_item["type_id"] = builtin.id
-		source_item["type_revision"] = builtin.current_revision
+	var type_plan: Dictionary = type_import_plan(source_item, source_registry, target_registry, target_db, bool(args.get("import_definition", false)))
+	if type_plan.has("error"): return type_plan
 	new_id = item_id if DocketDB._is_uuid7(item_id) else target_db.next_uuid7_id()
 	var reference_prepare_error: String = _prepare_export_refs(exported, source_registry, source_name, canonical_target, item_id, new_id)
 	if not reference_prepare_error.is_empty(): return {"error":"Source reference semantics are unresolved; nothing was copied: %s" % reference_prepare_error}
-	var target_error: String = _import_checked(target_db, new_id, exported, target_registry, pending_type, pending_revisions, args)
+	var target_error: String = import_checked(target_db, new_id, exported, target_registry, type_plan.type, type_plan.revisions, str(args.get("author", "")), str(args.get("reason", "")))
 	if not target_error.is_empty(): return {"error":"Target write failed; source preserved: %s" % target_error}
 	var old_qualified: String = "%s:%s" % [source_name,item_id]
 	var new_qualified: String = "%s:%s" % [canonical_target,new_id]
@@ -168,8 +149,38 @@ func _transfer_ref(reference: String, source_project: String, target_project: St
 	if reference == old_id or reference == "%s:%s" % [source_project,old_id]: return "%s:%s" % [target_project,new_id]
 	return reference if reference.contains(":") or reference.is_empty() else "%s:%s" % [source_project,reference]
 
-func _import_checked(db: DocketDB, id: String, exported: Dictionary, registry: TypeRegistry, type_record: Dictionary, revisions: Array, args: Dictionary) -> String:
-	if db is DocketDBJsonl: return registry.import_revisions_and_item(type_record, revisions, id, exported, str(args.get("author", "")), str(args.get("reason", "")))
+## Type definition the target needs before `item` can be imported there:
+## {"type": type record or {}, "revisions": revisions to import, oldest first}
+## or {"error"}. A pinned revision the target lacks is imported only when
+## `import_definition` is set. A legacy (unpinned) item bound for a JSONL 2.0
+## target is pinned in place to the target's protected builtin.
+## Shared with SessionPromotion.
+static func type_import_plan(item: Dictionary, source_registry: TypeRegistry, target_registry: TypeRegistry, target_db: DocketDB, import_definition: bool) -> Dictionary:
+	var plan: Dictionary = {"type": {}, "revisions": []}
+	if not str(item.get("type_revision", "")).is_empty():
+		if target_registry.is_legacy(): return {"error":"Target must be explicitly upgraded before moving a pinned v2 item"}
+		var revision: Dictionary = source_registry.get_revision(str(item.type_revision))
+		if revision.has("error"): return revision
+		if target_registry.get_revision(str(item.type_revision)).has("error"):
+			if not import_definition: return {"error":"Target lacks exact pinned revision '%s'; explicit definition import is required" % item.type_revision}
+			plan.type = source_registry.resolve_type_ref(str(item.get("type_id", "")))
+			var ancestry: Dictionary = source_registry.revision_ancestry(str(item.type_revision))
+			if ancestry.has("error"): return ancestry
+			for ancestor in ancestry.revisions:
+				if target_registry.get_revision(str(ancestor.id)).has("error"): plan.revisions.append(ancestor)
+	elif target_db is DocketDBJsonl and target_db.get_meta_value("jsonl_version", "1.0.0") == "2.0.0":
+		# A legacy builtin gains the target project's explicit compatible pin before
+		# import; leaving it unbound would make an otherwise valid v2 file read-only.
+		var builtin: Dictionary = target_registry.get_type(str(item.get("type", "")))
+		if builtin.has("error") or not bool(builtin.definition.get("protected", false)): return {"error":"Legacy item type has no compatible protected builtin in target"}
+		item["type_id"] = builtin.id
+		item["type_revision"] = builtin.current_revision
+	return plan
+
+## Writes one exported item (and any type revisions it needs) into `db` under `id`.
+## Shared with SessionPromotion.
+static func import_checked(db: DocketDB, id: String, exported: Dictionary, registry: TypeRegistry, type_record: Dictionary, revisions: Array, author: String, reason: String) -> String:
+	if db is DocketDBJsonl: return registry.import_revisions_and_item(type_record, revisions, id, exported, author, reason)
 	db._last_sql_error = ""
 	db._exec_checked("BEGIN TRANSACTION;")
 	db.import_item_full(id, exported)

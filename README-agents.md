@@ -329,6 +329,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_comment` | Add, list, reply to, accept, or reject comments |
 | `docket_move` | Move an item between loaded projects |
 | `docket_mirror` | Copy selected fields between items and optionally transition the target; on a claimed target, protected changes need the claim `holder` |
+| `docket_promote` | Copy selected records from a session_file or memory project into a durable project: new ids, a `promoted` event and `extras.promoted_from` provenance; references among the promoted items are rewritten, references to items left behind are kept as `<source>:<id>` and listed as `unresolved`; `dry_run=true` previews |
 | `docket_delete` | Permanently delete an item and its dependent data |
 | `docket_transition_report` | Aggregate failed transition attempts |
 | `docket_error_report` | Aggregate MCP tool errors |

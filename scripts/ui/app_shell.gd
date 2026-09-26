@@ -21,6 +21,7 @@ var _new_dialog: FileDialog
 var _info_dialog: AcceptDialog
 var _confirm_reload_dialog: ConfirmationDialog
 var _memory_dialog: MemoryProjectsDialog
+var _promote_dialog: PromoteDialog
 var _after_memory_resolved: Callable
 var _add_project_dialog: FileDialog
 var _open_query_dialog: FileDialog
@@ -121,6 +122,13 @@ func _on_memory_resolved() -> void:
 	if _after_memory_resolved.is_valid():
 		_after_memory_resolved.call()
 	_after_memory_resolved = Callable()
+
+
+func _on_records_promoted(summary: String) -> void:
+	_query_grid.refresh()
+	_info_dialog.title = "Records promoted"
+	_info_dialog.dialog_text = summary
+	_info_dialog.popup_centered()
 
 
 func _persist_last_query() -> void:
@@ -283,6 +291,11 @@ func _build_ui() -> void:
 	_memory_dialog.init(_state)
 	_memory_dialog.resolved.connect(_on_memory_resolved)
 	add_child(_memory_dialog)
+
+	_promote_dialog = PromoteDialog.new()
+	_promote_dialog.init(_state)
+	_promote_dialog.promoted.connect(_on_records_promoted)
+	add_child(_promote_dialog)
 	_build_new_item_dialog()
 
 	# A .dct that could not be opened (conflict markers, corruption)
@@ -656,6 +669,9 @@ func _on_menu_action(action: String) -> void:
 			if existing < 0:
 				existing = _add_work_entry("types", "Project Types", "", "")
 			_activate_work_entry(existing)
+		"promote_records":
+			var origin := _query_grid.get_selected_origin()
+			_promote_dialog.open(str(origin.get("project", "")), str(origin.get("id", "")))
 		"save_as":
 			_save_dialog.popup_centered(Vector2i(600, 400))
 		"add_project":
