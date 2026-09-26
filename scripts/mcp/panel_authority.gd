@@ -16,6 +16,13 @@ extends RefCounted
 ## known as the panel's. Tool calls may not carry the reserved
 ## RESERVED_ARGUMENTS names. None of this is an MCP tool: it is absent from
 ## tools/list and cannot be reached through tools/call.
+##
+## The host alone, before it opens any project, may also declare the schema
+## this process reads projects by (declare_schema) and have a project it
+## ships installed or brought up to date at a path it names
+## (bootstrap_project, MasterBootstrap). Their outcome is a result, {error,
+## kind} when refused; only a caller that is not the host, or malformed
+## parameters, get a JSON-RPC error.
 
 const PREFIX := "docket/panel/"
 const SECRET_VARIABLE := "DOCKET_PANEL_SECRET"
@@ -67,6 +74,14 @@ func handle(method: String, params: Dictionary, op: RefCounted = null) -> Dictio
 			if not _is_host(params):
 				return _failure(-32001, "not the host")
 			return _admitted(_register.bind(params))
+		"declare_schema":
+			if not _is_host(params):
+				return _failure(-32001, "not the host")
+			return _declare_schema(params)
+		"bootstrap_project":
+			if not _is_host(params):
+				return _failure(-32001, "not the host")
+			return _bootstrap_project(params)
 	# A person's reads and changes, for a grant: each admitted as a tool's is.
 	var granted := {"update_item": _update_item, "transition_item": _transition_item,
 		"create_item": _create_item, "attach_file": _attach_file}
@@ -297,6 +312,53 @@ func _granted(params: Dictionary, action: String) -> Dictionary:
 		_grants.erase(str(params.panel_grant))
 		return {"error": "the project the grant named is no longer open"}
 	return scope
+
+
+# declare_schema {panel_secret, schema, version}: {version} once `schema` is
+# the one projects are read by. Once projects are open only the version
+# already declared is accepted again (a host reconnecting), and changes
+# nothing.
+func _declare_schema(params: Dictionary) -> Dictionary:
+	var schema = params.get("schema")
+	var version := str(params.get("version", ""))
+	if not schema is Dictionary:
+		return _failure(-32602, "schema must be an object")
+	if not _registry.open_projects().is_empty():
+		if not version.is_empty() and version == TypeRegistryBootstrap.declared_version():
+			return {"result": {"version": version}}
+		return {"result": {"error": "a schema is declared before any project is opened", "kind": "projects_open"}}
+	var problem := TypeRegistryBootstrap.declare_schema(schema, version)
+	if not problem.is_empty():
+		return {"result": {"error": problem, "kind": "invalid_schema"}}
+	_registry.adopt_effective_schema()
+	return {"result": {"version": version}}
+
+
+# bootstrap_project {panel_secret, path, content (base64)}: the project the
+# host ships (`content`) installed or updated at `path` (MasterBootstrap),
+# then opened: its report with `project` (as docket_project_list describes
+# it) and `capability_gaps` (MasterBootstrap.capability_gaps), or {error,
+# kind} (with `report` when the file was brought up to date but could not be
+# opened).
+func _bootstrap_project(params: Dictionary) -> Dictionary:
+	var encoded := str(params.get("content", ""))
+	var path := str(params.get("path", ""))
+	if encoded.is_empty() or encoded.length() > MAX_ATTACHMENT_BASE64:
+		return _failure(-32602, "content must be the shipped project, base64, at most %d characters" % MAX_ATTACHMENT_BASE64)
+	var shipped := Marshalls.base64_to_raw(encoded)
+	if shipped.is_empty():
+		return _failure(-32602, "content is not base64")
+	if not _registry.add_project_fn.is_valid():
+		return {"result": {"error": "projects cannot be opened in this mode", "kind": "open_failed"}}
+	var report := MasterBootstrap.apply(path, shipped, _registry.open_projects())
+	if report.has("error"):
+		return {"result": report}
+	var opened: Dictionary = _registry.add_project_fn.call(report.path)
+	if opened.has("error"):
+		return {"result": {"error": "%s could not be opened: %s" % [report.path, opened.error], "kind": "open_failed", "report": report}}
+	report["project"] = opened
+	report["capability_gaps"] = MasterBootstrap.capability_gaps(_registry.get_type_registry(str(opened.get("name", ""))))
+	return {"result": report}
 
 
 # The request carries the bootstrap secret (compared in constant time).

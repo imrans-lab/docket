@@ -69,7 +69,7 @@ func reload() -> String:
 	_db._last_sql_error = ""
 	var next_legacy: bool = _db.get_meta_value("jsonl_version", "1.0.0") != "2.0.0"
 	if next_legacy:
-		var seeded := TypeRegistryBootstrap.records(TypeRegistryBootstrap.load_shipped_schema())
+		var seeded := TypeRegistryBootstrap.records(TypeRegistryBootstrap.effective_schema())
 		for value in seeded.type_defs: next_definitions[value.slug] = value
 		for value in seeded.type_def_versions: next_revisions[value.id] = value
 		_definitions = next_definitions
@@ -123,7 +123,9 @@ func get_generation_token() -> String:
 func _validate_definition_trust(record: Dictionary, definition: Dictionary) -> String:
 	if str(definition.slug) != str(record.slug): return "type '%s' revision has a conflicting slug" % record.slug
 	if str(record.lifecycle) not in ["draft", "active", "deprecated"]: return "type '%s' has invalid registry lifecycle" % record.slug
+	# Docket's own types stay trusted where a host's schema leaves one out.
 	var shipped_types: Dictionary = TypeRegistryBootstrap.load_shipped_schema().get("types", {})
+	shipped_types.merge(TypeRegistryBootstrap.effective_schema().get("types", {}))
 	var trusted_builtin: bool = shipped_types.has(record.slug) and str(record.id) == "builtin:%s" % record.slug and record.provenance.get("kind") == "starter" and bool(record.provenance.get("protected", false))
 	if trusted_builtin:
 		var expected_behavior := {"regular_creation_allowed":str(record.slug) not in ["secret", "encrypted_note"]}

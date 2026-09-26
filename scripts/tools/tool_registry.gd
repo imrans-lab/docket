@@ -86,6 +86,17 @@ func update_db(schema: Dictionary, db: DocketDB, project_dbs: Dictionary = {}) -
 	_tools = _build_tools()
 	_init_schema_dependent_tools(schema)
 
+
+## Serves this process's effective schema (TypeRegistryBootstrap) from now on.
+func adopt_effective_schema() -> void:
+	update_db(TypeRegistryBootstrap.effective_schema(), _db, _project_dbs)
+
+
+## The open projects: selector → DocketDB.
+func open_projects() -> Dictionary:
+	return _project_dbs
+
+
 func _rebuild_type_registries() -> void:
 	_type_registries.clear()
 	_type_registry_diagnostics.clear()
