@@ -151,6 +151,7 @@ var _events_container: VBoxContainer
 var _children_toggle: Button
 var _children_container: VBoxContainer
 var _children_list: ItemList
+var _authorizations: AuthorizationPanel
 
 var _comments_toggle: Button
 var _comments_container: VBoxContainer
@@ -840,6 +841,10 @@ func _build_ui() -> void:
 	_children_list.item_activated.connect(_on_child_activated)
 	_children_container.add_child(_children_list)
 
+	_authorizations = AuthorizationPanel.new()
+	_authorizations.record_opened.connect(func(policy_id: String) -> void: child_opened.emit(policy_id, _current_project))
+	_body_vbox.add_child(_authorizations)
+
 	# Comments (collapsible)
 	_comments_toggle = Button.new()
 	_comments_toggle.text = "> Comments"
@@ -1261,6 +1266,7 @@ func load_item(id: String, project: String = "") -> void:
 	_build_transition_buttons(item)
 	_populate_events(item)
 	_populate_children()
+	_authorizations.show_for(item_db, id)
 	# For discussion items, auto-expand comments and enlarge description.
 	_desc_edit.custom_minimum_size.y = 200 if type_name == "discussion" else 80
 	if type_name == "discussion":
@@ -1358,6 +1364,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 	for child in _transition_bar.get_children():
 		child.queue_free()
 	_events_list.clear()
+	_authorizations.show_for(null, "")
 
 	# For discussion drafts, auto-expand comments and enlarge description.
 	if type_name == "discussion":

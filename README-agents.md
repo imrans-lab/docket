@@ -314,6 +314,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_claim` | Claim an item's protected fields for a declared holder; lasts until released or reassigned (survives restart and disconnect) |
 | `docket_release` | Release your claim |
 | `docket_reassign` | Move a claim to a new holder; a non-holder must pass `override` with a reason, recorded in the item's events |
+| `docket_authorized` | Is an actor authorized for an action on an item (its project, ancestors and tags) or a project; reads active `policy` items tagged `authorization` |
 | `docket_query` | Filter, sort, and limit items |
 | `docket_link` | Link two items with a typed relation |
 | `docket_context` | Get a curated briefing by tags |

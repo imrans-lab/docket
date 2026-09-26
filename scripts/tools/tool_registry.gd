@@ -22,6 +22,7 @@ func _build_tools() -> Dictionary:
 		"docket_claim": DocketClaim.new(),
 		"docket_release": DocketRelease.new(),
 		"docket_reassign": DocketReassign.new(),
+		"docket_authorized": DocketAuthorized.new(),
 		"docket_query": DocketQuery.new(),
 		"docket_link": DocketLink.new(),
 		"docket_context": DocketContext.new(),
