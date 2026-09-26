@@ -1,5 +1,8 @@
 //! The system credential store, where the vault password is kept as a tagged
-//! record (CoordRecord in GDScript) under one of three fixed accounts.
+//! record (CoordRecord in GDScript). Each record has an account of its own,
+//! `vault-password/<epoch>/<tag>`; any other account is refused. Writing each
+//! account at most once, and never reusing one, is up to the caller
+//! (VaultCredential, with the tags CoordState hands out).
 //!
 //! - Linux: Secret Service, the account's persistent default collection only.
 //! - macOS: the account's default keychain (normally the login keychain),
@@ -23,7 +26,11 @@ use crate::coord_lock::{begin, end, failure, DocketCoordOperation, Failure, EXCL
 use godot::prelude::*;
 
 const SERVICE: &str = "Docket";
-const ACCOUNTS: [&str; 3] = ["vault-password", "vault-rotation-old", "vault-rotation-new"];
+const PREFIX: &str = "vault-password/";
+// A reserved diagnostic name status() reads, and nothing here writes. An
+// entry put there from outside Docket is left alone; one that cannot be read
+// (locked, denied, not text or, on Linux, duplicated) makes the probe fail.
+const PROBE: &str = "vault-password";
 
 /// GDScript's handle on the store. Results are {ok: true, ...} on success,
 /// {error, kind} on failure.
@@ -38,7 +45,7 @@ impl DocketCredentialStore {
     #[func]
     fn read(&self, account: GString, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
         let account = account.to_string();
-        reply(within(operation, SHARED, &account, || platform::read(&account)).map(Some))
+        reply(checked(&account).and_then(|_| within(operation, SHARED, || platform::read(&account))).map(Some))
     }
 
     /// Stores `value` under `account`, replacing what was there, within
@@ -48,7 +55,7 @@ impl DocketCredentialStore {
     fn write(&self, account: GString, value: GString, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
         let account = account.to_string();
         let value = value.to_string();
-        changed(within(operation, EXCLUSIVE, &account, || platform::write(&account, &value)))
+        changed(checked(&account).and_then(|_| within(operation, EXCLUSIVE, || platform::write(&account, &value))))
     }
 
     /// Removes `account`'s entry, within EXCLUSIVE `operation`; an entry
@@ -57,14 +64,14 @@ impl DocketCredentialStore {
     #[func]
     fn remove(&self, account: GString, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
         let account = account.to_string();
-        changed(within(operation, EXCLUSIVE, &account, || platform::remove(&account)))
+        changed(checked(&account).and_then(|_| within(operation, EXCLUSIVE, || platform::remove(&account))))
     }
 
     /// Whether the store can be used now, within `operation`: {ok} or the
     /// failure that stops it. A diagnostic only; the next call may still fail.
     #[func]
     fn status(&self, operation: Option<Gd<DocketCoordOperation>>) -> VarDictionary {
-        let probe = within(operation, SHARED, ACCOUNTS[0], || match platform::read(ACCOUNTS[0]) {
+        let probe = within(operation, SHARED, || match platform::read(PROBE) {
             Ok(_) => Ok(()),
             Err(f) if f.kind == "not_found" => Ok(()),
             Err(f) => Err(f),
@@ -116,18 +123,32 @@ impl Drop for Step {
 fn within<T>(
     operation: Option<Gd<DocketCoordOperation>>,
     mode: i64,
-    account: &str,
     work: impl FnOnce() -> Result<T, Failure>,
 ) -> Result<T, Failure> {
-    if !ACCOUNTS.contains(&account) {
-        return Err(failure("refused", format!("'{account}' is not a Docket credential account")));
-    }
     let Some(operation) = operation else {
         return Err(failure("refused", "the credential store is used only within a coordination operation"));
     };
     let id = operation.bind().live_id()?;
     let _step = Step(begin(mode, id)?);
     work()
+}
+
+// `vault-password/<epoch>/<tag>`: the epoch 32 lowercase hex digits, the tag
+// a canonical decimal from 1 to 18 digits (CoordState.is_epoch and
+// CoordRecord.parse_tag). A refused account is not quoted.
+fn checked(account: &str) -> Result<(), Failure> {
+    let valid = account.strip_prefix(PREFIX).and_then(|rest| rest.split_once('/')).is_some_and(|(epoch, tag)| {
+        epoch.len() == 32
+            && epoch.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            && (1..=18).contains(&tag.len())
+            && tag.bytes().all(|b| b.is_ascii_digit())
+            && !tag.starts_with('0')
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(failure("refused", "that is not a Docket credential account"))
+    }
 }
 
 fn not_text(account: &str) -> Failure {

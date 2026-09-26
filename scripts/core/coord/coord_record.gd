@@ -1,10 +1,11 @@
 class_name CoordRecord
 extends RefCounted
 ## The vault password as the system credential store holds it, tagged with
-## the coordination epoch and administration tag it was stored under. A reader
-## accepts it only when both match the committed state (CoordState), so a
-## value written by an administration that never committed, or before a
-## Forget, is never used.
+## the coordination epoch and administration tag it was stored under, in an
+## account named by both (account()). A reader reads only the account the
+## committed state names (active_account()) and accepts the record only when
+## both match that state (CoordState), so a value written by an administration
+## that never committed, or before a Forget, is never used.
 ##
 ## Stored as JSON with every field a string: tags are decimal strings, which
 ## GDScript, SQLite and Rust all read back exactly.
@@ -20,6 +21,28 @@ static func parse_tag(text: String) -> int:
 	if RegEx.create_from_string("^(0|[1-9][0-9]{0,17})\\z").search(text) == null:
 		return -1
 	return text.to_int()
+
+
+## The credential store account for `tag` in `epoch`.
+static func account(epoch: String, tag: int) -> String:
+	return "vault-password/%s/%d" % [epoch, tag]
+
+
+## {epoch, tag} when `text` is an account() name, else {}.
+static func parse_account(text: String) -> Dictionary:
+	var parts := text.split("/")
+	if parts.size() != 3 or parts[0] != "vault-password" or not CoordState.is_epoch(parts[1]) or parse_tag(parts[2]) < 1:
+		return {}
+	return {"epoch": parts[1], "tag": parse_tag(parts[2])}
+
+
+## The account holding the credential committed in `state` (CoordState.read),
+## or "" when it names none: not ready, or an administration is unfinished.
+static func active_account(state: Dictionary) -> String:
+	if state.get("ok") != true or str(state.get("state", "")) != CoordState.READY \
+			or not (state.get("intent", {}) as Dictionary).is_empty():
+		return ""
+	return account(state.epoch, state.generation)
 
 
 static func encode(epoch: String, tag: int, password: String) -> String:
@@ -49,9 +72,8 @@ static func decode(text: String) -> Dictionary:
 
 
 ## Whether decoded `record` is the credential committed in `state`
-## (CoordState.read): state ready with no rotation left unfinished, same
-## epoch, tag equal to its generation.
+## (CoordState.read): one active_account() names, with the same epoch and a
+## tag equal to its generation.
 static func accepts(record: Dictionary, state: Dictionary) -> bool:
-	return state.get("ok") == true and str(state.get("state", "")) == CoordState.READY \
-		and str(state.get("rotation_intent", "")).is_empty() and not record.has("error") \
+	return not active_account(state).is_empty() and not record.has("error") \
 		and record.get("epoch") == state.get("epoch") and record.get("tag") == state.get("generation")
