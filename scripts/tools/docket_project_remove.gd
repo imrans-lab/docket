@@ -25,6 +25,10 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	if not project_dbs.has(proj_name):
 		return {"error": "Project not found: %s" % proj_name}
 
+	var refusal := MemoryProject.unload_refusal(project_dbs[proj_name], proj_name)
+	if not refusal.is_empty():
+		return {"error": refusal}
+
 	if project_dbs.size() <= 1:
 		return {"error": "Cannot remove the last project"}
 

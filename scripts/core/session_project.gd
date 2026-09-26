@@ -16,16 +16,22 @@ class_name SessionProject
 ## a record whose pid is gone is taken over. This is the per-file claim; the
 ## per-user server discovery record belongs to server-ownership DCR 01a0b0f12c15.
 ##
+## A memory project (DocketDBMemory) has no file and no owner record; its lease
+## and spill rules live in MemoryProject.
+##
 ## Callers: AppState and DocketHttpServer call admit() after opening any project
 ## and release() when unloading it; the project verbs (add/close/archive/discard)
 ## use the path checks and outstanding_items().
 
 const MODE_DURABLE := "durable"
 const MODE_SESSION_FILE := "session_file"
-const MODES: Array[String] = [MODE_DURABLE, MODE_SESSION_FILE]
+const MODE_MEMORY := "memory"
+const MODES: Array[String] = [MODE_DURABLE, MODE_SESSION_FILE, MODE_MEMORY]
 const META_KEY := "project_storage_mode"
 const OWNER_SUFFIX := ".owner"
 const VOLATILE_FS: Array[String] = ["tmpfs", "ramfs"]
+## Environment variable that replaces default_dir(), e.g. for a container or a test.
+const SESSION_DIR_ENV := "DOCKET_SESSION_DIR"
 
 ## How this process describes itself in owner records: "gui" or "serve".
 static var role: String = "serve"
@@ -45,6 +51,10 @@ static func mode_of(db: DocketDB) -> String:
 static func default_dir() -> String:
 	## Per-user data directory: ~/.local/share/docket/sessions on Linux,
 	## ~/Library/Application Support/docket/sessions on macOS, %APPDATA% on Windows.
+	## DOCKET_SESSION_DIR, when set, is used instead.
+	var override := OS.get_environment(SESSION_DIR_ENV)
+	if not override.is_empty():
+		return override
 	return OS.get_data_dir().path_join("docket").path_join("sessions")
 
 

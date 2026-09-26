@@ -101,7 +101,9 @@ func add_project(path: String) -> String:
 	## Load an additional .dct project without closing the primary.
 	## Returns "" on success, else the reason it was refused (also emitted).
 	var new_db: DocketDB
-	if FileAccess.file_exists(path):
+	if DocketDBMemory.is_memory_path(path):
+		new_db = DocketDBMemory.create(path.trim_prefix(DocketDBMemory.PATH_SCHEME))
+	elif FileAccess.file_exists(path):
 		match JSONLMigration.detect_format(path):
 			"jsonl":
 				new_db = DocketDBJsonl.open_jsonl(path)

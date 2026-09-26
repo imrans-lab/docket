@@ -7,7 +7,7 @@ class_name DocketProjectClose
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_project_close",
-		"description": "Close a loaded project and keep its file on disk (any storage mode). Releases this server's ownership of a session_file project.",
+		"description": "Close a loaded project and keep its file on disk (durable or session_file). Releases this server's ownership of a session_file project. Refuses a memory project, which has no file.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
@@ -22,6 +22,9 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	var target := resolve(args, project_dbs)
 	if target.has("error"):
 		return target
+	var refusal := MemoryProject.unload_refusal(target.db, target.name)
+	if not refusal.is_empty():
+		return {"error": refusal}
 	return unload(target, remove_fn, project_dbs)
 
 

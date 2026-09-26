@@ -1,16 +1,19 @@
 extends Node
-## Session-file projects through the MCP project tools on a real AppState, the
-## same path the GUI-hosted server takes.
+## Session-file and memory projects through the MCP project tools on a real
+## AppState, the same path the GUI-hosted server takes.
 ##
 ## Oracle: the refusal texts returned by the tools and the presence of the
 ## project file on disk (FileAccess on the canonical path). The "second server"
-## is a live foreign process named in the file's owner record; SessionProject
-## internals are not consulted for any expectation.
+## is a live foreign process named in the file's owner record. For memory
+## projects the oracle is the guarantees-table outcome per event (KB
+## docket:01a0dc3d7498) and the spill file's contents on disk; SessionProject
+## and MemoryProject internals are not consulted for any expectation.
 
 var A := AssertHelpers
 const DIR := "user://test_session_project"
 const REPO := DIR + "/repo"
 const SESSION_PATH := DIR + "/sessions/Scratch.dct"
+const SPILL_PATH := DIR + "/sessions/Mem.dct"
 
 var _state: AppState
 var _tools: ToolRegistry
@@ -21,6 +24,8 @@ func setup() -> void:
 	_remove_tree(DIR)
 	DirAccess.make_dir_recursive_absolute(REPO + "/.git")
 	DirAccess.make_dir_recursive_absolute(DIR + "/sessions")
+	# Spills go to the session directory; point it inside the test tree.
+	OS.set_environment(SessionProject.SESSION_DIR_ENV, ProjectSettings.globalize_path(DIR + "/sessions"))
 	_state = AppState.new()
 	_state.load_schema()
 	_state.create_dct(DIR + "/Primary.dct")
@@ -36,6 +41,7 @@ func teardown() -> void:
 		OS.kill(_foreign_pid)
 	for name in _state.get_project_dbs().keys():
 		_state.remove_project(str(name))
+	OS.unset_environment(SessionProject.SESSION_DIR_ENV)
 	_remove_tree(DIR)
 
 
@@ -127,3 +133,61 @@ func test_session_file_project_lives_outside_git_has_one_owner_and_explicit_clos
 	for item: Dictionary in gone.get("outstanding_discarded", []):
 		discarded.append(item.get("id"))
 	return A.is_true(gone.get("discarded") == true and discarded.has(id) and not FileAccess.file_exists(SESSION_PATH), "discard with confirm deletes the file: %s" % gone)
+
+
+func test_memory_project_is_owner_gated_bounded_listed_and_spilled_when_the_lease_lapses() -> Variant:
+	# Row: creation needs an owner present. None holds the lease, so it is refused.
+	var refused: Dictionary = _tools.call_tool("docket_project_add", {"mode":"memory", "name":"Mem", "max_items":3})
+	var r = A.is_true(str(refused.get("error", "")).contains("owner-class client") and not _state.get_project_dbs().has("Mem"), "memory project refused without an owner: %s" % refused)
+	if r is String: return r
+
+	# A tool client's heartbeat does not count; an owner's does.
+	var tool_beat: Dictionary = _tools.call_tool("docket_project_heartbeat", {"client":"agent", "client_class":"tool"})
+	r = A.is_true(tool_beat.get("renewed") == false and tool_beat.get("lease", {}).get("owner_present") == false, "tool-class heartbeat renews nothing: %s" % tool_beat)
+	if r is String: return r
+	_tools.call_tool("docket_project_heartbeat", {"client":"test-owner", "client_class":"owner", "lease_seconds":60})
+	var added: Dictionary = _tools.call_tool("docket_project_add", {"mode":"memory", "name":"Mem", "max_items":3})
+	r = A.is_true(added.get("name") == "Mem" and added.get("storage_mode") == "memory", "memory project created with an owner present: %s" % added)
+	if r is String: return r
+
+	# project_list shows mode=memory and usage against the bound; no file exists.
+	var mem := _entry(_tools.call_tool("docket_project_list", {}), "Mem")
+	r = A.is_true(mem.get("storage_mode") == "memory" and mem.get("usage", {}).get("items") == 0 and mem.get("usage", {}).get("max_items") == 3 and not FileAccess.file_exists(SPILL_PATH), "list shows memory mode and usage 0/3: %s" % mem)
+	if r is String: return r
+
+	# Row: past the bound the next create is refused naming the limit; nothing is evicted.
+	var ids: Array[String] = []
+	for i in 3:
+		var created: Dictionary = _tools.call_tool("docket_create", {"project":"Mem", "type":"work_item", "title":"Memory %d" % i})
+		if created.has("error"): return "fixture create %d failed: %s" % [i, created.error]
+		ids.append(str(created.id))
+	var over: Dictionary = _tools.call_tool("docket_create", {"project":"Mem", "type":"work_item", "title":"One too many"})
+	r = A.contains(str(over.get("error", "")), "limit of 3 items", "fourth create refused naming the limit: %s" % over)
+	if r is String: return r
+	var held: Dictionary = _tools.call_tool("docket_query", {"project":"Mem"})
+	var held_ids: Array = []
+	for item: Dictionary in held.get("items", []):
+		held_ids.append(item.get("id"))
+	r = A.is_true(held_ids.size() == 3 and held_ids.has(ids[0]) and held_ids.has(ids[1]) and held_ids.has(ids[2]), "existing items intact after the refusal: %s" % held)
+	if r is String: return r
+	mem = _entry(_tools.call_tool("docket_project_list", {}), "Mem")
+	r = A.is_true(mem.get("usage", {}).get("items") == 3 and mem.get("usage", {}).get("max_items") == 3, "list shows usage 3/3: %s" % mem)
+	if r is String: return r
+
+	# Closing would lose it silently, so close is refused.
+	var closed: Dictionary = _tools.call_tool("docket_project_close", {"name":"Mem"})
+	r = A.is_true(str(closed.get("error", "")).contains("memory project") and _state.get_project_dbs().has("Mem"), "close of a memory project refused: %s" % closed)
+	if r is String: return r
+
+	# Row: the owner stops renewing and the lease lapses. The next call spills the
+	# outstanding project to a session file, which is then served under the same name.
+	_tools.call_tool("docket_project_heartbeat", {"client":"test-owner", "client_class":"owner", "lease_seconds":1})
+	OS.delay_msec(1500)
+	var after: Dictionary = _tools.call_tool("docket_project_list", {})
+	r = A.is_true(FileAccess.file_exists(SPILL_PATH), "spill file written at the session path after the lease lapsed: %s" % after)
+	if r is String: return r
+	var spilled_text := FileAccess.get_file_as_string(SPILL_PATH)
+	r = A.is_true(spilled_text.contains(ids[0]) and spilled_text.contains(ids[1]) and spilled_text.contains(ids[2]) and spilled_text.contains("session_file"), "spill file holds every item and records session_file mode")
+	if r is String: return r
+	mem = _entry(after, "Mem")
+	return A.is_true(mem.get("storage_mode") == "session_file" and ProjectSettings.globalize_path(str(mem.get("path", ""))) == ProjectSettings.globalize_path(SPILL_PATH), "spilled project is served from the session file: %s" % mem)

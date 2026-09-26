@@ -20,6 +20,8 @@ var _save_dialog: FileDialog
 var _new_dialog: FileDialog
 var _info_dialog: AcceptDialog
 var _confirm_reload_dialog: ConfirmationDialog
+var _memory_dialog: MemoryProjectsDialog
+var _after_memory_resolved: Callable
 var _add_project_dialog: FileDialog
 var _open_query_dialog: FileDialog
 var _save_query_dialog: FileDialog
@@ -62,6 +64,8 @@ func init(state: AppState) -> void:
 
 
 func _ready() -> void:
+	# Quitting waits for the memory-project answer instead of exiting on close.
+	get_tree().set_auto_accept_quit(false)
 	# Viewport is available now that we're in the tree.
 	size = get_viewport().get_visible_rect().size
 	get_viewport().size_changed.connect(_on_viewport_resized)
@@ -89,9 +93,34 @@ func _ready() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		_save_current_work_state()
-		_persist_last_query()
-		get_tree().quit()
+		_request_quit()
+
+
+func _request_quit() -> void:
+	## Memory projects with outstanding items are resolved (spill, promote or
+	## discard) before the process exits; the quit waits for that answer.
+	var pending := MemoryProject.outstanding_projects(_state.get_project_dbs())
+	if not pending.is_empty():
+		_after_memory_resolved = _quit
+		_memory_dialog.ask(pending)
+		return
+	_quit()
+
+
+func _quit() -> void:
+	_save_current_work_state()
+	_persist_last_query()
+	get_tree().quit()
+
+
+func _on_memory_resolved() -> void:
+	_update_window_title()
+	_update_project_menu()
+	_save_session()
+	_query_grid.refresh()
+	if _after_memory_resolved.is_valid():
+		_after_memory_resolved.call()
+	_after_memory_resolved = Callable()
 
 
 func _persist_last_query() -> void:
@@ -249,6 +278,11 @@ func _build_ui() -> void:
 	_confirm_reload_dialog.cancel_button_text = "Keep my edits"
 	_confirm_reload_dialog.confirmed.connect(_on_reload_open_item_confirmed)
 	add_child(_confirm_reload_dialog)
+
+	_memory_dialog = MemoryProjectsDialog.new()
+	_memory_dialog.init(_state)
+	_memory_dialog.resolved.connect(_on_memory_resolved)
+	add_child(_memory_dialog)
 	_build_new_item_dialog()
 
 	# A .dct that could not be opened (conflict markers, corruption)
@@ -585,6 +619,12 @@ func _on_menu_action(action: String) -> void:
 		return
 	if action.begins_with("close_project:"):
 		var proj_name := action.substr("close_project:".length())
+		var closing: DocketDB = _state.get_db_for_project(proj_name)
+		if closing is DocketDBMemory:
+			var pending := MemoryProject.outstanding_projects({proj_name: closing})
+			if not pending.is_empty():
+				_memory_dialog.ask(pending)
+				return
 		_state.remove_project(proj_name)
 		_update_window_title()
 		_update_project_menu()
@@ -629,9 +669,7 @@ func _on_menu_action(action: String) -> void:
 			_save_recent_files()
 			_menu_builder.set_recent_files(_recent_files)
 		"quit":
-			_save_current_work_state()
-			_persist_last_query()
-			get_tree().quit()
+			_request_quit()
 		"view_query":
 			switch_view(ViewMode.QUERY)
 		"view_detail":
@@ -717,7 +755,7 @@ func _save_session() -> void:
 	for proj_name in _state.get_project_dbs():
 		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
 		var p := pdb.get_path()
-		if not p.is_empty():
+		if not p.is_empty() and not pdb is DocketDBMemory:
 			paths.append(ProjectSettings.globalize_path(p) if p.begins_with("res://") else p)
 	UserPrefs.save_session(paths)
 

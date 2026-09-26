@@ -17,6 +17,10 @@ var _clients: Array = []
 var _db: DocketDB
 var _project_dbs: Dictionary = {}  # project_name → DocketDB
 var _schema: Dictionary
+var _next_lease_check_msec: int = 0
+
+## Interval between checks of the memory-project owner lease.
+const LEASE_CHECK_INTERVAL_MS := 5000
 
 
 func _ready() -> void:
@@ -94,6 +98,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	MemoryProject.spill_on_exit(_project_dbs)
 	SessionProject.release_all()
 
 
@@ -109,6 +114,8 @@ func _open_or_create_db(path: String) -> DocketDB:
 	## Dispatch on the actual on-disk format, mirroring AppState.load_dct.
 	## is_json_dct() only distinguishes "has a SQLite header" from "doesn't", so
 	## it reports JSONL as legacy JSON and sends it to the wrong migrator.
+	if DocketDBMemory.is_memory_path(path):
+		return DocketDBMemory.create(path.trim_prefix(DocketDBMemory.PATH_SCHEME))
 	if FileAccess.file_exists(path):
 		match JSONLMigration.detect_format(path):
 			"jsonl":
@@ -192,13 +199,18 @@ func _persist_headless_session() -> void:
 	## Persist current project paths so they survive server restarts.
 	var paths := PackedStringArray()
 	for db: DocketDB in _project_dbs.values():
-		paths.append(db.get_path())
+		if not db is DocketDBMemory:
+			paths.append(db.get_path())
 	UserPrefs.save_session(paths)
 
 
 func _process(_delta: float) -> void:
 	if _server == null or not _server.is_listening():
 		return
+
+	if Time.get_ticks_msec() >= _next_lease_check_msec:
+		_next_lease_check_msec = Time.get_ticks_msec() + LEASE_CHECK_INTERVAL_MS
+		_registry.enforce_memory_lease()
 
 	# Accept new connections
 	while _server.is_connection_available():
@@ -348,6 +360,7 @@ func _handle_post(req: Dictionary) -> String:
 		var err_resp := {"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}
 		return HttpParser.format_response(400, {"Content-Type": "application/json"}, JSON.stringify(err_resp))
 
+	MemoryProject.renew_from_headers(req.get("headers", {}))
 	var result = _handler.handle(parsed)
 
 	# Checkpoint WAL so other processes (e.g. GUI) can see writes immediately

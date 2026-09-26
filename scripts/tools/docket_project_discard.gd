@@ -2,13 +2,14 @@ extends RefCounted
 class_name DocketProjectDiscard
 ## Without confirm=true this only reports the outstanding (non-terminal) items
 ## and changes nothing. With confirm=true it closes the project and deletes the
-## file, returning the outstanding items it discarded.
+## file (a memory project has none and is dropped), returning the outstanding
+## items it discarded.
 
 
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_project_discard",
-		"description": "Delete a session_file project. Without confirm=true, lists its outstanding (non-terminal) items and does nothing; with confirm=true, closes it and deletes the file, reporting what was discarded.",
+		"description": "Delete a session_file or memory project. Without confirm=true, lists its outstanding (non-terminal) items and does nothing; with confirm=true, closes it and deletes the file, reporting what was discarded.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
@@ -24,8 +25,8 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	var target := DocketProjectClose.resolve(args, project_dbs)
 	if target.has("error"):
 		return target
-	if target.storage_mode != SessionProject.MODE_SESSION_FILE:
-		return {"error": "%s is a %s project; only session_file projects can be discarded" % [target.name, target.storage_mode]}
+	if target.storage_mode == SessionProject.MODE_DURABLE:
+		return {"error": "%s is a durable project; only session_file and memory projects can be discarded" % target.name}
 	var outstanding := SessionProject.outstanding_items(target.db)
 	if args.get("confirm", false) != true:
 		return {
@@ -39,6 +40,8 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	var closed := DocketProjectClose.unload(target, remove_fn, project_dbs)
 	if closed.has("error"):
 		return closed
+	if target.storage_mode == SessionProject.MODE_MEMORY:
+		return {"discarded": true, "project": target.name, "storage_mode": target.storage_mode, "outstanding_discarded": outstanding, "outstanding_count": outstanding.size()}
 	var error := SessionProject.discard_files(target.path)
 	if not error.is_empty():
 		return {"error": "Closed %s but could not delete it: %s" % [target.name, error]}

@@ -51,6 +51,8 @@ func _build_tools() -> Dictionary:
 		"docket_project_close": DocketProjectClose.new(),
 		"docket_project_archive": DocketProjectArchive.new(),
 		"docket_project_discard": DocketProjectDiscard.new(),
+		"docket_project_heartbeat": DocketProjectHeartbeat.new(),
+		"docket_project_persist": DocketProjectPersist.new(),
 		"docket_gui_open": DocketGuiOpen.new(),
 		"docket_get_state_machine": DocketGetStateMachine.new(),
 		"docket_quality": DocketQuality.new(),
@@ -131,6 +133,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	# anything. Serving from a stale cache is not just a stale read: the next
 	# write rewrites the entire JSONL from cache and would discard them.
 	refresh_stale_dbs()
+	enforce_memory_lease()
 
 	# An unrecognised project name used to fall through to the primary project,
 	# silently answering from the wrong data.
@@ -155,6 +158,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		result = _tools[name].execute(arguments, _schema, typed_db, TypeRegistry.for_db(typed_db, typed_db.get_project_name()))
 	elif name in ["docket_project_list", "docket_project_add", "docket_project_remove", "docket_project_meta",
 			"docket_project_close", "docket_project_archive", "docket_project_discard",
+			"docket_project_heartbeat", "docket_project_persist",
 			"docket_reload", "docket_flush", "docket_validate", "docket_audit_log"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, add_project_fn, remove_project_fn)
 	elif name == "docket_gui_open":
@@ -165,6 +169,13 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	if result.has("error"):
 		_log_error(name, arguments, result)
 	return result
+
+
+func enforce_memory_lease() -> Array[Dictionary]:
+	## Spill outstanding memory projects to session files while no owner holds the lease.
+	if not add_project_fn.is_valid() or not remove_project_fn.is_valid():
+		return []
+	return MemoryProject.enforce(_project_dbs, add_project_fn, remove_project_fn)
 
 
 func refresh_stale_dbs() -> Array:

@@ -338,12 +338,14 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_secret_delete` | Delete a vault entry |
 | `docket_audit_log` | Read the local metadata-only vault access audit log |
 | `docket_secret_promote` | Wrap a standalone vault entry in a tracked Secret item, without re-entering the value |
-| `docket_project_list` | List loaded projects with `storage_mode` (durable / session_file) beside the lifecycle `stage` |
-| `docket_project_add` | Load or create another project; `mode=session_file` creates one outside any Git checkout (default `<user data dir>/docket/sessions/<name>.dct`), served by one owning server at a time |
-| `docket_project_remove` | Close a loaded project |
-| `docket_project_close` | Close a project and keep its file |
+| `docket_project_list` | List loaded projects with `storage_mode` (durable / session_file / memory) beside the lifecycle `stage`; memory projects show `usage` against `max_items`, and the reply carries `memory_lease` and any spill result |
+| `docket_project_add` | Load or create another project; `mode=session_file` creates one outside any Git checkout (default `<user data dir>/docket/sessions/<name>.dct`, or `$DOCKET_SESSION_DIR`), served by one owning server at a time; `mode=memory` with `name` creates one with no file, refused unless an owner-class client holds the lease, bounded by `max_items` (default 1000; past it creates are refused, nothing is evicted) |
+| `docket_project_heartbeat` | Renew the memory-project owner lease (`client_class=owner`, declared not authenticated; also renewed by any request with header `X-Docket-Client-Class: owner`). While no owner holds it, memory projects with outstanding items are spilled to session files and served from them |
+| `docket_project_persist` | Write a memory project to disk and serve the file instead: `mode=session_file` spills, `mode=durable` with `path` promotes |
+| `docket_project_remove` | Close a loaded project (refuses a memory project) |
+| `docket_project_close` | Close a project and keep its file (refuses a memory project) |
 | `docket_project_archive` | Mark a session_file project archived, close it, keep its file |
-| `docket_project_discard` | Delete a session_file project; without `confirm=true` it only lists outstanding items |
+| `docket_project_discard` | Delete a session_file or memory project; without `confirm=true` it only lists outstanding items |
 | `docket_project_meta` | Get or set project lifecycle metadata |
 | `docket_gui_open` | Ask the running GUI to open an item or query |
 | `docket_get_state_machine` | Inspect one or all schema-defined state machines |
