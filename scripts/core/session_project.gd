@@ -14,7 +14,7 @@ class_name SessionProject
 ## the owner and its MCP endpoint, so the client can connect there instead. The
 ## record is removed when the owning process closes the project or exits cleanly;
 ## a record whose pid is gone is taken over. This is the per-file claim; the
-## per-user server discovery record belongs to server-ownership DCR 01a0b0f12c15.
+## per-user server discovery record is a separate mechanism.
 ##
 ## A memory project (DocketDBMemory) has no file and no owner record; its lease
 ## and spill rules live in MemoryProject.

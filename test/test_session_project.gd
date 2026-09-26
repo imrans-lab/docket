@@ -3,11 +3,13 @@ extends Node
 ## AppState, the same path the GUI-hosted server takes.
 ##
 ## Oracle: the refusal texts returned by the tools and the presence of the
-## project file on disk (FileAccess on the canonical path). The "second server"
+## project file and its owner record on disk (FileAccess on the canonical path). The "second server"
 ## is a live foreign process named in the file's owner record. For memory
 ## projects the oracle is the guarantees-table outcome per event (KB
-## docket:01a0dc3d7498) and the spill file's contents on disk; SessionProject
-## and MemoryProject internals are not consulted for any expectation.
+## docket:01a0dc3d7498) and the spill file's contents on disk. For promotion the
+## oracle is the durable target's .dct on disk (item and link lines). No
+## SessionProject, MemoryProject or SessionPromotion internals are consulted for
+## any expectation.
 
 var A := AssertHelpers
 const DIR := "user://test_session_project"
@@ -42,6 +44,8 @@ func teardown() -> void:
 	for name in _state.get_project_dbs().keys():
 		_state.remove_project(str(name))
 	OS.unset_environment(SessionProject.SESSION_DIR_ENV)
+	# The owner lease is process-wide; end it so the next test starts without an owner.
+	MemoryProject._lease_until_msec = 0
 	_remove_tree(DIR)
 
 
@@ -84,6 +88,10 @@ func test_session_file_project_lives_outside_git_has_one_owner_and_explicit_clos
 	var added: Dictionary = _tools.call_tool("docket_project_add", {"mode":"session_file", "path":SESSION_PATH, "create":true, "name":"Scratch"})
 	r = A.is_true(added.get("name") == "Scratch" and FileAccess.file_exists(SESSION_PATH), "session project created on disk: %s" % added)
 	if r is String: return r
+	# Admitting it writes this process's owner record beside the file.
+	var claim: Variant = JSON.parse_string(FileAccess.get_file_as_string(SESSION_PATH + ".owner")) if FileAccess.file_exists(SESSION_PATH + ".owner") else null
+	r = A.is_true(claim is Dictionary and int(claim.get("pid", 0)) == OS.get_process_id(), "owner record names this process: %s" % claim)
+	if r is String: return r
 	var listing: Dictionary = _tools.call_tool("docket_project_list", {})
 	var scratch := _entry(listing, "Scratch")
 	var primary := _entry(listing, "Primary")
@@ -96,7 +104,7 @@ func test_session_file_project_lives_outside_git_has_one_owner_and_explicit_clos
 
 	# Close keeps the file.
 	var closed: Dictionary = _tools.call_tool("docket_project_close", {"name":"Scratch"})
-	r = A.is_true(closed.get("closed") == "Scratch" and FileAccess.file_exists(SESSION_PATH), "close unloads and keeps the file: %s" % closed)
+	r = A.is_true(closed.get("closed") == "Scratch" and FileAccess.file_exists(SESSION_PATH) and not FileAccess.file_exists(SESSION_PATH + ".owner"), "close unloads, keeps the file and drops the owner record: %s" % closed)
 	if r is String: return r
 
 	# A second server holds the file: opening it here is refused, naming the owner.
@@ -191,3 +199,92 @@ func test_memory_project_is_owner_gated_bounded_listed_and_spilled_when_the_leas
 	if r is String: return r
 	mem = _entry(after, "Mem")
 	return A.is_true(mem.get("storage_mode") == "session_file" and ProjectSettings.globalize_path(str(mem.get("path", ""))) == ProjectSettings.globalize_path(SPILL_PATH), "spilled project is served from the session file: %s" % mem)
+
+
+## The target .dct's item lines by id and its link lines, read from disk.
+func _dct_records(path: String) -> Dictionary:
+	var items := {}
+	var links: Array = []
+	for line in FileAccess.get_file_as_string(path).split("\n", false):
+		var record: Variant = JSON.parse_string(line)
+		if not record is Dictionary:
+			continue
+		if record.get("_type") == "item":
+			items[str(record.id)] = record
+		elif record.get("_type") == "link":
+			links.append(record)
+	return {"items": items, "links": links}
+
+
+## Ten records in `project`: the 2nd is the 1st's child and links to it (both
+## promoted) and links to the 3rd (left behind). Returns the ten ids.
+func _seed_ten(project: String) -> Array[String]:
+	var ids: Array[String] = []
+	for i in 10:
+		var args := {"project":project, "type":"work_item", "title":"%s record %d" % [project, i]}
+		if i == 1:
+			args["parent"] = ids[0]
+		var created: Dictionary = _tools.call_tool("docket_create", args)
+		if created.has("error"):
+			return []
+		ids.append(str(created.id))
+	_tools.call_tool("docket_link", {"project":project, "from":ids[1], "to":ids[0], "relation":"follow_up"})
+	_tools.call_tool("docket_link", {"project":project, "from":ids[1], "to":ids[2], "relation":"blocks"})
+	return ids
+
+
+func _check_promotion(source: String, mode: String, ids: Array[String], primary_path: String) -> Variant:
+	var before: Dictionary = _dct_records(primary_path)
+	var result: Dictionary = _tools.call_tool("docket_promote", {"items":[ids[0], ids[1]], "source_project":source, "to_project":"Primary", "promoted_by":"local:tester", "import_definition":true})
+	if result.has("error"):
+		return "promote from %s failed: %s" % [source, result.error]
+	var after: Dictionary = _dct_records(primary_path)
+	var added: Array = []
+	for id in after.items:
+		if not before.items.has(id):
+			added.append(after.items[id])
+	var r = A.is_true(added.size() == 2, "exactly two records written to the target from %s: %s" % [source, added])
+	if r is String: return r
+
+	var by_origin := {}
+	for item: Dictionary in added:
+		var provenance: Dictionary = item.get("extras", {}).get("promoted_from", {})
+		r = A.is_true(provenance.get("project") == source and provenance.get("storage_mode") == mode and provenance.get("promoted_by") == "local:tester" and not str(provenance.get("promoted_at", "")).is_empty(), "provenance recorded on %s: %s" % [item.id, provenance])
+		if r is String: return r
+		by_origin[str(provenance.get("item_id", ""))] = item
+	r = A.is_true(by_origin.has(ids[0]) and by_origin.has(ids[1]), "the two copies are of the two chosen records: %s" % by_origin.keys())
+	if r is String: return r
+	var first_copy := str(by_origin[ids[0]].id)
+	var second: Dictionary = by_origin[ids[1]]
+
+	# References inside the promoted set follow the copies; the one outside stays and is reported.
+	var kept := "%s:%s" % [source, ids[2]]
+	r = A.is_true(str(second.get("parent", "")) == "Primary:%s" % first_copy, "parent rewritten to the new id: %s" % second.get("parent"))
+	if r is String: return r
+	var targets := {}
+	for link: Dictionary in after.links:
+		if link.get("from_id") == second.id:
+			targets[str(link.relation)] = str(link.to_id)
+	r = A.is_true(targets.get("follow_up") == "Primary:%s" % first_copy and targets.get("blocks") == kept, "intra-set link rewritten, outside link kept qualified: %s" % targets)
+	if r is String: return r
+	var reported: Array = []
+	for miss: Dictionary in result.get("unresolved", []):
+		reported.append(miss.get("reference"))
+	return A.is_true(reported == [kept] and second.get("extras", {}).get("promoted_from", {}).get("unresolved_refs", []) == [kept], "the left-behind reference is reported unresolved in the reply and on disk: %s" % result.get("unresolved"))
+
+
+func test_promote_copies_exactly_the_chosen_records_from_session_file_and_memory_projects() -> Variant:
+	var primary_path := DIR + "/Primary.dct"
+	var session: Dictionary = _tools.call_tool("docket_project_add", {"mode":"session_file", "path":SESSION_PATH, "create":true, "name":"Scratch"})
+	if session.has("error"): return "fixture session project failed: %s" % session.error
+	_tools.call_tool("docket_project_heartbeat", {"client":"test-owner", "client_class":"owner", "lease_seconds":60})
+	var memory: Dictionary = _tools.call_tool("docket_project_add", {"mode":"memory", "name":"Mem"})
+	if memory.has("error"): return "fixture memory project failed: %s" % memory.error
+
+	var session_ids := _seed_ten("Scratch")
+	var memory_ids := _seed_ten("Mem")
+	if session_ids.size() != 10 or memory_ids.size() != 10:
+		return "fixture records failed"
+	var r = _check_promotion("Scratch", SessionProject.MODE_SESSION_FILE, session_ids, primary_path)
+	if r is String: return r
+	return _check_promotion("Mem", SessionProject.MODE_MEMORY, memory_ids, primary_path)

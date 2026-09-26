@@ -6,9 +6,9 @@ class_name DocketDBMemory
 ## query API behaves as it does on a file-backed project.
 ##
 ## get_path() returns "memory://<name>", which names the project in listings and
-## never refers to a file. Creating an item past max_items is refused with the
-## limit in the message; nothing is evicted. MemoryProject owns the lease, the
-## spill to a file, and the registration of these projects.
+## never refers to a file. Creating or importing an item past max_items is
+## refused with the limit in the message; nothing is evicted. MemoryProject owns
+## the lease, the spill to a file, and the registration of these projects.
 
 const PATH_SCHEME := "memory://"
 const DEFAULT_MAX_ITEMS := 1000
@@ -55,10 +55,21 @@ func usage() -> Dictionary:
 
 
 func insert_item(id: String, item: Dictionary) -> String:
+	var refusal := _limit_refusal()
+	return refusal if not refusal.is_empty() else super.insert_item(id, item)
+
+
+func import_item_full_checked(new_id: String, exported: Dictionary) -> String:
+	## Imports (docket_move and friends) honour the same bound as creation.
+	var refusal := _limit_refusal()
+	return refusal if not refusal.is_empty() else super.import_item_full_checked(new_id, exported)
+
+
+func _limit_refusal() -> String:
 	var count := item_count()
-	if count >= max_items:
-		return "Refused: memory project %s is at its limit of %d items (%d held). Nothing was evicted; persist it with docket_project_persist or discard items first." % [get_project_name(), max_items, count]
-	return super.insert_item(id, item)
+	if count < max_items:
+		return ""
+	return "Refused: memory project %s is at its limit of %d items (%d held). Nothing was evicted; persist it with docket_project_persist or discard items first." % [get_project_name(), max_items, count]
 
 
 func serialize_as(mode: String) -> String:

@@ -293,7 +293,7 @@ func _build_ui() -> void:
 	_memory_dialog.resolved.connect(_on_memory_resolved)
 	add_child(_memory_dialog)
 
-	_promote_dialog = PromoteDialog.new()
+	_promote_dialog = (load("res://scenes/ui/promote_dialog.tscn") as PackedScene).instantiate() as PromoteDialog
 	_promote_dialog.init(_state)
 	_promote_dialog.promoted.connect(_on_records_promoted)
 	add_child(_promote_dialog)

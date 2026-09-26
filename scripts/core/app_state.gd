@@ -179,6 +179,10 @@ func add_project(path: String) -> String:
 		if new_prefix != new_db.get_id_prefix():
 			new_db.set_id_prefix(new_prefix)
 
+	# A project loaded under a name already served replaces it, including as primary.
+	if _project_dbs.get(proj_name) == db and db != null:
+		db = new_db
+		dct_path = path
 	_project_dbs[proj_name] = new_db
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 

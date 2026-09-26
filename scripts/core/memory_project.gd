@@ -11,8 +11,10 @@ class_name MemoryProject
 ## A memory project is created only while an owner is present. While no owner
 ## holds the lease, enforce() spills every memory project that has outstanding
 ## (non-terminal) items to a session_file under SessionProject.default_dir()
-## and serves the file in its place. A spill that fails leaves the project in
-## memory, sets last_spill_error, and is retried on the next enforce(). A memory
+## and serves the file in its place. A spill that fails at any step, including
+## opening the written file, leaves the project served from memory, logs the
+## error, sets last_spill_error (docket_project_list reports it as spill_error),
+## and is retried on the next enforce(). A memory
 ## project with nothing outstanding is left in memory.
 ##
 ## Callers: ToolRegistry.enforce_memory_lease() before each tool call and on a
@@ -140,12 +142,22 @@ static func persist(project_dbs: Dictionary, proj_name: String, mode: String, pa
 	var error := write_file(pdb, mode, target)
 	if not error.is_empty():
 		return {"error": error}
-	var removed: Dictionary = remove_fn.call(proj_name)
-	if removed.has("error"):
-		return {"error": "Wrote %s but could not unload the memory project: %s" % [target, removed.error]}
+	# Open the file before dropping the memory copy: loading a project under a
+	# name already served replaces that entry, so a failed open leaves the memory
+	# project served and listed. The unserved file is removed so a retry does
+	# not leave a trail of copies.
 	var added: Dictionary = add_fn.call(target)
 	if added.has("error"):
-		return {"error": "Wrote %s but could not open it here: %s" % [target, added.error], "path": target}
+		DirAccess.remove_absolute(target)
+		var failure := "Wrote %s but could not open it here, so %s stays in memory: %s" % [target, proj_name, added.error]
+		push_error("Docket: %s" % failure)
+		return {"error": failure, "kept_in_memory": proj_name}
+	if str(added.get("name", proj_name)) == proj_name:
+		pdb.close()
+	else:
+		var removed: Dictionary = remove_fn.call(proj_name)
+		if removed.has("error"):
+			push_error("Docket: %s is served from %s but its memory copy did not unload: %s" % [proj_name, target, removed.error])
 	return {"persisted": proj_name, "name": added.get("name", proj_name), "storage_mode": mode, "path": target, "items": usage.items, "outstanding_count": outstanding, "file_exists": FileAccess.file_exists(target)}
 
 

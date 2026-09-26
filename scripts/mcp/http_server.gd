@@ -170,9 +170,10 @@ func _headless_add_project(path: String) -> Dictionary:
 	if proj_name.is_empty():
 		proj_name = path.get_file().get_basename()
 		loaded_db.set_project_name(proj_name)
-	_project_dbs[proj_name] = loaded_db
-	if _db == null:
+	# A project loaded under a name already served replaces it, including as primary.
+	if _db == null or _project_dbs.get(proj_name) == _db:
 		_db = loaded_db
+	_project_dbs[proj_name] = loaded_db
 	_registry.update_db(_schema, _db, _project_dbs)
 	_persist_headless_session()
 	return {"name": proj_name, "path": path, "prefix": loaded_db.get_id_prefix(), "storage_mode": SessionProject.mode_of(loaded_db)}

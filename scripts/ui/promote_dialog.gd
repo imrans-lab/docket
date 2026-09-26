@@ -1,7 +1,8 @@
 extends ConfirmationDialog
 class_name PromoteDialog
 ## File > Promote Session Records…: copies chosen records from a session_file or
-## memory project into a durable project through SessionPromotion.
+## memory project into a durable project through SessionPromotion
+## (scenes/ui/promote_dialog.tscn).
 ##
 ## The user picks the source and target projects and the records, then presses
 ## Preview, which lists what would be copied and every reference that cannot be
@@ -24,49 +25,19 @@ var _previewed := false
 
 func init(state: AppState) -> void:
 	_state = state
-	title = "Promote session records"
-	ok_button_text = "Promote"
-	min_size = Vector2i(640, 520)
-	var box := VBoxContainer.new()
-	add_child(box)
-
-	var projects := HBoxContainer.new()
-	box.add_child(projects)
-	projects.add_child(_label("From"))
-	_source = OptionButton.new()
-	_source.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_source = %SourcePicker
+	_target = %TargetPicker
+	_items = %RecordList
+	_comments = %IncludeComments
+	_attachments = %IncludeAttachments
+	_import_definition = %ImportDefinitions
+	_report = %Report
 	_source.item_selected.connect(func(_i: int) -> void: _fill_items(""))
-	projects.add_child(_source)
-	projects.add_child(_label("To"))
-	_target = OptionButton.new()
-	_target.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_target.item_selected.connect(func(_i: int) -> void: _invalidate())
-	projects.add_child(_target)
-
-	box.add_child(_label("Records to promote (Ctrl/Shift-click for several):"))
-	_items = ItemList.new()
-	_items.select_mode = ItemList.SELECT_MULTI
-	_items.custom_minimum_size.y = 180
-	_items.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_items.multi_selected.connect(func(_i: int, _s: bool) -> void: _invalidate())
-	box.add_child(_items)
-
-	var flags := HBoxContainer.new()
-	box.add_child(flags)
-	_comments = _check(flags, "Include comments")
-	_attachments = _check(flags, "Include attachments")
-	_import_definition = _check(flags, "Import missing type definitions")
-
-	var preview := Button.new()
-	preview.text = "Preview"
-	preview.pressed.connect(_on_preview)
-	box.add_child(preview)
-	_report = TextEdit.new()
-	_report.editable = false
-	_report.custom_minimum_size.y = 140
-	_report.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	box.add_child(_report)
-
+	for box: CheckBox in [_comments, _attachments, _import_definition]:
+		box.toggled.connect(func(_on: bool) -> void: _invalidate())
+	%PreviewButton.pressed.connect(_on_preview)
 	confirmed.connect(_on_promote)
 
 
@@ -168,16 +139,3 @@ func _source_name() -> String:
 func _target_name() -> String:
 	return _target.get_item_text(_target.selected) if _target.selected >= 0 else ""
 
-
-func _label(text: String) -> Label:
-	var label := Label.new()
-	label.text = text
-	return label
-
-
-func _check(parent: Control, text: String) -> CheckBox:
-	var box := CheckBox.new()
-	box.text = text
-	box.toggled.connect(func(_on: bool) -> void: _invalidate())
-	parent.add_child(box)
-	return box

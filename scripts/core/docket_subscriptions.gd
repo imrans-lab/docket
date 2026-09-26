@@ -18,8 +18,8 @@ class_name DocketSubscriptions
 ## streams by (timestamp, project name); each project's events stay in eid order.
 ##
 ## Visibility. Without identity or role the subscriber sees every event in its
-## projects. With either, it sees only events on its chain, the C1 T3 scope
-## rule evaluated from the current records at read time: items whose
+## projects. With either, it sees only events on its chain (the agent gateway's
+## scope rule), evaluated from the current records at read time: items whose
 ## assigned_to or directed_to equals the identity or the role exactly, plus
 ## their parents up to and including the first `wr:objective` item (at most
 ## ANCESTOR_DEPTH levels, never into a project outside the subscription).

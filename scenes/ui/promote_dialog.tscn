@@ -1,0 +1,65 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/promote_dialog.gd" id="1"]
+
+[node name="PromoteDialog" type="ConfirmationDialog"]
+title = "Promote session records"
+size = Vector2i(640, 520)
+min_size = Vector2i(640, 520)
+ok_button_text = "Promote"
+script = ExtResource("1")
+
+[node name="Box" type="VBoxContainer" parent="."]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 632.0
+offset_bottom = 471.0
+
+[node name="ProjectRow" type="HBoxContainer" parent="Box"]
+
+[node name="FromLabel" type="Label" parent="Box/ProjectRow"]
+text = "From"
+
+[node name="SourcePicker" type="OptionButton" parent="Box/ProjectRow"]
+unique_name_in_owner = true
+size_flags_horizontal = 3
+
+[node name="ToLabel" type="Label" parent="Box/ProjectRow"]
+text = "To"
+
+[node name="TargetPicker" type="OptionButton" parent="Box/ProjectRow"]
+unique_name_in_owner = true
+size_flags_horizontal = 3
+
+[node name="RecordsLabel" type="Label" parent="Box"]
+text = "Records to promote (Ctrl/Shift-click for several):"
+
+[node name="RecordList" type="ItemList" parent="Box"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 180)
+size_flags_vertical = 3
+select_mode = 1
+
+[node name="FlagRow" type="HBoxContainer" parent="Box"]
+
+[node name="IncludeComments" type="CheckBox" parent="Box/FlagRow"]
+unique_name_in_owner = true
+text = "Include comments"
+
+[node name="IncludeAttachments" type="CheckBox" parent="Box/FlagRow"]
+unique_name_in_owner = true
+text = "Include attachments"
+
+[node name="ImportDefinitions" type="CheckBox" parent="Box/FlagRow"]
+unique_name_in_owner = true
+text = "Import missing type definitions"
+
+[node name="PreviewButton" type="Button" parent="Box"]
+unique_name_in_owner = true
+text = "Preview"
+
+[node name="Report" type="TextEdit" parent="Box"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 140)
+editable = false
+wrap_mode = 1
