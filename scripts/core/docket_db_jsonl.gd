@@ -153,6 +153,9 @@ static func _create_new_jsonl(path: String, step: RefCounted) -> DocketDBJsonl:
 	if not canonical_name.is_empty():
 		naming_error = wrapper._exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('project',?);", [canonical_name])
 		if naming_error.is_empty(): naming_error = wrapper._exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('id_prefix',?);", [DocketDB._derive_prefix(canonical_name)])
+	# Its cache is this parser's reading of the file it writes (JSONLCache.PARSE_REVISION).
+	if naming_error.is_empty(): naming_error = wrapper._exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES(?,?);",
+		[JSONLCache.PARSE_REVISION_META, JSONLCache.PARSE_REVISION])
 	if not naming_error.is_empty():
 		wrapper.last_write_error = naming_error
 		wrapper.close()

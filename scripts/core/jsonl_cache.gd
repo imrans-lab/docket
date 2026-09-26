@@ -15,6 +15,12 @@ static var last_error: String = ""
 ## A cache's mark (docket_meta) of a committed change its file does not hold
 ## yet: such a cache is never taken for its file's.
 const UNSAVED_META := "unsaved_change"
+## A cache's mark (docket_meta) of how its file was read. A cache without the
+## current one may hold a reading that lacks tags written as a comma-separated
+## string, so it is built again from its file even when the file is unchanged;
+## one with an unsaved change is never reused anyway.
+const PARSE_REVISION_META := "parse_revision"
+const PARSE_REVISION := "2"
 static var cache_delete_hook: Callable
 static var rebuild_failure_hook: Callable
 # Stands in for renaming a cache file (from, to) → Error, when set.
@@ -191,6 +197,7 @@ static func _build(jsonl_path: String, snapshot: Dictionary, cache_path: String,
 
 	# Store a fingerprint so we can validate freshness later
 	db.set_meta_value("jsonl_hash", fingerprint)
+	db.set_meta_value(PARSE_REVISION_META, PARSE_REVISION)
 
 	if not db._last_sql_error.is_empty():
 		db._rollback()
@@ -233,9 +240,10 @@ static func is_cache_valid(jsonl_path: String, cache_path: String) -> bool:
 
 	var stored := db.get_meta_value("jsonl_hash", "")
 	var unsaved := db.get_meta_value(UNSAVED_META, "")
+	var revision := db.get_meta_value(PARSE_REVISION_META, "")
 	db.close()
 
-	if stored.is_empty() or not unsaved.is_empty():
+	if stored.is_empty() or not unsaved.is_empty() or revision != PARSE_REVISION:
 		return false
 
 	var current := _file_fingerprint(jsonl_path)

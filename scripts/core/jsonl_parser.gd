@@ -135,6 +135,8 @@ static func parse_text(text: String, path: String) -> Dictionary:
 				bucket = "type_def_versions"
 				record = _parse_type_def_version(parsed)
 
+		if line_type == "item" and record.has("_error"):
+			return _corrupt(path, line_number, "item %s: %s" % [str(parsed.get("id", "")), record._error], line)
 		if not bucket.is_empty():
 			if record.is_empty():
 				return _corrupt(path, line_number,
@@ -156,7 +158,8 @@ static func parse_text(text: String, path: String) -> Dictionary:
 
 static func parse_line(json_text: String) -> Dictionary:
 	## Parse a single JSONL line. Returns the parsed dict with _type included,
-	## or an empty dict on any error.
+	## {_error} for an item whose tags cannot be read (decode_tags), or an
+	## empty dict on any other error.
 	var line: String = json_text.strip_edges()
 	if line.is_empty():
 		return {}
@@ -237,6 +240,34 @@ static func _parse_meta(d: Dictionary) -> Dictionary:
 	return out
 
 
+# One label of a comma-separated tags string (decode_tags), compiled once.
+static var _tag_label: RegEx
+
+## An item's `tags` as the labels it holds: {tags} or {error}. An array keeps
+## each string exactly as it is (an element "a,b" is one label). A string is
+## the older comma-separated form: each label, spaces and tabs around it
+## dropped, must be letters, digits or _.:- and none may be empty. Anything
+## else, or a string that is not that form, is refused rather than dropped,
+## since the next save would write the item back without it.
+static func decode_tags(value: Variant) -> Dictionary:
+	if value is Array:
+		for tag in value:
+			if not tag is String:
+				return {"error": "tags holds a %s, not only strings" % type_string(typeof(tag))}
+		return {"tags": (value as Array).duplicate()}
+	if not value is String:
+		return {"error": "tags is a %s, not a list or a comma-separated string" % type_string(typeof(value))}
+	if _tag_label == null:
+		_tag_label = RegEx.create_from_string("^[ \\t]*([A-Za-z0-9_.:-]+)[ \\t]*\\z")
+	var tags: Array = []
+	for part in (value as String).split(","):
+		var found := _tag_label.search(part)
+		if found == null:
+			return {"error": "tags '%s' is not a comma-separated list of labels" % value}
+		tags.append(found.get_string(1))
+	return {"tags": tags}
+
+
 static func _parse_item(d: Dictionary) -> Dictionary:
 	# Required fields
 	if not _has_required(d, ["id", "type", "status", "title", "created_at", "updated_at"]):
@@ -285,8 +316,11 @@ static func _parse_item(d: Dictionary) -> Dictionary:
 	_copy_int_opt(d, out, "customised")
 	_copy_int_opt(d, out, "deprecated")
 	# Array fields
-	if d.has("tags") and d["tags"] is Array:
-		out["tags"] = d["tags"].duplicate()
+	if d.has("tags"):
+		var decoded := decode_tags(d["tags"])
+		if decoded.has("error"):
+			return {"_error": decoded.error}
+		out["tags"] = decoded.tags
 	if d.has("tool_deps") and d["tool_deps"] is Array:
 		out["tool_deps"] = d["tool_deps"].duplicate()
 	if d.has("unsatisfied_deps") and d["unsatisfied_deps"] is Array:
