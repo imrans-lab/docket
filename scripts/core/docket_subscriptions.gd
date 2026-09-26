@@ -9,11 +9,12 @@ class_name DocketSubscriptions
 ##   filters    {projects, kinds, identity, role}; empty = no restriction
 ##   start      {project: eid} the head of each project when the record was made
 ##   delivered  {project: eid} the largest eid ever returned to this subscriber
+##   acked      {project: [eid]} events the subscriber acknowledged (DocketReceipts)
 ##
 ## A cursor is an opaque base64 of compact JSON {"s": subscriber id,
 ## "p": {project: eid}}: the last eid consumed in each project. Cursor "" means
 ## `start`. A project without a position (added to the server later) enters at
-## its current head. eids are per project, so a page merges the projects'
+## its current head, which is then recorded as its `start`. eids are per project, so a page merges the projects'
 ## streams by (timestamp, project name); each project's events stay in eid order.
 ##
 ## Visibility. Without identity or role the subscriber sees every event in its
@@ -26,7 +27,8 @@ class_name DocketSubscriptions
 ##
 ## Duplicates. An event whose eid is at or below `delivered` for its project has
 ## been returned before (for instance after a cursor rewind) and carries
-## possible_duplicate=true. Returning an event is not an acknowledgement.
+## possible_duplicate=true. Returning an event is not an acknowledgement:
+## consumption is recorded only by DocketReceipts.ack, in the record's `acked`.
 ##
 ## Expiry. A position below ProjectEvents.retention_floor has lost events to
 ## retention; a position above the project head belongs to a log that was
@@ -58,19 +60,19 @@ static func subscribe(name: String, raw_filters: Variant, project_dbs: Dictionar
 	var projects: Dictionary = _projects(filters, project_dbs)
 	for project in projects: start[project] = ProjectEvents.head(projects[project])
 	var id: String = "sub-" + Crypto.new().generate_random_bytes(8).hex_encode()
-	var records: Dictionary = _load()
+	var records: Dictionary = load_records()
 	records[id] = {"id":id, "name":name, "filters":filters, "start":start, "delivered":{}, "created_at":Time.get_datetime_string_from_system()}
-	var error: String = _save(records)
+	var error: String = save_records(records)
 	if not error.is_empty(): return {"error":error}
 	return {"subscriber":id, "name":name, "filters":filters, "cursor":encode_cursor(id, start), "heads":start}
 
 
 ## Removes a subscriber. Returns {removed, subscriber} or {error}.
 static func unsubscribe(id: String) -> Dictionary:
-	var records: Dictionary = _load()
+	var records: Dictionary = load_records()
 	if not records.has(id): return {"error":"Unknown subscriber: %s" % id}
 	records.erase(id)
-	var error: String = _save(records)
+	var error: String = save_records(records)
 	if not error.is_empty(): return {"error":error}
 	return {"removed":true, "subscriber":id}
 
@@ -80,7 +82,7 @@ static func unsubscribe(id: String) -> Dictionary:
 ## or {error}. A page holds at most `limit` events and ContentLedger.PAGE_BYTES
 ## of encoded events; `more` is true while events may remain.
 static func changes_since(id: String, cursor: String, limit: int, project_dbs: Dictionary) -> Dictionary:
-	var records: Dictionary = _load()
+	var records: Dictionary = load_records()
 	if not records.has(id): return {"error":"Unknown subscriber: %s" % id}
 	var record: Dictionary = records[id]
 	var filters: Dictionary = record.get("filters", {})
@@ -96,22 +98,29 @@ static func changes_since(id: String, cursor: String, limit: int, project_dbs: D
 		if not projects.has(str(listed)): unavailable.append(str(listed))
 
 	var expired: Array[Dictionary] = []
+	var start: Dictionary = record.get("start", {})
+	var entered: bool = false
 	for project in projects:
 		var db: DocketDB = projects[project]
 		var head: int = ProjectEvents.head(db)
 		if not positions.has(project): positions[project] = head
+		if not start.has(project):
+			start[project] = head
+			entered = true
 		var position: int = int(positions[project])
 		var floor_eid: int = ProjectEvents.retention_floor(db)
 		if position > head:
 			expired.append({"project":project, "cursor_eid":position, "recovery_eid":head, "reason":EXPIRED_AHEAD})
 			positions[project] = head
 			if int(delivered.get(project, 0)) > head: delivered[project] = head
+			DocketReceipts.forget_after(record, project, head)
 		elif position < floor_eid:
 			expired.append({"project":project, "cursor_eid":position, "recovery_eid":floor_eid, "reason":EXPIRED_RETENTION})
 			positions[project] = floor_eid
+	record["start"] = start
 	if not expired.is_empty():
 		record["delivered"] = delivered
-		var save_error: String = _save(records)
+		var save_error: String = save_records(records)
 		if not save_error.is_empty(): return {"error":save_error}
 		return {"events":[], "next_cursor":encode_cursor(id, positions), "more":true, "expired":true, "expired_projects":expired, "unavailable_projects":unavailable}
 
@@ -120,7 +129,7 @@ static func changes_since(id: String, cursor: String, limit: int, project_dbs: D
 	var kinds: Array = filters.get("kinds", [])
 	var streams: Dictionary = {}
 	for project in projects:
-		streams[project] = _collect(project, projects[project], int(positions[project]), limit, kinds, chain if scoped else null)
+		streams[project] = collect(project, projects[project], int(positions[project]), limit, kinds, chain if scoped else null)
 
 	var page: Array[Dictionary] = []
 	var budget: int = ContentLedger.PAGE_BYTES
@@ -154,9 +163,9 @@ static func changes_since(id: String, cursor: String, limit: int, project_dbs: D
 		if int(stream.taken) > 0 and int(stream.last) > int(delivered.get(project, 0)):
 			delivered[project] = int(stream.last)
 			raised = true
-	if raised:
+	if raised or entered:
 		record["delivered"] = delivered
-		var error: String = _save(records)
+		var error: String = save_records(records)
 		if not error.is_empty(): return {"error":error}
 	return {"events":page, "next_cursor":encode_cursor(id, positions), "more":more, "expired":false, "expired_projects":[], "unavailable_projects":unavailable}
 
@@ -181,14 +190,16 @@ static func decode_cursor(cursor: String) -> Dictionary:
 	return {"s":str(raw.s), "p":positions}
 
 
-## The project's visible events after `position`, in eid order, stopping once
-## `limit` are found: {events, taken, last, scanned_to, exhausted}. `chain` is
-## null for an unscoped subscriber.
-static func _collect(project: String, db: DocketDB, position: int, limit: int, kinds: Array, chain: Variant) -> Dictionary:
+## The project's visible events after `position` (and at or below `until`
+## when it is not negative), in eid order, stopping once `limit` are found:
+## {events, taken, last, scanned_to, exhausted}. `chain` is null for an
+## unscoped subscriber.
+static func collect(project: String, db: DocketDB, position: int, limit: int, kinds: Array, chain: Variant, until: int = -1) -> Dictionary:
 	var stream: Dictionary = {"events":[], "taken":0, "last":position, "scanned_to":position, "exhausted":false}
 	var events: Array = stream.events
+	var ceiling: int = until if until >= 0 else 9223372036854775807
 	while true:
-		var rows: Array = db._exec_select("SELECT eid, item_id, event_type, actor, timestamp, fields FROM item_events WHERE eid>? ORDER BY eid LIMIT ?;", [int(stream.scanned_to), SCAN_BATCH])
+		var rows: Array = db._exec_select("SELECT eid, item_id, event_type, actor, timestamp, fields FROM item_events WHERE eid>? AND eid<=? ORDER BY eid LIMIT ?;", [int(stream.scanned_to), ceiling, SCAN_BATCH])
 		for row in rows:
 			stream.scanned_to = int(row.eid)
 			var kind: String = str(row.event_type)
@@ -239,6 +250,15 @@ static func _chain(principals: Array, projects: Dictionary) -> Dictionary:
 				if project.is_empty(): break
 				id = parent
 	return chain
+
+
+## What a subscriber with `filters` may see now: {projects {name: DocketDB},
+## kinds, chain} where chain is null for an unscoped subscriber (collect's
+## arguments).
+static func visibility(filters: Dictionary, project_dbs: Dictionary) -> Dictionary:
+	var projects: Dictionary = _projects(filters, project_dbs)
+	var scoped: bool = not str(filters.get("identity", "")).is_empty() or not str(filters.get("role", "")).is_empty()
+	return {"projects":projects, "kinds":filters.get("kinds", []), "chain":_chain(_principals(filters), projects) if scoped else null}
 
 
 static func _principals(filters: Dictionary) -> Array:
@@ -295,14 +315,14 @@ static func _key(project: String, id: String) -> String:
 	return project.to_lower() + "\t" + id
 
 
-static func _load() -> Dictionary:
+static func load_records() -> Dictionary:
 	if not FileAccess.file_exists(store_path): return {}
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(store_path))
 	if not parsed is Dictionary or not (parsed as Dictionary).get("subscribers") is Dictionary: return {}
 	return (parsed as Dictionary).subscribers
 
 
-static func _save(records: Dictionary) -> String:
+static func save_records(records: Dictionary) -> String:
 	var file: FileAccess = FileAccess.open(store_path, FileAccess.WRITE)
 	if file == null: return "could not write subscriptions to %s: %s" % [store_path, error_string(FileAccess.get_open_error())]
 	file.store_string(JSON.stringify({"version":1, "subscribers":records}, "\t"))

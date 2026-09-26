@@ -265,3 +265,124 @@ func _memory_feed_case(schema: Dictionary) -> Variant:
 	var file := FileAccess.open(scratch, FileAccess.WRITE); file.store_string(db.serialize_as(SessionProject.MODE_MEMORY)); file.close()
 	db.close()
 	return A.is_true(not sub.has("error") and not created.has("error") and not feed.has("error") and feed.eids == _file_eids(scratch, 0) and feed.eids.size() == 1, "memory project feed: file=%s feed=%s" % [_file_eids(scratch, 0), feed])
+
+
+# --- Receipts (DocketReceipts) -----------------------------------------------
+# Oracle: the subscriber record in the store file (its start, delivered and
+# acked, read as JSON) and the .dct's comment and event lines. Pending is
+# expected to be the file's eids after `start` up to `delivered`, minus `acked`.
+
+## The stored record of subscriber `id`, read straight from the store file.
+func _stored(id: String) -> Dictionary:
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(DocketSubscriptions.store_path))
+	if not parsed is Dictionary: return {}
+	return ((parsed as Dictionary).get("subscribers", {}) as Dictionary).get(id, {})
+
+## The status a comment has on the .dct ("open" when the line has none).
+func _comment_status(path: String, comment_id: int) -> String:
+	for line in FileAccess.get_file_as_string(path).split("\n", false):
+		var record: Variant = JSON.parse_string(line)
+		if record is Dictionary and (record as Dictionary).get("_type") == "comment" and int((record as Dictionary).get("id", 0)) == comment_id:
+			return str((record as Dictionary).get("status", "open"))
+	return "(missing)"
+
+## Pending eids for `project` expected from the stored record and the file.
+func _expected_pending(path: String, record: Dictionary, project: String) -> Array:
+	var start: int = int((record.get("start", {}) as Dictionary).get(project, 0))
+	var delivered: int = int((record.get("delivered", {}) as Dictionary).get(project, 0))
+	var acked: Array = ((record.get("acked", {}) as Dictionary).get(project, []) as Array).map(func(v: Variant) -> int: return int(v))
+	return _file_eids(path, start).filter(func(eid: int) -> bool: return eid <= delivered and not acked.has(eid))
+
+func _pending_eids(status: Dictionary) -> Array:
+	return (status.get("pending", []) as Array).map(func(e: Dictionary) -> int: return int(e.eid))
+
+func test_only_an_ack_consumes_an_event_idempotently_and_apart_from_comment_status_across_a_restart() -> Variant:
+	var saved_store: String = DocketSubscriptions.store_path
+	DocketSubscriptions.store_path = DIR + "/receipts.json"
+	var result: Variant = _receipt_case()
+	DocketSubscriptions.store_path = saved_store
+	return result
+
+func _receipt_case() -> Variant:
+	var db: DocketDBJsonl = _db("Acks")
+	var path: String = db.get_jsonl_path()
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Acks":db})
+	var item: Dictionary = tools.call_tool("docket_create", {"project":"Acks", "type":"work_item", "title":"Acked task"})
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"acker"})
+	if item.has("error") or sub.has("error"): db.close(); return "fixture failed: %s %s" % [item, sub]
+	var id: String = sub.subscriber
+	var comment: Dictionary = tools.call_tool("docket_comment", {"project":"Acks", "action":"add", "item_id":item.id, "text":"please look", "author":"local:alice"})
+	tools.call_tool("docket_update", {"project":"Acks", "id":item.id, "title":"Acked task renamed"})
+	var fed: Dictionary = _drain(tools, id, sub.cursor, 10)
+	if comment.has("error") or fed.has("error"): db.close(); return "feed failed: %s %s" % [comment, fed]
+	var comment_eid: int = int(fed.eids[0])
+	var update_eid: int = int(fed.eids[1])
+
+	# Delivered but unacked: both events pending, nothing acked, comment open.
+	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":id})
+	var record: Dictionary = _stored(id)
+	var r = A.is_true(fed.eids.size() == 2 and (record.get("acked", {}) as Dictionary).is_empty() and _pending_eids(status) == _expected_pending(path, record, "Acks") and _pending_eids(status) == fed.eids, "delivered events stay pending until acked: record=%s status=%s" % [record, status])
+	if r is String: db.close(); return r
+
+	# Ack removes the event from pending and records it; the comment stays open.
+	var acked: Dictionary = tools.call_tool("docket_ack", {"subscriber":id, "event_ids":[{"project":"Acks", "eid":comment_eid}]})
+	status = tools.call_tool("docket_subscription_status", {"subscriber":id})
+	record = _stored(id)
+	r = A.is_true(not acked.has("error") and (acked.acked as Array).size() == 1 and _pending_eids(status) == [update_eid] and _expected_pending(path, record, "Acks") == [update_eid] and _comment_status(path, int(comment.id)) == "open", "ack consumes only the acked event and leaves the comment open: ack=%s record=%s comment=%s" % [acked, record, _comment_status(path, int(comment.id))])
+	if r is String: db.close(); return r
+
+	# Idempotent: acking again (another spelling) changes nothing in the store.
+	var before: String = FileAccess.get_file_as_string(DocketSubscriptions.store_path)
+	var again: Dictionary = tools.call_tool("docket_ack", {"subscriber":id, "event_ids":["Acks:%d" % comment_eid]})
+	r = A.is_true(not again.has("error") and (again.acked as Array).is_empty() and (again.already_acked as Array).size() == 1 and FileAccess.get_file_as_string(DocketSubscriptions.store_path) == before, "a second ack is a no-op: %s" % again)
+	if r is String: db.close(); return r
+
+	# Accepting the comment changes its status on the .dct and not the acks.
+	var accepted: Dictionary = tools.call_tool("docket_comment", {"project":"Acks", "action":"accept", "comment_id":int(comment.id), "addressed_by":"local:bob"})
+	r = A.is_true(not accepted.has("error") and _comment_status(path, int(comment.id)) == "accepted" and FileAccess.get_file_as_string(DocketSubscriptions.store_path) == before, "comment accept leaves the receipt record unchanged: %s" % accepted)
+	if r is String: db.close(); return r
+
+	# An event that was never delivered cannot be acked, and a refused batch
+	# records nothing, including its valid entries.
+	var second: Dictionary = tools.call_tool("docket_comment", {"project":"Acks", "action":"add", "item_id":item.id, "text":"second", "author":"local:alice"})
+	var undelivered: int = _file_head(path)
+	var refused: Dictionary = tools.call_tool("docket_ack", {"subscriber":id, "event_ids":[update_eid, undelivered]})
+	r = A.is_true(refused.has("error") and (refused.get("rejected", []) as Array).size() == 1 and FileAccess.get_file_as_string(DocketSubscriptions.store_path) == before, "an undelivered event is refused and nothing is recorded: %s" % refused)
+	if r is String: db.close(); return r
+
+	# The second comment is delivered but its receipt never arrives (a failed
+	# delivery downstream): it stays pending and the comment stays open.
+	var fed_again: Dictionary = _drain(tools, id, fed.cursor, 10)
+	var event_view: Dictionary = tools.call_tool("docket_subscription_status", {"event":{"project":"Acks", "eid":undelivered}})
+	r = A.is_true(not fed_again.has("error") and fed_again.eids == [undelivered] and _comment_status(path, int(second.id)) == "open" and (event_view.get("pending_for", []) as Array).size() == 1 and (event_view.get("acked_by", [1]) as Array).is_empty(), "delivery alone consumes nothing: feed=%s event=%s" % [fed_again, event_view])
+	if r is String: db.close(); return r
+
+	# Restart: the pending set comes back from the stored record.
+	db.close()
+	JSONLCache.delete_cache_family(path)
+	db = DocketDBJsonl.open_jsonl(path)
+	if db == null: return "reopen failed: %s" % DocketDBJsonl.last_open_error
+	tools = ToolRegistry.new(); tools.init(schema, db, {"Acks":db})
+	status = tools.call_tool("docket_subscription_status", {"subscriber":id, "include_acked":true})
+	record = _stored(id)
+	db.close()
+	r = A.is_true(_pending_eids(status) == [update_eid, undelivered] and _expected_pending(path, record, "Acks") == _pending_eids(status) and int(status.get("acked_count", 0)) == 1 and (status.get("acked_events", []) as Array).size() == 1, "delivered-but-unacked events are still pending after a restart: record=%s status=%s" % [record, status])
+	if r is String: return r
+	return _memory_receipt_case(schema)
+
+## Acks on a memory project; oracle is the stored record.
+func _memory_receipt_case(schema: Dictionary) -> Variant:
+	var db: DocketDBMemory = DocketDBMemory.create("MemAcks")
+	if db == null: return "memory project create failed: %s" % DocketDBJsonl.last_open_error
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"MemAcks":db})
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"mem-acker", "filters":{"projects":["MemAcks"]}})
+	tools.call_tool("docket_create", {"project":"MemAcks", "type":"work_item", "title":"Mem task"})
+	var id: String = str(sub.get("subscriber", ""))
+	var feed: Dictionary = _drain(tools, id, str(sub.get("cursor", "")), 10)
+	var acked: Dictionary = tools.call_tool("docket_ack", {"subscriber":id, "event_ids":feed.get("eids", [])})
+	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":id})
+	var record: Dictionary = _stored(id)
+	db.close()
+	var stored_acks: Array = ((record.get("acked", {}) as Dictionary).get("MemAcks", []) as Array).map(func(v: Variant) -> int: return int(v))
+	return A.is_true(not feed.has("error") and not acked.has("error") and stored_acks == feed.eids and _pending_eids(status) == [] and int(status.get("acked_count", 0)) == 1, "memory project acks: feed=%s ack=%s record=%s status=%s" % [feed, acked, record, status])

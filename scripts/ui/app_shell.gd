@@ -22,6 +22,7 @@ var _info_dialog: AcceptDialog
 var _confirm_reload_dialog: ConfirmationDialog
 var _memory_dialog: MemoryProjectsDialog
 var _promote_dialog: PromoteDialog
+var _subscriptions_dialog: SubscriptionsDialog
 var _after_memory_resolved: Callable
 var _add_project_dialog: FileDialog
 var _open_query_dialog: FileDialog
@@ -296,6 +297,10 @@ func _build_ui() -> void:
 	_promote_dialog.init(_state)
 	_promote_dialog.promoted.connect(_on_records_promoted)
 	add_child(_promote_dialog)
+
+	_subscriptions_dialog = (load("res://scenes/ui/subscriptions_dialog.tscn") as PackedScene).instantiate() as SubscriptionsDialog
+	_subscriptions_dialog.init(_state)
+	add_child(_subscriptions_dialog)
 	_build_new_item_dialog()
 
 	# A .dct that could not be opened (conflict markers, corruption)
@@ -672,6 +677,8 @@ func _on_menu_action(action: String) -> void:
 		"promote_records":
 			var origin := _query_grid.get_selected_origin()
 			_promote_dialog.open(str(origin.get("project", "")), str(origin.get("id", "")))
+		"subscriptions":
+			_subscriptions_dialog.open()
 		"save_as":
 			_save_dialog.popup_centered(Vector2i(600, 400))
 		"add_project":

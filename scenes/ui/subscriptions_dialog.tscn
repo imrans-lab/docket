@@ -1,0 +1,37 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/subscriptions_dialog.gd" id="1"]
+
+[node name="SubscriptionsDialog" type="AcceptDialog"]
+title = "Subscriptions"
+size = Vector2i(640, 460)
+ok_button_text = "Close"
+script = ExtResource("1")
+
+[node name="Box" type="VBoxContainer" parent="."]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 632.0
+offset_bottom = 411.0
+
+[node name="PickerRow" type="HBoxContainer" parent="Box"]
+
+[node name="PickerLabel" type="Label" parent="Box/PickerRow"]
+text = "Subscriber"
+
+[node name="SubscriberPicker" type="OptionButton" parent="Box/PickerRow"]
+unique_name_in_owner = true
+size_flags_horizontal = 3
+
+[node name="RefreshButton" type="Button" parent="Box/PickerRow"]
+unique_name_in_owner = true
+text = "Refresh"
+
+[node name="SummaryLabel" type="Label" parent="Box"]
+unique_name_in_owner = true
+autowrap_mode = 3
+
+[node name="EventList" type="ItemList" parent="Box"]
+unique_name_in_owner = true
+size_flags_vertical = 3
+tooltip_text = "Events delivered to this subscriber. Pending = sent but not acknowledged with docket_ack."
