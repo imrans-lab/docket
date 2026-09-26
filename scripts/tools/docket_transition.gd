@@ -27,6 +27,7 @@ func get_definition() -> Dictionary:
 				"expected_revision": {"type":"string","description":"Expected pinned type revision for stale-form refusal"},
 				"expected_item_token": {"type":"string","description":"Expected content token for stale-form refusal"},
 				"if_revision": {"type":"integer","minimum":0,"description":"Item revision you read (docket_get `revision`). A stale value is refused and the state does not move. Distinct from expected_revision, which is the type revision."},
+				"holder": {"type":"string","description":"Your declared claim holder (session label). A transition changes status, so on a claimed item it is refused with \"not the holder: <current>\" unless this matches. Recorded as the event actor."},
 				"project": {"type": "string", "description": "Project name (optional, defaults to primary)"},
 			},
 			"required": ["id", "to"],
@@ -59,7 +60,8 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var if_revision: Dictionary = ItemRevision.parse_arg(args)
 	if if_revision.has("error"): return {"error":if_revision.error}
 	var transition_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
-	var typed_error: String = transition_registry.transition_item(id, to, "agent", note, extra, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")), int(if_revision.value))
+	var holder: String = str(args.get("holder", ""))
+	var typed_error: String = transition_registry.transition_item(id, to, holder if not holder.is_empty() else "agent", note, extra, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")), int(if_revision.value), holder)
 	if not typed_error.is_empty():
 		var failed_item: Dictionary = db.get_item(id)
 		db.log_transition(str(failed_item.get("type", "")), str(failed_item.get("status", "")), to, false, [])

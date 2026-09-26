@@ -44,4 +44,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	# Added after stripping so a legacy item's revision 0 is still reported.
 	var result: Dictionary = DocketDB._strip_empty(item)
 	result["revision"] = ItemRevision.current(db, id)
+	# Reported only; reading never creates or refreshes a claim.
+	var holder: String = ItemClaim.holder(db, id)
+	if not holder.is_empty(): result["claim_holder"] = holder
 	return result

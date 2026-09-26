@@ -15,6 +15,7 @@ func get_definition() -> Dictionary:
 				"expected_revision": {"type":"string","description":"Expected pinned type revision for stale-form refusal"},
 				"expected_item_token": {"type":"string","description":"Expected content token for stale-form refusal"},
 				"if_revision": {"type":"integer","minimum":0,"description":"Item revision you read (docket_get `revision`). A stale value is refused and nothing is written. Distinct from expected_revision, which is the type revision."},
+				"holder": {"type":"string","description":"Your declared claim holder (session label). Required to change a protected field (status, resolution, assigned_to, parent, blocked_by, title, description, or tags in wr:/role:/base:/head:/result:/requires:/outcome:/deferred:) of a claimed item; otherwise refused with \"not the holder: <current>\". Recorded as the event actor."},
 				"title": {"type": "string"},
 				"description": {"type": "string"},
 				"priority": {"type": "integer"},
@@ -107,8 +108,10 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var if_revision: Dictionary = ItemRevision.parse_arg(changes)
 	changes.erase("if_revision")
 	if if_revision.has("error"): return {"error":if_revision.error}
+	var holder: String = str(changes.get("holder", ""))
+	changes.erase("holder")
 	var update_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
-	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token, int(if_revision.value))
+	var typed_error: String = update_registry.update_item(id, changes, holder if not holder.is_empty() else "agent", expected_revision, expected_item_token, int(if_revision.value), holder)
 	if not typed_error.is_empty():
 		# Only a conditional write reports the current revision with its refusal.
 		return {"error":typed_error} if int(if_revision.value) == ItemRevision.ABSENT else {"error":typed_error,"revision":ItemRevision.current(db, id)}

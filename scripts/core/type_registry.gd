@@ -495,7 +495,10 @@ func item_token(item_or_id) -> String:
 ## `if_revision` is the item revision (ItemRevision) the caller read, or
 ## ItemRevision.ABSENT for an unconditional write. It is independent of
 ## `expected_revision`, which compares the pinned TYPE revision.
-func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT) -> String:
+## `holder` is the caller's declared claim holder; on a claimed item a change to
+## a protected field (ItemClaim) is refused unless it matches. Transitions
+## always change a protected field (status).
+func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT, holder: String = "") -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item := _db.get_item(id)
@@ -511,6 +514,8 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 	if normalized.has("error"): return normalized.error
 	var mutable_error := _validate_mutable_patch(resolved.definition, normalized.values, normalized.unset)
 	if not mutable_error.is_empty(): return mutable_error
+	var claim_error: String = ItemClaim.check(_db, id, holder, ItemClaim.protected_change(item, normalized.values, normalized.unset))
+	if not claim_error.is_empty(): return claim_error
 	# Validate one complete clone before staging either the item patch or its audit.
 	var candidate := _candidate_values(item, resolved.definition)
 	for key in normalized.unset: candidate.erase(key)
@@ -528,7 +533,7 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 			error = _db._last_sql_error
 	return _complete_item_mutation(error)
 
-func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT) -> String:
+func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT, holder: String = "") -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item: Dictionary = _db.get_item(id)
@@ -539,6 +544,8 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 	if not expected_item_token.is_empty() and item_token(item) != expected_item_token: return "stale expected item token"
 	var stale_error: String = ItemRevision.check(_db, id, if_revision)
 	if not stale_error.is_empty(): return stale_error
+	var claim_error: String = ItemClaim.check(_db, id, holder, true)
+	if not claim_error.is_empty(): return claim_error
 	var definition: Dictionary = resolved.definition
 	var lifecycle: Dictionary = definition.lifecycle
 	if _state(definition, target).is_empty(): return "target state '%s' is not declared" % target

@@ -19,6 +19,9 @@ func _build_tools() -> Dictionary:
 		"docket_get": DocketGet.new(),
 		"docket_update": DocketUpdate.new(),
 		"docket_transition": DocketTransition.new(),
+		"docket_claim": DocketClaim.new(),
+		"docket_release": DocketRelease.new(),
+		"docket_reassign": DocketReassign.new(),
 		"docket_query": DocketQuery.new(),
 		"docket_link": DocketLink.new(),
 		"docket_context": DocketContext.new(),
@@ -196,9 +199,9 @@ func _resolve_id_args(tool_name: String, args: Dictionary) -> String:
 	## Returns "" on success, or an error describing an ambiguous short ID.
 	## Try to resolve short hex prefixes in ID fields to full IDs.
 	var fields: Array = _ID_FIELDS.duplicate()
-	# Transition targets and type references are domain keys, even when they look
-	# like hexadecimal item prefixes.
-	if tool_name == "docket_transition": fields.erase("to")
+	# Transition targets, reassignment holders and type references are domain
+	# keys, even when they look like hexadecimal item prefixes.
+	if tool_name == "docket_transition" or tool_name == "docket_reassign": fields.erase("to")
 	if tool_name.begins_with("docket_type_"): fields.clear()
 	for field in fields:
 		if not args.has(field):
