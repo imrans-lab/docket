@@ -41,4 +41,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if not ("links" in include):
 		item.erase("links")
 
-	return DocketDB._strip_empty(item)
+	# Added after stripping so a legacy item's revision 0 is still reported.
+	var result: Dictionary = DocketDB._strip_empty(item)
+	result["revision"] = ItemRevision.current(db, id)
+	return result

@@ -14,6 +14,7 @@ func get_definition() -> Dictionary:
 				"unset_fields": {"type":"array","items":{"type":"string"}},
 				"expected_revision": {"type":"string","description":"Expected pinned type revision for stale-form refusal"},
 				"expected_item_token": {"type":"string","description":"Expected content token for stale-form refusal"},
+				"if_revision": {"type":"integer","minimum":0,"description":"Item revision you read (docket_get `revision`). A stale value is refused and nothing is written. Distinct from expected_revision, which is the type revision."},
 				"title": {"type": "string"},
 				"description": {"type": "string"},
 				"priority": {"type": "integer"},
@@ -103,6 +104,12 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	changes.erase("expected_revision")
 	var expected_item_token: String = str(changes.get("expected_item_token", ""))
 	changes.erase("expected_item_token")
+	var if_revision: Dictionary = ItemRevision.parse_arg(changes)
+	changes.erase("if_revision")
+	if if_revision.has("error"): return {"error":if_revision.error}
 	var update_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
-	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token)
-	return {"error":typed_error} if not typed_error.is_empty() else {"id":id,"status":"updated","type_revision":db.get_item(id).get("type_revision", ""),"item_token":update_registry.item_token(id)}
+	var typed_error: String = update_registry.update_item(id, changes, "agent", expected_revision, expected_item_token, int(if_revision.value))
+	if not typed_error.is_empty():
+		# Only a conditional write reports the current revision with its refusal.
+		return {"error":typed_error} if int(if_revision.value) == ItemRevision.ABSENT else {"error":typed_error,"revision":ItemRevision.current(db, id)}
+	return {"id":id,"status":"updated","type_revision":db.get_item(id).get("type_revision", ""),"item_token":update_registry.item_token(id),"revision":ItemRevision.current(db, id)}

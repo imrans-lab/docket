@@ -26,6 +26,7 @@ func get_definition() -> Dictionary:
 				"unset_fields": {"type":"array","items":{"type":"string"}},
 				"expected_revision": {"type":"string","description":"Expected pinned type revision for stale-form refusal"},
 				"expected_item_token": {"type":"string","description":"Expected content token for stale-form refusal"},
+				"if_revision": {"type":"integer","minimum":0,"description":"Item revision you read (docket_get `revision`). A stale value is refused and the state does not move. Distinct from expected_revision, which is the type revision."},
 				"project": {"type": "string", "description": "Project name (optional, defaults to primary)"},
 			},
 			"required": ["id", "to"],
@@ -55,11 +56,13 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 		extra["resolution"] = args.resolution
 	if args.has("blocked_by"):
 		extra["blocked_by"] = args.blocked_by
+	var if_revision: Dictionary = ItemRevision.parse_arg(args)
+	if if_revision.has("error"): return {"error":if_revision.error}
 	var transition_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
-	var typed_error: String = transition_registry.transition_item(id, to, "agent", note, extra, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")))
+	var typed_error: String = transition_registry.transition_item(id, to, "agent", note, extra, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")), int(if_revision.value))
 	if not typed_error.is_empty():
 		var failed_item: Dictionary = db.get_item(id)
 		db.log_transition(str(failed_item.get("type", "")), str(failed_item.get("status", "")), to, false, [])
-		return {"error":typed_error}
+		return {"error":typed_error} if int(if_revision.value) == ItemRevision.ABSENT else {"error":typed_error,"revision":ItemRevision.current(db, id)}
 	var typed_item: Dictionary = db.get_item(id)
-	return {"id":id,"status":typed_item.get("status", ""),"type_revision":typed_item.get("type_revision", ""),"item_token":transition_registry.item_token(typed_item)}
+	return {"id":id,"status":typed_item.get("status", ""),"type_revision":typed_item.get("type_revision", ""),"item_token":transition_registry.item_token(typed_item),"revision":ItemRevision.current(db, id)}

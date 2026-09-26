@@ -492,7 +492,10 @@ func item_token(item_or_id) -> String:
 	if item.is_empty(): return ""
 	return TypeRegistryBootstrap._definition_hash(_normalize_json_numbers(item))
 
-func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "") -> String:
+## `if_revision` is the item revision (ItemRevision) the caller read, or
+## ItemRevision.ABSENT for an unconditional write. It is independent of
+## `expected_revision`, which compares the pinned TYPE revision.
+func update_item(id: String, changes: Dictionary, actor: String = "", expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item := _db.get_item(id)
@@ -501,6 +504,8 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 	if resolved.has("error"): return resolved.error
 	if not expected_revision.is_empty() and str(item.get("type_revision", "")) != expected_revision: return "stale expected item revision"
 	if not expected_item_token.is_empty() and item_token(item) != expected_item_token: return "stale expected item token"
+	var stale_error: String = ItemRevision.check(_db, id, if_revision)
+	if not stale_error.is_empty(): return stale_error
 	if changes.has("type") or changes.has("type_id") or changes.has("type_revision") or changes.has("status"): return "registry-backed retype/status update is not allowed"
 	var normalized := _normalize_input(changes)
 	if normalized.has("error"): return normalized.error
@@ -523,7 +528,7 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 			error = _db._last_sql_error
 	return _complete_item_mutation(error)
 
-func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "") -> String:
+func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item: Dictionary = _db.get_item(id)
@@ -532,6 +537,8 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 	if resolved.has("error"): return resolved.error
 	if not expected_revision.is_empty() and str(item.get("type_revision", "")) != expected_revision: return "stale expected item revision"
 	if not expected_item_token.is_empty() and item_token(item) != expected_item_token: return "stale expected item token"
+	var stale_error: String = ItemRevision.check(_db, id, if_revision)
+	if not stale_error.is_empty(): return stale_error
 	var definition: Dictionary = resolved.definition
 	var lifecycle: Dictionary = definition.lifecycle
 	if _state(definition, target).is_empty(): return "target state '%s' is not declared" % target
@@ -601,10 +608,20 @@ func rewrite_move_references(old_qualified: String, new_qualified: String, old_b
 	var error: String = json_db._begin_canonical_mutation() if json_db != null else _db._exec_checked("BEGIN TRANSACTION;")
 	if not error.is_empty(): return {"count":0,"error":error}
 	var count: int = 0
-	if json_db != null:
+	# Items whose parent/blocked_by the column rewrite below will change; each
+	# changed item gets one references_rewritten event so its revision moves.
+	# Link targets are rewritten too, but links are outside the revision.
+	var touched: Dictionary = {}
+	var olds: Array = [old_qualified, old_bare] if rewrite_bare else [old_qualified]
+	var marks: String = "?,?" if rewrite_bare else "?"
+	if json_db == null: _db._last_sql_error = ""
+	for row in _db._exec_select("SELECT id FROM items WHERE parent IN (%s) OR blocked_by IN (%s);" % [marks, marks], olds + olds):
+		touched[str(row.id)] = true
+	error = _db._last_sql_error
+	if error.is_empty() and json_db != null:
 		var rewritten: Dictionary = json_db.rewrite_refs_checked(old_qualified,new_qualified,old_bare,new_for_bare,rewrite_bare)
 		count = int(rewritten.get("count", 0)); error = str(rewritten.get("error", ""))
-	else:
+	elif error.is_empty():
 		count = _db.rewrite_refs(old_qualified,new_qualified,old_bare,new_for_bare,rewrite_bare)
 		if not _db._last_sql_error.is_empty(): error = _db._last_sql_error
 	var items: Array = _db.execute_query({}, "full") if error.is_empty() else []
@@ -629,7 +646,16 @@ func rewrite_move_references(old_qualified: String, new_qualified: String, old_b
 				if rewritten_list != custom[key]: changes[key] = rewritten_list
 		if not changes.is_empty():
 			error = _db.update_item_fields_checked(str(item.id), _storage_patch(changes, [], resolved.definition))
-			if error.is_empty(): count += 1
+			if error.is_empty():
+				count += 1
+				touched[str(item.id)] = true
+	for touched_id in touched:
+		if not error.is_empty(): break
+		var note: String = "Reference %s → %s" % [old_qualified, new_qualified]
+		if json_db != null: error = json_db.add_event_checked(str(touched_id), "references_rewritten", "", note)
+		else:
+			_db.add_event(str(touched_id), "references_rewritten", "", note)
+			error = _db._last_sql_error
 	if json_db != null: error = json_db._complete_canonical_mutation(error)
 	elif error.is_empty(): error = _db._exec_checked("COMMIT;")
 	else: _db._rollback()
