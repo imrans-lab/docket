@@ -19,6 +19,7 @@ func _build_tools() -> Dictionary:
 		"docket_get": DocketGet.new(),
 		"docket_update": DocketUpdate.new(),
 		"docket_transition": DocketTransition.new(),
+		"docket_append": DocketAppend.new(),
 		"docket_claim": DocketClaim.new(),
 		"docket_release": DocketRelease.new(),
 		"docket_reassign": DocketReassign.new(),

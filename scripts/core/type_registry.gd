@@ -585,6 +585,72 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 				error = _db._last_sql_error
 	return _complete_item_mutation(error)
 
+## Appends `text` to a markdown field and records it as a ContentLedger entry,
+## all in one item mutation. Checks run in this order and any refusal writes
+## nothing: (1) the field is appendable; (2) request_id dedup, where a retry of a
+## completed append returns the original entry with deduplicated=true (even if
+## if_revision is now stale) and a reused request_id with different text is
+## refused; (3) the claim gate, when the field is protected; (4) if_revision;
+## (5) write. Returns {entry_id, revision, offset, length, deduplicated} or {error}.
+func append_field(id: String, field: String, text: String, request_id: String, actor: String = "", if_revision: int = ItemRevision.ABSENT, holder: String = "") -> Dictionary:
+	var refresh_error := refresh_if_changed()
+	if not refresh_error.is_empty(): return {"error":refresh_error}
+	var item: Dictionary = _db.get_item(id)
+	if item.is_empty(): return {"error":"item not found"}
+	var resolved: Dictionary = resolve_item(item)
+	if resolved.has("error"): return {"error":resolved.error}
+	if request_id.strip_edges().is_empty(): return {"error":"request_id is required"}
+	var stored_text: String = str(DocketDB._normalize_text(text))
+	if stored_text.is_empty(): return {"error":"text is required"}
+	var definition: Dictionary = resolved.definition
+	var descriptor: Dictionary = _appendable_descriptor(definition, field)
+	if descriptor.is_empty(): return {"error":"field '%s' is not appendable" % field}
+	if not bool(descriptor.get("mutable", true)): return {"error":"field '%s' is immutable" % field}
+	var current: String = _field_text(item, descriptor, definition)
+	var earlier: Dictionary = ContentLedger.find_request(_db, id, field, request_id)
+	if not earlier.is_empty():
+		if str(earlier.h) != ContentLedger.text_hash(stored_text): return {"error":"request_id already used for different content"}
+		return {"entry_id":earlier.e, "revision":earlier.r, "offset":earlier.o, "length":earlier.n, "deduplicated":true, "superseded":not ContentLedger.is_live(earlier, current)}
+	var claim_error: String = ItemClaim.check(_db, id, holder, ItemClaim.PROTECTED_FIELDS.has(field))
+	if not claim_error.is_empty(): return {"error":claim_error}
+	var stale_error: String = ItemRevision.check(_db, id, if_revision)
+	if not stale_error.is_empty(): return {"error":stale_error}
+	var composed: String = current + ContentLedger.separator(current) + stored_text
+	var candidate: Dictionary = _candidate_values(item, definition)
+	candidate[field] = composed
+	var error: String = validate_candidate(definition, candidate)
+	if not error.is_empty(): return {"error":error}
+	error = _begin_item_mutation()
+	if not error.is_empty(): return {"error":error}
+	error = _db.update_item_fields_checked(id, _storage_patch({field:composed}, [], definition))
+	var entry: Dictionary = {}
+	if error.is_empty():
+		# Offset is measured on what was stored: the appended text is its tail.
+		var after: String = _field_text(_db.get_item(id), descriptor, definition)
+		if not after.ends_with(stored_text): error = "appended text was not stored verbatim"
+		else:
+			# The ledger event itself is the one revision-bearing event of this write.
+			entry = {"entry_id":DocketDB.generate_uuid7(), "revision":ItemRevision.current(_db, id) + 1, "offset":after.length() - stored_text.length(), "length":stored_text.length(), "deduplicated":false}
+			var note: String = ContentLedger.encode(entry.entry_id, field, entry.offset, entry.length, ContentLedger.text_hash(stored_text), request_id, entry.revision)
+			if _db is DocketDBJsonl: error = (_db as DocketDBJsonl).add_event_checked(id, ContentLedger.EVENT, actor, note)
+			else:
+				_db.add_event(id, ContentLedger.EVENT, actor, note)
+				error = _db._last_sql_error
+	error = _complete_item_mutation(error)
+	return {"error":error} if not error.is_empty() else entry
+
+## The descriptor of `field` when its registry format is markdown, else {}.
+## `description` is universal and markdown even where a type omits it.
+func _appendable_descriptor(definition: Dictionary, field: String) -> Dictionary:
+	for descriptor in definition.fields:
+		if str(descriptor.key) == field: return descriptor if str(descriptor.type) == "markdown" else {}
+	return _universal_descriptor(field) if field == "description" else {}
+
+## Stored text of a field, "" when unset or null.
+func _field_text(item: Dictionary, descriptor: Dictionary, definition: Dictionary) -> String:
+	var stored: Dictionary = _stored_descriptor_value(item, descriptor, definition)
+	return "" if not bool(stored.present) or stored.value == null else str(stored.value)
+
 func mirror_item(id: String, changes: Dictionary, target: String, actor: String, note: String, audit_text: String, expected_revision: String = "", expected_item_token: String = "", holder: String = "") -> Dictionary:
 	## The outer mutation makes the candidate patch, transition and audit records
 	## one canonical unit while the ordinary typed operations retain validation.
