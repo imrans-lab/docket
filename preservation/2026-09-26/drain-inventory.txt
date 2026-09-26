@@ -1,0 +1,107 @@
+# Drain inventory, 2026-09-26T02:11Z container clock. Git checkouts under /agent-home/t/b5 (maxdepth 4).
+# columns: path | branch-or-HEAD | head | dirty-path-count | imported | remotes | local branches NOT contained in any remote-tracking ref (branch:head:count)
+/agent-home/t/b5/b10/docket | p1-10a-master-bootstrap | 48529388e687dab0c144fcb5f735fde5b22d443f | 0 | - | origin=/agent-home/t/b5/b8/docket  | p1-10a-master-bootstrap:48529388e687:1
+/agent-home/t/b5/b10b/minerva-fixes | p1-10b-docket-host-fixes | 11bc4ce1e4f021a8fc192a2602a7e11ab23f052c | 0 | - | origin=/agent-home/t/b5/b9/minerva  | codex/docket-extraction-integration:fdc164015ea0:34 p1-10b-docket-host:a356273233cc:4 p1-10b-docket-host-fixes:11bc4ce1e4f0:10 p1-10d-docket-policy:2b245c54fbf9:15 p1-10e-docket-policy-parity:8413743aae1d:19 p1-10f-docket-skills:eab1bb3c3d6a:25 p1-10g-docket-triggers:53bd7da0dd6d:27 p1-10h-owner-seeding:effc03309e92:33
+/agent-home/t/b5/b10b/minerva | p1-10b-docket-host | a356273233cc5d28ca5545759c238c5855f8b47b | 0 | - | origin=/agent-home/t/b5/b9/minerva  | codex/docket-extraction-integration:fdc164015ea0:34 p1-10b-docket-host:a356273233cc:4 p1-10b-docket-host-fixes:11bc4ce1e4f0:10 p1-10d-docket-policy:2b245c54fbf9:15 p1-10e-docket-policy-parity:8413743aae1d:19 p1-10f-docket-skills:eab1bb3c3d6a:25 p1-10g-docket-triggers:53bd7da0dd6d:27 p1-10h-owner-seeding:effc03309e92:33
+/agent-home/t/b5/b10bval-minerva/src | HEAD | 11bc4ce1e4f021a8fc192a2602a7e11ab23f052c | 9 | - | origin=/agent-home/t/b5/b10b/minerva-fixes  |
+/agent-home/t/b5/b10c/docket | p1-10c-additive-open | de7b9411268715607cb7748e4a729f2c900ab014 | 0 | - | origin=/agent-home/t/b5/b10/docket  | p1-10c-additive-open:de7b94112687:1
+/agent-home/t/b5/b10d/minerva | p1-10d-docket-policy | 2b245c54fbf9a4c1c306b727029b7730fc60895e | 0 | - | origin=/agent-home/t/b5/b9/minerva  | codex/docket-extraction-integration:fdc164015ea0:34 p1-10b-docket-host:a356273233cc:4 p1-10b-docket-host-fixes:11bc4ce1e4f0:10 p1-10d-docket-policy:2b245c54fbf9:15 p1-10e-docket-policy-parity:8413743aae1d:19 p1-10f-docket-skills:eab1bb3c3d6a:25 p1-10g-docket-triggers:53bd7da0dd6d:27 p1-10h-owner-seeding:effc03309e92:33
+/agent-home/t/b5/b10dval-minerva/src | HEAD | 473c61809b7049a5169e814be76758741d086147 | 9 | - | origin=/agent-home/t/b5/b10d/minerva  |
+/agent-home/t/b5/b10dval2-minerva/src | HEAD | 473c61809b7049a5169e814be76758741d086147 | 9 | - | origin=/agent-home/t/b5/b10d/minerva  |
+/agent-home/t/b5/b10dval3-minerva/src | HEAD | 2b245c54fbf9a4c1c306b727029b7730fc60895e | 9 | - | origin=/agent-home/t/b5/b10d/minerva  |
+/agent-home/t/b5/b10e/minerva | p1-10e-docket-policy-parity | 8413743aae1dc60011cd4ad5e25a304660c28f6a | 0 | - | origin=/agent-home/t/b5/b9/minerva  | codex/docket-extraction-integration:fdc164015ea0:34 p1-10b-docket-host:a356273233cc:4 p1-10b-docket-host-fixes:11bc4ce1e4f0:10 p1-10d-docket-policy:2b245c54fbf9:15 p1-10e-docket-policy-parity:8413743aae1d:19 p1-10f-docket-skills:eab1bb3c3d6a:25 p1-10g-docket-triggers:53bd7da0dd6d:27 p1-10h-owner-seeding:effc03309e92:33
+/agent-home/t/b5/b10eval-minerva/src | HEAD | dc749b8f16d0c9682f2b1d28ea7d2484ecdfcc82 | 9 | - | origin=/agent-home/t/b5/b10e/minerva  |
+/agent-home/t/b5/b10eval2-minerva/src | HEAD | 8413743aae1dc60011cd4ad5e25a304660c28f6a | 9 | - | origin=/agent-home/t/b5/b10e/minerva  |
+/agent-home/t/b5/b10f/minerva | p1-10f-docket-skills | eab1bb3c3d6a1a3df9f75f9c366164f2a609e69b | 0 | - | origin=/agent-home/t/b5/b9/minerva  | codex/docket-extraction-integration:fdc164015ea0:34 p1-10b-docket-host:a356273233cc:4 p1-10b-docket-host-fixes:11bc4ce1e4f0:10 p1-10d-docket-policy:2b245c54fbf9:15 p1-10e-docket-policy-parity:8413743aae1d:19 p1-10f-docket-skills:eab1bb3c3d6a:25 p1-10g-docket-triggers:53bd7da0dd6d:27 p1-10h-owner-seeding:effc03309e92:33
+/agent-home/t/b5/b10feval-minerva/src | HEAD | eab1bb3c3d6a1a3df9f75f9c366164f2a609e69b | 9 | - | origin=/agent-home/t/b5/b10f/minerva  |
+/agent-home/t/b5/b10g/docket | p1-b10g-trigger-events | a68581d9ad4e286f31759d2e9355537a9113e655 | 0 | - | github=https://github.com/imrans-lab/docket.git origin=/agent-home/t/b5/d7a/docket  | codex/docket-extraction-complete:92f8708e529c:1
+/agent-home/t/b5/b10g/minerva | p1-10g-docket-triggers | 53bd7da0dd6d1b239392b703d3ff96a52848d21f | 0 | - | origin=/agent-home/t/b5/b9/minerva  | codex/docket-extraction-integration:fdc164015ea0:34 p1-10b-docket-host:a356273233cc:4 p1-10b-docket-host-fixes:11bc4ce1e4f0:10 p1-10d-docket-policy:2b245c54fbf9:15 p1-10e-docket-policy-parity:8413743aae1d:19 p1-10f-docket-skills:eab1bb3c3d6a:25 p1-10g-docket-triggers:53bd7da0dd6d:27 p1-10h-owner-seeding:effc03309e92:33
+/agent-home/t/b5/b10gdocket-val/src | HEAD | a68581d9ad4e286f31759d2e9355537a9113e655 | 0 | - | origin=/agent-home/t/b5/b10g/docket  |
+/agent-home/t/b5/b10gdocket-val2/src | HEAD | a68581d9ad4e286f31759d2e9355537a9113e655 | 11 | imported | origin=/agent-home/t/b5/b10g/docket  |
+/agent-home/t/b5/b10geval-minerva/src | HEAD | 53bd7da0dd6d1b239392b703d3ff96a52848d21f | 9 | - | origin=/agent-home/t/b5/b10g/minerva  |
+/agent-home/t/b5/b10h/docket | p1-b10h-checked-flush | 6f8b35ad13055c3ab4f68942e12b34fe4230db6e | 0 | - | github=https://github.com/imrans-lab/docket.git origin=/agent-home/t/b5/d7a/docket  | codex/docket-extraction-complete:92f8708e529c:1
+/agent-home/t/b5/b10h/minerva | p1-10h-owner-seeding | effc03309e92f05e8755603e125e76ee3c12a77c | 0 | - | origin=/agent-home/t/b5/b9/minerva  | codex/docket-extraction-integration:fdc164015ea0:34 p1-10b-docket-host:a356273233cc:4 p1-10b-docket-host-fixes:11bc4ce1e4f0:10 p1-10d-docket-policy:2b245c54fbf9:15 p1-10e-docket-policy-parity:8413743aae1d:19 p1-10f-docket-skills:eab1bb3c3d6a:25 p1-10g-docket-triggers:53bd7da0dd6d:27 p1-10h-owner-seeding:effc03309e92:33
+/agent-home/t/b5/b10hdocket-val/src | HEAD | 6f8b35ad13055c3ab4f68942e12b34fe4230db6e | 11 | imported | origin=/agent-home/t/b5/b10h/docket  |
+/agent-home/t/b5/b10heval-minerva/src | HEAD | effc03309e92f05e8755603e125e76ee3c12a77c | 10 | - | origin=/agent-home/t/b5/b10h/minerva  |
+/agent-home/t/b5/b5val/src | HEAD | a8cab71407ad52d4e605fbc98d503453f6a8e2ab | 6 | - | origin=/agent-home/t/b5/minerva-b5-adapter  |
+/agent-home/t/b5/b5val2/src | HEAD | d58d28b69c8184ce2aa9b04a279f8c0f2be0f261 | 6 | - | origin=/agent-home/t/b5/minerva-b5-adapter  |
+/agent-home/t/b5/b6/docket | p1-6-create-transition | 3e7b3ec78c0f659685f51fdb0e2c6f356990b18b | 0 | - | origin=/agent-home/t/b5/docket-main  | p1-6-create-transition:3e7b3ec78c0f:1
+/agent-home/t/b5/b6/minerva | b6-create-transition | 11b7ca33b32a7cc3b440ffe32ebc1d2bb3abef2e | 0 | - | origin=/agent-home/t/b5/minerva-b5-adapter  | b6-create-transition:11b7ca33b32a:2
+/agent-home/t/b5/b6val-docket/src | HEAD | 8e364727ad5f74a8b0c0f9824a4de086885d7cbf | 7 | imported | origin=/agent-home/t/b5/b6/docket  |
+/agent-home/t/b5/b6val-docket2/src | HEAD | 3e7b3ec78c0f659685f51fdb0e2c6f356990b18b | 7 | imported | origin=/agent-home/t/b5/b6/docket  |
+/agent-home/t/b5/b6val-minerva/src | HEAD | 11b7ca33b32a7cc3b440ffe32ebc1d2bb3abef2e | 6 | - | origin=/agent-home/t/b5/b6/minerva  |
+/agent-home/t/b5/b7/docket | p1-7-attach-file | f5201ef37c9f03f113258fddae6f9f78adf9bcff | 0 | - | origin=/agent-home/t/b5/b6/docket  | p1-7-attach-file:f5201ef37c9f:2
+/agent-home/t/b5/b7/minerva | b7-attach-file | 53149e899e0571d740bae0f00543b87525fb133f | 0 | - | origin=/agent-home/t/b5/b6/minerva  | b7-attach-file:53149e899e05:1
+/agent-home/t/b5/b7val-docket/src | HEAD | c9b82e10f00651a3cb437f7caed4a248e6fca3a5 | 0 | - | origin=/agent-home/t/b5/b7/docket  |
+/agent-home/t/b5/b7val-docket2/src | HEAD | f5201ef37c9f03f113258fddae6f9f78adf9bcff | 7 | imported | origin=/agent-home/t/b5/b7/docket  |
+/agent-home/t/b5/b7val-minerva/src | HEAD | 53149e899e0571d740bae0f00543b87525fb133f | 6 | - | origin=/agent-home/t/b5/b7/minerva  |
+/agent-home/t/b5/b8/docket | p1-8a-project-selectors | f9b4d233091fc2b6e25c08e01b977cf889c37112 | 0 | - | origin=/agent-home/t/b5/b7/docket  | p1-8a-project-selectors:f9b4d233091f:5
+/agent-home/t/b5/b8aval/src | HEAD | 99d5e5fea14bcbad5c74596ae95d06e23b6f2a62 | 10 | imported | origin=/agent-home/t/b5/b8/docket  |
+/agent-home/t/b5/b8aval2/src | HEAD | 1d44dbdb6d7da4ed5c2ad49e6f23410c500097cf | 10 | imported | origin=/agent-home/t/b5/b8/docket  |
+/agent-home/t/b5/b8aval3/src | HEAD | 08a966a648652674ee3e3ccbef711ab584f1c520 | 10 | imported | origin=/agent-home/t/b5/b8/docket  |
+/agent-home/t/b5/b8aval4/src | HEAD | efa35a59612a21c7adbad66234e6c9f2b6325e83 | 10 | imported | origin=/agent-home/t/b5/b8/docket  |
+/agent-home/t/b5/b8aval5/src | HEAD | f9b4d233091fc2b6e25c08e01b977cf889c37112 | 10 | imported | origin=/agent-home/t/b5/b8/docket  |
+/agent-home/t/b5/b8b/docket | p1-8b-save-as-internal | 91e968cd6c790d9b44ddcb5c14d73d53e8ffcae1 | 0 | - | origin=/agent-home/t/b5/b8/docket  | p1-8b-save-as-internal:91e968cd6c79:4
+/agent-home/t/b5/b8b2val/src | HEAD | 91e968cd6c790d9b44ddcb5c14d73d53e8ffcae1 | 14 | imported | origin=/agent-home/t/b5/b8b/docket  |
+/agent-home/t/b5/b8bval/src | HEAD | b5dacb76e9809d26fd9e54304343986ff1b8fee8 | 12 | imported | origin=/agent-home/t/b5/b8b/docket  |
+/agent-home/t/b5/b9/minerva | p1-9-panel-entrypoint | c7f54be4a881c2ebdf749d353207fdd6401ec033 | 0 | - | origin=/agent-home/t/b5/b7/minerva  | p1-9-panel-entrypoint:c7f54be4a881:1
+/agent-home/t/b5/c0-validate | HEAD | 9a729b95e595995184afaf14a16e27f5c1774f9e | 0 | imported | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/cifix/minerva | p1-fdc-ci-fixes | 1b2df5e98261d07bb902056ddee9840d634912b2 | 0 | - | origin=/agent-home/t/b5/b10b/minerva  | p1-fdc-ci-fixes:1b2df5e98261:2
+/agent-home/t/b5/cifixeval-minerva/src | HEAD | 1b2df5e98261d07bb902056ddee9840d634912b2 | 7 | - | origin=/agent-home/t/b5/cifix/minerva  |
+/agent-home/t/b5/d7a/docket | p1-d7a-patched-editor | f32cc9e5e8ee6857ebd12bfbb3bd7e385d6da240 | 0 | - | origin=/agent-home/t/b5/b8/docket  | p1-d7a-patched-editor:f32cc9e5e8ee:1
+/agent-home/t/b5/d7b/docket | p1-d7b-strict-import | a1e2a2d03452a81179cc6e965cbd9ba3d2eee538 | 1 | - | github=https://github.com/imrans-lab/docket.git origin=/agent-home/t/b5/d7a/docket  | codex/docket-extraction-complete:92f8708e529c:1
+/agent-home/t/b5/d7int/docket | p1-d7-integration | e9f68ed3e94a534bde16b7236e6c5e3f3d552cfb | 0 | - | github=https://github.com/imrans-lab/docket.git origin=/agent-home/t/b5/d7a/docket  | codex/docket-extraction-complete:92f8708e529c:1
+/agent-home/t/b5/d7r4/docket | p1-d7r4-windows-profile | 6d51e09d86c53c4dd0d1fab4dc057f5e38db7c41 | 0 | - | github=https://github.com/imrans-lab/docket.git origin=/agent-home/t/b5/d7a/docket  | codex/docket-extraction-complete:92f8708e529c:1
+/agent-home/t/b5/d7val1e/src | HEAD | 1e1448a0a3d42893508602e9d01b9641e31733b6 | 11 | imported | origin=/agent-home/t/b5/d7int/docket  |
+/agent-home/t/b5/diag-classfree | b5-diag-classfree | 3d1ca3796c4c4dd61b93e6c42c2675504d3d7810 | 0 | - | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/diag-noapi | b5-diag-noapi | c9dc26574ae2cc01df3abee2aba3982188ea39b9 | 0 | - | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/diag-tool | b5-diag-tool | d75505c7e902ec465cb3caaf1d5121da2af5ce67 | 0 | - | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/docket-main | p1-5-trusted-panel | c64577a7b4a43dfc6fa3c938c8b7f75f8715ad12 | 0 | imported | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/docket-u1fix | u1-stdio-events | 3eb0f6c88592c7228f8926f6b06082910a082b79 | 0 | imported | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/docket-u1tests | u1-tests | f56ad7a52644b4a93d6cb6db92c2617a019d18ef | 0 | imported | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/docket-u1tests/third_party/godot-sqlite | HEAD | 9cbdb225823ee111342ce32fe451e066eb92cc6e | 20 | - | origin=https://github.com/2shady4u/godot-sqlite.git  |
+/agent-home/t/b5/godot-symbol-build/source | HEAD | 42a2768b86fdd3555bfd73bf894b5614b55da115 | 0 | - | origin=https://github.com/godotengine/godot.git  | docket-d1-doc-guard:42a2768b86fd:2
+/agent-home/t/b5/gsq | HEAD | 9cbdb225823ee111342ce32fe451e066eb92cc6e | 0 | - | origin=/agent-home/t/b5/docket-u1tests/third_party/godot-sqlite  |
+/agent-home/t/b5/gsq/godot-cpp |  |  | 0 | - |  |
+/agent-home/t/b5/gsq2 | HEAD | 9cbdb225823ee111342ce32fe451e066eb92cc6e | 3 | - | origin=/agent-home/t/b5/gsq  |
+/agent-home/t/b5/gsq3 | HEAD | 9cbdb225823ee111342ce32fe451e066eb92cc6e | 3 | - | origin=/agent-home/t/b5/gsq  |
+/agent-home/t/b5/hm913-fresh/src | HEAD | 913ed73ebb9cb275ba6195d486c4974b1af7eb14 | 7 | imported | origin=/agent-home/t/b5/docket-main  |
+/agent-home/t/b5/integration-docket |  |  | 0 | - |  |
+/agent-home/t/b5/integration-minerva |  |  | 0 | - |  |
+/agent-home/t/b5/minerva-b5-adapter | b5-trusted-panel-adapter | d58d28b69c8184ce2aa9b04a279f8c0f2be0f261 | 0 | - | origin=/agent-home/t/b5/minerva-p1-clone  | b5-trusted-panel-adapter:d58d28b69c81:5
+/agent-home/t/b5/minerva-p1-clone | b5-p1-packaged-test | b71c2facbfa4117a430d0f9366bd85226c40ba67 | 0 | - | origin=/home/imran/github/Minerva  | b5-p1-packaged-test:b71c2facbfa4:1
+/agent-home/t/b5/minerva-p1-test |  |  | 0 | - |  |
+/agent-home/t/b5/review-l1a5/gsq | HEAD | 9cbdb225823ee111342ce32fe451e066eb92cc6e | 0 | - | origin=/agent-home/t/b5/gsq  |
+/agent-home/t/b5/review-l1a5/gsq2 | HEAD | 9cbdb225823ee111342ce32fe451e066eb92cc6e | 3 | - | origin=/agent-home/t/b5/gsq  |
+/agent-home/t/b5/review/b10b-11bc4ce1 |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10b-373578f9 |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10b-5006cded |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10b-69d90543 |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10b-a3562732 |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10b-aaddbff8 |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10b-e5c96917 |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10b-f0337b0b |  |  | 0 | - |  |
+/agent-home/t/b5/review/b10c-de7b941 |  |  | 0 | - |  |
+/agent-home/t/b5/review/d7-2370f4e |  |  | 0 | - |  |
+/agent-home/t/b5/review/d7-a1e2a2d0 |  |  | 0 | - |  |
+/agent-home/t/b5/review/d7-b22f70c |  |  | 0 | - |  |
+/agent-home/t/b5/review/d7-fa0a532 |  |  | 0 | - |  |
+/agent-home/t/b5/scratch-b6check/src | HEAD | 3e7b3ec78c0f659685f51fdb0e2c6f356990b18b | 14 | imported | origin=/agent-home/t/b5/b6/docket  |
+/agent-home/t/b5/scratch-b7m/src | HEAD | 11b7ca33b32a7cc3b440ffe32ebc1d2bb3abef2e | 8 | - | origin=/agent-home/t/b5/b6/minerva  |
+/agent-home/t/b5/scratch-b8/src | HEAD | f5201ef37c9f03f113258fddae6f9f78adf9bcff | 48 | imported | origin=/agent-home/t/b5/b8/docket  |
+/agent-home/t/b5/scratch-tags | HEAD | a68581d9ad4e286f31759d2e9355537a9113e655 | 31 | imported | origin=/agent-home/t/b5/b10g/docket  |
+/agent-home/t/b5/scratch-v1s1 | HEAD | a68581d9ad4e286f31759d2e9355537a9113e655 | 38 | imported | origin=/agent-home/t/b5/b10g/docket  |
+/agent-home/t/b5/tags/docket | p1-legacy-comma-tags | e4a8f980388be7693deb2dbf052412e90a8b9a3d | 0 | - | origin=/agent-home/t/b5/d7b/docket  | p1-legacy-comma-tags:e4a8f980388b:2 p1-v1-s1:ec0a8e1088f7:4
+/agent-home/t/b5/tagsval-docket/src | HEAD | e4a8f980388be7693deb2dbf052412e90a8b9a3d | 13 | imported | origin=/agent-home/t/b5/tags/docket  |
+/agent-home/t/b5/v1/docket | p1-v1-credential-lifecycle | 92f8708e529cc3bec579169165ae04d474b2400c | 0 | - | origin=/agent-home/t/b5/d7b/docket  |
+/agent-home/t/b5/v1s1/docket | p1-v1-s1 | 6208caa50eaa274bd9416cb6a5ade6baf9f94d3e (was ec0a8e1; same tree, DRAFT message) | 0 | - | origin=/agent-home/t/b5/d7b/docket  | p1-legacy-comma-tags:e4a8f980388b:2 p1-v1-s1:ec0a8e1088f7:4
+/agent-home/t/b5/val-e67aeb6 | HEAD | e67aeb63e1230932ce41f8c3b05396a5eed98a9c | 4 | imported | origin=https://github.com/imrans-lab/docket.git  | b5-diag-classfree:3d1ca3796c4c:1 b5-diag-noapi:c9dc26574ae2:1 b5-diag-tool:d75505c7e902:1 p1-3-package:913ed73ebb9c:30 p1-5-trusted-panel:c64577a7b4a4:31 p1-plugin-panel:15c6f01d1e3b:28 u1-tests:f56ad7a52644:1 u1-tests-final-review:49184e1abe52:1 u1-tests-review:4c015c0be41e:1 u1-tests-validated:f56ad7a52644:1 u2-ui-seam:a6c0520ec5a2:24
+/agent-home/t/b5/val-e67aeb6/third_party/godot-sqlite | HEAD | 9cbdb225823ee111342ce32fe451e066eb92cc6e | 23 | - | origin=/agent-home/t/b5/docket-u1tests/third_party/godot-sqlite  |
+/agent-home/t/b5/val-l2-a6c | HEAD | a6c0520ec5a2665b4672ac783c10dcf01b770f09 | 4 | imported |  |
+
+# NOTES (Opus)
+# - "not contained in any remote-tracking ref" is per clone and against that clone's own, possibly stale, remotes (most origins are sibling clones), so it overstates what is unpushed; Codex's scan against GitHub is authoritative.
+# - Opus-owned work NOT integrated: Docket p1-v1-s1 6208caa5 (DRAFT, on e4a8f980: 6fe74a08 code + 6208caa5 tests; tree 71457bba), worktree /agent-home/t/b5/v1s1/docket of the repo at /agent-home/t/b5/tags/docket. Optional B8b: Docket p1-8b-save-as-internal 91e968cd (/agent-home/t/b5/b8b/docket, clean; deferred per scope, T3 Save As).
+# - Dirty paths outside validation clones: d7b/docket ?? .dependency-cache/ (not mine to touch); gsq2, gsq3, review-l1a5/gsq2: staged godot-sqlite patch edits (doc_classes/SQLite.xml, src/gdsqlite.cpp, src/gdsqlite.hpp); docket-u1tests/third_party/godot-sqlite: untracked icon .import files; val-e67aeb6: untracked .uid files from import.
+# - */src under *val* directories are detached validation clones; their dirt is import/run output (evidence), not work.
+# - Scratch copies (not git): scratch-v1s1, scratch-tags, scratch-b10b and others; cargo copy v1s1-check.
