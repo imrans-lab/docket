@@ -21,6 +21,9 @@ var _desc_edit: TextEdit
 var _transition_bar: HBoxContainer
 var _events_list: ItemList
 var _id_label: Label
+## Item revision (ItemRevision.current) of the loaded item; the number an MCP
+## client passes as if_revision. Empty for drafts and the empty form.
+var _revision_label: Label
 var _back_btn: Button
 
 # Off-flow transition note prompt
@@ -194,6 +197,7 @@ func _clear_fields() -> void:
 	_desc_edit.text = ""
 	_loaded_revision = ""
 	_loaded_item_token = ""
+	_revision_label.text = ""
 	if _dynamic_fields != null:
 		_dynamic_fields.load_definition({"fields":[]})
 	# Clear all mapped fields
@@ -245,6 +249,10 @@ func _build_ui() -> void:
 	_project_label.add_theme_font_size_override("font_size", 13)
 	_project_label.add_theme_color_override("font_color", Color(0.45, 0.7, 0.9))
 	header.add_child(_project_label)
+	_revision_label = Label.new()
+	_revision_label.add_theme_font_size_override("font_size", 13)
+	_revision_label.tooltip_text = "Item revision: rises with every field write from the GUI or MCP; pass it as if_revision."
+	header.add_child(_revision_label)
 	add_child(header)
 
 	# Title row (outside scroll — always visible)
@@ -1219,6 +1227,7 @@ func load_item(id: String, project: String = "") -> void:
 		return
 	_loaded_revision = str(item.get("type_revision", resolved.revision.id))
 	_loaded_item_token = registry.item_token(item)
+	_revision_label.text = "  rev %d" % ItemRevision.current(item_db, id)
 	# Display short ID for UUID7, full for legacy
 	if DocketDB._is_uuid7(id):
 		_id_label.text = item_db.short_id(id)
@@ -1294,6 +1303,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 	_current_project = ""
 	_loaded_revision = ""
 	_loaded_item_token = ""
+	_revision_label.text = ""
 	_id_label.text = "(new — unsaved)"
 	_project_label.text = ""
 	_rebuild_project_options()
