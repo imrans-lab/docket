@@ -258,6 +258,7 @@ godot --path . -- --file minerva.dct --file services.dct --query bugs.dcq
 ### Project event log
 - Every work-relevant mutation (assignment or direction change, comment added, status transition, claim change, or a change to a claim-protected field or tag) records exactly one event on the item's `event` line with a project-scoped `eid` and the `fields` it changed; ids strictly increase and survive restart
 - Retention: the newest `event_retention` events keep their id (default 10000; `docket_project_meta` action `set` with `event_retention`)
+- Change feed: `docket_subscribe` then `docket_changes_since` with the returned cursor; a reconnecting client passes its last cursor and receives every visible event it missed. A subscriber with `identity`/`role` sees only events on items assigned or directed to them and those items' parents up to the first `wr:objective`
 - Details: `data/jsonl_format.md` section 5.3
 
 ### SQLite Cache
@@ -318,6 +319,9 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_transition` | Move item to a new state (off-flow moves require a note) |
 | `docket_append` | Append text to a markdown field as one entry; returns `{entry_id, revision}`; `request_id` makes retries safe; honours claims and `if_revision` |
 | `docket_read_since` | Page a markdown field by cursor: base text then appended entries, bounded by `limit` and ~32 KB; a rewrite resets the cursor with a reason, and cursor `""` recovers |
+| `docket_subscribe` | Register a change-feed subscriber (filters: projects, kinds, identity, role); returns its id and initial cursor; stored outside project files, survives restart |
+| `docket_changes_since` | Page a subscriber's visible events after a cursor (eid order per project, `limit` and ~32 KB); re-sent events carry `possible_duplicate`; a cursor past retention returns `expired` with a recovery cursor |
+| `docket_unsubscribe` | Remove a change-feed subscriber |
 | `docket_claim` | Claim an item's protected fields for a declared holder; lasts until released or reassigned (survives restart and disconnect) |
 | `docket_release` | Release your claim |
 | `docket_reassign` | Move a claim to a new holder; a non-holder must pass `override` with a reason, recorded in the item's events |

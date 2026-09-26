@@ -136,3 +136,132 @@ func _memory_project_case() -> Variant:
 	var two: Array = events[1].fields if events.size() > 1 else []; two.sort()
 	db.close()
 	return A.is_true(update_error.is_empty() and not comment.has("error") and kinds == ["created", "typed_update", "comment_added"] and two == ["assigned_to", "directed_to"] and _ordered(events).is_empty(), "memory project: create, two-field update and comment are three ordered events: %s" % [events])
+
+
+# --- Change feed (DocketSubscriptions) ---------------------------------------
+# Oracle: the eids on the .dct's event lines (_events). A replay is correct when
+# its eid list equals the file's eids after the subscriber's last read position,
+# restricted to the subscriber's items for a scoped subscriber.
+
+## The file's eids after `after`, optionally only on `items`.
+func _file_eids(path: String, after: int, items: Array = []) -> Array:
+	var eids: Array = []
+	for event in _events(path):
+		if int(event.eid) > after and (items.is_empty() or items.has(event.item_id)): eids.append(int(event.eid))
+	return eids
+
+func _file_head(path: String) -> int:
+	var events: Array = _events(path)
+	return 0 if events.is_empty() else int(events.back().eid)
+
+## Reads pages until more=false: {eids, duplicates, pages, cursor} or {error}.
+func _drain(tools: ToolRegistry, subscriber: String, cursor: String, limit: int) -> Dictionary:
+	var eids: Array = []
+	var duplicates: int = 0
+	for pages in range(1, 100):
+		var page: Dictionary = tools.call_tool("docket_changes_since", {"subscriber":subscriber, "cursor":cursor, "limit":limit})
+		if page.has("error") or bool(page.get("expired", false)) or (page.events as Array).size() > limit: return {"error":"bad page: %s" % page}
+		for event in page.events:
+			eids.append(int(event.eid))
+			if bool(event.possible_duplicate): duplicates += 1
+		cursor = page.next_cursor
+		if not bool(page.more): return {"eids":eids, "duplicates":duplicates, "pages":pages, "cursor":cursor}
+	return {"error":"feed did not finish within 99 pages"}
+
+func test_a_reconnecting_subscriber_replays_exactly_the_missed_visible_events_and_an_expired_cursor_says_so() -> Variant:
+	var saved_store: String = DocketSubscriptions.store_path
+	DocketSubscriptions.store_path = DIR + "/subscriptions.json"
+	var result: Variant = _feed_case()
+	DocketSubscriptions.store_path = saved_store
+	return result
+
+func _feed_case() -> Variant:
+	var db: DocketDBJsonl = _db("Feed")
+	var path: String = db.get_jsonl_path()
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Feed":db})
+	var objective: Dictionary = tools.call_tool("docket_create", {"project":"Feed", "type":"work_item", "title":"Objective", "tags":["wr:objective"]})
+	var task: Dictionary = tools.call_tool("docket_create", {"project":"Feed", "type":"work_item", "title":"Alice task", "assigned_to":"local:alice", "parent":str(objective.get("id", ""))})
+	var other: Dictionary = tools.call_tool("docket_create", {"project":"Feed", "type":"work_item", "title":"Bob task", "assigned_to":"local:bob"})
+	if objective.has("error") or task.has("error") or other.has("error"): db.close(); return "fixture create failed: %s %s %s" % [objective, task, other]
+	var alice_items: Array = [objective.id, task.id]
+	var all_sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"everything"})
+	var alice_sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"alice", "filters":{"identity":"local:alice"}})
+	if all_sub.has("error") or alice_sub.has("error"): db.close(); return "subscribe failed: %s %s" % [all_sub, alice_sub]
+
+	# N=1: one change after subscribing is the whole feed, for both subscribers.
+	var head: int = _file_head(path)
+	tools.call_tool("docket_comment", {"project":"Feed", "action":"add", "item_id":task.id, "text":"one", "author":"local:alice"})
+	var one: Dictionary = _drain(tools, all_sub.subscriber, all_sub.cursor, 10)
+	var alice_one: Dictionary = _drain(tools, alice_sub.subscriber, alice_sub.cursor, 10)
+	var r = A.is_true(not one.has("error") and one.eids == _file_eids(path, head) and one.eids.size() == 1 and not alice_one.has("error") and alice_one.eids == one.eids, "N=1 replays the one change: file=%s all=%s alice=%s" % [_file_eids(path, head), one, alice_one])
+	if r is String: db.close(); return r
+
+	# N>limit while disconnected, across a restart: every missed change comes
+	# back once, paged, with no duplicate flags; alice's feed has no Bob events.
+	head = _file_head(path)
+	var calls: Array = [
+		["docket_comment", {"action":"add", "item_id":other.id, "text":"bob one", "author":"local:bob"}],
+		["docket_update", {"id":objective.id, "title":"Objective renamed"}],
+		["docket_comment", {"action":"add", "item_id":task.id, "text":"two", "author":"local:alice"}],
+		["docket_update", {"id":other.id, "title":"Bob task renamed"}],
+		["docket_update", {"id":task.id, "directed_to":"local:carol"}],
+		["docket_comment", {"action":"add", "item_id":objective.id, "text":"three", "author":"local:alice"}],
+		["docket_comment", {"action":"add", "item_id":other.id, "text":"bob two", "author":"local:bob"}],
+	]
+	for call in calls:
+		var args: Dictionary = (call[1] as Dictionary).duplicate(); args["project"] = "Feed"
+		var done: Dictionary = tools.call_tool(str(call[0]), args)
+		if done.has("error"): db.close(); return "%s failed: %s" % [call[0], done.error]
+	db.close()
+	JSONLCache.delete_cache_family(path)
+	db = DocketDBJsonl.open_jsonl(path)
+	if db == null: return "reopen failed: %s" % DocketDBJsonl.last_open_error
+	tools = ToolRegistry.new(); tools.init(schema, db, {"Feed":db})
+	var missed: Array = _file_eids(path, head)
+	var alice_missed: Array = _file_eids(path, head, alice_items)
+	var many: Dictionary = _drain(tools, all_sub.subscriber, one.cursor, 3)
+	var alice_many: Dictionary = _drain(tools, alice_sub.subscriber, alice_one.cursor, 3)
+	r = A.is_true(missed.size() == calls.size() and not many.has("error") and many.eids == missed and int(many.pages) >= 3 and int(many.duplicates) == 0, "N=%d > limit 3 replays every missed change once, paged: file=%s feed=%s" % [calls.size(), missed, many])
+	if r is String: db.close(); return r
+	r = A.is_true(alice_missed.size() < missed.size() and not alice_many.has("error") and alice_many.eids == alice_missed, "scoped feed holds only alice's chain (objective + task), not Bob's item: file=%s alice=%s" % [alice_missed, alice_many])
+	if r is String: db.close(); return r
+
+	# Rewind: re-reading from the older cursor returns the same events, flagged.
+	var again: Dictionary = _drain(tools, all_sub.subscriber, one.cursor, 3)
+	r = A.is_true(not again.has("error") and again.eids == missed and int(again.duplicates) == missed.size(), "a rewound cursor replays %s flagged possible_duplicate: %s" % [missed, again])
+	if r is String: db.close(); return r
+
+	# Expired: with retention 3, four more changes drop the events after the
+	# cursor; the reply says expired, and its recovery cursor reads what is left.
+	var retention: Dictionary = tools.call_tool("docket_project_meta", {"project":"Feed", "action":"set", "event_retention":3})
+	if retention.has("error"): db.close(); return "set retention failed: %s" % retention.error
+	for text in ["r1", "r2", "r3", "r4"]:
+		tools.call_tool("docket_comment", {"project":"Feed", "action":"add", "item_id":task.id, "text":text, "author":"local:alice"})
+	var stale: Dictionary = tools.call_tool("docket_changes_since", {"subscriber":all_sub.subscriber, "cursor":one.cursor, "limit":10})
+	var expired_rows: Array = stale.get("expired_projects", [])
+	r = A.is_true(bool(stale.get("expired", false)) and (stale.get("events", [1]) as Array).is_empty() and expired_rows.size() == 1 and str(expired_rows[0].reason) == DocketSubscriptions.EXPIRED_RETENTION, "a cursor past retention is expired, not an empty page: %s" % stale)
+	if r is String: db.close(); return r
+	var recovered: Dictionary = _drain(tools, all_sub.subscriber, str(stale.next_cursor), 10)
+	r = A.is_true(not recovered.has("error") and recovered.eids == _file_eids(path, 0) and recovered.eids.size() == 3, "the recovery cursor reads every retained event: file=%s feed=%s" % [_file_eids(path, 0), recovered])
+	if r is String: db.close(); return r
+
+	var gone: Dictionary = tools.call_tool("docket_unsubscribe", {"subscriber":all_sub.subscriber})
+	var after_gone: Dictionary = tools.call_tool("docket_changes_since", {"subscriber":all_sub.subscriber, "cursor":""})
+	db.close()
+	r = A.is_true(not gone.has("error") and after_gone.has("error"), "an unsubscribed id is refused: %s / %s" % [gone, after_gone])
+	if r is String: return r
+	return _memory_feed_case(schema)
+
+## The feed on a memory project; oracle is its serialized text.
+func _memory_feed_case(schema: Dictionary) -> Variant:
+	var db: DocketDBMemory = DocketDBMemory.create("MemFeed")
+	if db == null: return "memory project create failed: %s" % DocketDBJsonl.last_open_error
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"MemFeed":db})
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"mem", "filters":{"projects":["MemFeed"]}})
+	var created: Dictionary = tools.call_tool("docket_create", {"project":"MemFeed", "type":"work_item", "title":"Mem task"})
+	var feed: Dictionary = _drain(tools, str(sub.get("subscriber", "")), str(sub.get("cursor", "")), 10)
+	var scratch: String = DIR + "/MemFeed.dct"
+	var file := FileAccess.open(scratch, FileAccess.WRITE); file.store_string(db.serialize_as(SessionProject.MODE_MEMORY)); file.close()
+	db.close()
+	return A.is_true(not sub.has("error") and not created.has("error") and not feed.has("error") and feed.eids == _file_eids(scratch, 0) and feed.eids.size() == 1, "memory project feed: file=%s feed=%s" % [_file_eids(scratch, 0), feed])

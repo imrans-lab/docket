@@ -113,6 +113,24 @@ static func set_retention(db: DocketDB, count: int) -> String:
 	return db._exec_checked("INSERT OR REPLACE INTO docket_meta (key, value) VALUES (?, ?);", [RETENTION_KEY, str(count)])
 
 
+## The newest eid issued in the project (0 when none has been).
+static func head(db: DocketDB) -> int:
+	return _next_eid(db) - 1
+
+
+## The largest eid whose event may have lost its id to retention: every event
+## after it still carries its eid. It is the larger of head - retention (what
+## the retention rule drops) and one below the smallest stored eid (which also
+## covers a retention lowered since the last stamp). Events of deleted items
+## vanish with their rows, so the second bound can sit above the first without
+## anything visible having been dropped.
+static func retention_floor(db: DocketDB) -> int:
+	var floor_eid: int = maxi(head(db) - retention(db), 0)
+	var rows: Array = db._exec_select("SELECT MIN(eid) AS low FROM item_events;")
+	if not rows.is_empty() and rows[0].get("low") != null: floor_eid = maxi(floor_eid, int(rows[0].low) - 1)
+	return floor_eid
+
+
 ## One past the larger of the stored counter and the largest stored eid, so a
 ## hand-edited or merged file cannot make an id repeat.
 static func _next_eid(db: DocketDB) -> int:
