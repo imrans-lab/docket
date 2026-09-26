@@ -22,6 +22,7 @@ func _ready() -> void:
 		preload("res://test/test_item_change_events.gd"),
 		preload("res://test/test_host_event_baseline.gd"),
 		preload("res://test/test_minerva_master_tags.gd"),
+		preload("res://test/test_vault_credential.gd"),
 		preload("res://test/test_remote_source.gd"),
 		preload("res://test/test_mcp_handler.gd"),
 		preload("res://test/test_mcp_tools.gd"),
