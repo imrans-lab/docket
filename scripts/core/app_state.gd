@@ -22,6 +22,11 @@ var prefs: UserPrefs
 # Multi-project support: project_name → DocketDB
 var _project_dbs: Dictionary = {}
 var _type_registries: Dictionary = {}
+# project name → {registry, frame, cache_hash} of the last full freshness check;
+# erased wherever that project's registry is dropped or replaced
+var _registry_checks: Dictionary = {}
+# True while load_projects batches several loads into one file_changed
+var _holding_file_changed := false
 var registry_diagnostics: Dictionary = {}
 var last_cross_project_query_error: String = ""
 
@@ -34,6 +39,7 @@ func load_dct(path: String) -> void:
 	_release_all_claims()
 	_project_dbs.clear()
 	_type_registries.clear()
+	_registry_checks.clear()
 	registry_diagnostics.clear()
 
 	if FileAccess.file_exists(path):
@@ -82,6 +88,21 @@ func load_dct(path: String) -> void:
 	_project_dbs[proj_name] = db
 	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
 
+	if not _holding_file_changed: file_changed.emit()
+
+
+func load_projects(paths: Array) -> void:
+	## Opens a session's files as one change: the first becomes primary, the
+	## rest are added, and file_changed fires once at the end so listeners (the
+	## query grid re-queries every loaded item) rebuild once, not once per file.
+	## Refusals still emit load_failed per file.
+	if paths.is_empty():
+		return
+	_holding_file_changed = true
+	load_dct(str(paths[0]))
+	for i in range(1, paths.size()):
+		add_project(str(paths[i]))
+	_holding_file_changed = false
 	file_changed.emit()
 
 
@@ -185,8 +206,9 @@ func add_project(path: String) -> String:
 		dct_path = path
 	_project_dbs[proj_name] = new_db
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
+	_registry_checks.erase(proj_name)
 
-	file_changed.emit()
+	if not _holding_file_changed: file_changed.emit()
 	return ""
 
 
@@ -199,11 +221,27 @@ func get_type_registry(project_name: String = "") -> TypeRegistry:
 	if registry == null and _project_dbs.has(key):
 		registry = TypeRegistry.for_db(_project_dbs[key], key)
 		_type_registries[key] = registry
-	if registry != null:
+	if registry != null and not _registry_verified_this_frame(key, registry):
 		var error: String = registry.refresh_if_changed()
 		if error.is_empty(): registry_diagnostics.erase(key)
 		else: registry_diagnostics[key] = error
+		_registry_checks[key] = {"registry":registry, "frame":Engine.get_process_frames(), "cache_hash":_cache_hash(key)}
 	return registry
+
+
+func _registry_verified_this_frame(key: String, registry: TypeRegistry) -> bool:
+	## refresh_if_changed hashes the whole canonical file, so per-row callers
+	## (grid cells, sort comparators) would rehash it once per item. The
+	## freshness verdict is reused for the rest of the frame while the same
+	## registry and the same cache generation are in place; a reload or an own
+	## write changes the cache's jsonl_hash and forces a full check.
+	var check: Dictionary = _registry_checks.get(key, {})
+	return not check.is_empty() and check.registry == registry and int(check.frame) == Engine.get_process_frames() and str(check.cache_hash) == _cache_hash(key)
+
+
+func _cache_hash(key: String) -> String:
+	var pdb: DocketDB = _project_dbs.get(key)
+	return pdb.get_meta_value("jsonl_hash", "") if pdb != null and pdb.is_open() else ""
 
 
 func get_db_for_project(project_name: String) -> DocketDB:
@@ -220,6 +258,7 @@ func promote_project_to_jsonl(project_name: String, exclusive_writer_confirmed: 
 	var path: String = old_db.get_path()
 	var was_primary: bool = old_db == db
 	old_db.close()
+	_registry_checks.erase(project_name)
 	var result: Dictionary = JSONLMigration.migrate_to_jsonl(path)
 	result["path"] = path
 	var reopened: DocketDB
@@ -260,6 +299,7 @@ func upgrade_project_to_jsonl_v2(project_name: String, preview: Dictionary, excl
 	var path: String = old_db.get_path()
 	var was_primary: bool = old_db == db
 	old_db.close()
+	_registry_checks.erase(project_name)
 	var result: Dictionary = JSONLTypeUpgrade.apply(path, preview, schema, exclusive_writer_confirmed)
 	var reopened: DocketDBJsonl = DocketDBJsonl.open_jsonl(path)
 	if reopened == null:
@@ -314,6 +354,7 @@ func remove_project(project_name: String) -> Dictionary:
 	SessionProject.release(closing_db.get_path())
 	_project_dbs.erase(project_name)
 	_type_registries.erase(project_name)
+	_registry_checks.erase(project_name)
 	registry_diagnostics.erase(project_name)
 
 	# If we just closed the primary, promote the next one or clear
@@ -367,6 +408,7 @@ func create_dct(path: String) -> void:
 	_release_all_claims()
 	_project_dbs.clear()
 	_type_registries.clear()
+	_registry_checks.clear()
 	registry_diagnostics.clear()
 	# Default new dockets to JSONL format
 	db = DocketDBJsonl.create_new_jsonl(path)
@@ -396,6 +438,7 @@ func create_and_add_project(path: String) -> void:
 
 	_project_dbs[proj_name] = new_db
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
+	_registry_checks.erase(proj_name)
 	file_changed.emit()
 
 

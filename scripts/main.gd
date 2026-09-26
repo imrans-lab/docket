@@ -201,9 +201,7 @@ func _start_gui(opts: Dictionary) -> void:
 	if files.size() > 0:
 		# Explicit --file args: load those
 		print("Docket GUI — file: %s" % opts.file)
-		state.load_dct(str(files[0]))
-		for i in range(1, files.size()):
-			state.add_project(str(files[i]))
+		state.load_projects(files)
 	else:
 		# No --file args: try session restore
 		var session_paths := UserPrefs.load_session()
@@ -213,9 +211,7 @@ func _start_gui(opts: Dictionary) -> void:
 				valid_paths.append(p)
 		if valid_paths.size() > 0:
 			print("Docket GUI — restoring %d project(s) from session" % valid_paths.size())
-			state.load_dct(valid_paths[0])
-			for i in range(1, valid_paths.size()):
-				state.add_project(valid_paths[i])
+			state.load_projects(Array(valid_paths))
 		else:
 			print("Docket GUI — empty workspace")
 
