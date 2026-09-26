@@ -312,6 +312,7 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_update` | Update fields on an existing item |
 | `docket_transition` | Move item to a new state (off-flow moves require a note) |
 | `docket_append` | Append text to a markdown field as one entry; returns `{entry_id, revision}`; `request_id` makes retries safe; honours claims and `if_revision` |
+| `docket_read_since` | Page a markdown field by cursor: base text then appended entries, bounded by `limit` and ~32 KB; a rewrite resets the cursor with a reason, and cursor `""` recovers |
 | `docket_claim` | Claim an item's protected fields for a declared holder; lasts until released or reassigned (survives restart and disconnect) |
 | `docket_release` | Release your claim |
 | `docket_reassign` | Move a claim to a new holder; a non-holder must pass `override` with a reason, recorded in the item's events |

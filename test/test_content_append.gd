@@ -125,3 +125,99 @@ func test_append_interleaves_losslessly_dedups_retries_and_honours_if_revision()
 	disk = _on_disk(id)
 	r = A.is_true(after_restart.get("entry_id") == replies[0].get("entry_id") and after_restart.get("deduplicated") == true and after_restart.get("superseded") == true and disk.article == "Rewritten." and disk.entries.size() == before.entries.size() and int(disk.revision) == int(before.revision), "dedup survives restart and never re-adds removed text: %s" % after_restart)
 	db.close(); return r
+
+func _read(tools: ToolRegistry, id: String, cursor: String, limit: int = 2, field: String = "article") -> Dictionary:
+	return tools.call_tool("docket_read_since", {"project":PROJECT, "id":id, "field":field, "cursor":cursor, "limit":limit})
+
+## Ledger entries of one field, as decoded from the file.
+func _disk_entries(disk: Dictionary, field: String) -> Array:
+	return (disk.entries as Array).filter(func(entry: Variant) -> bool: return entry is Dictionary and entry.get("f") == field)
+
+func test_read_since_pages_without_gap_or_overlap_resets_explicitly_and_pages_a_large_article() -> Variant:
+	var db: DocketDBJsonl = _fresh_db()
+	var tools: ToolRegistry = _tools(db)
+	var created: Dictionary = tools.call_tool("docket_create", {"project":PROJECT, "type":"kb", "title":"Paged", "article":"Base."})
+	if created.has("error"): db.close(); return "fixture create failed: %s" % created.error
+	var id: String = created.id
+
+	# An empty field is an empty page with a usable cursor, not a reset; the next append is read from it.
+	var empty: Dictionary = _read(tools, id, "", 2, "description")
+	var r = A.is_true(not empty.has("error") and empty.get("reset") == false and (empty.get("entries", [1]) as Array).is_empty() and not str(empty.get("next_cursor", "")).is_empty(), "empty field reads as an empty page: %s" % empty)
+	if r is String: db.close(); return r
+	_append(tools, id, "D one", "req-d1", {"field":"description"})
+	var after_empty: Dictionary = _read(tools, id, str(empty.next_cursor), 2, "description")
+	var described: Array = _disk_entries(_on_disk(id), "description")
+	r = A.is_true(after_empty.get("reset") == false and after_empty.get("entries", []).size() == 1 and after_empty.entries[0].get("text") == "D one" and after_empty.entries[0].get("entry_id") == described[0].e, "append after an empty-field cursor is returned: %s" % after_empty)
+	if r is String: db.close(); return r
+
+	# Five entries read as the base, then pages of 2, 2 and 1 with no gap or overlap, then an empty page.
+	for i in 5: _append(tools, id, "Entry %d" % i, "req-p%d" % i)
+	var disk: Dictionary = _on_disk(id)
+	var logged: Array = _disk_entries(disk, "article")
+	var base: Dictionary = _read(tools, id, "", 1)
+	r = A.is_true(base.get("entries", []).size() == 1 and base.entries[0].get("entry_id") == null and base.entries[0].get("text") == "Base." and int(base.entries[0].get("offset", -1)) == 0, "cursor \"\" starts with the base: %s" % base)
+	if r is String: db.close(); return r
+	var cursor: String = str(base.next_cursor)
+	var seen: Array = []
+	for expected_size in [2, 2, 1]:
+		var page: Dictionary = _read(tools, id, cursor, 2)
+		r = A.is_true(page.get("reset") == false and page.get("entries", []).size() == expected_size, "page of %d: %s" % [expected_size, page])
+		if r is String: db.close(); return r
+		seen.append_array(page.entries)
+		cursor = str(page.next_cursor)
+	for i in 5:
+		var entry: Dictionary = logged[i]
+		var piece: Dictionary = seen[i]
+		r = A.is_true(piece.get("entry_id") == entry.e and int(piece.get("offset", -1)) == int(entry.o) and piece.get("text") == str(disk.article).substr(int(entry.o), int(entry.n)) and piece.get("continued") == false, "entry %d read once, in order: %s vs %s" % [i, piece, entry])
+		if r is String: db.close(); return r
+	var drained: Dictionary = _read(tools, id, cursor, 2)
+	r = A.is_true(not drained.has("error") and drained.get("reset") == false and drained.get("entries", [1]).is_empty() and drained.get("next_cursor") == cursor, "final cursor yields an empty page: %s" % drained)
+	if r is String: db.close(); return r
+
+	# A whole-field replace resets the old cursor, naming the replacing revision; cursor "" recovers in one call.
+	tools.call_tool("docket_update", {"project":PROJECT, "id":id, "article":"Rewritten."})
+	disk = _on_disk(id)
+	var stale: Dictionary = _read(tools, id, cursor, 2)
+	var recovered: Dictionary = _read(tools, id, "", 2)
+	r = A.is_true(stale.get("reset") == true and stale.get("reset_reason") == "rewritten" and int(stale.get("revision", -1)) == int(disk.revision) and stale.get("entries", [1]).is_empty() and recovered.get("reset") == false and recovered.get("entries", []).size() == 1 and recovered.entries[0].get("text") == disk.article, "rewrite resets, \"\" recovers: %s %s" % [stale, recovered])
+	if r is String: db.close(); return r
+
+	# Text added after a cursor by a replace rather than an append is an unlogged tail.
+	tools.call_tool("docket_update", {"project":PROJECT, "id":id, "article":"Rewritten. And more."})
+	var tail: Dictionary = _read(tools, id, str(recovered.next_cursor), 2)
+	var other_field: Dictionary = _read(tools, id, str(after_empty.next_cursor), 2)
+	var garbage: Dictionary = _read(tools, id, Marshalls.utf8_to_base64("not a cursor"), 2)
+	r = A.is_true(tail.get("reset_reason") == "unlogged_tail" and other_field.get("reset_reason") == "malformed" and garbage.get("reset_reason") == "malformed", "unlogged tail and malformed cursors reset: %s %s %s" % [tail, other_field, garbage])
+	if r is String: db.close(); return r
+	tools.call_tool("docket_delete", {"project":PROJECT, "id":id})
+	var gone: Dictionary = _read(tools, id, "", 2)
+	r = A.is_true(gone.get("reset") == true and gone.get("reset_reason") == "item_not_found", "deleted item resets: %s" % gone)
+	if r is String: db.close(); return r
+
+	# A >1 MB article, including an entry larger than one page, pages under a 64 KiB reply.
+	var big: Dictionary = tools.call_tool("docket_create", {"project":PROJECT, "type":"kb", "title":"Big", "article":"Head."})
+	if big.has("error"): db.close(); return "fixture create failed: %s" % big.error
+	for i in 20: _append(tools, big.id, ("chunk %d " % i) + "abcdefghij".repeat(5200), "req-big%d" % i)
+	_append(tools, big.id, "é".repeat(60000), "req-wide")
+	var article: String = str(_on_disk(big.id).article)
+	r = A.is_true(article.to_utf8_buffer().size() > 1048576, "fixture exceeds 1 MB: %d" % article.to_utf8_buffer().size())
+	if r is String: db.close(); return r
+	var covered: int = 0
+	var next: String = ""
+	var pages: int = 0
+	while pages < 200:
+		var page: Dictionary = _read(tools, big.id, next, 200)
+		var reply_bytes: int = JSON.stringify(page).to_utf8_buffer().size()
+		r = A.is_true(page.get("reset") == false and reply_bytes < 65536, "page %d under the cap: %d bytes, reset=%s" % [pages, reply_bytes, page.get("reset")])
+		if r is String: db.close(); return r
+		if (page.entries as Array).is_empty(): break
+		for piece in page.entries:
+			var offset: int = int(piece.offset)
+			var gap_ok: bool = offset == covered or (offset == covered + 2 and article.substr(covered, 2) == "\n\n")
+			r = A.is_true(gap_ok and piece.text == article.substr(offset, int(piece.length)), "piece at %d continues from %d and matches the file" % [offset, covered])
+			if r is String: db.close(); return r
+			covered = offset + int(piece.length)
+		next = str(page.next_cursor)
+		pages += 1
+	r = A.is_true(covered == article.length() and pages > 16, "paging covered the whole article: %d of %d in %d pages" % [covered, article.length(), pages])
+	db.close(); return r

@@ -69,3 +69,126 @@ static func is_live(entry: Dictionary, current: String) -> bool:
 	var length: int = int(entry.n)
 	if offset < 0 or offset + length > current.length(): return false
 	return text_hash(current.substr(offset, length)) == str(entry.h)
+
+
+# --- Incremental reads (docket_read_since, D1 KB s3) ---------------------------
+#
+# The field is read as segments: an optional `base` (text not covered by the
+# trailing chain of live entries, entry_id null) followed by that chain in
+# offset order. Consecutive segments are separated by "" or "\n\n", which the
+# offsets make explicit. A cursor is an opaque base64 of compact JSON
+# {"f": field, "o": offset, "h": sha256[:16] of field[0:o], "s": segment},
+# where "s" is "" at a segment boundary, or "base" / an entry id while that
+# segment is being read in parts. It holds no revision, so writes to other
+# fields, comments and links never invalidate it.
+
+## Text budget per page, in UTF-8 bytes. Keeps a reply well under a 64 KiB
+## reply cap measured on the decoded reply.
+const PAGE_BYTES := 32768
+const DEFAULT_LIMIT := 20
+const MAX_LIMIT := 200
+const BASE_SEGMENT := "base"
+const RESET_ITEM_NOT_FOUND := "item_not_found"
+const RESET_REWRITTEN := "rewritten"
+const RESET_UNLOGGED_TAIL := "unlogged_tail"
+const RESET_MALFORMED := "malformed"
+
+
+static func encode_cursor(field: String, offset: int, current: String, segment: String) -> String:
+	var body: String = JSON.stringify({"f":field, "o":offset, "h":text_hash(current.substr(0, offset)), "s":segment})
+	return Marshalls.utf8_to_base64(body)
+
+
+## {f, o, h, s} or {} when the cursor cannot be decoded.
+static func decode_cursor(cursor: String) -> Dictionary:
+	var raw_bytes: PackedByteArray = Marshalls.base64_to_raw(cursor)
+	if raw_bytes.is_empty(): return {}
+	var parsed: Variant = JSON.parse_string(raw_bytes.get_string_from_utf8())
+	if not parsed is Dictionary: return {}
+	var raw: Dictionary = parsed
+	for key in ["f", "h", "s"]:
+		if not raw.get(key) is String: return {}
+	if not (raw.get("o") is float or raw.get("o") is int) or int(raw.o) < 0: return {}
+	return {"f":str(raw.f), "o":int(raw.o), "h":str(raw.h), "s":str(raw.s)}
+
+
+## Reply without entries that tells the caller to re-read from cursor "".
+static func reset_page(reason: String) -> Dictionary:
+	return {"entries":[], "next_cursor":"", "reset":true, "reset_reason":reason}
+
+
+## Segments of `current`: [{key, entry_id, start, end, revision}], base first.
+## The chain is built backwards from the end of the field: each step takes the
+## latest live entry ending exactly there (or two characters earlier across a
+## "\n\n" separator, between entries only).
+static func segments(current: String, ledger: Array[Dictionary]) -> Array[Dictionary]:
+	var by_end: Dictionary = {}
+	for entry in ledger:
+		if int(entry.n) > 0 and is_live(entry, current): by_end[int(entry.o) + int(entry.n)] = entry
+	var chain: Array[Dictionary] = []
+	var pos: int = current.length()
+	while true:
+		var entry: Dictionary = {}
+		if by_end.has(pos): entry = by_end[pos]
+		elif not chain.is_empty() and pos >= 2 and current.substr(pos - 2, 2) == "\n\n" and by_end.has(pos - 2): entry = by_end[pos - 2]
+		if entry.is_empty(): break
+		chain.push_front({"key":str(entry.e), "entry_id":str(entry.e), "start":int(entry.o), "end":int(entry.o) + int(entry.n), "revision":int(entry.r)})
+		pos = int(entry.o)
+	var base_end: int = pos
+	if not chain.is_empty() and base_end >= 2 and current.substr(base_end - 2, 2) == "\n\n": base_end -= 2
+	if base_end > 0: chain.push_front({"key":BASE_SEGMENT, "entry_id":null, "start":0, "end":base_end, "revision":null})
+	return chain
+
+
+## One page of `field` after `cursor`: {entries, next_cursor, reset, reset_reason}
+## or a reset_page. Each returned entry is {entry_id, offset, length, text,
+## revision, continued}; continued=true means the rest of that segment starts
+## the next page. A page holds at most `limit` entries and PAGE_BYTES of text;
+## a segment larger than the budget is split across pages.
+static func read_page(current: String, field: String, ledger: Array[Dictionary], cursor: String, limit: int) -> Dictionary:
+	var parts: Array[Dictionary] = segments(current, ledger)
+	var index: int = 0
+	var pos: int = 0
+	if not cursor.is_empty():
+		var decoded: Dictionary = decode_cursor(cursor)
+		if decoded.is_empty() or decoded.f != field: return reset_page(RESET_MALFORMED)
+		var offset: int = int(decoded.o)
+		if offset > current.length() or text_hash(current.substr(0, offset)) != decoded.h: return reset_page(RESET_REWRITTEN)
+		index = _resume_index(parts, offset, str(decoded.s))
+		if index < 0: return reset_page(RESET_UNLOGGED_TAIL)
+		pos = offset
+	var out: Array[Dictionary] = []
+	var budget: int = PAGE_BYTES
+	var next_offset: int = pos
+	var next_segment: String = ""
+	while index < parts.size() and out.size() < limit:
+		var part: Dictionary = parts[index]
+		var start: int = maxi(pos, int(part.start))
+		var text: String = current.substr(start, int(part.end) - start)
+		var size: int = text.to_utf8_buffer().size()
+		var continued: bool = size > budget
+		if continued:
+			if not out.is_empty(): break
+			# Removing k characters removes at least k bytes, so one cut fits the budget.
+			text = text.substr(0, maxi(1, text.length() - (size - budget)))
+		out.append({"entry_id":part.entry_id, "offset":start, "length":text.length(), "text":text, "revision":part.revision, "continued":continued})
+		budget -= text.to_utf8_buffer().size()
+		next_offset = start + text.length()
+		next_segment = str(part.key) if continued else ""
+		if continued: break
+		index += 1
+	return {"entries":out, "next_cursor":encode_cursor(field, next_offset, current, next_segment), "reset":false, "reset_reason":""}
+
+
+## Index of the segment to read next for a prefix-valid cursor at `offset`, or
+## -1 when the text after `offset` is not tiled by segments (unlogged tail).
+## A part-way cursor resumes inside its named segment; a boundary cursor must
+## sit at the end of a segment, at the end of the field, or at 0 before an entry.
+static func _resume_index(parts: Array[Dictionary], offset: int, segment: String) -> int:
+	for i in parts.size():
+		var part: Dictionary = parts[i]
+		if not segment.is_empty() and str(part.key) == segment and int(part.start) < offset and offset < int(part.end): return i
+	if offset == 0 and (parts.is_empty() or parts[0].entry_id != null): return 0
+	for i in parts.size():
+		if int(parts[i].end) == offset: return i + 1
+	return -1

@@ -593,20 +593,16 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 ## refused; (3) the claim gate, when the field is protected; (4) if_revision;
 ## (5) write. Returns {entry_id, revision, offset, length, deduplicated} or {error}.
 func append_field(id: String, field: String, text: String, request_id: String, actor: String = "", if_revision: int = ItemRevision.ABSENT, holder: String = "") -> Dictionary:
-	var refresh_error := refresh_if_changed()
-	if not refresh_error.is_empty(): return {"error":refresh_error}
-	var item: Dictionary = _db.get_item(id)
-	if item.is_empty(): return {"error":"item not found"}
-	var resolved: Dictionary = resolve_item(item)
-	if resolved.has("error"): return {"error":resolved.error}
+	var target: Dictionary = appendable_target(id, field)
+	if target.has("error"): return target
 	if request_id.strip_edges().is_empty(): return {"error":"request_id is required"}
 	var stored_text: String = str(DocketDB._normalize_text(text))
 	if stored_text.is_empty(): return {"error":"text is required"}
-	var definition: Dictionary = resolved.definition
-	var descriptor: Dictionary = _appendable_descriptor(definition, field)
-	if descriptor.is_empty(): return {"error":"field '%s' is not appendable" % field}
+	var item: Dictionary = target.item
+	var definition: Dictionary = target.definition
+	var descriptor: Dictionary = target.descriptor
 	if not bool(descriptor.get("mutable", true)): return {"error":"field '%s' is immutable" % field}
-	var current: String = _field_text(item, descriptor, definition)
+	var current: String = target.text
 	var earlier: Dictionary = ContentLedger.find_request(_db, id, field, request_id)
 	if not earlier.is_empty():
 		if str(earlier.h) != ContentLedger.text_hash(stored_text): return {"error":"request_id already used for different content"}
@@ -638,6 +634,21 @@ func append_field(id: String, field: String, text: String, request_id: String, a
 				error = _db._last_sql_error
 	error = _complete_item_mutation(error)
 	return {"error":error} if not error.is_empty() else entry
+
+## {item, definition, descriptor, text} for a markdown field of `id`, or {error}
+## ("item not found", a resolve error, or "field '<f>' is not appendable").
+## Shared by append_field and docket_read_since.
+func appendable_target(id: String, field: String) -> Dictionary:
+	var refresh_error := refresh_if_changed()
+	if not refresh_error.is_empty(): return {"error":refresh_error}
+	var item: Dictionary = _db.get_item(id)
+	if item.is_empty(): return {"error":"item not found"}
+	var resolved: Dictionary = resolve_item(item)
+	if resolved.has("error"): return {"error":resolved.error}
+	var definition: Dictionary = resolved.definition
+	var descriptor: Dictionary = _appendable_descriptor(definition, field)
+	if descriptor.is_empty(): return {"error":"field '%s' is not appendable" % field}
+	return {"item":item, "definition":definition, "descriptor":descriptor, "text":_field_text(item, descriptor, definition)}
 
 ## The descriptor of `field` when its registry format is markdown, else {}.
 ## `description` is universal and markdown even where a type omits it.
