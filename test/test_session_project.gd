@@ -6,8 +6,9 @@ extends Node
 ## project file and its owner record on disk (FileAccess on the canonical path). The "second server"
 ## is a live foreign process named in the file's owner record. For memory
 ## projects the oracle is the guarantees-table outcome per event (KB
-## docket:01a0dc3d7498) and the spill file's contents on disk. For promotion the
-## oracle is the durable target's .dct on disk (item and link lines). No
+## docket:01a0dc3d7498), the spill files' contents on disk (lease lapse, process
+## exit, the quit prompt's choice) and the saved session list. For promotion the
+## oracle is the durable target's .dct on disk (item, link and event lines). No
 ## SessionProject, MemoryProject or SessionPromotion internals are consulted for
 ## any expectation.
 
@@ -201,10 +202,12 @@ func test_memory_project_is_owner_gated_bounded_listed_and_spilled_when_the_leas
 	return A.is_true(mem.get("storage_mode") == "session_file" and ProjectSettings.globalize_path(str(mem.get("path", ""))) == ProjectSettings.globalize_path(SPILL_PATH), "spilled project is served from the session file: %s" % mem)
 
 
-## The target .dct's item lines by id and its link lines, read from disk.
+## The target .dct's item lines by id, its link lines, and its event lines by
+## item id, read from disk.
 func _dct_records(path: String) -> Dictionary:
 	var items := {}
 	var links: Array = []
+	var events := {}
 	for line in FileAccess.get_file_as_string(path).split("\n", false):
 		var record: Variant = JSON.parse_string(line)
 		if not record is Dictionary:
@@ -213,7 +216,9 @@ func _dct_records(path: String) -> Dictionary:
 			items[str(record.id)] = record
 		elif record.get("_type") == "link":
 			links.append(record)
-	return {"items": items, "links": links}
+		elif record.get("_type") == "event":
+			(events.get_or_add(str(record.item_id), []) as Array).append(record)
+	return {"items": items, "links": links, "events": events}
 
 
 ## Ten records in `project`: the 2nd is the 1st's child and links to it (both
@@ -252,6 +257,11 @@ func _check_promotion(source: String, mode: String, ids: Array[String], primary_
 		r = A.is_true(provenance.get("project") == source and provenance.get("storage_mode") == mode and provenance.get("promoted_by") == "local:tester" and not str(provenance.get("promoted_at", "")).is_empty(), "provenance recorded on %s: %s" % [item.id, provenance])
 		if r is String: return r
 		by_origin[str(provenance.get("item_id", ""))] = item
+		# The arrival is a `promoted` event on the copy, naming where it came from and who promoted it.
+		var arrivals: Array = (after.events.get(str(item.id), []) as Array).filter(func(ev: Dictionary) -> bool: return ev.get("event_type") == "promoted")
+		var note := str(arrivals[0].get("note", "")) if arrivals.size() == 1 else ""
+		r = A.is_true(arrivals.size() == 1 and arrivals[0].get("actor") == "local:tester" and note.contains("%s:%s" % [source, provenance.get("item_id", "")]) and note.contains(mode), "one promoted event on %s carrying its provenance: %s" % [item.id, arrivals])
+		if r is String: return r
 	r = A.is_true(by_origin.has(ids[0]) and by_origin.has(ids[1]), "the two copies are of the two chosen records: %s" % by_origin.keys())
 	if r is String: return r
 	var first_copy := str(by_origin[ids[0]].id)
@@ -288,3 +298,45 @@ func test_promote_copies_exactly_the_chosen_records_from_session_file_and_memory
 	var r = _check_promotion("Scratch", SessionProject.MODE_SESSION_FILE, session_ids, primary_path)
 	if r is String: return r
 	return _check_promotion("Mem", SessionProject.MODE_MEMORY, memory_ids, primary_path)
+
+
+func test_memory_projects_at_exit_and_at_the_quit_prompt_leave_every_item_on_disk() -> Variant:
+	# Oracle: the session files on disk and the saved session list. The saved
+	# session list is the user's; it is restored afterwards.
+	var saved_session := UserPrefs.load_session()
+	_tools.call_tool("docket_project_heartbeat", {"client":"test-owner", "client_class":"owner", "lease_seconds":60})
+	var added: Dictionary = _tools.call_tool("docket_project_add", {"mode":"memory", "name":"Mem"})
+	if added.has("error"): return "fixture memory project failed: %s" % added.error
+	var ids: Array[String] = []
+	for i in 3:
+		var created: Dictionary = _tools.call_tool("docket_create", {"project":"Mem", "type":"work_item", "title":"Open %d" % i})
+		if created.has("error"): return "fixture create %d failed: %s" % [i, created.error]
+		ids.append(str(created.id))
+
+	# Process exit with open items: every item is written to a session file,
+	# and that file joins the saved session list so the next start opens it.
+	MemoryProject.spill_on_exit(_state.get_project_dbs())
+	var on_exit := _dct_records(SPILL_PATH)
+	var listed := UserPrefs.load_session()
+	UserPrefs.save_session(saved_session)
+	var r = A.is_true(on_exit.items.has(ids[0]) and on_exit.items.has(ids[1]) and on_exit.items.has(ids[2]) and FileAccess.get_file_as_string(SPILL_PATH).contains("session_file"), "spill_on_exit wrote every item to %s: %s" % [SPILL_PATH, on_exit.items.keys()])
+	if r is String: return r
+	r = A.is_true(listed.has(ProjectSettings.globalize_path(SPILL_PATH)), "the exit spill is recorded in the saved session list: %s" % listed)
+	if r is String: return r
+
+	# A clean quit asks first; choosing "Spill" writes the project to a new
+	# session file and serves it from there, and only then reports resolved.
+	var dialog := MemoryProjectsDialog.new()
+	add_child(dialog)
+	dialog.init(_state)
+	var resolved := [false]
+	dialog.resolved.connect(func() -> void: resolved[0] = true)
+	dialog.ask(MemoryProject.outstanding_projects(_state.get_project_dbs()))
+	dialog.confirmed.emit()
+	var mem := _entry(_tools.call_tool("docket_project_list", {}), "Mem")
+	var chosen_path := str(mem.get("path", ""))
+	var on_quit := _dct_records(chosen_path) if not chosen_path.is_empty() else {"items": {}}
+	dialog.queue_free()
+	r = A.is_true(resolved[0] and mem.get("storage_mode") == "session_file" and ProjectSettings.globalize_path(chosen_path) != ProjectSettings.globalize_path(SPILL_PATH) and on_quit.items.has(ids[0]) and on_quit.items.has(ids[1]) and on_quit.items.has(ids[2]), "the quit prompt's spill choice is on disk with every item and served: %s %s" % [mem, on_quit.items.keys()])
+	if r is String: return r
+	return A.is_true(MemoryProject.outstanding_projects(_state.get_project_dbs()).is_empty(), "nothing is left in memory to lose after the choice")
