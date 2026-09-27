@@ -44,42 +44,35 @@ const _OP_LABELS := {
 	"is_empty": "is empty", "is_not_empty": "is not empty",
 }
 
-# Fields with fixed-value dropdowns
-## Values offered in the query builder's value dropdown.
-##
-## Types and statuses are derived from data/schema.json rather than listed here:
-## the hardcoded copy fell six types behind (secret, encrypted_note, skill,
-## prompt, kb, policy) and was missing every state those types introduced, so
-## the GUI silently could not build queries the MCP surface could.
-var _dropdown_values_cache: Dictionary = {}
+# Fields whose value is chosen from a list (EnumValuePicker), never typed.
+const _ENUM_FIELDS := ["type", "status", "priority", "severity", "has_attachment"]
+const _FIXED_ENUM_VALUES := {
+	"priority": ["1", "2", "3", "4"],
+	"severity": ["1", "2", "3", "4"],
+	"has_attachment": ["true", "false"],
+}
 var _type_catalog: Array = []
 var _refreshing_scope := false
 
 
-func _dropdown_values() -> Dictionary:
-	if not _dropdown_values_cache.is_empty():
-		return _dropdown_values_cache
-
-	var types: Array = []
-	var statuses := {}
-	if _state != null and _state.schema.has("types"):
-		for type_name in _state.schema.types:
-			types.append(str(type_name))
-			for st in _state.schema.types[type_name].get("states", []):
-				statuses[str(st)] = true
-	types.sort()
-	var status_list: Array = statuses.keys()
-	status_list.sort()
-
-	# Non-schema fields keep fixed value sets.
-	_dropdown_values_cache = {
-		"type": types,
-		"status": status_list,
-		"priority": ["1", "2", "3", "4"],
-		"severity": ["1", "2", "3", "4"],
-		"has_attachment": ["true", "false"],
-	}
-	return _dropdown_values_cache
+## Plain values offered for an enumerated field. Type and status come from the
+## loaded projects' type catalogs as slugs and state keys (never labels), so a
+## built condition compares the strings stored items carry. Types narrow to
+## the row's project scope; statuses narrow to its type and project scope.
+func _enum_values(field_name: String, scope: Dictionary) -> Array:
+	match field_name:
+		"type":
+			var slugs: Array = []
+			for record_value in _type_catalog:
+				var record: Dictionary = record_value
+				var listed: bool = not bool(record.get("deprecated", false)) or int(record.get("item_count", 0)) > 0
+				if listed and QueryTypeScope.record_in_scope(record, {"known": false, "projects": scope.get("projects", [])}): slugs.append(record.slug)
+			return slugs
+		"status":
+			var states: Array = []
+			for group in QueryTypeScope.statuses(_type_catalog, scope): states.append_array(group.values)
+			return states
+	return _FIXED_ENUM_VALUES.get(field_name, [])
 
 # Column index → data field name (dynamic — may include "project" when multi-project)
 var _col_fields: Array = ["id", "type", "status", "priority", "title"]
@@ -119,11 +112,6 @@ func init(state: AppState) -> void:
 
 func _on_file_changed() -> void:
 	_rebuild_type_catalog()
-	var shortcut_projects: Array = _state.get_project_dbs().keys()
-	shortcut_projects.sort()
-	var project_key := ",".join(shortcut_projects)
-	for row in _condition_rows:
-		row.type_chooser.update_catalog(_type_catalog, project_key)
 	_refresh_scoped_controls()
 	refresh()
 
@@ -514,7 +502,7 @@ func _add_condition_row(is_first: bool) -> void:
 	hbox.add_child(op_option)
 	row_data["op"] = op_option
 
-	# Value input — LineEdit for free-form, OptionButton for fixed values
+	# Value input — LineEdit for free-form fields, EnumValuePicker for listed ones
 	var value_edit := LineEdit.new()
 	value_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	value_edit.placeholder_text = "value"
@@ -523,30 +511,15 @@ func _add_condition_row(is_first: bool) -> void:
 	hbox.add_child(value_edit)
 	row_data["value"] = value_edit
 
-	var value_dropdown := OptionButton.new()
-	value_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	value_dropdown.visible = false
-	row_data["catalog_status_choice"] = {}
-	value_dropdown.item_selected.connect(func(_idx):
-		row_data["catalog_status_choice"] = {}
+	var value_picker := EnumValuePicker.new()
+	value_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	value_picker.visible = false
+	value_picker.value_changed.connect(func(_value):
 		_user_has_modified = true
 		_refresh_scoped_controls()
 	)
-	hbox.add_child(value_dropdown)
-	row_data["value_dropdown"] = value_dropdown
-
-	var type_chooser := TypeChooser.new()
-	type_chooser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	type_chooser.visible = false
-	var shortcut_projects: Array = _state.get_project_dbs().keys()
-	shortcut_projects.sort()
-	type_chooser.configure(_type_catalog, ",".join(shortcut_projects))
-	type_chooser.selection_changed.connect(func(_values):
-		_user_has_modified = true
-		_refresh_scoped_controls()
-	)
-	hbox.add_child(type_chooser)
-	row_data["type_chooser"] = type_chooser
+	hbox.add_child(value_picker)
+	row_data["value_picker"] = value_picker
 
 	var validation_label := Label.new()
 	validation_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.35))
@@ -587,6 +560,11 @@ func _add_condition_row(is_first: bool) -> void:
 		_user_has_modified = true
 		_update_ops_for_row(current_idx)
 		_refresh_scoped_controls()
+	)
+
+	op_option.item_selected.connect(func(_idx):
+		_user_has_modified = true
+		_sync_value_widgets(row_data)
 	)
 
 	# Wire conjunction change to update group visuals
@@ -674,80 +652,34 @@ func _update_ops_for_row(row_idx: int) -> void:
 	if row_idx >= _condition_rows.size():
 		return
 	var row: Dictionary = _condition_rows[row_idx]
-	var field_option: OptionButton = row["field"]
-	var op_option: OptionButton = row["op"]
-	var value_edit: LineEdit = row["value"]
-	var value_dropdown: OptionButton = row["value_dropdown"]
-	var type_chooser: TypeChooser = row["type_chooser"]
+	var field_name: String = row.field.get_item_text(row.field.selected)
+	row.op.clear()
+	for o in _get_ops_for_field(field_name):
+		row.op.add_item(_OP_LABELS.get(o, o))
+	var picker: EnumValuePicker = row.value_picker
+	picker.set_value("")
+	_sync_value_widgets(row)
 
-	var field_name: String = field_option.get_item_text(field_option.selected)
-	var ops := _get_ops_for_field(field_name)
 
-	op_option.clear()
-	for o in ops:
-		op_option.add_item(_OP_LABELS.get(o, o))
-
-	# Determine if this field uses a dropdown
-	var use_dropdown: bool = _dropdown_values().has(field_name) and field_name != "type"
-	type_chooser.visible = field_name == "type"
-
-	if use_dropdown:
-		# Populate dropdown with fixed values for this field
-		value_dropdown.clear()
-		value_dropdown.add_item("(any)")
-		var values: Array = _dropdown_values()[field_name]
-		for v in values:
-			value_dropdown.add_item(str(v))
-		value_dropdown.visible = true
-		value_edit.visible = false
-	else:
-		value_dropdown.visible = false
-		value_edit.visible = field_name != "type"
-		value_edit.placeholder_text = "value"
-
-	# Show/hide value widgets for is_empty/is_not_empty
-	for connection in op_option.item_selected.get_connections():
-		op_option.item_selected.disconnect(connection.callable)
-	op_option.item_selected.connect(func(_idx):
-		_user_has_modified = true
-		var op_text: String = op_option.get_item_text(op_option.selected)
-		var is_no_value: bool = (op_text == "is empty" or op_text == "is not empty")
-		if is_no_value:
-			value_edit.visible = false
-			value_dropdown.visible = false
-		elif field_name == "type" and _op_label_to_key(op_text) == "eq":
-			type_chooser.visible = true
-			value_edit.visible = false
-			value_dropdown.visible = false
-		elif field_name == "type":
-			type_chooser.visible = false
-			value_edit.visible = true
-			value_dropdown.visible = false
-		elif use_dropdown:
-			value_dropdown.visible = true
-			value_edit.visible = false
-		else:
-			value_edit.visible = true
-			value_dropdown.visible = false
-	)
+func _sync_value_widgets(row: Dictionary) -> void:
+	## Shows the picker for listed fields, the text box otherwise, and neither
+	## for operators that take no value.
+	var field_name: String = row.field.get_item_text(row.field.selected)
+	var op_key := _op_label_to_key(row.op.get_item_text(row.op.selected))
+	var takes_value: bool = op_key not in ["is_empty", "is_not_empty"]
+	row.value_picker.visible = takes_value and _ENUM_FIELDS.has(field_name)
+	row.value.visible = takes_value and not _ENUM_FIELDS.has(field_name)
 
 
 func _condition_snapshots() -> Array:
+	## Each row as a plain condition with its raw string value. An enumerated
+	## row set to (any) has value "".
 	var conditions: Array = []
 	for i in _condition_rows.size():
 		var row: Dictionary = _condition_rows[i]
 		var field: String = row.field.get_item_text(row.field.selected)
-		var value: Variant = ""
-		if field == "type" and row.type_chooser.visible:
-			value = row.type_chooser.selected_values()
-		elif row.value_dropdown.visible and row.value_dropdown.item_count > 0:
-			value = _dropdown_stored_value(row.value_dropdown)
-		else:
-			value = row.value.text
-		var op := _op_label_to_key(row.op.get_item_text(row.op.selected))
-		if field == "type" and row.type_chooser.visible:
-			op = "catalog_in"
-		var condition := {"field": field, "op": op, "value": value}
+		var value: String = row.value_picker.get_value() if _ENUM_FIELDS.has(field) else row.value.text.strip_edges()
+		var condition := {"field": field, "op": _op_label_to_key(row.op.get_item_text(row.op.selected)), "value": value}
 		if i > 0:
 			condition.conj = "or" if row.conj.selected == 1 else "and"
 		conditions.append(condition)
@@ -773,56 +705,13 @@ func _refresh_scoped_controls() -> void:
 			if row.field.get_item_text(field_idx) == field_name:
 				row.field.selected = field_idx
 				break
-		var raw_value := ""
-		if row.value_dropdown.visible and row.value_dropdown.item_count > 0:
-			raw_value = str(_dropdown_stored_value(row.value_dropdown))
-		if field_name == "status":
-			row.value_dropdown.clear()
-			row.value_dropdown.add_item("(any)")
-			row.value_dropdown.set_item_metadata(0, "(any)")
-			for group in QueryTypeScope.statuses(_type_catalog, scope):
-				for status in group.values:
-					var label := "%s — %s — %s" % [group.label, group.project, status] if not str(group.project).is_empty() else "%s — %s" % [group.label, status]
-					row.value_dropdown.add_item(label)
-					row.value_dropdown.set_item_metadata(row.value_dropdown.item_count - 1, {"key": group.key, "value": str(status), "type": group.type, "project": group.project})
-			var pending_choice = row.catalog_status_choice
-			var found := _select_status_choice(row.value_dropdown, pending_choice) if pending_choice is Dictionary and not pending_choice.is_empty() else _select_dropdown_metadata(row.value_dropdown, raw_value)
-			if not raw_value.is_empty() and raw_value != "(any)" and not found:
-				row.value_dropdown.add_item("Unavailable — %s" % raw_value)
-				row.value_dropdown.set_item_metadata(row.value_dropdown.item_count - 1, raw_value)
-				row.value_dropdown.selected = row.value_dropdown.item_count - 1
+		if _ENUM_FIELDS.has(field_name):
+			row.value_picker.set_values(_enum_values(field_name, scope))
+		var raw_value := str(conditions[i].value)
 		var check := QueryTypeScope.validate_value(field_name, raw_value, _type_catalog, scope)
 		row.validation.text = check.message
 		row.validation.visible = not check.valid
 	_refreshing_scope = false
-
-
-func _select_dropdown_metadata(dropdown: OptionButton, value: String) -> bool:
-	for i in dropdown.item_count:
-		var metadata = dropdown.get_item_metadata(i)
-		var stored = metadata.get("value", "") if metadata is Dictionary else metadata
-		if (stored != null and str(stored) == value) or dropdown.get_item_text(i) == value:
-			dropdown.selected = i
-			return true
-	return false
-
-
-func _dropdown_stored_value(dropdown: OptionButton) -> Variant:
-	if dropdown.item_count == 0:
-		return ""
-	var metadata = dropdown.get_item_metadata(dropdown.selected)
-	if metadata is Dictionary:
-		return metadata.get("value", "")
-	return metadata if metadata != null else dropdown.get_item_text(dropdown.selected)
-
-
-func _select_status_choice(dropdown: OptionButton, choice: Dictionary) -> bool:
-	for i in dropdown.item_count:
-		var metadata = dropdown.get_item_metadata(i)
-		if metadata is Dictionary and metadata.get("key", "") == choice.get("key", "") and metadata.get("value", "") == choice.get("status", ""):
-			dropdown.selected = i
-			return true
-	return false
 
 
 func _op_label_to_key(label: String) -> String:
@@ -869,50 +758,12 @@ func _run_query() -> void:
 
 func _build_conditions_filter() -> Dictionary:
 	var conditions: Array = []
-	for i in _condition_rows.size():
-		var row: Dictionary = _condition_rows[i]
-		var field_option: OptionButton = row["field"]
-		var op_option: OptionButton = row["op"]
-		var value_edit: LineEdit = row["value"]
-		var value_dropdown: OptionButton = row["value_dropdown"]
-		var conj_option: OptionButton = row["conj"]
-
-		var field_name: String = field_option.get_item_text(field_option.selected)
-		var op_label: String = op_option.get_item_text(op_option.selected)
-		var op_key: String = _op_label_to_key(op_label)
-
-		# Read value from dropdown or text input depending on field
-		var raw_value: String
-		if field_name == "type" and row["type_chooser"].visible:
-			var selected_types: Array = row["type_chooser"].selected_values()
-			raw_value = str(selected_types[0]) if selected_types.size() == 1 else ""
-		elif _dropdown_values().has(field_name) and value_dropdown.visible:
-			raw_value = str(_dropdown_stored_value(value_dropdown))
-		else:
-			raw_value = value_edit.text.strip_edges()
-
-		# Skip conditions where "(any)" is selected — matches everything
-		if raw_value == "(any)" and op_key not in ["is_empty", "is_not_empty"]:
+	for snapshot in _condition_snapshots():
+		var cond: Dictionary = snapshot
+		# An enumerated row left at (any) matches everything, so it adds nothing.
+		if _ENUM_FIELDS.has(cond.field) and str(cond.value).is_empty() and cond.op not in ["is_empty", "is_not_empty"]:
 			continue
-
-		var cond := {"field": field_name, "op": op_key}
-		if i > 0:
-			cond["conj"] = "or" if conj_option.selected == 1 else "and"
-
-		# Parse value
-		if op_key in ["is_empty", "is_not_empty"]:
-			pass  # no value needed
-		elif field_name == "type" and row["type_chooser"].visible:
-			cond["op"] = "catalog_in"
-			cond["value"] = row["type_chooser"].selected_values()
-		elif field_name == "has_attachment":
-			cond["value"] = raw_value.to_lower() == "true"
-		elif field_name in ["priority", "severity", "retrieval_count", "research_cost"]:
-			cond["value"] = int(raw_value) if raw_value.is_valid_int() else 0
-		else:
-			cond["value"] = raw_value
-
-		_append_scoped_condition(conditions, cond, row, i)
+		conditions.append(_typed_condition(cond))
 
 	if conditions.size() == 0:
 		return {}
@@ -928,63 +779,28 @@ func _build_conditions_filter() -> Dictionary:
 
 
 func _serialize_all_conditions() -> Dictionary:
-	## Like _build_conditions_filter() but preserves "(any)" rows for UI state.
+	## Like _build_conditions_filter() but keeps (any) rows for UI state.
 	var conditions: Array = []
-	for i in _condition_rows.size():
-		var row: Dictionary = _condition_rows[i]
-		var field_option: OptionButton = row["field"]
-		var op_option: OptionButton = row["op"]
-		var value_edit: LineEdit = row["value"]
-		var value_dropdown: OptionButton = row["value_dropdown"]
-		var conj_option: OptionButton = row["conj"]
-
-		var field_name: String = field_option.get_item_text(field_option.selected)
-		var op_label: String = op_option.get_item_text(op_option.selected)
-		var op_key: String = _op_label_to_key(op_label)
-
-		var raw_value: String
-		if field_name == "type" and row["type_chooser"].visible:
-			var chosen: Array = row["type_chooser"].selected_values()
-			raw_value = str(chosen[0]) if chosen.size() == 1 else ""
-		elif _dropdown_values().has(field_name) and value_dropdown.visible:
-			raw_value = str(_dropdown_stored_value(value_dropdown))
-		else:
-			raw_value = value_edit.text.strip_edges()
-
-		var cond := {"field": field_name, "op": op_key}
-		if i > 0:
-			cond["conj"] = "or" if conj_option.selected == 1 else "and"
-
-		if op_key in ["is_empty", "is_not_empty"]:
-			pass
-		elif field_name == "type" and row["type_chooser"].visible:
-			cond["op"] = "catalog_in"
-			cond["value"] = row["type_chooser"].selected_values()
-		elif field_name == "has_attachment":
-			cond["value"] = raw_value.to_lower() == "true"
-		elif field_name in ["priority", "severity", "retrieval_count", "research_cost"]:
-			cond["value"] = int(raw_value) if raw_value.is_valid_int() else 0
-		else:
-			cond["value"] = raw_value
-
-		_append_scoped_condition(conditions, cond, row, i)
-
+	for snapshot in _condition_snapshots():
+		var cond: Dictionary = snapshot
+		conditions.append(cond if _ENUM_FIELDS.has(cond.field) and str(cond.value).is_empty() else _typed_condition(cond))
 	if conditions.size() == 0:
 		return {}
 	return {"conditions": conditions}
 
 
-func _append_scoped_condition(conditions: Array, condition: Dictionary, row: Dictionary, _row_index: int) -> void:
-	if condition.field == "status" and row.value_dropdown.visible and row.value_dropdown.item_count > 0:
-		var choice = row.catalog_status_choice
-		if not choice is Dictionary or choice.is_empty():
-			choice = row.value_dropdown.get_item_metadata(row.value_dropdown.selected)
-		if choice is Dictionary and not str(choice.get("key", "")).is_empty():
-			condition["op"] = "catalog_status"
-			condition["value"] = {"key": choice.key, "status":choice.get("value", choice.get("status", ""))}
-			conditions.append(condition)
-			return
-	conditions.append(condition)
+func _typed_condition(snapshot: Dictionary) -> Dictionary:
+	## Converts a snapshot's raw string value to the type the query engine
+	## compares; value-less operators drop the value.
+	var cond: Dictionary = snapshot.duplicate()
+	var raw := str(cond.get("value", ""))
+	if cond.op in ["is_empty", "is_not_empty"]:
+		cond.erase("value")
+	elif cond.field == "has_attachment":
+		cond["value"] = raw.to_lower() == "true"
+	elif cond.field in ["priority", "severity", "retrieval_count", "research_cost"]:
+		cond["value"] = int(raw) if raw.is_valid_int() else 0
+	return cond
 
 
 ## Status → display color mapping.
@@ -1145,13 +961,9 @@ func _column_scope_records() -> Array:
 		branch_scopes[branch] = QueryTypeScope.branch_scope(conditions, i, _type_catalog)
 	var allowed: Dictionary = {}
 	for scope_value in branch_scopes.values():
-		var scope: Dictionary = scope_value
-		if not bool(scope.known):
-			return _type_catalog.duplicate()
 		for record_value in _type_catalog:
-			var record: Dictionary = record_value
-			if (not scope.identities.is_empty() and scope.identities.has(record.key)) or (scope.identities.is_empty() and scope.types.has(record.slug)):
-				allowed[str(record.key)] = true
+			if QueryTypeScope.record_in_scope(record_value, scope_value):
+				allowed[str(record_value.key)] = true
 	var records: Array = []
 	for record_value in _type_catalog:
 		if allowed.has(str(record_value.key)):
@@ -1260,141 +1072,78 @@ func set_filter(text: String) -> void:
 	if parsed is Dictionary and parsed.has("conditions"):
 		var conditions: Array = parsed["conditions"]
 		for i in conditions.size():
-			var cond: Dictionary = conditions[i]
 			_add_condition_row(i == 0)
-			var row: Dictionary = _condition_rows[i]
-			# Set conjunction
-			if i > 0 and cond.has("conj"):
-				var conj_opt: OptionButton = row["conj"]
-				conj_opt.selected = 1 if str(cond.conj).to_lower() == "or" else 0
-			# Set field
-			var field_opt: OptionButton = row["field"]
-			var field_name: String = str(cond.get("field", "type"))
-			for fi in field_opt.item_count:
-				if field_opt.get_item_text(fi) == field_name:
-					field_opt.selected = fi
-					break
-			_update_ops_for_row(i)
-			# Set op
-			var op_key: String = str(cond.get("op", "eq"))
-			var catalog_status_choice: Dictionary = cond.get("value", {}) if op_key == "catalog_status" else {}
-			if op_key == "catalog_status":
-				op_key = "eq"
-			var op_label: String = _OP_LABELS.get(op_key, op_key)
-			var op_opt: OptionButton = row["op"]
-			for oi in op_opt.item_count:
-				if op_opt.get_item_text(oi) == op_label:
-					op_opt.selected = oi
-					break
-			if field_name == "type" and op_key != "catalog_in":
-				row["type_chooser"].visible = false
-				row["value"].visible = op_key not in ["is_empty", "is_not_empty"]
-				row["value_dropdown"].visible = false
-			# Set value
-			if cond.has("value"):
-				var val_str: String = str(catalog_status_choice.get("status", cond["value"]))
-				if field_name == "type" and op_key == "catalog_in":
-					var values: Array = cond["value"] if cond["value"] is Array else [cond["value"]]
-					row["type_chooser"].set_selected_values(values)
-					row["type_chooser"].visible = true
-					row["value_dropdown"].visible = false
-					row["value"].visible = false
-				elif field_name == "type":
-					row["value"].text = val_str
-					row["value"].visible = true
-					row["type_chooser"].visible = false
-				elif _dropdown_values().has(field_name):
-					var dd: OptionButton = row["value_dropdown"]
-					if not _select_dropdown_metadata(dd, val_str):
-						# Keeping the literal makes legacy saved queries reviewable even
-						# when the current registry cannot offer their old value.
-						dd.add_item("Unavailable — %s" % val_str)
-						dd.set_item_metadata(dd.item_count - 1, val_str)
-						dd.selected = dd.item_count - 1
-					dd.visible = op_key not in ["is_empty", "is_not_empty"]
-					row["value"].visible = false
-				else:
-					var val_edit: LineEdit = row["value"]
-					val_edit.text = val_str
-					val_edit.visible = op_key not in ["is_empty", "is_not_empty"]
-					row["value_dropdown"].visible = false
+			_apply_condition(i, _plain_condition(conditions[i]))
 	else:
 		# Old "key:value" format → convert to condition rows
-		var parts := text.split(" ")
 		var idx := 0
-		for part in parts:
+		for part in text.split(" "):
 			var kv := part.split(":")
 			if kv.size() == 2:
 				_add_condition_row(idx == 0)
-				var row: Dictionary = _condition_rows[idx]
-				if idx > 0:
-					row["conj"].selected = 0  # AND
-				# Set field
-				var field_opt: OptionButton = row["field"]
-				for fi in field_opt.item_count:
-					if field_opt.get_item_text(fi) == kv[0]:
-						field_opt.selected = fi
-						break
-				_update_ops_for_row(idx)
-				# Set value
-				var kv_field: String = kv[0]
-				if kv_field == "type":
-					row["type_chooser"].visible = false
-					row["value_dropdown"].visible = false
-					row["value"].visible = true
-					row["value"].text = kv[1]
-				elif _dropdown_values().has(kv_field):
-					var dd: OptionButton = row["value_dropdown"]
-					for vi in dd.item_count:
-						if dd.get_item_text(vi) == kv[1]:
-							dd.selected = vi
-							break
-				else:
-					row["value"].text = kv[1]
+				_apply_condition(idx, {"field": kv[0], "op": "eq", "value": kv[1]})
 				idx += 1
 		if idx == 0:
 			_add_condition_row(true)
+	_update_group_visuals()
 	_refresh_scoped_controls()
-	if parsed is Dictionary and parsed.has("conditions"):
-		for i in parsed.conditions.size():
-			var saved: Dictionary = parsed.conditions[i]
-			if saved.get("op", "") == "catalog_status" and saved.get("value") is Dictionary:
-				var row: Dictionary = _condition_rows[i]
-				_select_status_choice(row.value_dropdown, saved.value)
-				row.catalog_status_choice = saved.value.duplicate(true)
-
 	_run_query()
 
 
+func _plain_condition(saved: Dictionary) -> Dictionary:
+	## Queries saved by the former catalog chooser carried catalog identities;
+	## they reload as the plain slug / state they selected.
+	var cond: Dictionary = saved.duplicate(true)
+	if cond.get("op", "") == "catalog_in":
+		var slugs: Array = []
+		for key in (cond.get("value") if cond.get("value") is Array else [cond.get("value")]):
+			var record := TypeCatalog.find_by_key(_type_catalog, str(key))
+			if not record.is_empty() and not slugs.has(record.slug): slugs.append(record.slug)
+		cond["op"] = "eq"
+		cond["value"] = slugs[0] if not slugs.is_empty() else ""
+	elif cond.get("op", "") == "catalog_status" and cond.get("value") is Dictionary:
+		cond["op"] = "eq"
+		cond["value"] = str(cond.value.get("status", ""))
+	return cond
+
+
+func _apply_condition(row_idx: int, cond: Dictionary) -> void:
+	var row: Dictionary = _condition_rows[row_idx]
+	if row_idx > 0:
+		row.conj.selected = 1 if str(cond.get("conj", "and")).to_lower() == "or" else 0
+	var field_name := str(cond.get("field", "type"))
+	var field_idx := -1
+	for fi in row.field.item_count:
+		if row.field.get_item_text(fi) == field_name:
+			field_idx = fi
+	if field_idx < 0:
+		row.field.add_item(field_name)
+		field_idx = row.field.item_count - 1
+	row.field.selected = field_idx
+	_update_ops_for_row(row_idx)
+	var op_label: String = _OP_LABELS.get(str(cond.get("op", "eq")), str(cond.get("op", "eq")))
+	for oi in row.op.item_count:
+		if row.op.get_item_text(oi) == op_label:
+			row.op.selected = oi
+	var value := str(cond.get("value", ""))
+	if _ENUM_FIELDS.has(field_name):
+		row.value_picker.set_value(value)
+	else:
+		row.value.text = value
+	_sync_value_widgets(row)
+
+
 func get_filter_summary() -> String:
-	## Human-readable summary like "type equals bug, priority > 2"
+	## Human-readable summary like "type equals bug, AND priority > 2"
 	var parts := PackedStringArray()
-	for i in _condition_rows.size():
-		var row: Dictionary = _condition_rows[i]
-		var field_opt: OptionButton = row["field"]
-		var op_opt: OptionButton = row["op"]
-		var value_edit: LineEdit = row["value"]
-		var value_dropdown: OptionButton = row["value_dropdown"]
-		var conj_opt: OptionButton = row["conj"]
-
-		var field_name: String = field_opt.get_item_text(field_opt.selected)
-		var op_label: String = op_opt.get_item_text(op_opt.selected)
-		var val: String
-		if field_name == "type" and row["type_chooser"].visible:
-			val = ", ".join(row["type_chooser"].selected_values())
-		elif _dropdown_values().has(field_name) and value_dropdown.visible:
-			val = str(_dropdown_stored_value(value_dropdown))
-		else:
-			val = value_edit.text.strip_edges()
-
+	for cond in _condition_snapshots():
 		var part := ""
-		if i > 0:
-			part += "OR " if conj_opt.selected == 1 else "AND "
-		part += "%s %s" % [field_name, op_label]
-		if op_label not in ["is empty", "is not empty"] and not val.is_empty():
-			part += " %s" % val
+		if cond.has("conj"):
+			part += "OR " if cond.conj == "or" else "AND "
+		part += "%s %s" % [cond.field, _OP_LABELS.get(cond.op, cond.op)]
+		if cond.op not in ["is_empty", "is_not_empty"] and not str(cond.value).is_empty():
+			part += " %s" % cond.value
 		parts.append(part)
-
 	var summary := ", ".join(parts)
 	return summary if not summary.is_empty() else "All Items"
 

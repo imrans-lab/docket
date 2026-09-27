@@ -321,7 +321,7 @@ func test_query_scope_expands_compatible_multitype_field_and_keeps_grouped_statu
 	var r = A.is_true(encoded.contains("type:a") and encoded.contains("type:b") and encoded.count("field_key") == 2 and JSON.stringify(status).contains("type:b") and JSON.stringify(status).contains("done"), "multi-type custom fields expand to explicit branches and grouped status retains its chosen identity")
 	return r
 
-func test_query_grid_compiles_multitype_field_and_status_choice_to_exact_identities() -> Variant:
+func test_query_grid_binds_typed_fields_per_type_branch_and_keeps_status_plain() -> Variant:
 	var db: DocketDBJsonl = _db("Grid"); var registry: TypeRegistry = _registry_with_widget(db)
 	var second: Dictionary = _definition("Second"); second.slug = "second"
 	var defined: Dictionary = registry.define_type("second", second, "tester", "second")
@@ -329,17 +329,11 @@ func test_query_grid_compiles_multitype_field_and_status_choice_to_exact_identit
 	registry.activate_type("second", defined.type.current_revision, "tester", "ready")
 	var state: AppState = AppState.new(); state.db = db; state.schema = {}; state._project_dbs = {"Grid":db}; state._type_registries = {"Grid":registry}
 	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
-	var keys: Array = []
-	for record in grid._type_catalog:
-		if record.slug in ["widget","second"]: keys.append(record.key)
-	grid.set_filter(JSON.stringify({"conditions":[{"field":"type","op":"catalog_in","value":keys},{"conj":"and","field":"score","op":"gte","value":0}]}))
-	var compiled: Dictionary = grid._build_conditions_filter(); var encoded: String = JSON.stringify(compiled)
-	var status_key: String = ""
-	for record in grid._type_catalog:
-		if record.slug == "second": status_key = str(record.key)
-	grid.set_filter(JSON.stringify({"conditions":[{"field":"type","op":"catalog_in","value":keys},{"conj":"and","field":"status","op":"catalog_status","value":{"key":status_key,"status":"queued"}}]}))
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type","op":"eq","value":"widget"},{"conj":"and","field":"score","op":"gte","value":0},{"conj":"or","field":"type","op":"eq","value":"second"},{"conj":"and","field":"score","op":"gte","value":0}]}))
+	var encoded: String = JSON.stringify(grid._build_conditions_filter())
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type","op":"eq","value":"second"},{"conj":"and","field":"status","op":"eq","value":"queued"}]}))
 	var status_encoded: String = JSON.stringify(grid._build_conditions_filter())
-	var r = A.is_true(encoded.count("field_key") == 2 and encoded.contains(registry.get_type("widget").id) and encoded.contains(registry.get_type("second").id) and status_encoded.contains(status_key) == false and status_encoded.contains(registry.get_type("second").id), "QueryGrid emits explicit compatible field branches and preserves the selected status identity")
+	var r = A.is_true(encoded.count("field_key") == 2 and encoded.contains(registry.get_type("widget").id) and encoded.contains(registry.get_type("second").id) and status_encoded.contains('{"field":"status","op":"eq","value":"queued"}'), "each type branch binds its typed field to that type's identity; status stays a plain state comparison")
 	grid.queue_free(); db.close(); return r
 
 func test_uuid_move_retargets_qualified_incoming_and_declared_json_references_only() -> Variant:

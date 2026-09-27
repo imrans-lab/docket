@@ -435,7 +435,7 @@ func test_column_menu_uses_query_branch_scope_and_project_labels() -> Variant:
 			beta_review = record
 	if alpha_review.is_empty() or beta_review.is_empty():
 		return "review catalog records missing"
-	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"catalog_in", "value":[alpha_review.key]}]}))
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"alpha"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}]}))
 	var anchor := Button.new()
 	grid.add_child(anchor)
 	grid._show_columns_menu(anchor)
@@ -448,7 +448,7 @@ func test_column_menu_uses_query_branch_scope_and_project_labels() -> Variant:
 		return r
 	var selected_alpha: Dictionary = grid._column_candidates[0]
 	grid._toggle_result_column(0)
-	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"catalog_in", "value":[beta_review.key]}]}))
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"beta"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}]}))
 	grid._show_columns_menu(anchor)
 	var retained := false
 	for candidate_value in grid._column_candidates:
@@ -459,7 +459,7 @@ func test_column_menu_uses_query_branch_scope_and_project_labels() -> Variant:
 	r = A.is_true(retained, "selected typed columns remain available when the current query scope changes")
 	if r is String:
 		return r
-	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"catalog_in", "value":[alpha_review.key]}, {"field":"title", "op":"contains", "value":"open branch", "conj":"or"}]}))
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"alpha"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}, {"field":"title", "op":"contains", "value":"open branch", "conj":"or"}]}))
 	grid._show_columns_menu(anchor)
 	var unconstrained_projects: Dictionary = {}
 	for candidate_value in grid._column_candidates:

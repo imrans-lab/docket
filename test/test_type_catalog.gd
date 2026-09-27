@@ -271,44 +271,20 @@ func test_popup_opens_below_anchor_with_opaque_bounded_content() -> Variant:
 	r = A.is_true(chooser._selected_label.tooltip_text.contains("Popup Type 099"), "clipped selection summary preserves full accessible detail")
 	chooser._popup.hide(); chooser.queue_free(); return r
 
-func test_query_grid_large_selection_keeps_row_bounded_and_full_identity_detail() -> Variant:
+func test_query_grid_long_value_keeps_row_bounded() -> Variant:
 	var schema: Dictionary = {"types": {}}
-	for i in 120:
-		var slug := "grid_type_%03d" % i
-		schema.types[slug] = {"label": "Grid Type %03d" % i, "description": "Grid geometry fixture", "states": []}
-	var long_label := "Extremely long registry label "
-	for _i in 100: long_label += "segment "
-	schema.types["long_type"] = {"label": long_label, "description": "Long label fixture", "states": []}
+	var long_slug := "long_type"
+	for _i in 60: long_slug += "_segment"
+	schema.types[long_slug] = {"label": "Long", "description": "Long slug fixture", "states": []}
 	var state := AppState.new()
 	state.schema = schema
 	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
-	var chooser: TypeChooser = grid._condition_rows[0].type_chooser
-	var keys: Array = []
-	for record in grid._type_catalog:
-		if str(record.slug).begins_with("grid_type_") and keys.size() < 100: keys.append(record.key)
-	chooser.set_selected_values(keys)
+	var picker: EnumValuePicker = grid._condition_rows[0].value_picker
+	picker.set_value(long_slug)
 	var row_minimum: Vector2 = grid._condition_rows[0].hbox.get_combined_minimum_size()
-	var r = A.eq(chooser._button.text, "100 types selected", "multi-selection trigger remains concise")
+	var r = A.is_true(row_minimum.x <= 700, "a long value cannot widen the query row; minimum=%s" % row_minimum)
 	if r is String: grid.queue_free(); return r
-	r = A.eq(chooser.selected_values(), keys, "concise trigger retains every selected catalog identity")
-	if r is String: grid.queue_free(); return r
-	grid._user_has_modified = true
-	var serialized: Dictionary = JSON.parse_string(grid.get_filter())
-	r = A.eq(serialized.conditions[0].value, keys, "QueryGrid serialization retains all catalog identities")
-	if r is String: grid.queue_free(); return r
-	r = A.is_true(chooser._button.tooltip_text.contains("Grid Type 099"), "trigger tooltip preserves full human-readable selection")
-	if r is String: grid.queue_free(); return r
-	r = A.is_true(row_minimum.x <= 700, "large selection cannot widen QueryGrid row; minimum=%s" % row_minimum)
-	if r is String: grid.queue_free(); return r
-	var long_key := ""
-	for record in grid._type_catalog:
-		if record.slug == "long_type": long_key = record.key
-	chooser.set_selected_values([long_key])
-	r = A.eq(chooser._button.text, long_label, "single selection still presents its human label")
-	if r is String: grid.queue_free(); return r
-	r = A.is_true(chooser._button.get_combined_minimum_size().x <= 240, "ellipsis prevents one long label from setting row width; button minimum=%s" % chooser._button.get_combined_minimum_size())
-	if r is String: grid.queue_free(); return r
-	r = A.is_true(chooser._button.tooltip_text.contains(long_label), "full long label remains available as detail")
+	r = A.eq(picker.tooltip_text, long_slug, "the full value remains available as detail")
 	grid.queue_free(); return r
 
 func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
@@ -322,22 +298,19 @@ func test_catalog_row_separates_count_and_moves_purpose_to_tooltip() -> Variant:
 	r = A.is_true(chooser._list.get_item_tooltip(discussion_index).contains("Async decisions"), "purpose remains available as detail")
 	chooser.queue_free(); return r
 
-func test_query_grid_refreshes_empty_catalog_after_loading_legacy_project() -> Variant:
-	var state := AppState.new(); state.schema = _schema()
+func test_query_grid_refreshes_type_values_after_loading_legacy_project() -> Variant:
+	var state := AppState.new(); state.schema = {"types": {}}
 	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
-	grid._condition_rows[0].type_chooser._search.text = "discussion"
+	var picker: EnumValuePicker = grid._condition_rows[0].value_picker
+	var r = A.eq(picker.values(), [], "no types before a project loads")
+	if r is String: grid.queue_free(); return r
 	var db := _make_db("Loaded", [{"type": "discussion", "status": "active", "title": "Loaded thread"}])
 	db.close(); _dbs.erase(db)
 	state.load_dct(_db_dir + "/Loaded.dct")
 	_dbs.append(state.db)
-	var chooser: TypeChooser = grid._condition_rows[0].type_chooser
-	var r = A.eq(chooser._search.text, "discussion", "catalog refresh preserves active search")
+	r = A.is_true(picker.values().has("discussion"), "loaded project's types replace the empty list")
 	if r is String: grid.queue_free(); return r
-	r = A.eq(chooser._list.item_count, 1, "loaded catalog replaces empty choices")
-	if r is String: grid.queue_free(); return r
-	r = A.is_true(chooser._list.get_item_text(0).contains("Loaded") and chooser._list.get_item_text(0).contains("1 item"), "loaded project and live count are shown")
-	if r is String: grid.queue_free(); return r
-	chooser.set_selected_values([chooser._list.get_item_metadata(0)]); grid._user_has_modified = true; grid._run_query()
+	picker.set_search("discussion"); picker.choose_first_match(); grid._run_query()
 	r = A.eq(grid._current_results.size(), 1, "refreshed choice executes against loaded file")
 	grid.queue_free(); return r
 
@@ -423,33 +396,28 @@ func test_unsupported_project_operator_reports_actionable_error() -> Variant:
 	if r is String: return r
 	return A.is_true(state.last_cross_project_query_error.contains("gt"), "error identifies operator")
 
-func test_query_grid_serializes_project_identity_and_executes_only_that_project() -> Variant:
+func test_query_grid_project_and_type_select_one_project_definition() -> Variant:
 	var state := _two_project_state()
 	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
-	var alpha_key := ""
-	for record in grid._type_catalog:
-		if record.project == "Alpha" and record.slug == "discussion": alpha_key = record.key
-	grid._condition_rows[0].type_chooser.set_selected_values([alpha_key]); grid._user_has_modified = true
-	var saved = JSON.parse_string(grid.get_filter())
-	var r = A.eq(saved.conditions[0].op, "catalog_in", "saved UI filter retains stable identity")
+	var conditions := [{"field": "project", "op": "eq", "value": "Alpha"}, {"field": "type", "op": "eq", "value": "discussion", "conj": "and"}]
+	grid.set_filter(JSON.stringify({"conditions": conditions}))
+	var r = A.eq(JSON.parse_string(grid.get_filter()).conditions, conditions, "saved UI filter keeps the plain project and type")
 	if r is String: grid.queue_free(); return r
-	grid._run_query()
-	r = A.eq(grid._current_results.size(), 1, "compiled selection returns one project row")
+	r = A.eq(grid._current_results.size(), 1, "one project row returned")
 	if r is String: grid.queue_free(); return r
 	r = A.eq(grid._current_results[0].title, "Alpha thread", "duplicate Beta slug excluded")
 	grid.queue_free(); return r
 
-func test_query_grid_multiselect_keeps_each_project_type_pair_coupled() -> Variant:
+func test_query_grid_or_branches_keep_each_project_type_pair_coupled() -> Variant:
 	var state := _two_project_state()
 	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
-	var keys: Array = []
-	for record in grid._type_catalog:
-		if (record.project == "Alpha" and record.slug == "discussion") or (record.project == "Beta" and record.slug == "code_review"): keys.append(record.key)
-	grid._condition_rows[0].type_chooser.set_selected_values(keys); grid._user_has_modified = true; grid._run_query()
+	grid.set_filter(JSON.stringify({"conditions": [
+		{"field": "project", "op": "eq", "value": "Alpha"}, {"field": "type", "op": "eq", "value": "discussion", "conj": "and"},
+		{"field": "project", "op": "eq", "value": "Beta", "conj": "or"}, {"field": "type", "op": "eq", "value": "code_review", "conj": "and"}]}))
 	var titles: Array = []
 	for item in grid._current_results: titles.append(item.title)
 	titles.sort()
-	var r = A.eq(titles, ["Alpha thread", "Beta requested review", "Beta review"], "multiselect retains project/type pair identity")
+	var r = A.eq(titles, ["Alpha thread", "Beta requested review", "Beta review"], "each OR branch keeps its own project/type pair")
 	grid.queue_free(); return r
 
 func test_shortcut_actions_enforce_caps_and_persist_recency_order() -> Variant:
@@ -487,24 +455,20 @@ func test_legacy_unqualified_filter_round_trips_without_rebinding() -> Variant:
 	var r = A.eq(saved, original, "legacy literal survives dcq save and load")
 	grid.queue_free(); reopened.queue_free(); return r
 
-func test_grouped_status_roundtrip_keeps_exact_project_identity() -> Variant:
+func test_saved_catalog_status_reloads_as_plain_status() -> Variant:
 	var state := _two_project_state()
 	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
 	var alpha_key := ""
 	for record in grid._type_catalog:
 		if record.project == "Alpha" and record.slug == "code_review": alpha_key = record.key
-	var original := {"conditions": [{"field": "status", "op": "catalog_status", "value": {"key": alpha_key, "status": "requested"}}]}
-	grid.set_filter(JSON.stringify(original))
-	var path := _db_dir + "/grouped-status.dcq"
-	grid.save_dcq(path)
-	var reopened := QueryGrid.new(); add_child(reopened); reopened.init(state); reopened.load_dcq(path)
-	var saved = JSON.parse_string(reopened.get_filter())
-	var r = A.eq(saved, original, "group identity survives UI and dcq round trip")
-	if r is String: grid.queue_free(); reopened.queue_free(); return r
-	r = A.eq(reopened._current_results.size(), 1, "same literal in another project remains excluded")
-	if r is String: grid.queue_free(); reopened.queue_free(); return r
-	r = A.eq(reopened._current_results[0].title, "Alpha review", "reloaded query executes against original group")
-	grid.queue_free(); reopened.queue_free(); return r
+	grid.set_filter(JSON.stringify({"conditions": [{"field": "status", "op": "catalog_status", "value": {"key": alpha_key, "status": "requested"}}]}))
+	var r = A.eq(JSON.parse_string(grid.get_filter()), {"conditions": [{"field": "status", "op": "eq", "value": "requested"}]}, "a query saved by the former catalog chooser reloads as the plain state")
+	if r is String: grid.queue_free(); return r
+	var titles: Array = []
+	for item in grid._current_results: titles.append(item.title)
+	titles.sort()
+	r = A.eq(titles, ["Alpha review", "Beta requested review"], "the plain state matches in every project")
+	grid.queue_free(); return r
 
 func test_incompatible_status_remains_visible_in_query_grid() -> Variant:
 	var state := _two_project_state()
@@ -513,17 +477,14 @@ func test_incompatible_status_remains_visible_in_query_grid() -> Variant:
 	var row: Dictionary = grid._condition_rows[1]
 	var r = A.is_true(row.validation.visible, "incompatible condition is visibly invalid")
 	if r is String: grid.queue_free(); return r
-	r = A.eq(grid._dropdown_stored_value(row.value_dropdown), "active", "literal selection retained")
+	r = A.eq(row.value_picker.text, "active (not available)", "literal selection retained and marked")
 	grid.queue_free(); return r
 
 func test_added_and_reindexed_rows_refresh_branch_scope_immediately() -> Variant:
 	var state := AppState.new()
 	state.schema = _schema()
 	var grid := QueryGrid.new(); add_child(grid); grid.init(state)
-	var discussion_key := ""
-	for record in grid._type_catalog:
-		if record.slug == "discussion": discussion_key = record.key
-	grid._condition_rows[0].type_chooser.set_selected_values([discussion_key])
+	grid._condition_rows[0].value_picker.set_value("discussion")
 	grid._refresh_scoped_controls()
 	grid._add_condition_row(false)
 	var added: Dictionary = grid._condition_rows[1]

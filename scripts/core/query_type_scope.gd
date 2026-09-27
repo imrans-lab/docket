@@ -1,8 +1,9 @@
 extends RefCounted
 class_name QueryTypeScope
-## Resolves catalog identities and query choices per OR branch. Project/type
-## pairs stay coupled until compilation, preventing duplicate slugs in separate
-## projects from collapsing into one predicate.
+## Resolves catalog identities and query choices per OR branch. A branch's
+## scope is the type slugs (or catalog identities) and project names its AND
+## conditions pin; project/type pairs stay coupled until compilation so a slug
+## shared by two projects binds each project's own type definition.
 
 const UNIVERSAL_FIELDS := ["type", "status", "priority", "severity", "title", "description", "assigned_to", "directed_to", "tags", "has_attachment", "id", "created_at", "updated_at", "project", "blocked_by", "parent"]
 
@@ -16,9 +17,14 @@ static func branch_scope(conditions: Array, row_index: int, catalog: Array = [])
 	var wanted := branch_index(conditions, row_index)
 	var identity_sets: Array = []
 	var slug_sets: Array = []
+	var project_sets: Array = []
 	for i in conditions.size():
 		if branch_index(conditions, i) != wanted: continue
 		var cond: Dictionary = conditions[i]
+		if cond.get("field", "") == "project" and str(cond.get("op", "eq")) in ["eq", "in"]:
+			var named: Array = (cond.get("value") if cond.get("value") is Array else [cond.get("value", "")]).filter(func(value): return not str(value).is_empty())
+			if not named.is_empty(): project_sets.append(named)
+			continue
 		if cond.get("field", "") != "type": continue
 		var raw = cond.get("value", [])
 		var values: Array = raw if raw is Array else [raw]
@@ -36,7 +42,7 @@ static func branch_scope(conditions: Array, row_index: int, catalog: Array = [])
 			var record := TypeCatalog.find_by_key(catalog, str(key))
 			if not record.is_empty() and not identity_slugs.has(record.slug): identity_slugs.append(record.slug)
 		slugs = identity_slugs if slugs.is_empty() else _intersect_two(slugs, identity_slugs)
-	return {"known": not identity_sets.is_empty() or not slug_sets.is_empty(), "identities": identities, "types": slugs}
+	return {"known": not identity_sets.is_empty() or not slug_sets.is_empty(), "identities": identities, "types": slugs, "projects": _intersection(project_sets)}
 
 static func _intersection(sets: Array) -> Array:
 	if sets.is_empty(): return []
@@ -52,7 +58,9 @@ static func _intersect_two(left: Array, right: Array) -> Array:
 		if right.has(value): result.append(value)
 	return result
 
-static func _record_in_scope(record: Dictionary, scope: Dictionary) -> bool:
+static func record_in_scope(record: Dictionary, scope: Dictionary) -> bool:
+	var projects: Array = scope.get("projects", [])
+	if not projects.is_empty() and not projects.has(str(record.get("project", ""))): return false
 	if not scope.known: return true
 	if not scope.identities.is_empty(): return scope.identities.has(record.key)
 	return scope.types.has(record.slug)
@@ -61,7 +69,7 @@ static func statuses(catalog: Array, scope: Dictionary) -> Array:
 	var groups: Array = []
 	for value in catalog:
 		var record: Dictionary = value
-		if not _record_in_scope(record, scope): continue
+		if not record_in_scope(record, scope): continue
 		groups.append({"key": record.key, "type": record.slug, "label": record.label, "project": record.project, "values": record.states.duplicate()})
 	return groups
 
@@ -69,7 +77,7 @@ static func fields(catalog: Array, scope: Dictionary) -> Array:
 	var available := UNIVERSAL_FIELDS.duplicate()
 	for value in catalog:
 		var record: Dictionary = value
-		if not _record_in_scope(record, scope): continue
+		if not record_in_scope(record, scope): continue
 		for field_value in record.fields:
 			var field := str(field_value)
 			if not available.has(field): available.append(field)
@@ -97,11 +105,18 @@ static func compile_catalog_conditions(conditions: Array, catalog: Array, includ
 	var compiled: Array = []
 	for group in groups:
 		var identities: Array = []
+		var group_scope: Dictionary = branch_scope(group, 0, catalog)
 		for group_condition in group:
 			if group_condition.get("field", "") == "type" and group_condition.get("op", "") == "catalog_in":
 				for identity in group_condition.get("value", []):
 					var scoped_record := TypeCatalog.find_by_key(catalog, str(identity))
 					if not scoped_record.is_empty() and not identities.has(scoped_record.key): identities.append(scoped_record.key)
+			elif group_condition.get("field", "") == "type" and group_condition.get("op", "") == "eq":
+				# A plain slug binds typed fields to every loaded definition of that
+				# slug the branch's project conditions allow.
+				for record_value in catalog:
+					var slug_record: Dictionary = record_value
+					if str(slug_record.slug) == str(group_condition.get("value", "")) and record_in_scope(slug_record, {"known": false, "projects": group_scope.projects}) and not identities.has(slug_record.key): identities.append(slug_record.key)
 		var expanded: Array = []
 		for group_condition in group:
 			var scoped_condition: Dictionary = group_condition.duplicate(true)

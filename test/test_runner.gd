@@ -25,6 +25,7 @@ func _ready() -> void:
 		preload("res://test/test_vault_kdf_migration.gd"),
 		preload("res://test/test_audit_log.gd"),
 		preload("res://test/test_query_field_validation.gd"),
+		preload("res://test/test_query_grid_conditions.gd"),
 		preload("res://test/test_meta_roundtrip.gd"),
 		preload("res://test/test_user_prefs.gd"),
 		preload("res://test/test_type_catalog.gd"),
