@@ -5,6 +5,9 @@ class_name QueryGrid
 
 signal item_selected(id: String, project: String)
 signal item_activated(id: String, project: String)
+## A project condition's "add…" entry was chosen; the shell runs its
+## add-project flow and the grid selects the newly loaded project.
+signal add_project_requested
 
 var _state: AppState
 var _run_btn: Button
@@ -45,14 +48,19 @@ const _OP_LABELS := {
 }
 
 # Fields whose value is chosen from a list (EnumValuePicker), never typed.
-const _ENUM_FIELDS := ["type", "status", "priority", "severity", "has_attachment"]
+const _ENUM_FIELDS := ["type", "status", "project", "priority", "severity", "has_attachment"]
 const _FIXED_ENUM_VALUES := {
 	"priority": ["1", "2", "3", "4"],
 	"severity": ["1", "2", "3", "4"],
 	"has_attachment": ["true", "false"],
 }
+const _ADD_PROJECT_LABEL := "add…"
 var _type_catalog: Array = []
 var _refreshing_scope := false
+# Row whose "add…" entry opened the add-project flow, and the projects loaded
+# before it, so the newly loaded project can be selected in that row.
+var _project_add_row: Dictionary = {}
+var _projects_before_add: Array = []
 
 
 ## Plain values offered for an enumerated field. Type and status come from the
@@ -72,6 +80,8 @@ func _enum_values(field_name: String, scope: Dictionary) -> Array:
 			var states: Array = []
 			for group in QueryTypeScope.statuses(_type_catalog, scope): states.append_array(group.values)
 			return states
+		"project":
+			return _state.get_project_dbs().keys()
 	return _FIXED_ENUM_VALUES.get(field_name, [])
 
 # Column index → data field name (dynamic — may include "project" when multi-project)
@@ -112,8 +122,27 @@ func init(state: AppState) -> void:
 
 func _on_file_changed() -> void:
 	_rebuild_type_catalog()
+	_select_added_project()
 	_refresh_scoped_controls()
 	refresh()
+
+
+func _request_add_project(row_data: Dictionary) -> void:
+	_project_add_row = row_data
+	_projects_before_add = _state.get_project_dbs().keys()
+	add_project_requested.emit()
+
+
+func _select_added_project() -> void:
+	if _project_add_row.is_empty() or _find_condition_row(_project_add_row) < 0:
+		_project_add_row = {}
+		return
+	for project_name in _state.get_project_dbs():
+		if not _projects_before_add.has(project_name):
+			_project_add_row.value_picker.set_value(str(project_name))
+			_user_has_modified = true
+			_project_add_row = {}
+			return
 
 
 func _rebuild_type_catalog() -> void:
@@ -518,6 +547,7 @@ func _add_condition_row(is_first: bool) -> void:
 		_user_has_modified = true
 		_refresh_scoped_controls()
 	)
+	value_picker.add_requested.connect(func(): _request_add_project(row_data))
 	hbox.add_child(value_picker)
 	row_data["value_picker"] = value_picker
 
@@ -658,6 +688,8 @@ func _update_ops_for_row(row_idx: int) -> void:
 		row.op.add_item(_OP_LABELS.get(o, o))
 	var picker: EnumValuePicker = row.value_picker
 	picker.set_value("")
+	picker.set_add_entry(_ADD_PROJECT_LABEL if field_name == "project" else "")
+	picker.missing_suffix = " (not loaded)" if field_name == "project" else " (not available)"
 	_sync_value_widgets(row)
 
 
@@ -737,8 +769,10 @@ func _run_query() -> void:
 		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
 		query["sort"] = [sort_value]
 
-	# Use cross-project query if multiple projects loaded
-	if _state._project_dbs.size() > 1:
+	# Project is not a database column; the cross-project path evaluates it,
+	# so it also serves a single loaded project when a row filters on project.
+	var filters_project: bool = _condition_snapshots().any(func(cond): return cond.field == "project")
+	if _state._project_dbs.size() > 1 or (filters_project and not _state._project_dbs.is_empty()):
 		_current_results = _state.execute_cross_project_query(query)
 		if not _state.last_cross_project_query_error.is_empty():
 			_tree.clear()

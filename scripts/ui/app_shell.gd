@@ -214,6 +214,7 @@ func _build_ui() -> void:
 	_query_grid.init(_state)
 	_query_grid.item_selected.connect(_on_item_selected)
 	_query_grid.item_activated.connect(_on_item_activated)
+	_query_grid.add_project_requested.connect(_on_menu_action.bind("add_project"))
 
 	_record_form = RecordForm.new()
 	_record_form.custom_minimum_size.x = 400

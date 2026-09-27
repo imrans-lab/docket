@@ -190,3 +190,42 @@ func test_type_and_status_query_matches_core_query() -> Variant:
 	if r is String: grid.queue_free(); reopened.queue_free(); return r
 	r = A.eq(_titles(reopened._current_results), core, "the reloaded query returns the core query's rows")
 	grid.queue_free(); reopened.queue_free(); return r
+
+
+func test_project_value_lists_loaded_projects_and_add_selects_new_one() -> Variant:
+	var state := _state()
+	var grid := _grid(state)
+	_set_field(grid, 0, "project")
+	var picker: EnumValuePicker = grid._condition_rows[0].value_picker
+	var r = A.is_true(picker.visible and not grid._condition_rows[0].value.visible and picker.values() == ["legacy", "typed"], "project value is a picker of loaded projects, sorted: %s" % [picker.values()])
+	if r is String: grid.queue_free(); return r
+	r = A.eq(picker.visible_entries().back(), "add…", "the list ends with an add entry")
+	if r is String: grid.queue_free(); return r
+	_pick(grid, 0, "typed")
+	grid._run_query()
+	r = A.is_true(grid._condition_snapshots() == [{"field": "project", "op": "eq", "value": "typed"}] and _titles(grid._current_results) == ["T bug new", "T bug resolved", "T review"], "project condition executes the chosen project only")
+	if r is String: grid.queue_free(); return r
+	var third_path := _db_dir + "/third.dct"
+	var third := _legacy_db("third", [{"type": "bug", "status": "new", "title": "3 bug new"}])
+	third.close(); _dbs.erase(third)
+	var requests := [0]
+	grid.add_project_requested.connect(func(): requests[0] += 1)
+	picker.set_search("")
+	picker._choose_index(picker.visible_entries().find("add…"))
+	r = A.eq(requests[0], 1, "add… asks the shell to run its add-project flow")
+	if r is String: grid.queue_free(); return r
+	var error := state.add_project(third_path)
+	_dbs.append(state.get_db_for_project("third"))
+	r = A.is_true(error.is_empty() and picker.get_value() == "third" and picker.values() == ["legacy", "third", "typed"], "the newly loaded project is listed and selected: %s %s" % [error, picker.values()])
+	if r is String: grid.queue_free(); return r
+	grid._run_query()
+	r = A.eq(_titles(grid._current_results), ["3 bug new"], "the query runs against the added project")
+	if r is String: grid.queue_free(); return r
+	grid.set_filter(JSON.stringify({"conditions": [{"field": "project", "op": "eq", "value": "gone"}]}))
+	r = A.eq(grid._condition_rows[0].value_picker.text, "gone (not loaded)", "a saved project that is not loaded stays visible, never blank")
+	if r is String: grid.queue_free(); return r
+	state._project_dbs.erase("typed"); state._project_dbs.erase("third")
+	grid.set_filter(JSON.stringify({"conditions": [{"field": "project", "op": "eq", "value": "legacy"}]}))
+	r = A.eq(_titles(grid._current_results), ["L bug new", "L bug resolved", "L chore new"], "a project condition also runs with a single project loaded")
+	grid.queue_free(); return r
+
