@@ -156,3 +156,37 @@ func test_enumerated_values_are_plain_sorted_pickers_in_every_row() -> Variant:
 	_pick(grid, 0, "code_review")
 	r = A.eq(second.value_picker.values(), ["approved", "requested"], "status values narrow to the chosen type")
 	grid.queue_free(); return r
+
+
+func test_type_and_status_query_matches_core_query() -> Variant:
+	var state := _state()
+	var grid := _grid(state)
+	_pick(grid, 0, "bug")
+	grid._add_condition_row(false)
+	var r = A.eq(grid._condition_rows[1].conj.get_item_text(grid._condition_rows[1].conj.selected), "AND", "a new row joins with AND by default")
+	if r is String: grid.queue_free(); return r
+	_set_field(grid, 1, "status")
+	_pick(grid, 1, "new")
+	var expected := [{"field": "type", "op": "eq", "value": "bug"}, {"field": "status", "op": "eq", "value": "new", "conj": "and"}]
+	r = A.eq(grid._condition_snapshots(), expected, "rows build plain type/status conditions")
+	if r is String: grid.queue_free(); return r
+	grid._run_query()
+	var core := _core_titles(state, expected)
+	r = A.is_true(core == ["L bug new", "T bug new"] and _titles(grid._current_results) == core, "GUI returns exactly the core query's rows: gui=%s core=%s" % [_titles(grid._current_results), core])
+	if r is String: grid.queue_free(); return r
+	_set_op(grid, 1, "not equals")
+	grid._run_query()
+	var not_new := [expected[0], {"field": "status", "op": "neq", "value": "new", "conj": "and"}]
+	r = A.eq(_titles(grid._current_results), _core_titles(state, not_new), "not equals matches the core query too")
+	if r is String: grid.queue_free(); return r
+	_set_op(grid, 1, "equals")
+	_pick(grid, 1, "new")
+	var path := _db_dir + "/bugs.dcq"
+	grid.save_dcq(path)
+	var reopened := _grid(state)
+	reopened.load_dcq(path)
+	var row0: Dictionary = reopened._condition_rows[0]
+	r = A.is_true(row0.value_picker.visible and not row0.value.visible and reopened._condition_snapshots() == expected, "a saved query reloads into the same pickers and conditions")
+	if r is String: grid.queue_free(); reopened.queue_free(); return r
+	r = A.eq(_titles(reopened._current_results), core, "the reloaded query returns the core query's rows")
+	grid.queue_free(); reopened.queue_free(); return r
