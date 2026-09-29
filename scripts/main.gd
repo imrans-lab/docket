@@ -193,6 +193,8 @@ func _start_gui(opts: Dictionary) -> void:
 
 	# Owner records written while this GUI loads files name it as the GUI host.
 	SessionProject.role = "gui"
+	# Background settles read a project's cache in per-frame slices.
+	DocketDBJsonl.snapshot_slice_ms = 12
 
 	# Create and attach shell BEFORE loading .dct files so that
 	# file_changed signals reach the RecordForm (which connects in init).

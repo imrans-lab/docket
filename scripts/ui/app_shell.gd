@@ -103,9 +103,9 @@ func _ready() -> void:
 
 
 func _process(_delta: float) -> void:
-	## Commits each File → Save background settle on the first frame after its
-	## worker finishes, so the canonical is on disk for a git add right after
-	## Save; stops once nothing is in flight.
+	## Reads each background settle's next snapshot slice, and commits it on
+	## the first frame after its worker finishes, so the canonical is on disk
+	## for a git add right after Save; stops once nothing is in flight.
 	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
 	for pdb in _state.get_project_dbs().values():
 		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): return
@@ -547,6 +547,9 @@ func _on_poll_external_changes() -> void:
 	## cache, so without an actual reload it would redisplay stale rows.
 	## Also the GUI's own idle-debounced settle of sidecar appends.
 	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
+	# A debounce settle this tick started reads its slices on every frame.
+	for pdb in _state.get_project_dbs().values():
+		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): set_process(true)
 	var current_token := _get_projects_token()
 	if current_token == _last_projects_token:
 		return

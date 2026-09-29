@@ -2,10 +2,14 @@ extends RefCounted
 class_name JSONLSettleJob
 ## One canonical settle whose expensive middle runs on a worker thread.
 ##
-##   main    DocketDBJsonl._start_settle_job, under one FileLock hold: checks
+##   main    DocketDBJsonl._seal_settle_job, under one FileLock hold: checks
 ##           and every cache read (JSONLSerializer.snapshot), plus the identity
 ##           that snapshot stands for: the canonical's sha and the sidecar's
-##           bytes at that moment.
+##           bytes at that moment. A sliced job (begin_reading) first reads the
+##           large row sets in chunks over several ticks (read_slice); the hold
+##           takes them only if the cache generation (DocketDBJsonl.
+##           _cache_generation) is the one the reads started under, so every
+##           row stands for the same instant as the rest of the snapshot.
 ##   worker  _run: JSONLSerializer.format_all, sha256 of the text, and the full
 ##           write of the temp file. It touches no SQLite connection, sidecar,
 ##           lock or freshness state, and never renames.
@@ -34,6 +38,15 @@ var temp_path := ""
 var text_sha := ""
 var error := ""
 
+# Sliced read (main thread only): true until launch().
+var reading := false
+## Cache generation the sliced reads started under; restarts count retries.
+var generation: Array = []
+var restarts := 0
+var _read: Dictionary = {}
+var _set_index := 0
+var _offset := 0
+
 var _snapshot: Dictionary = {}
 var _task_id := -1
 # The pool's Callable does not keep this object alive; this does, until wait().
@@ -44,17 +57,65 @@ static func start(path: String, snapshot: Dictionary, source_sha: String, prefix
 	## snapshot, source_sha and prefix must come from one FileLock hold.
 	var job := JSONLSettleJob.new()
 	job.canonical_path = path
-	job.canonical_sha = source_sha
-	job.sidecar_prefix = prefix
-	job.started_ms = Time.get_ticks_msec()
-	job._snapshot = snapshot
-	job._self_ref = job
-	job._task_id = WorkerThreadPool.add_task(job._run, false, "docket canonical settle")
+	job.launch(snapshot, source_sha, prefix)
 	return job
 
 
+static func begin_reading(path: String, cache_generation: Array) -> JSONLSettleJob:
+	var job := JSONLSettleJob.new()
+	job.canonical_path = path
+	job.reading = true
+	job.generation = cache_generation
+	return job
+
+
+func restart_reading(cache_generation: Array) -> void:
+	## The cache was written since the reads began; they are dropped.
+	restarts += 1
+	generation = cache_generation
+	_read = {}
+	_set_index = 0
+	_offset = 0
+
+
+func read_slice(db: DocketDB, budget_ms: int, chunk_rows: int) -> bool:
+	## Main thread. Reads chunks of the sliced row sets until budget_ms has
+	## passed (at least one chunk). True once every sliced set is read; the
+	## caller checks db._last_sql_error.
+	var deadline := Time.get_ticks_msec() + budget_ms
+	while _set_index < JSONLSerializer.SLICED_SETS:
+		var key: String = JSONLSerializer.row_sets()[_set_index][0]
+		var rows := JSONLSerializer.read_chunk(db, _set_index, _offset, chunk_rows)
+		if not db._last_sql_error.is_empty(): return false
+		if not _read.has(key): _read[key] = []
+		(_read[key] as Array).append_array(rows)
+		_offset += rows.size()
+		if rows.size() < chunk_rows:
+			_set_index += 1
+			_offset = 0
+		if Time.get_ticks_msec() >= deadline: break
+	return _set_index >= JSONLSerializer.SLICED_SETS
+
+
+func rows_read() -> Dictionary:
+	## The sliced row sets read so far, for JSONLSerializer.snapshot.
+	return _read
+
+
+func launch(snapshot: Dictionary, source_sha: String, prefix: PackedByteArray) -> void:
+	## snapshot, source_sha and prefix must come from one FileLock hold.
+	reading = false
+	_read = {}
+	canonical_sha = source_sha
+	sidecar_prefix = prefix
+	started_ms = Time.get_ticks_msec()
+	_snapshot = snapshot
+	_self_ref = self
+	_task_id = WorkerThreadPool.add_task(_run, false, "docket canonical settle")
+
+
 func is_done() -> bool:
-	return _task_id < 0 or WorkerThreadPool.is_task_completed(_task_id)
+	return not reading and (_task_id < 0 or WorkerThreadPool.is_task_completed(_task_id))
 
 
 func wait() -> void:

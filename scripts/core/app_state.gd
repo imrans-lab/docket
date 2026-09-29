@@ -712,27 +712,33 @@ func reload_all() -> Array:
 	return reloaded
 
 
-func flush_all() -> Array:
+func flush_all() -> Dictionary:
 	## File → Save: settle, in the background, every JSONL project with anything
 	## pending (its own unsettled appends or a non-empty sidecar). The frame loop
-	## keeps running while workers format and write; each canonical is replaced
-	## on a later settle_projects tick. A clean project is not rewritten.
-	## Returns the projects with a settle in flight.
-	var flushed: Array = []
+	## keeps running while the snapshot is read and workers format and write;
+	## each canonical is replaced on a later settle_projects tick. A clean
+	## project is not rewritten. Returns {"settling": projects with a settle in
+	## flight, "refused": projects whose settle was refused at once, which
+	## rebuilds that project's cache from its files (DocketDBJsonl._fail_flush)}.
+	var settling: Array = []
+	var refused: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
 		if pdb is DocketDBJsonl:
 			var jsonl_db: DocketDBJsonl = pdb
 			var error := jsonl_db.settle_in_background()
-			if not error.is_empty(): push_warning("AppState: save of %s deferred: %s" % [proj_name, error])
-			if jsonl_db.is_settling(): flushed.append(proj_name)
-	return flushed
+			if not error.is_empty():
+				push_warning("AppState: save of %s deferred: %s" % [proj_name, error])
+				refused.append(proj_name)
+			if jsonl_db.is_settling(): settling.append(proj_name)
+	return {"settling": settling, "refused": refused}
 
 
 func save() -> void:
-	# File → Save: settle every project with pending changes so git sees them.
-	flush_all()
-	data_changed.emit()
+	## File → Save. A settle writes the cache's rows to the canonical and
+	## changes none of them, so views re-read (data_changed) only when a
+	## refusal rebuilt a project's cache.
+	if not (flush_all().refused as Array).is_empty(): data_changed.emit()
 
 
 func load_schema() -> void:

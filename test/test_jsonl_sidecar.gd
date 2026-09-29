@@ -246,7 +246,74 @@ func test_save_skips_clean_projects_and_quit_waits_for_the_background_write() ->
 		r = A.is_false(name.contains(".tmp."), "no temp file is left behind (%s)" % name)
 		if r is String: return _close_all(state, r)
 	r = A.is_true(FileAccess.get_file_as_bytes(clean_path) == clean_bytes and FileAccess.get_modified_time(clean_path) == clean_mtime and _sidecar_lines(clean_path) == 0, "the project with an empty sidecar keeps its bytes and mtime")
-	return _close_all(state, r)
+	if r is String: return _close_all(state, r)
+
+	# Control: a Save whose settle is refused rebuilds that project's cache and
+	# tells views to re-read. A foreign line appended to Dirty's canonical after
+	# a journaled mutation makes the settle's fingerprint check refuse.
+	var re_reads := [0]
+	state.data_changed.connect(func() -> void: re_reads[0] += 1)
+	r = A.eq(dirty.set_project_meta_checked({"hypothesis": "save-probe-3"}), "", "a mutation journals before the foreign write")
+	if r is String: return _close_all(state, r)
+	var foreign := FileAccess.open(dirty_path, FileAccess.READ_WRITE)
+	foreign.seek_end()
+	foreign.store_string("\n" + JSON.stringify({"_type": "saved_query", "name": "foreign-probe", "query": {}}) + "\n")
+	foreign.close()
+	state.save()
+	r = A.eq(re_reads[0], 1, "a Save whose settle is refused emits data_changed once")
+	if r is String: return _close_all(state, r)
+	r = A.eq(dirty.flush_checked(), "", "the rebuilt project settles, leaving every project clean")
+	if r is String: return _close_all(state, r)
+
+	# A Save with every project clean tells no view to re-read the cache.
+	state.save()
+	return _close_all(state, A.eq(re_reads[0], 1, "a Save of clean projects emits no data_changed"))
+
+
+func test_sliced_snapshot_restarts_when_the_cache_is_written_between_slices() -> Variant:
+	## A background settle reading its snapshot one row per tick. A mutation
+	## after the first item row was read must still reach the canonical: the
+	## oracle is the canonical's bytes and the sidecar's absence after commit.
+	var path := DIR + "/Sliced.dct"
+	var created := DocketDBJsonl.create_new_jsonl(path)
+	if created == null: return "could not create %s" % path
+	created.close()
+	var db := DocketDBJsonl.open_jsonl(path)
+	if db == null: return "project did not open: %s" % DocketDBJsonl.last_open_error
+	var ids: Array = []
+	for i in 3:
+		var id := db.next_id()
+		ids.append(id)
+		var error := db.insert_item(id, {"type": "bug", "status": "open", "title": "sliced-item-%d" % i, "created_at": "2026-09-29T10:00:00Z", "updated_at": "2026-09-29T10:00:00Z", "tags": ["t%d" % i]})
+		if not error.is_empty(): db.close(); return "insert failed: %s" % error
+	ids.sort()
+	var saved_slice := DocketDBJsonl.snapshot_slice_ms
+	var saved_rows := DocketDBJsonl.snapshot_chunk_rows
+	DocketDBJsonl.snapshot_slice_ms = 0
+	DocketDBJsonl.snapshot_chunk_rows = 1
+	var r = A.eq(db.settle_in_background(), "", "Save starts a sliced settle")
+	if r is String: return _restore_slicing(db, saved_slice, saved_rows, r)
+	r = A.is_true(db.is_settling(), "the settle is reading its snapshot")
+	if r is String: return _restore_slicing(db, saved_slice, saved_rows, r)
+	# The first slice read the first item row; this rewrites that row.
+	r = A.eq(db.update_item_fields_checked(str(ids[0]), {"title": "rewritten-between-slices"}), "", "a mutation between slices journals")
+	if r is String: return _restore_slicing(db, saved_slice, saved_rows, r)
+	var ticks := 0
+	while db.is_settling() and ticks < 500:
+		DocketDBJsonl.settle_projects({"Sliced": db}, true)
+		OS.delay_msec(2)
+		ticks += 1
+	var text := FileAccess.get_file_as_string(path)
+	var parsed := JSONLParser.parse_file(path)
+	r = A.is_true(not db.is_settling() and str(parsed.get("error", "")).is_empty() and text.contains("rewritten-between-slices") and not text.contains("sliced-item-0") and text.contains("sliced-item-2") and text.contains("\"t2\"") and _sidecar_lines(path) == 0, "the canonical parses, holds the mid-read rewrite and every item and tag, and the sidecar is retired")
+	return _restore_slicing(db, saved_slice, saved_rows, r)
+
+
+func _restore_slicing(db: DocketDBJsonl, slice_ms: int, chunk_rows: int, result: Variant) -> Variant:
+	DocketDBJsonl.snapshot_slice_ms = slice_ms
+	DocketDBJsonl.snapshot_chunk_rows = chunk_rows
+	db.close()
+	return result
 
 
 func _close_all(state: AppState, result: Variant) -> Variant:

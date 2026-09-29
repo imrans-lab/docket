@@ -13,8 +13,9 @@ class_name DocketDBJsonl
 ## changes the sidecar does not journal (type registry, secrets, saved queries).
 ##
 ## The debounce and File → Save settle in the background (JSONLSettleJob): the
-## cache is read on the main thread, formatting and the temp-file write run on
-## a worker, and the rename commits on a later main-thread tick. Every other
+## cache is read on the main thread (in per-tick slices when
+## snapshot_slice_ms >= 0), formatting and the temp-file write run on a
+## worker, and the rename commits on a later main-thread tick. Every other
 ## settle is synchronous and first waits for a background one to commit.
 ##
 ## Opening flow:
@@ -58,6 +59,15 @@ var _pending_first_ms: int = 0
 var _pending_last_ms: int = 0
 # The background settle in flight, or null. At most one per project.
 var _settle_job: JSONLSettleJob = null
+
+## Per-tick time budget for reading a background settle's snapshot in slices
+## (JSONLSettleJob.read_slice), so no frame holds the whole cache read; -1
+## reads it in one FileLock hold. The GUI sets it (main.gd _start_gui).
+static var snapshot_slice_ms: int = -1
+## Rows per chunk of a sliced read.
+static var snapshot_chunk_rows: int = 500
+## Restarts after which a sliced read falls back to one hold.
+const MAX_SNAPSHOT_RESTARTS := 3
 
 # Reason the most recent open_jsonl() returned null (e.g. unresolved conflict
 # markers). Read immediately after a null return.
@@ -267,7 +277,8 @@ func reload() -> bool:
 #   settle_if_idle        settle_projects(idle_only)                 async: commits a finished
 #                                                                    job or starts one when idle
 #   settle_if_pending     close(), settle_projects(quit)             sync
-#   finish_settle         every sync settle, before reading cache    sync: wait + commit
+#   finish_settle         every sync settle, before reading cache    sync: wait + commit; a job
+#                                                                    still reading slices is dropped
 #   settle_projects       idle: DocketHttpServer._process, AppShell  per project, see above
 #                         _process and 3 s poll; quit: _exit_tree,
 #                         AppShell._quit
@@ -310,12 +321,17 @@ func settle_in_background() -> String:
 		var error := _poll_settle_job()
 		if not error.is_empty() or _settle_job != null: return error
 	if not has_pending_sidecar() and not JSONLSidecar.has_content(JSONLSidecar.path_for(_jsonl_path)): return ""
-	return _start_settle_job()
+	return _start_settle_job(true)
 
 
 func finish_settle() -> String:
-	## Wait for the background settle, if any, and commit it.
+	## Wait for the background settle, if any, and commit it. A job still
+	## reading its snapshot in slices has written nothing and is dropped; its
+	## records stay journaled for the caller's own settle.
 	if _settle_job == null: return ""
+	if _settle_job.reading:
+		_settle_job = null
+		return ""
 	return _commit_settle_job()
 
 
@@ -335,9 +351,10 @@ func settle_if_idle(now_ms: int) -> String:
 	if _settle_job != null:
 		error = _poll_settle_job()
 	elif has_pending_sidecar() and _is_open and (now_ms - _pending_last_ms >= SETTLE_IDLE_MS or now_ms - _pending_first_ms >= SETTLE_MAX_AGE_MS):
-		error = _start_settle_job()
+		error = _start_settle_job(true)
 	# Back off a failing settle to the next idle window instead of every tick.
 	if not error.is_empty(): _pending_last_ms = now_ms
+	if _settle_job == null and _is_open: _freshness.recheck_if_due(_jsonl_path)
 	return error
 
 
@@ -661,52 +678,112 @@ func _settle_canonical() -> String:
 	return ""
 
 
-func _start_settle_job() -> String:
-	## Main-thread half of a background settle: the synchronous settle's checks,
-	## except the per-item envelope check, which the worker runs on the snapshot.
+func _start_settle_job(sliced: bool = false) -> String:
+	## Main-thread half of a background settle. With sliced and
+	## snapshot_slice_ms >= 0 the large row sets are read over the following
+	## ticks (_advance_settle_job) before the hold; otherwise the hold is now.
+	if _write_blocked:
+		return last_write_error
+	if not FileAccess.file_exists(_jsonl_path):
+		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
+	if not sliced or snapshot_slice_ms < 0:
+		return _seal_settle_job(null)
+	var cache_generation := _cache_generation()
+	if cache_generation.is_empty(): return _seal_settle_job(null)
+	_settle_job = JSONLSettleJob.begin_reading(_jsonl_path, cache_generation)
+	return _advance_settle_job()
+
+
+func _advance_settle_job() -> String:
+	## One tick of a sliced read. Any cache write since the reads began (this
+	## connection's or another process's) restarts them; after
+	## MAX_SNAPSHOT_RESTARTS the snapshot is taken in one hold instead.
+	var job := _settle_job
+	var cache_generation := _cache_generation()
+	if cache_generation != job.generation or cache_generation.is_empty():
+		if job.restarts >= MAX_SNAPSHOT_RESTARTS or cache_generation.is_empty():
+			_settle_job = null
+			var fallback_error := _seal_settle_job(null)
+			if _settle_job != null: _settle_job.resettle = job.resettle
+			return fallback_error
+		job.restart_reading(cache_generation)
+	_last_sql_error = ""
+	var complete := job.read_slice(self, snapshot_slice_ms, snapshot_chunk_rows)
+	if not _last_sql_error.is_empty():
+		_settle_job = null
+		return _fail_flush("cache read failed during serialization: %s" % _last_sql_error)
+	return _seal_settle_job(job) if complete else ""
+
+
+func _seal_settle_job(job: JSONLSettleJob) -> String:
+	## Takes the snapshot and launches the worker; job is a sliced job whose
+	## row sets are all read, or null to read everything here.
 	##
 	## One FileLock hold covers the source check against the stored jsonl_hash,
 	## the type-pointer check, the cache snapshot and the sidecar read. Every
 	## journaled mutation checks, appends, stores its identity and commits its
 	## cache rows under the same lock (_commit_mutation), so no other process's
 	## append or rows land between any two of them: the prefix is exactly the
-	## sidecar the snapshot and the stored identity stand for. The
-	## hold is reads only (one freshness-gated hash of each file, SQLite
+	## sidecar the snapshot and the stored identity stand for. Rows a sliced job
+	## read before the hold are used only if the cache generation still equals
+	## the one they were read under, so they equal what a read here would
+	## return; otherwise the hold is dropped and the next tick restarts them.
+	## The hold is reads only (one freshness-gated hash of each file, SQLite
 	## selects, one sidecar read); formatting runs on the worker. Nothing inside
 	## appends or settles, so it never waits on this process's own lock.
-	if _write_blocked:
-		return last_write_error
-	if not FileAccess.file_exists(_jsonl_path):
-		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
 	_last_sql_error = ""
 	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
 	if lock == null:
+		_settle_job = null
 		return _fail_flush("could not acquire advisory lock for %s" % _jsonl_path)
 	var stored := super.get_meta_value("jsonl_hash", "")
 	if _source_fingerprint(lock.contended) != stored:
 		lock.release()
+		_settle_job = null
 		return _fail_flush("canonical source changed; reload before writing")
+	if job != null and _cache_generation() != job.generation:
+		lock.release()
+		return ""
 	var pointer_error := _validate_type_pointers()
 	var snapshot := {}
-	if pointer_error.is_empty(): snapshot = JSONLSerializer.snapshot(self)
+	if pointer_error.is_empty(): snapshot = JSONLSerializer.snapshot(self, job.rows_read() if job != null else {})
 	var prefix := JSONLSidecar.read_bytes(JSONLSidecar.path_for(_jsonl_path))
 	lock.release()
+	if not pointer_error.is_empty() or not _last_sql_error.is_empty() or not str(prefix.error).is_empty():
+		_settle_job = null
 	if not pointer_error.is_empty(): return _fail_flush(pointer_error)
 	if not _last_sql_error.is_empty():
 		return _fail_flush("cache read failed during serialization: %s" % _last_sql_error)
 	if not str(prefix.error).is_empty():
 		push_error("DocketDBJsonl: %s" % prefix.error)
 		return _fail_flush(str(prefix.error))
-	_settle_job = JSONLSettleJob.start(_jsonl_path, snapshot, JSONLSidecar.canonical_part(stored), prefix.bytes)
+	if job == null:
+		_settle_job = JSONLSettleJob.start(_jsonl_path, snapshot, JSONLSidecar.canonical_part(stored), prefix.bytes)
+	else:
+		job.launch(snapshot, JSONLSidecar.canonical_part(stored), prefix.bytes)
 	return ""
 
 
+func _cache_generation() -> Array:
+	## Moves whenever the cache is written: total_changes() counts this
+	## connection's row writes, and PRAGMA data_version changes when another
+	## connection (another process sharing the cache file) commits. [] when
+	## either cannot be read.
+	var own := _exec_select("SELECT total_changes() AS n;")
+	var other := _exec_select("PRAGMA data_version;")
+	if own.is_empty() or other.is_empty(): return []
+	return [own[0].get("n"), other[0].get("data_version")]
+
+
 func _poll_settle_job() -> String:
-	## Commit a finished background settle; start the coalesced follow-up.
-	if _settle_job == null or not _settle_job.is_done(): return ""
+	## Read the next slice, or commit a finished background settle and start
+	## the coalesced follow-up.
+	if _settle_job == null: return ""
+	if _settle_job.reading: return _advance_settle_job()
+	if not _settle_job.is_done(): return ""
 	var follow_up := _settle_job.resettle
 	var error := _commit_settle_job()
-	if error.is_empty() and follow_up and has_pending_sidecar(): error = _start_settle_job()
+	if error.is_empty() and follow_up and has_pending_sidecar(): error = _start_settle_job(true)
 	return error
 
 

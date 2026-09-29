@@ -35,23 +35,43 @@ static func serialize_all(db: DocketDB) -> String:
 	return format_all(snapshot(db))
 
 
-static func snapshot(db: DocketDB) -> Dictionary:
+static func snapshot(db: DocketDB, read: Dictionary = {}) -> Dictionary:
 	## Every cache read serialize_all needs, as the meta line plus plain row
 	## arrays (the binding returns copies, so no row aliases the connection).
-	return {
-		"meta": serialize_meta(db),
-		"type_defs": db._exec_select("SELECT * FROM type_defs ORDER BY slug,id;"),
-		"type_def_versions": db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"),
-		"items": db._exec_select(_ITEMS_SQL),
-		"tags": db._exec_select(_TAGS_SQL),
-		"events": db._exec_select(_EVENTS_SQL % ""),
-		"comments": db._exec_select(_COMMENTS_SQL % ""),
-		"links": db._exec_select(_LINKS_SQL % ""),
-		"attachments": db._exec_select(_ATTACHMENTS_SQL % ""),
-		"secrets": db._exec_select("SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"),
-		"secret_versions": db._exec_select("SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;"),
-		"saved_queries": db._exec_select("SELECT name, query_json FROM saved_queries ORDER BY name ASC;"),
-	}
+	## A row set already in read (JSONLSettleJob.read_slice) is taken from it.
+	var snap := {"meta": serialize_meta(db)}
+	for row_set: Array in row_sets():
+		var key: String = row_set[0]
+		snap[key] = read[key] if read.has(key) else db._exec_select(row_set[1])
+	return snap
+
+
+## The first SLICED_SETS of row_sets() are ordered by a unique key, so reading
+## one in LIMIT/OFFSET chunks over unchanged rows yields exactly the whole read.
+const SLICED_SETS := 4
+
+
+static func row_sets() -> Array:
+	## [snapshot key, query], in read order.
+	return [
+		["items", _ITEMS_SQL],
+		["tags", _TAGS_SQL],
+		["events", _EVENTS_SQL % ""],
+		["comments", _COMMENTS_SQL % ""],
+		["type_defs", "SELECT * FROM type_defs ORDER BY slug,id;"],
+		["type_def_versions", "SELECT * FROM type_def_versions ORDER BY type_id,id;"],
+		["links", _LINKS_SQL % ""],
+		["attachments", _ATTACHMENTS_SQL % ""],
+		["secrets", "SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"],
+		["secret_versions", "SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;"],
+		["saved_queries", "SELECT name, query_json FROM saved_queries ORDER BY name ASC;"],
+	]
+
+
+static func read_chunk(db: DocketDB, set_index: int, offset: int, limit: int) -> Array:
+	## Rows offset .. offset + limit - 1 of one sliced row set.
+	var sql: String = str(row_sets()[set_index][1]).trim_suffix(";")
+	return db._exec_select("%s LIMIT %d OFFSET %d;" % [sql, limit, offset])
 
 
 static func format_all(snap: Dictionary) -> String:

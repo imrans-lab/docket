@@ -15,7 +15,9 @@ class_name JSONLFreshness
 ## the FileLock (DocketDBJsonl._atomic_write, JSONLSettleJob.replace_canonical).
 ## A hash taken inside the window (typically right after our own settle) is
 ## used once and not reused; the first check past the window hashes again and
-## is reused from then on. The window is 2 s so that 2-second FAT timestamps are covered too.
+## is reused from then on. recheck_if_due lets an idle tick take that repeat
+## hash, so a later Save or mutation finds it recorded. The window is 2 s so
+## that 2-second FAT timestamps are covered too.
 ##
 ## Lock evidence: a lock file naming another process (another Docket, or
 ## Minerva's integrated Docket, which uses the same .lock format) means a
@@ -32,6 +34,10 @@ var _path := ""
 var _mtime := -1
 var _size := -1
 var _sha := ""
+# Set by a hash taken inside the window: the unix second from which a repeat
+# of it can be recorded; 0 = none due.
+var _recheck_path := ""
+var _recheck_at := 0
 
 
 static func hash_file(path: String) -> String:
@@ -54,7 +60,11 @@ func canonical_sha(path: String, force_full: bool = false) -> String:
 		return _sha
 	forget()
 	var sha := hash_file(path)
-	if sha.is_empty() or mtime <= 0 or size < 0 or started_at < mtime + MTIME_WINDOW_SEC:
+	if sha.is_empty() or mtime <= 0 or size < 0:
+		return sha
+	if started_at < mtime + MTIME_WINDOW_SEC:
+		_recheck_path = path
+		_recheck_at = mtime + MTIME_WINDOW_SEC
 		return sha
 	if FileAccess.get_modified_time(path) == mtime and _size_of(path) == size and not FileLock.held_by_other(path):
 		_path = path
@@ -64,11 +74,22 @@ func canonical_sha(path: String, force_full: bool = false) -> String:
 	return sha
 
 
+func recheck_if_due(path: String) -> void:
+	## Idle tick: repeat a hash that was taken inside the window once the
+	## window has passed. canonical_sha applies every rule to the repeat; at
+	## most one repeat per hash taken inside the window.
+	if _recheck_at == 0 or path != _recheck_path or Time.get_unix_time_from_system() < _recheck_at:
+		return
+	canonical_sha(path)
+
+
 func forget() -> void:
 	_path = ""
 	_mtime = -1
 	_size = -1
 	_sha = ""
+	_recheck_path = ""
+	_recheck_at = 0
 
 
 static func _size_of(path: String) -> int:
