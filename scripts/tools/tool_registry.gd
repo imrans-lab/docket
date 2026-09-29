@@ -103,6 +103,7 @@ func _rebuild_type_registries() -> void:
 	if _db != null and not _db in _project_dbs.values():
 		var project_name := _db.get_project_name()
 		_type_registries[project_name] = TypeRegistry.for_db(_db, project_name)
+	for registry: TypeRegistry in _type_registries.values(): registry.project_dbs = _project_dbs
 
 func get_type_registry(project_name: String) -> TypeRegistry:
 	var registry: TypeRegistry = _type_registries.get(project_name)

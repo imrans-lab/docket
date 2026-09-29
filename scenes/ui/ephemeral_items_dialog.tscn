@@ -1,0 +1,27 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/ephemeral_items_dialog.gd" id="1"]
+
+[node name="EphemeralItemsDialog" type="ConfirmationDialog"]
+title = "Items not saved to file"
+size = Vector2i(560, 380)
+min_size = Vector2i(560, 380)
+ok_button_text = "Keep"
+script = ExtResource("1")
+
+[node name="Box" type="VBoxContainer" parent="."]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 552.0
+offset_bottom = 331.0
+
+[node name="Message" type="Label" parent="Box"]
+unique_name_in_owner = true
+autowrap_mode = 3
+text = "These items are ephemeral: they were never written to their project files and will be lost.
+Keep saves them to their project files. Drop deletes them. Cancel goes back."
+
+[node name="Items" type="ItemList" parent="Box"]
+unique_name_in_owner = true
+size_flags_vertical = 3
+select_mode = 0

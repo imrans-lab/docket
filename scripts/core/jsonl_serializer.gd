@@ -13,13 +13,19 @@ const JSONL_VERSION := "1.0.0"
 
 ## docket_meta keys that must NOT be written to the shared file.
 ## jsonl_hash is this machine's cache fingerprint — writing it would make the
-## file's own content depend on the cache built from it.
-const _EPHEMERAL_META_KEYS := ["jsonl_hash", "jsonl_version", "registry_diagnostics"]
+## file's own content depend on the cache built from it. cache_id names one
+## cache file (JSONLCache.cache_id_at).
+const _EPHEMERAL_META_KEYS := ["jsonl_hash", "jsonl_version", "registry_diagnostics", "cache_id"]
 
-const _EVENTS_SQL := "SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events%s ORDER BY item_id ASC, timestamp ASC, id ASC;"
-const _COMMENTS_SQL := "SELECT * FROM comments%s ORDER BY item_id ASC, id ASC;"
-const _LINKS_SQL := "SELECT from_id, to_id, relation FROM item_links%s ORDER BY from_id ASC, to_id ASC, relation ASC;"
-const _ATTACHMENTS_SQL := "SELECT * FROM attachments%s ORDER BY item_id ASC, id ASC;"
+## Every query leaves out ephemeral items (ItemStorage), their dependent rows,
+## and links with an ephemeral item at either end: none of them is ever written.
+const _ITEMS_SQL := "SELECT * FROM items WHERE storage<>'ephemeral' ORDER BY id ASC;"
+const _TAGS_SQL := "SELECT item_id, tag FROM item_tags WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral') ORDER BY item_id ASC, tag ASC;"
+const _EVENTS_SQL := "SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral')%s ORDER BY item_id ASC, timestamp ASC, id ASC;"
+const _COMMENTS_SQL := "SELECT * FROM comments WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral')%s ORDER BY item_id ASC, id ASC;"
+## A link's to_id may qualify a same-project target with the project name.
+const _LINKS_SQL := "SELECT from_id, to_id, relation FROM item_links WHERE from_id NOT IN (SELECT id FROM items WHERE storage='ephemeral') AND to_id NOT IN " + ItemStorage.EPHEMERAL_REFS_SQL + "%s ORDER BY from_id ASC, to_id ASC, relation ASC;"
+const _ATTACHMENTS_SQL := "SELECT * FROM attachments WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral')%s ORDER BY item_id ASC, id ASC;"
 
 
 # -- Public API ---------------------------------------------------------------
@@ -36,8 +42,8 @@ static func snapshot(db: DocketDB) -> Dictionary:
 		"meta": serialize_meta(db),
 		"type_defs": db._exec_select("SELECT * FROM type_defs ORDER BY slug,id;"),
 		"type_def_versions": db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"),
-		"items": db._exec_select("SELECT * FROM items ORDER BY id ASC;"),
-		"tags": db._exec_select("SELECT item_id, tag FROM item_tags ORDER BY item_id ASC, tag ASC;"),
+		"items": db._exec_select(_ITEMS_SQL),
+		"tags": db._exec_select(_TAGS_SQL),
 		"events": db._exec_select(_EVENTS_SQL % ""),
 		"comments": db._exec_select(_COMMENTS_SQL % ""),
 		"links": db._exec_select(_LINKS_SQL % ""),
@@ -140,8 +146,8 @@ static func serialize_meta(db: DocketDB) -> String:
 
 
 static func serialize_items(db: DocketDB) -> String:
-	## All item lines sorted by id ascending.
-	var rows := db._exec_select("SELECT * FROM items ORDER BY id ASC;")
+	## All durable item lines sorted by id ascending.
+	var rows := db._exec_select(_ITEMS_SQL)
 	if rows.is_empty():
 		return ""
 
@@ -456,8 +462,8 @@ static func _format_saved_queries(rows: Array) -> String:
 # -- Internal helpers ---------------------------------------------------------
 
 static func _scope(column: String, id: String) -> String:
-	## WHERE clause limiting a section query to one item; empty means all rows.
-	return "" if id.is_empty() else " WHERE %s=?" % column
+	## Condition limiting a section query to one item; empty means all rows.
+	return "" if id.is_empty() else " AND %s=?" % column
 
 
 static func _scope_bindings(id: String) -> Array:

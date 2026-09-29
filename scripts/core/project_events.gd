@@ -14,6 +14,7 @@ class_name ProjectEvents
 ##
 ## Which rows are stamped:
 ##   created, moved, promoted          always; fields = tracked fields the item arrives with
+##   any row of an ephemeral item      never (ItemStorage)
 ##   comment_added, comment_reply      always; fields = []
 ##   claimed, claim_released,
 ##   claim_reassigned                  always; fields = ["claim"]
@@ -72,6 +73,10 @@ static func tracked_changes(db: DocketDB, id: String, changes: Dictionary) -> Ar
 ## stamped and leave them in place. Returns "" or an SQL error; the caller's
 ## transaction rolls the stamp back with the row.
 static func stamp(db: DocketDB, row_id: int, item_id: String, event_type: String) -> String:
+	# The counter lives in the canonical's meta line, and an ephemeral item
+	# (ItemStorage) must not change the canonical. Its events stay unstamped;
+	# keeping it stamps its "promoted" arrival row.
+	if ItemStorage.is_ephemeral(db, item_id): return ""
 	var fields: Array[String] = []
 	if not COMMENTS.has(event_type):
 		if not ItemRevision.counts(event_type): return ""

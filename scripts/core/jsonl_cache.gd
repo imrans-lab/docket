@@ -13,6 +13,17 @@ class_name JSONLCache
 ## fingerprint is the hash of the very bytes it parsed from both files, so a
 ## record appended by any process, even during the rebuild, makes every other
 ## cache of this canonical stale.
+##
+## The cache also holds the project's ephemeral items (ItemStorage), which no
+## file has; a rebuild carries them over from the cache file it replaces.
+##
+## A rebuild unlinks the cache file and creates a new one, so another process's
+## open connection is left on the unlinked file. Each rebuilt file carries a
+## random cache_id in docket_meta; a connection compares its own with the one
+## at the path (cache_id_at) and reopens instead of writing to the unlinked
+## file (DocketDBJsonl._cache_replaced). Before the unlink, the rebuild marks
+## the old file retired (RETIRED_PREFIX), which every connection also reads
+## as replaced.
 
 
 # Reason the most recent rebuild_cache() returned null. Read it immediately
@@ -87,9 +98,24 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 		return null
 	last_error = ""
 
-	# Remove stale cache files (db + WAL/SHM)
+	# Ephemeral items (ItemStorage) exist only in the cache being replaced.
+	# capture reads them and retires that file in one write-locked
+	# transaction, so no connection commits to it after the rows are read.
+	var capture := ItemStorage.capture(cache_path)
+	if capture.has("error"):
+		last_error = str(capture.error)
+		return null
+
+	# Remove stale cache files (db + WAL/SHM). A platform that refuses to
+	# unlink an open file fails while the capture is open; the delete is then
+	# retried after it closes, which is safe because the file is retired. It
+	# still fails while any other connection has the file open, and the file
+	# then goes back into service so those connections can keep writing.
 	var delete_error := _delete_cache_files(cache_path)
+	ItemStorage.end_capture(capture)
+	if not delete_error.is_empty(): delete_error = _delete_cache_files(cache_path)
 	if not delete_error.is_empty():
+		unretire(cache_path, str(capture.get("retired", "")))
 		last_error = delete_error
 		return null
 
@@ -120,6 +146,10 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 	_insert_secrets(db, parsed["secrets"])
 	_insert_secret_versions(db, parsed["secret_versions"])
 	_insert_saved_queries(db, parsed["saved_queries"])
+	# Never part of the fingerprint below: it hashes the canonical and sidecar
+	# bytes only, and neither ever holds an ephemeral row.
+	ItemStorage.restore(db, capture.rows)
+	db.set_meta_value("cache_id", DocketDB.generate_uuid7())
 	if rebuild_failure_hook.is_valid():
 		var injected_error := str(rebuild_failure_hook.call())
 		if not injected_error.is_empty() and db._last_sql_error.is_empty(): db._last_sql_error = injected_error
@@ -161,13 +191,64 @@ static func is_cache_valid(jsonl_path: String, cache_path: String) -> bool:
 		return false
 
 	var stored := db.get_meta_value("jsonl_hash", "")
+	var retired := db.get_meta_value("cache_id", "").begins_with(RETIRED_PREFIX)
 	db.close()
 
-	if stored.is_empty():
+	# A retired file is kept only by a rebuild that has not deleted it yet, or
+	# by a crash in between; rebuilding carries its ephemeral rows.
+	if stored.is_empty() or retired:
 		return false
 
 	var current := _file_fingerprint(jsonl_path)
 	return stored == current
+
+
+static func cache_id_at(cache_path: String) -> String:
+	## The cache_id stored in the cache file now at cache_path; "" when the file
+	## is missing, unreadable or has none (a rebuild still in its transaction).
+	## Reads through its own connection without DocketDB.open, which migrates
+	## and may write.
+	if not FileAccess.file_exists(cache_path): return ""
+	var probe := DocketDB.new()
+	probe._db = SQLite.new()
+	probe._db.path = cache_path
+	probe._db.verbosity_level = SQLite.QUIET
+	if not probe._db.open_db(): return ""
+	probe._exec("PRAGMA busy_timeout=15000;")
+	var rows := probe._exec_select("SELECT value FROM docket_meta WHERE key='cache_id';")
+	var id := str(rows[0].value) if not rows.is_empty() else ""
+	probe._db.close_db()
+	probe._db = null
+	return id
+
+
+# A cache_id of "retired:<nonce>:<id>" marks a file that a rebuild has read
+# and will delete (ItemStorage.capture); <id> is the id it had before.
+const RETIRED_PREFIX := "retired:"
+
+static func retired_marker(cache_id: String) -> String:
+	return "%s%s:%s" % [RETIRED_PREFIX, DocketDB.generate_uuid7(), live_cache_id(cache_id)]
+
+
+static func live_cache_id(cache_id: String) -> String:
+	## The id a cache_id value stands for: a retired marker names the id it
+	## retired, any other value is itself.
+	if not cache_id.begins_with(RETIRED_PREFIX): return cache_id
+	return cache_id.substr(cache_id.find(":", RETIRED_PREFIX.length()) + 1)
+
+
+static func unretire(cache_path: String, marker: String) -> void:
+	## Puts back the id that marker retired, if the file at cache_path still
+	## holds exactly that marker. Connections that hold the file compare their
+	## id with it (DocketDBJsonl._cache_replaced), so they can commit again.
+	if marker.is_empty() or not FileAccess.file_exists(cache_path): return
+	var db := DocketDB.new()
+	if not db.open(cache_path): return
+	var live := live_cache_id(marker)
+	var error := db._exec_checked("DELETE FROM docket_meta WHERE key='cache_id' AND value=?;", [marker]) if live.is_empty() \
+		else db._exec_checked("UPDATE docket_meta SET value=? WHERE key='cache_id' AND value=?;", [live, marker])
+	if not error.is_empty(): push_warning("JSONLCache: cache %s stays retired: %s" % [cache_path, error])
+	db.close()
 
 
 # -- Internal helpers ---------------------------------------------------------

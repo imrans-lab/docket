@@ -89,6 +89,8 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	var id: String = args.get("id", "")
 	if not db.has_item(id):
 		return {"error": "Item not found: %s" % id}
+	if args.has("storage"):
+		return {"error": ItemStorage.UPDATE_REFUSAL}
 
 	# Auto-qualify parent if bare ID
 	if args.has("parent") and not str(args.parent).is_empty():

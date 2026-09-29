@@ -1,0 +1,22 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/storage_choice.gd" id="1"]
+
+[node name="StorageChoice" type="HBoxContainer"]
+script = ExtResource("1")
+
+[node name="StorageLabel" type="Label" parent="."]
+text = "Storage"
+
+[node name="Mode" type="OptionButton" parent="."]
+unique_name_in_owner = true
+size_flags_horizontal = 3
+tooltip_text = "Ephemeral items take part in queries, links and comments but are never written to the project file until kept."
+item_count = 3
+selected = 0
+popup/item_0/text = "Default for the type"
+popup/item_0/id = 0
+popup/item_1/text = "Durable — saved to the project file"
+popup/item_1/id = 1
+popup/item_2/text = "Ephemeral — not saved until kept"
+popup/item_2/id = 2

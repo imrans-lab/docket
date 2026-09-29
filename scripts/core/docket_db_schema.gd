@@ -41,7 +41,8 @@ static func init_schema(db: DocketDB) -> void:
 		deprecated INTEGER DEFAULT 0,
 		type_id TEXT DEFAULT '', type_revision TEXT DEFAULT '',
 		fields_json TEXT NOT NULL DEFAULT '{}',
-		extras_json TEXT NOT NULL DEFAULT '{}'
+		extras_json TEXT NOT NULL DEFAULT '{}',
+		storage TEXT NOT NULL DEFAULT 'durable'
 	);""")
 
 	# Registry rows are fixed-shape cache records. Complete definitions stay in
@@ -192,10 +193,13 @@ static func migrate_schema(db: DocketDB) -> void:
 	for column_sql in [
 		"type_id TEXT DEFAULT ''", "type_revision TEXT DEFAULT ''",
 		"fields_json TEXT NOT NULL DEFAULT '{}'", "extras_json TEXT NOT NULL DEFAULT '{}'",
+		# Cache-only (ItemStorage): never serialized, so no canonical record has it.
+		"storage TEXT NOT NULL DEFAULT 'durable'",
 	]:
 		var column_name := str(column_sql).get_slice(" ", 0)
 		if not DocketDB._has_column(col_rows, column_name):
 			db._exec("ALTER TABLE items ADD COLUMN %s;" % column_sql)
+	db._exec("CREATE INDEX IF NOT EXISTS idx_items_storage ON items(storage);")
 	# Project event id and changed fields of work-relevant events (ProjectEvents).
 	var event_cols := db._exec_select("PRAGMA table_info(item_events);")
 	if not event_cols.is_empty():

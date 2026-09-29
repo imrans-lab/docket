@@ -339,6 +339,14 @@ func insert_item(id: String, item: Dictionary) -> String:
 	# Insert main row
 	if item.has("fields_json") or item.has("extras_json"): return "internal envelope columns are not accepted as item input"
 	var stored_item := item.duplicate(true)
+	# Storage mode (ItemStorage) is set by the insert itself, so the sidecar's
+	# dirty triggers see an ephemeral row as ephemeral from its first statement.
+	var storage := str(stored_item.get("storage", ItemStorage.DURABLE))
+	stored_item.erase("storage")
+	if storage not in ItemStorage.MODES: return "storage must be one of %s" % str(ItemStorage.MODES)
+	if storage == ItemStorage.DURABLE:
+		var reference_error := ItemStorage.reference_refusal(self, stored_item)
+		if not reference_error.is_empty(): return reference_error
 	var fields: Dictionary = stored_item.get("fields", {}) if stored_item.get("fields", {}) is Dictionary else {}
 	var extras: Dictionary = stored_item.get("extras", {}) if stored_item.get("extras", {}) is Dictionary else {}
 	if stored_item.has("fields") and not stored_item.fields is Dictionary: return "fields must be an object"
@@ -358,9 +366,9 @@ func insert_item(id: String, item: Dictionary) -> String:
 		if stored_item.has(envelope):
 			if not stored_item[envelope] is Dictionary: return "%s must be an object" % envelope
 			stored_item["%s_json" % envelope] = JSON.stringify(stored_item[envelope], "", true, true)
-	var cols := PackedStringArray(["id"])
-	var placeholders := PackedStringArray(["?"])
-	var bindings: Array = [id]
+	var cols := PackedStringArray(["id", "storage"])
+	var placeholders := PackedStringArray(["?", "?"])
+	var bindings: Array = [id, storage]
 	for col in _ITEM_COLS:
 		if stored_item.has(col):
 			cols.append(col)
@@ -434,6 +442,11 @@ func update_item_fields_checked(id: String, changes: Dictionary) -> String:
 		if not key is String: return "unset_fields entries must be strings"
 	for key in unset_extras:
 		if not key is String: return "unset_extras entries must be strings"
+	# storage changes only through ItemStorage.keep, never through an update.
+	if changes.has("storage"): return ItemStorage.UPDATE_REFUSAL
+	if not ItemStorage.is_ephemeral(self, id):
+		var reference_error := ItemStorage.reference_refusal(self, changes)
+		if not reference_error.is_empty(): return reference_error
 	for key in unset_fields:
 		if field_changes.has(key) or extra_changes.has(key) or unset_extras.has(key): return "ambiguous set/unset item key '%s'" % key
 	for key in unset_extras:
@@ -588,6 +601,8 @@ func export_item_full(id: String) -> Dictionary:
 func export_item_full_checked(id: String) -> Dictionary:
 	## A move may delete its source only after every related collection was read.
 	_last_sql_error = ""
+	var storage_error := ItemStorage.move_refusal(self, id)
+	if not storage_error.is_empty(): return {"error":storage_error}
 	var exported: Dictionary = export_item_full(id)
 	if not _last_sql_error.is_empty(): return {"error":_last_sql_error}
 	if exported.has("_error"): return {"error":exported._error}
@@ -688,7 +703,8 @@ func delete_item(id: String) -> void:
 	## Foreign keys with ON DELETE CASCADE handle most of this, but we do it explicitly for safety.
 	_exec("DELETE FROM item_tags WHERE item_id=?;", [id])
 	_exec("DELETE FROM item_events WHERE item_id=?;", [id])
-	_exec("DELETE FROM item_links WHERE from_id=? OR to_id=?;", [id, id])
+	# Incoming links name the item bare or qualified with this project's name.
+	_exec("DELETE FROM item_links WHERE from_id=? OR to_id=? OR to_id=?;", [id, id, "%s:%s" % [get_project_name(), id]])
 	_exec("DELETE FROM comments WHERE item_id=?;", [id])
 	_exec("DELETE FROM attachments WHERE item_id=?;", [id])
 	# Clean up vault entries (secret value + encrypted notes + versions).
@@ -1613,13 +1629,16 @@ static func _strip_empty(item: Dictionary) -> Dictionary:
 
 
 static func _build_lean_rows(rows: Array) -> Array:
-	## Return [{id, title}, ...] from raw SQL rows. Zero extra queries.
+	## Return [{id, title}, ...] from raw SQL rows, plus storage on ephemeral
+	## items (ItemStorage). Zero extra queries.
 	var result: Array = []
 	for row in rows:
-		result.append({
+		var lean := {
 			"id": str(row.get("id", "")),
 			"title": str(row.get("title", "")),
-		})
+		}
+		if str(row.get("storage", "")) == ItemStorage.EPHEMERAL: lean["storage"] = ItemStorage.EPHEMERAL
+		result.append(lean)
 	return result
 
 
@@ -1649,6 +1668,7 @@ func _build_item_dict(row: Dictionary) -> Dictionary:
 	item["title"] = str(row.get("title", ""))
 	item["type_id"] = str(row.get("type_id", ""))
 	item["type_revision"] = str(row.get("type_revision", ""))
+	item["storage"] = str(row.get("storage", ItemStorage.DURABLE))
 	for envelope in ["fields", "extras"]:
 		var raw := str(row.get("%s_json" % envelope, "{}"))
 		var decoded = JSON.parse_string(raw)

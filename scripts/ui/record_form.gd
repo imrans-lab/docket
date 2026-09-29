@@ -1538,6 +1538,8 @@ func _save_draft() -> Variant:
 	var type_record: Dictionary = registry.get_type(type_name)
 	var definition_protected: bool = not type_record.has("error") and bool(type_record.definition.get("protected", false))
 	var protected_payload: bool = type_name in ["secret", "encrypted_note"]
+	# A vault payload is written with the canonical, so its owner is never ephemeral.
+	if _draft_item.has("storage") and not protected_payload: fields.storage = _draft_item.storage
 	var regular_allowed: bool = bool(type_record.get("definition", {}).get("protected_behavior", {}).get("regular_creation_allowed", true))
 	var prepared_payload: Dictionary = {"operations":[]}
 	if protected_payload:

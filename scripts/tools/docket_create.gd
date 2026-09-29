@@ -72,6 +72,7 @@ func get_definition() -> Dictionary:
 				"target": {"type": "string", "description": "Model targeting expression. Grammar: family[:version][@provider]. Examples: 'all', 'sonnet', 'sonnet:<=4.6', 'sonnet:<=4.6@openrouter'. Comma-separated for OR."},
 				# Multi-project
 				"project": {"type": "string", "description": "Target project name (optional, defaults to primary)"},
+				"storage": {"type": "string", "enum": ["durable", "ephemeral"], "description": "durable: written to the project file. ephemeral: held in the project's cache and never written until kept (docket_promote with no to_project); dropped or kept at quit. Default durable, except items tagged wr:attempt or of type steering, which default to ephemeral. Ephemeral needs a file-backed project."},
 			},
 			"required": ["type", "title"],
 		},
@@ -97,7 +98,7 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB) -> Dictionary:
 		var created: Dictionary = TypeRegistry.for_db(db, db.get_project_name()).create_item(typed_args, "agent")
 		if created.has("error"): return created
 		var typed_item: Dictionary = created.get("item", {})
-		return {"id":created.id,"type":typed_item.get("type", item_type),"type_id":typed_item.get("type_id", ""),"type_revision":typed_item.get("type_revision", ""),"item_token":TypeRegistry.for_db(db, db.get_project_name()).item_token(typed_item),"status":typed_item.get("status", ""),"title":typed_item.get("title", "")}
+		return {"id":created.id,"type":typed_item.get("type", item_type),"type_id":typed_item.get("type_id", ""),"type_revision":typed_item.get("type_revision", ""),"item_token":TypeRegistry.for_db(db, db.get_project_name()).item_token(typed_item),"status":typed_item.get("status", ""),"title":typed_item.get("title", ""),"storage":typed_item.get("storage", ItemStorage.DURABLE)}
 
 	# Reject secret/encrypted_note — use docket_secret_set for vault storage
 	if item_type in ["secret", "encrypted_note"]:

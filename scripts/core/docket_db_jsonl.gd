@@ -22,6 +22,13 @@ class_name DocketDBJsonl
 ##   2. If cache is stale or missing → rebuild from JSONL + sidecar via JSONLCache
 ##   3. If neither exists → create new (fresh JSONL + SQLite cache)
 ##   4. A non-empty sidecar is then compacted into the canonical
+##
+## Ephemeral items (ItemStorage) live in the cache only and are never journaled
+## or settled.
+##
+## Another process's rebuild unlinks the cache file under this connection
+## (JSONLCache.cache_id_at). is_stale() reports it, reload() then reopens the
+## file at the path, and _commit_mutation refuses to commit to the unlinked one.
 
 var _jsonl_path: String
 var last_write_error: String = ""
@@ -33,6 +40,8 @@ var _lock_timeout_ms: int = 5000
 ## or the sidecar (one record line to append) on an ordinary mutation.
 var _atomic_write_hook: Callable
 var _mutation_depth: int = 0
+# cache_id of the file this connection holds; "" when it could not be stamped.
+var _cache_id: String = ""
 var _mutation_error: String = ""
 # The committed mutation changed a table the sidecar does not journal.
 var _settle_after_commit: bool = false
@@ -181,9 +190,12 @@ func close() -> void:
 # ensure_fresh() at the top of each request (MCP) or poll tick (GUI).
 
 func is_stale() -> bool:
-	## True if the JSONL file no longer matches what this cache was built from.
+	## True if the JSONL file no longer matches what this cache was built from,
+	## or another process has replaced the cache file this connection holds.
 	if not _is_open or _jsonl_path.is_empty():
 		return false
+	if _cache_replaced():
+		return true
 	var current := _source_fingerprint()
 	if current.is_empty():
 		return true
@@ -202,9 +214,13 @@ func ensure_fresh() -> bool:
 
 func reload() -> bool:
 	## Force a rebuild of the SQLite cache from the canonical JSONL file,
-	## discarding cached state. Returns true on success.
+	## discarding cached state. Returns true on success. When another process
+	## has replaced the cache file, that file is opened instead if it is fresh:
+	## it already carries the ephemeral rows, and rebuilding it would unlink it
+	## under that process in turn.
 	if _mutation_depth > 0 or _jsonl_path.is_empty():
 		return false
+	var replaced := _is_open and _cache_replaced()
 	# A snapshot of the cache being discarded must never reach the canonical.
 	if _settle_job != null:
 		_settle_job.discard()
@@ -219,7 +235,12 @@ func reload() -> bool:
 	if _is_open:
 		super.close()
 
-	var fresh := JSONLCache.rebuild_cache(_jsonl_path, cache_path)
+	var fresh: DocketDB = null
+	if replaced and JSONLCache.is_cache_valid(_jsonl_path, cache_path):
+		fresh = DocketDB.new()
+		if not fresh.open(cache_path): fresh = null
+	if fresh == null:
+		fresh = JSONLCache.rebuild_cache(_jsonl_path, cache_path)
 	if fresh == null:
 		last_open_error = JSONLCache.last_error
 		push_error("DocketDBJsonl: reload failed for %s — %s" % [_jsonl_path, last_open_error])
@@ -353,6 +374,13 @@ func _adopt(source: DocketDB) -> void:
 	_is_open = true
 	source._db = null
 	source._is_open = false
+	_cache_id = ""
+	if _uses_sidecar():
+		# A cache made by create_new_jsonl or an older build has no id; the
+		# first connection to open it stamps one.
+		_exec("INSERT OR IGNORE INTO docket_meta(key,value) VALUES('cache_id',?);", [DocketDB.generate_uuid7()])
+		# A retired file stands for the id it had; _cache_replaced reports it.
+		_cache_id = JSONLCache.live_cache_id(super.get_meta_value("cache_id", ""))
 	var diagnostics := super.get_meta_value("registry_diagnostics", "")
 	_write_blocked = not diagnostics.is_empty()
 	if _write_blocked: last_write_error = "unresolved type definition data; project is read-only: %s" % diagnostics
@@ -361,6 +389,16 @@ func _adopt(source: DocketDB) -> void:
 		if not tracking_error.is_empty():
 			_write_blocked = true
 			last_write_error = tracking_error
+
+
+func _cache_replaced() -> bool:
+	## True when the cache file at this connection's path is no longer the one
+	## it holds: a rebuild in another process unlinked it (missing, a rebuild
+	## still in its transaction, or another cache_id), or retired it
+	## (ItemStorage.capture), whichever connection opened it. Writes through
+	## this connection would reach only a file the rebuild has already read.
+	var at_path := JSONLCache.cache_id_at(_path)
+	return at_path.begins_with(JSONLCache.RETIRED_PREFIX) or (not _cache_id.is_empty() and at_path != _cache_id)
 
 
 func get_storage_diagnostics() -> Array:
@@ -382,14 +420,19 @@ func _mutation_precheck() -> String:
 	return ""
 
 
-func _begin_canonical_mutation() -> String:
+func _begin_canonical_mutation(write_lock: bool = false) -> String:
+	## write_lock opens the outermost transaction with BEGIN IMMEDIATE: it waits
+	## (busy_timeout) for SQLite's write lock on the shared cache and holds it
+	## until COMMIT/ROLLBACK, so no other connection commits between this
+	## mutation's reads and its writes. The default deferred BEGIN takes the
+	## lock at the first write. Ignored when nested: the outer BEGIN decides.
 	if _mutation_depth > 0 and (not _mutation_error.is_empty() or not _last_sql_error.is_empty()):
 		return _mutation_error if not _mutation_error.is_empty() else _last_sql_error
 	if _mutation_depth == 0:
 		var precheck := _mutation_precheck()
 		if not precheck.is_empty(): return precheck
 		_last_sql_error = ""
-		_mutation_error = _exec_checked("BEGIN TRANSACTION;")
+		_mutation_error = _exec_checked("BEGIN IMMEDIATE TRANSACTION;" if write_lock else "BEGIN TRANSACTION;")
 		if not _mutation_error.is_empty(): return _mutation_error
 	_mutation_depth += 1
 	return ""
@@ -414,6 +457,19 @@ func _complete_canonical_mutation(error: String = "") -> String:
 	var flush_error := _flush_jsonl()
 	_mutation_error = ""
 	return flush_error
+
+
+func _refuse_canonical_mutation(refusal: String) -> String:
+	## Ends a mutation with a refusal found inside it, before anything was
+	## journaled. The outermost one only rolls back: no file was touched, so
+	## the cache is not rebuilt and last_write_error is left alone. Nested, or
+	## after a SQL error, it completes with the refusal as the error instead.
+	if _mutation_depth != 1 or not _mutation_error.is_empty() or not _last_sql_error.is_empty():
+		return _complete_canonical_mutation(refusal)
+	_mutation_depth = 0
+	_rollback()
+	_settle_after_commit = false
+	return refusal
 
 
 func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bindings: Array, events: Array, expected_current_revision: String) -> String:
@@ -469,6 +525,13 @@ func _commit_mutation() -> String:
 	## settles them.
 	if not _uses_sidecar() or _allow_initial_write: return _exec_checked("COMMIT;")
 	if _write_blocked: return last_write_error
+	# A transaction that wrote holds the file's write lock until COMMIT, and a
+	# rebuild takes that lock to read the rows it carries and retire the file
+	# in one transaction (ItemStorage.capture). So if the file is at the path
+	# and not retired here, it stays so through COMMIT; if not, the rows would
+	# land only in a file the rebuild has already read. The caller rolls back
+	# and reloads.
+	if _cache_replaced(): return "the cache file was replaced by another process's rebuild; this change was not saved, retry"
 	if not FileAccess.file_exists(_jsonl_path): return "canonical source is missing; refusing to recreate it from cache"
 	var expected_source := super.get_meta_value("jsonl_hash", "")
 	var built := JSONLSidecar.build_record(self, JSONLSidecar.canonical_part(expected_source))
@@ -712,7 +775,7 @@ func _commit_settle_job() -> String:
 
 
 func _validate_cache_for_flush() -> String:
-	var malformed := JSONLSerializer.malformed_item(_exec_select("SELECT id,fields_json,extras_json FROM items;"))
+	var malformed := JSONLSerializer.malformed_item(_exec_select("SELECT id,fields_json,extras_json FROM items WHERE storage<>'ephemeral';"))
 	if not malformed.is_empty(): return malformed
 	return _validate_type_pointers()
 
@@ -1040,7 +1103,9 @@ func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray
 	set_secret_checked(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
 
 func set_secret_checked(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> String:
-	var error := _begin_canonical_mutation()
+	var error := ItemStorage.owner_refusal(self, owner_item_id)
+	if not error.is_empty(): return error
+	error = _begin_canonical_mutation()
 	if not error.is_empty(): return error
 	super.set_secret(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
 	return _complete_canonical_mutation()
@@ -1050,7 +1115,9 @@ func set_secret_owner(handle: String, owner_item_id: String) -> void:
 	set_secret_owner_checked(handle, owner_item_id)
 
 func set_secret_owner_checked(handle: String, owner_item_id: String) -> String:
-	var error := _begin_canonical_mutation()
+	var error := ItemStorage.owner_refusal(self, owner_item_id)
+	if not error.is_empty(): return error
+	error = _begin_canonical_mutation()
 	if not error.is_empty(): return error
 	super.set_secret_owner(handle, owner_item_id)
 	return _complete_canonical_mutation()

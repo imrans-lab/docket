@@ -16,6 +16,11 @@ var _revisions: Dictionary = {}
 var _generation: String = ""
 var _load_error: String = ""
 var _sqlite_mutation_depth: int = 0
+## The loaded project map (name -> DocketDB), set by AppState and ToolRegistry.
+## A durable item's parent or blocked_by naming another loaded project's
+## ephemeral item is refused against it (ItemStorage.foreign_reference_refusal);
+## an ephemeral item's naming any other project is refused without it.
+var project_dbs: Dictionary = {}
 
 static var _shared_by_db: Dictionary = {}
 
@@ -458,7 +463,11 @@ func create_item(fields: Dictionary, actor: String = "") -> Dictionary:
 	if resolved.lifecycle != "active": return {"error":"type '%s' is %s and cannot create items" % [slug,resolved.lifecycle]}
 	var definition: Dictionary = resolved.definition
 	if not bool(definition.protected_behavior.get("regular_creation_allowed", true)): return {"error":"type '%s' requires its protected creation path" % slug}
-	var normalized := _normalize_input(fields, true)
+	# Storage mode (ItemStorage) is how the item is kept, not a typed field.
+	var typed_input := fields.duplicate()
+	var requested_storage := str(typed_input.get("storage", ""))
+	typed_input.erase("storage")
+	var normalized := _normalize_input(typed_input, true)
 	if normalized.has("error"): return normalized
 	var candidate: Dictionary = normalized.values
 	for descriptor in definition.fields:
@@ -473,6 +482,12 @@ func create_item(fields: Dictionary, actor: String = "") -> Dictionary:
 		if key in UNIVERSAL_MUTABLE: item[key] = candidate[key]
 		elif bool(definition.get("protected", false)) and key in DocketDB._ITEM_COLS: item[key] = candidate[key]
 		elif key != "type": item.fields[key] = candidate[key]
+	var tags: Array = candidate.get("tags", []) if candidate.get("tags", []) is Array else []
+	var storage := ItemStorage.resolve(_db, requested_storage, slug, tags)
+	if storage.has("error"): return storage
+	item["storage"] = storage.storage
+	error = ItemStorage.foreign_reference_refusal(_db, item, project_dbs, "the new item" if storage.storage == ItemStorage.EPHEMERAL else "")
+	if not error.is_empty(): return {"error":error}
 	error = _begin_item_mutation()
 	if not error.is_empty(): return {"error":error}
 	var id := _db.next_uuid7_id()
@@ -522,6 +537,8 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 	for key in normalized.values: candidate[key] = normalized.values[key]
 	var error := validate_candidate(resolved.definition, candidate)
 	if not error.is_empty(): return error
+	error = _foreign_reference_refusal(id, normalized.values)
+	if not error.is_empty(): return error
 	var patch := _storage_patch(normalized.values, normalized.unset, resolved.definition)
 	error = _begin_item_mutation()
 	if not error.is_empty(): return error
@@ -564,6 +581,8 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 		if not candidate.has(field) or candidate[field] == null or (candidate[field] is String and candidate[field].strip_edges().is_empty()): return "transition to '%s' requires field '%s'" % [target, field]
 	var error := validate_candidate(definition, candidate)
 	if not error.is_empty(): return error
+	error = _foreign_reference_refusal(id, normalized.values)
+	if not error.is_empty(): return error
 	var patch := _storage_patch(normalized.values, normalized.unset, definition)
 	patch.status = target
 	error = _begin_item_mutation()
@@ -584,6 +603,9 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 				_db.add_link(blocker, id, "blocks")
 				error = _db._last_sql_error
 	return _complete_item_mutation(error)
+
+func _foreign_reference_refusal(id: String, values: Dictionary) -> String:
+	return ItemStorage.foreign_reference_refusal(_db, values, project_dbs, "item %s" % id if ItemStorage.is_ephemeral(_db, id) else "")
 
 ## Appends `text` to a markdown field and records it as a ContentLedger entry,
 ## all in one item mutation. Checks run in this order and any refusal writes

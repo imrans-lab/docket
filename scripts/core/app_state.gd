@@ -221,6 +221,7 @@ func get_type_registry(project_name: String = "") -> TypeRegistry:
 	if registry == null and _project_dbs.has(key):
 		registry = TypeRegistry.for_db(_project_dbs[key], key)
 		_type_registries[key] = registry
+	if registry != null: registry.project_dbs = _project_dbs
 	if registry != null and not _registry_verified_this_frame(key, registry):
 		var error: String = registry.refresh_if_changed()
 		if error.is_empty(): registry_diagnostics.erase(key)

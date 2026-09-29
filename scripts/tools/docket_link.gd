@@ -44,6 +44,9 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB, project_dbs: Di
 		var to_db: DocketDB = project_dbs[to_project]
 		if not to_db.has_item(to_id):
 			return {"error": "Item not found in project '%s': %s" % [to_project, to_id]}
+		var refusal := ItemStorage.link_refusal(from_db, from_id, to_db, to_id)
+		if not refusal.is_empty():
+			return {"error": refusal}
 	else:
 		if not from_db.has_item(to_id):
 			return {"error": "Item not found: %s" % to_id}
@@ -54,9 +57,25 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB, project_dbs: Di
 
 	# Store the link — use qualified ID for cross-project refs
 	var stored_to := to_id_raw if not to_project.is_empty() else to_id
-	from_db.add_link(from_id, stored_to, relation)
-	from_db.add_event(from_id, "linked", "agent",
-		"Linked %s → %s (%s)" % [from_id, stored_to, relation])
+	# A link with an ephemeral end is ephemeral (ItemStorage); so is its history
+	# entry, which names both ends: it goes on the source when that is ephemeral,
+	# else on an ephemeral target of the source's own project, else the source.
+	# A link across projects with an ephemeral end was refused (link_refusal).
+	# The local ends are rechecked, the link written and the entry placed under
+	# the cache's write lock (ItemStorage.write_locked), so a drop or keep by
+	# another process lands wholly before or after them.
+	var local_to := to_id if to_project.is_empty() or to_project == from_db.get_project_name() else ""
+	var error := ItemStorage.write_locked(from_db, func() -> String:
+		for item_id: String in [from_id, local_to]:
+			if not item_id.is_empty() and not from_db.has_item(item_id): return "Item not found: %s" % item_id
+		from_db.add_link(from_id, stored_to, relation)
+		var history_id := from_id
+		if not ItemStorage.is_ephemeral(from_db, from_id) and not local_to.is_empty() and ItemStorage.is_ephemeral(from_db, local_to): history_id = local_to
+		from_db.add_event(history_id, "linked", "agent",
+			"Linked %s → %s (%s)" % [from_id, stored_to, relation])
+		return "")
+	if not error.is_empty():
+		return {"error": error}
 
 	return {"from": from_id, "to": stored_to, "relation": relation}
 

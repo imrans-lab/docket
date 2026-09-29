@@ -13,6 +13,7 @@ class_name JSONLSidecar
 ## replaced with no item record means the item was deleted, which also drops
 ## every other section of that id. Registry, secret and saved-query changes are
 ## never journaled: the caller settles the canonical for those instead.
+## Ephemeral items (ItemStorage) and links touching them are never journaled.
 ##
 ## Settling writes the canonical from the cache, then removes the sidecar.
 ## Before the canonical is replaced a {"_type":"settle","target":<sha>} line is
@@ -102,31 +103,71 @@ static func install_dirty_tracking(db: DocketDB) -> String:
 	## TEMP triggers record which item sections each statement touched. They live
 	## on this connection only and never reach the cache file; the temp table is
 	## transactional, so a rolled-back mutation leaves no dirty rows.
+	##
+	## Rows of ephemeral items (ItemStorage) are never recorded: the items
+	## triggers test the row's own storage, the dependent-table triggers test
+	## the owning item's, and a link is recorded only when neither end is
+	## ephemeral; a link target qualified with the project's own name counts as
+	## the bare id (ItemStorage.EPHEMERAL_REFS_SQL). ItemStorage.drop deletes
+	## dependent rows and links before the item row, so they are still
+	## recognised. Keeping an item (storage ephemeral -> durable) records all of
+	## its sections and the links sections of the durable items that link to it.
 	var sql: PackedStringArray = ["CREATE TEMP TABLE IF NOT EXISTS sidecar_dirty (item_id TEXT NOT NULL, section TEXT NOT NULL, PRIMARY KEY(item_id, section)) WITHOUT ROWID;"]
-	var scoped := {"items": ["id", "item"], "item_tags": ["item_id", "item"], "item_events": ["item_id", "events"], "comments": ["item_id", "comments"], "item_links": ["from_id", "links"], "attachments": ["item_id", "attachments"]}
-	for table: String in scoped:
-		var column: String = scoped[table][0]
-		var section: String = scoped[table][1]
-		sql.append(_trigger(table, "INSERT", "", "(NEW.%s,'%s')" % [column, section]))
-		sql.append(_trigger(table, "DELETE", "", "(OLD.%s,'%s')" % [column, section]))
-		sql.append(_trigger(table, "UPDATE", "", "(OLD.%s,'%s'),(NEW.%s,'%s')" % [column, section, column, section]))
+	sql.append(_trigger("items", "INSERT", "WHEN NEW.storage<>'ephemeral'", _record("(NEW.id,'item')")))
+	sql.append(_trigger("items", "DELETE", "WHEN OLD.storage<>'ephemeral'", _record("(OLD.id,'item')")))
+	sql.append(_trigger("items", "UPDATE", "WHEN NEW.storage<>'ephemeral'", _record("(OLD.id,'item'),(NEW.id,'item')")))
+	# Keep (storage ephemeral -> durable). The UPDATE trigger above marks only
+	# the item's 'item' section (its row and tags); its other sections were never
+	# journaled, so keep_sections marks them. A link is journaled in its source's
+	# 'links' section (by from_id), and a durable item's link to this one was
+	# left out of that section while this end was ephemeral, so durable_linkers
+	# marks the 'links' section of every durable item linking here to re-emit it.
+	var keep_sections := _record("(NEW.id,'events'),(NEW.id,'comments'),(NEW.id,'links'),(NEW.id,'attachments')")
+	var durable_linkers := "INSERT OR IGNORE INTO sidecar_dirty(item_id,section) SELECT l.from_id,'links' FROM item_links l JOIN items f ON f.id=l.from_id WHERE (l.to_id=NEW.id OR l.to_id=(SELECT value FROM docket_meta WHERE key='project') || ':' || NEW.id) AND f.storage<>'ephemeral';"
+	sql.append("CREATE TEMP TRIGGER IF NOT EXISTS sidecar_items_keep AFTER UPDATE OF storage ON main.items FOR EACH ROW WHEN OLD.storage='ephemeral' AND NEW.storage<>'ephemeral' BEGIN %s %s END;" % [keep_sections, durable_linkers])
+	var owned := {"item_tags": "item", "item_events": "events", "comments": "comments", "attachments": "attachments"}
+	for table: String in owned:
+		var section: String = owned[table]
+		sql.append(_trigger(table, "INSERT", "", _record_if("NEW.item_id", section, _durable("NEW.item_id"))))
+		sql.append(_trigger(table, "DELETE", "", _record_if("OLD.item_id", section, _durable("OLD.item_id"))))
+		sql.append(_trigger(table, "UPDATE", "", _record_if("OLD.item_id", section, _durable("OLD.item_id")) + " " + _record_if("NEW.item_id", section, _durable("NEW.item_id"))))
+	sql.append(_trigger("item_links", "INSERT", "", _record_if("NEW.from_id", "links", _durable_link("NEW"))))
+	sql.append(_trigger("item_links", "DELETE", "", _record_if("OLD.from_id", "links", _durable_link("OLD"))))
+	sql.append(_trigger("item_links", "UPDATE", "", _record_if("OLD.from_id", "links", _durable_link("OLD")) + " " + _record_if("NEW.from_id", "links", _durable_link("NEW"))))
 	var quoted: PackedStringArray = []
 	for key: String in JSONLSerializer._EPHEMERAL_META_KEYS: quoted.append("'%s'" % key)
 	var ephemeral := ",".join(quoted)
-	sql.append(_trigger("docket_meta", "INSERT", "WHEN NEW.key NOT IN (%s)" % ephemeral, "('','meta')"))
-	sql.append(_trigger("docket_meta", "DELETE", "WHEN OLD.key NOT IN (%s)" % ephemeral, "('','meta')"))
-	sql.append(_trigger("docket_meta", "UPDATE", "WHEN NEW.key NOT IN (%s) OR OLD.key NOT IN (%s)" % [ephemeral, ephemeral], "('','meta')"))
+	sql.append(_trigger("docket_meta", "INSERT", "WHEN NEW.key NOT IN (%s)" % ephemeral, _record("('','meta')")))
+	sql.append(_trigger("docket_meta", "DELETE", "WHEN OLD.key NOT IN (%s)" % ephemeral, _record("('','meta')")))
+	sql.append(_trigger("docket_meta", "UPDATE", "WHEN NEW.key NOT IN (%s) OR OLD.key NOT IN (%s)" % [ephemeral, ephemeral], _record("('','meta')")))
 	for table: String in _SETTLE_TABLES:
 		for op in ["INSERT", "DELETE", "UPDATE"]:
-			sql.append(_trigger(table, op, "", "('','full')"))
+			sql.append(_trigger(table, op, "", _record("('','full')")))
 	for statement in sql:
 		var error := db._exec_checked(statement)
 		if not error.is_empty(): return "sidecar dirty tracking unavailable: %s" % error
 	return ""
 
 
-static func _trigger(table: String, op: String, when: String, values: String) -> String:
-	return "CREATE TEMP TRIGGER IF NOT EXISTS sidecar_%s_%s AFTER %s ON main.%s FOR EACH ROW %s BEGIN INSERT OR IGNORE INTO sidecar_dirty(item_id,section) VALUES %s; END;" % [table, op.to_lower(), op, table, when, values]
+static func _trigger(table: String, op: String, when: String, body: String) -> String:
+	return "CREATE TEMP TRIGGER IF NOT EXISTS sidecar_%s_%s AFTER %s ON main.%s FOR EACH ROW %s BEGIN %s END;" % [table, op.to_lower(), op, table, when, body]
+
+
+static func _record(values: String) -> String:
+	return "INSERT OR IGNORE INTO sidecar_dirty(item_id,section) VALUES %s;" % values
+
+
+static func _record_if(id_expr: String, section: String, condition: String) -> String:
+	return "INSERT OR IGNORE INTO sidecar_dirty(item_id,section) SELECT %s,'%s' WHERE %s;" % [id_expr, section, condition]
+
+
+static func _durable(id_expr: String) -> String:
+	## True unless id_expr names an ephemeral item (ItemStorage).
+	return "NOT EXISTS (SELECT 1 FROM items e WHERE e.id=%s AND e.storage='ephemeral')" % id_expr
+
+
+static func _durable_link(row: String) -> String:
+	return "%s AND %s.to_id NOT IN %s" % [_durable(row + ".from_id"), row, ItemStorage.EPHEMERAL_REFS_SQL]
 
 
 static func clear_dirty(db: DocketDB) -> String:
@@ -138,6 +179,10 @@ static func build_record(db: DocketDB, base: String) -> Dictionary:
 	## {"full": true} when a non-journaled table changed, {"line": ""} when
 	## nothing durable changed, or {"error": ...}.
 	db._last_sql_error = ""
+	# The triggers already skip ephemeral items; this also covers an entry
+	# recorded before its item was marked ephemeral in the same transaction.
+	var skip_error := db._exec_checked("DELETE FROM temp.sidecar_dirty WHERE item_id IN (SELECT id FROM main.items WHERE storage='ephemeral');")
+	if not skip_error.is_empty(): return {"error": "cannot read sidecar dirty set: %s" % skip_error}
 	var rows := db._exec_select("SELECT item_id,section FROM temp.sidecar_dirty ORDER BY item_id,section;")
 	if not db._last_sql_error.is_empty(): return {"error": "cannot read sidecar dirty set: %s" % db._last_sql_error}
 	var replace: Array = []

@@ -21,6 +21,7 @@ var _new_dialog: FileDialog
 var _info_dialog: AcceptDialog
 var _confirm_reload_dialog: ConfirmationDialog
 var _memory_dialog: MemoryProjectsDialog
+var _ephemeral_dialog: EphemeralItemsDialog
 var _promote_dialog: PromoteDialog
 var _subscriptions_dialog: SubscriptionsDialog
 var _after_memory_resolved: Callable
@@ -36,6 +37,7 @@ var _new_item_dialog: ConfirmationDialog
 var _new_item_project: OptionButton
 var _new_item_search: LineEdit
 var _new_item_list: ItemList
+var _new_item_storage: StorageChoice
 var _new_item_catalog: Array = []
 
 # Zoom levels
@@ -124,11 +126,16 @@ func _notification(what: int) -> void:
 
 func _request_quit() -> void:
 	## Memory projects with outstanding items are resolved (spill, promote or
-	## discard) before the process exits; the quit waits for that answer.
+	## discard), then ephemeral items (keep, drop), before the process exits;
+	## the quit waits for both answers.
 	var pending := MemoryProject.outstanding_projects(_state.get_project_dbs())
 	if not pending.is_empty():
-		_after_memory_resolved = _quit
+		_after_memory_resolved = _request_quit
 		_memory_dialog.ask(pending)
+		return
+	var ephemeral := ItemStorage.outstanding(_state.get_project_dbs())
+	if not ephemeral.is_empty():
+		_ephemeral_dialog.ask(ephemeral, _quit)
 		return
 	_quit()
 
@@ -318,6 +325,10 @@ func _build_ui() -> void:
 	_memory_dialog.init(_state)
 	_memory_dialog.resolved.connect(_on_memory_resolved)
 	add_child(_memory_dialog)
+
+	_ephemeral_dialog = (load("res://scenes/ui/ephemeral_items_dialog.tscn") as PackedScene).instantiate() as EphemeralItemsDialog
+	_ephemeral_dialog.init(_state)
+	add_child(_ephemeral_dialog)
 
 	_promote_dialog = (load("res://scenes/ui/promote_dialog.tscn") as PackedScene).instantiate() as PromoteDialog
 	_promote_dialog.init(_state)
@@ -671,11 +682,11 @@ func _on_menu_action(action: String) -> void:
 			if not pending.is_empty():
 				_memory_dialog.ask(pending)
 				return
-		_state.remove_project(proj_name)
-		_update_window_title()
-		_update_project_menu()
-		_save_session()
-		_query_grid.refresh()
+		var ephemeral := ItemStorage.outstanding({proj_name: closing})
+		if not ephemeral.is_empty():
+			_ephemeral_dialog.ask(ephemeral, _close_project.bind(proj_name))
+			return
+		_close_project(proj_name)
 		return
 	match action:
 		"new_item":
@@ -813,6 +824,14 @@ func _save_session() -> void:
 
 # -- Grid/form callbacks ---------------------------------------------------
 
+func _close_project(proj_name: String) -> void:
+	_state.remove_project(proj_name)
+	_update_window_title()
+	_update_project_menu()
+	_save_session()
+	_query_grid.refresh()
+
+
 func _build_new_item_dialog() -> void:
 	_new_item_dialog = ConfirmationDialog.new()
 	_new_item_dialog.title = "New item"
@@ -833,6 +852,8 @@ func _build_new_item_dialog() -> void:
 		_new_item_dialog.hide()
 	)
 	content.add_child(_new_item_list)
+	_new_item_storage = (load("res://scenes/ui/storage_choice.tscn") as PackedScene).instantiate() as StorageChoice
+	content.add_child(_new_item_storage)
 	_new_item_dialog.add_child(content)
 	add_child(_new_item_dialog)
 
@@ -854,6 +875,8 @@ func _rebuild_new_item_catalog() -> void:
 		_filter_new_item_catalog()
 		return
 	var project: String = _new_item_project.get_item_text(_new_item_project.selected)
+	var project_db: DocketDB = _state.get_db_for_project(project)
+	_new_item_storage.reset(project_db != null and ItemStorage.supports_ephemeral(project_db))
 	var registry: TypeRegistry = _state.get_type_registry(project)
 	if registry == null:
 		_new_item_dialog.dialog_text = "Type registry unavailable for %s." % project
@@ -896,14 +919,14 @@ func _on_new_item_confirmed() -> void:
 		return
 	var index: int = _new_item_list.get_selected_items()[0]
 	var selection: Dictionary = _new_item_list.get_item_metadata(index)
-	_create_and_edit_item(str(selection.slug), str(selection.project), false, str(selection.type_id))
+	_create_and_edit_item(str(selection.slug), str(selection.project), false, str(selection.type_id), _new_item_storage.requested())
 
 func _on_item_selected(id: String, project: String = "") -> void:
 	if _record_form.is_inside_tree():
 		_record_form.load_item(id, project)
 
 
-func _create_and_edit_item(type_name: String, project: String = "", protected_path: bool = false, expected_type_id: String = "") -> void:
+func _create_and_edit_item(type_name: String, project: String = "", protected_path: bool = false, expected_type_id: String = "", storage: String = "") -> void:
 	var registry := _state.get_type_registry(project)
 	if registry == null:
 		return
@@ -916,6 +939,8 @@ func _create_and_edit_item(type_name: String, project: String = "", protected_pa
 	if not regular_creation_allowed and not protected_path:
 		return
 	var item := {"type":type_name, "status":type.definition.lifecycle.initial_state, "title":"", "fields":{}}
+	# "" leaves the storage mode to the type's default (ItemStorage.resolve).
+	if not storage.is_empty(): item["storage"] = storage
 	_record_form.load_draft(type_name, item, project)
 	switch_view(ViewMode.DETAIL)
 
