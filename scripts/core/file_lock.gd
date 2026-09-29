@@ -22,6 +22,9 @@ const POLL_INTERVAL_MS  := 50
 
 var _lock_path: String = ""
 var _locked: bool = false
+## True when acquire found the lock file already present at least once, i.e.
+## another holder may have written the protected file just before us.
+var contended: bool = false
 
 
 # -- Public API ---------------------------------------------------------------
@@ -31,6 +34,7 @@ static func acquire(path: String, timeout_ms: int = 5000) -> FileLock:
 	## or null if the lock could not be acquired within timeout_ms.
 	var lock_path := path + ".lock"
 	var deadline_ms := Time.get_ticks_msec() + timeout_ms
+	var saw_holder := false
 
 	while true:
 		# Attempt the documented best-effort sidecar claim.
@@ -38,7 +42,9 @@ static func acquire(path: String, timeout_ms: int = 5000) -> FileLock:
 			var fl := FileLock.new()
 			fl._lock_path = lock_path
 			fl._locked = true
+			fl.contended = saw_holder
 			return fl
+		saw_holder = true
 
 		# Creation can fail without a lock file (for example an unwritable parent).
 		# Apply the deadline before every retry path so that case cannot spin forever.

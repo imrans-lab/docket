@@ -49,7 +49,7 @@ static func source_fingerprint(canonical_path: String) -> String:
 	## bare canonical hash, so caches built before the sidecar stay valid.
 	if not FileAccess.file_exists(canonical_path):
 		return ""
-	return fingerprint_with(FileAccess.get_sha256(canonical_path), canonical_path)
+	return fingerprint_with(JSONLFreshness.hash_file(canonical_path), canonical_path)
 
 
 static func fingerprint_with(canonical_sha: String, canonical_path: String) -> String:
@@ -60,7 +60,7 @@ static func fingerprint_with(canonical_sha: String, canonical_path: String) -> S
 	var sidecar := path_for(canonical_path)
 	if not has_content(sidecar):
 		return canonical_sha
-	var sidecar_sha := FileAccess.get_sha256(sidecar)
+	var sidecar_sha := JSONLFreshness.hash_file(sidecar)
 	return "" if sidecar_sha.is_empty() else "%s:%s" % [canonical_sha, sidecar_sha]
 
 

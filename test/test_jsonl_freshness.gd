@@ -2,6 +2,7 @@ extends Node
 ## Tests for merge-safety behaviour:
 ##   - unresolved git conflict markers are refused, not silently unioned
 ##   - a cache that went stale (git pull) is reloaded rather than clobbering
+##   - an own write is not re-read; a foreign edit or lock holder still is
 ##   - JSONLValidator reporting
 ##   - events read back in chronological order regardless of file line order
 
@@ -151,6 +152,65 @@ func test_mutation_after_pull_does_not_clobber() -> Variant:
 	if r != true:
 		return r
 	return A.contains(text, "\"a3\"", "local item was written")
+
+
+func _canonical_reads() -> int:
+	return int(JSONLFreshness.hash_reads.get(_path, 0))
+
+
+func test_own_write_skips_the_rehash_and_a_foreign_edit_is_still_detected() -> Variant:
+	## Oracles: JSONLFreshness.hash_reads counts hash_file calls on the
+	## canonical, not bytes read; it sits inside the module under test, so a
+	## read through another API would not show. Detection is judged from the
+	## file's own bytes after a hand edit this test makes.
+	_write(META + "\n" + _item_line("a1", "one") + "\n" + _item_line("a2", "original") + "\n")
+	var db := DocketDBJsonl.open_jsonl(_path)
+	if db == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
+	var errors: Array = [db.add_event_checked("a1", "noted", "tester", "before-settle"), db.flush_checked()]
+	# Our settle was the canonical's last write. Past the mtime window the first
+	# check hashes once; after that our own writes cost no canonical read.
+	while Time.get_unix_time_from_system() < FileAccess.get_modified_time(_path) + JSONLFreshness.MTIME_WINDOW_SEC + 0.1:
+		OS.delay_msec(100)
+	errors.append(db.add_event_checked("a1", "noted", "tester", "first-past-window"))
+	var reads := _canonical_reads()
+	for i in 3: errors.append(db.add_event_checked("a1", "noted", "tester", "own-write-probe-%d" % i))
+	var r = A.is_true(errors == ["", "", "", "", "", ""] and _canonical_reads() == reads, "mutations after our own write read nothing of the canonical: %s, %d reads" % [errors, _canonical_reads() - reads])
+	if r != true: db.close(); return r
+
+	# A lock file naming another process forces the full check.
+	var lock := FileAccess.open(_path + ".lock", FileAccess.WRITE)
+	lock.store_string(JSON.stringify({"pid": OS.get_process_id() + 1, "timestamp": Time.get_unix_time_from_system()}))
+	lock.close()
+	var stale := db.is_stale()
+	DirAccess.remove_absolute(_path + ".lock")
+	r = A.is_true(not stale and _canonical_reads() == reads + 1, "a foreign lock holder forces one full hash")
+	if r != true: db.close(); return r
+	# Re-establish a reusable hash so detection below rests on the stat alone.
+	db.is_stale()
+	reads = _canonical_reads()
+	db.is_stale()
+	r = A.eq(_canonical_reads(), reads, "with the lock gone the hash is reused again")
+	if r != true: db.close(); return r
+
+	# A foreign in-place edit of equal length (same file, same size).
+	var text := _read()
+	var edited := text.replace('"title":"original"', '"title":"handedit"')
+	r = A.is_true(edited != text and edited.length() == text.length(), "hand edit applies and keeps the length")
+	if r != true: db.close(); return r
+	var out := FileAccess.open(_path, FileAccess.READ_WRITE)
+	out.store_string(edited)
+	out.close()
+	reads = _canonical_reads()
+	errors = [db.add_event_checked("a1", "noted", "tester", "after-foreign-probe"), db.flush_checked()]
+	db.close()
+	var final_text := _read()
+	r = A.is_true(errors == ["", ""] and _canonical_reads() > reads, "the foreign edit is hashed: %s" % [errors])
+	if r != true: return r
+	r = A.contains(final_text, '"title":"handedit"', "the hand edit survives our next write (reloaded, not clobbered)")
+	if r != true: return r
+	r = A.is_true(not final_text.contains('"title":"original"'), "the pre-edit title is gone")
+	if r != true: return r
+	return A.contains(final_text, "after-foreign-probe", "our mutation after the foreign edit is written")
 
 
 func test_reload_recovers_after_conflict_is_resolved() -> Variant:

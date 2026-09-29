@@ -31,6 +31,8 @@ var _mutation_depth: int = 0
 var _mutation_error: String = ""
 # The committed mutation changed a table the sidecar does not journal.
 var _settle_after_commit: bool = false
+# Reuses the canonical's hash while its stat proves it unchanged (JSONLFreshness).
+var _freshness := JSONLFreshness.new()
 
 ## Settle once no record has been appended for this long...
 const SETTLE_IDLE_MS := 2000
@@ -175,7 +177,7 @@ func is_stale() -> bool:
 	## True if the JSONL file no longer matches what this cache was built from.
 	if not _is_open or _jsonl_path.is_empty():
 		return false
-	var current := _file_fingerprint(_jsonl_path)
+	var current := _source_fingerprint()
 	if current.is_empty():
 		return true
 	return super.get_meta_value("jsonl_hash", "") != current
@@ -409,7 +411,7 @@ func _commit_mutation() -> String:
 	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
 	if lock == null:
 		return "could not acquire advisory lock for %s" % _jsonl_path
-	if _file_fingerprint(_jsonl_path) != expected_source:
+	if _source_fingerprint(lock.contended) != expected_source:
 		lock.release()
 		return "canonical source changed while acquiring write lock"
 	var length_before := JSONLSidecar.length_of(sidecar)
@@ -484,7 +486,7 @@ func _settle_canonical() -> String:
 	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
 	if lock == null:
 		return _fail_flush("could not acquire advisory lock for %s" % _jsonl_path)
-	if not _allow_initial_write and _file_fingerprint(_jsonl_path) != expected_source_hash:
+	if not _allow_initial_write and _source_fingerprint(lock.contended) != expected_source_hash:
 		lock.release()
 		return _fail_flush("canonical source changed while acquiring write lock")
 
@@ -500,7 +502,9 @@ func _settle_canonical() -> String:
 		var remove_error := JSONLSidecar.remove(sidecar)
 		# The canonical is complete; a leftover sidecar is skipped by its marker.
 		if not remove_error.is_empty(): push_warning("DocketDBJsonl: %s" % remove_error)
-	var fingerprint := _file_fingerprint(_jsonl_path)
+	# Our own replacement is always hashed in full: its stat is fresh, so the
+	# hash is reused only after a later check past the mtime window.
+	var fingerprint := _source_fingerprint(true)
 	lock.release()
 	if not write_error.is_empty():
 		return _fail_flush(write_error)
@@ -538,11 +542,14 @@ func _fail_flush(message: String) -> String:
 	return message
 
 
-static func _file_fingerprint(path: String) -> String:
+func _source_fingerprint(force_full: bool = false) -> String:
 	## Strong content identity prevents a same-size, same-timestamp external edit
-	## from being overwritten by a cache that only appeared fresh. It covers the
-	## sidecar too, so another process's append also reads as a change.
-	return JSONLSidecar.source_fingerprint(path)
+	## from being overwritten by a cache that only appeared fresh. Same value as
+	## JSONLSidecar.source_fingerprint; the canonical's hash is reused only under
+	## JSONLFreshness's rules, and the sidecar is always hashed, so another
+	## process's append also reads as a change.
+	var canonical_sha := _freshness.canonical_sha(_jsonl_path, force_full)
+	return "" if canonical_sha.is_empty() else JSONLSidecar.fingerprint_with(canonical_sha, _jsonl_path)
 
 
 static func _atomic_write(path: String, content: String) -> String:
