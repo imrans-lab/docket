@@ -71,6 +71,8 @@ func test_mutations_journal_settle_and_survive_a_crash_before_settling() -> Vari
 	r = A.eq(FileAccess.get_sha256(path), fixture_sha, "no settle inside the idle window")
 	if r is String: db.close(); return r
 	var settle_error := db.settle_if_idle(Time.get_ticks_msec() + DocketDBJsonl.SETTLE_IDLE_MS)
+	# The debounce settles in the background; its commit lands on a later tick.
+	if settle_error.is_empty(): settle_error = db.finish_settle()
 	var settled := FileAccess.get_file_as_string(path)
 	r = A.is_true(settle_error.is_empty() and _sidecar_lines(path) == 0 and _count(settled, '{"_type":"comment"') == fixture_comments + 3, "settle empties the sidecar and the canonical holds the 3 comments (%s)" % settle_error)
 	if r is String: db.close(); return r
@@ -197,3 +199,57 @@ func test_a_damaged_or_unreadable_sidecar_refuses_the_load_and_is_kept() -> Vari
 	if db == null: return "clean sidecar did not open: %s" % DocketDBJsonl.last_open_error
 	db.close()
 	return A.is_true(FileAccess.get_file_as_string(path).contains("damaged-probe") and not FileAccess.file_exists(sidecar), "once repaired, the record reaches the canonical and the sidecar is retired")
+
+
+func test_save_skips_clean_projects_and_quit_waits_for_the_background_write() -> Variant:
+	## File → Save (AppState.flush_all) and the quit hook on two projects, one
+	## with an empty sidecar. Oracles are files: bytes, whole-second mtime,
+	## sidecar lines, probe strings, leftover temp files, and the parser.
+	## The in-flight write is not under real contention: a two-line project's
+	## worker finishes before the next step, so quit's wait path never blocks.
+	var clean_path := DIR + "/Clean.dct"
+	var dirty_path := DIR + "/Dirty.dct"
+	for path in [clean_path, dirty_path]:
+		var created := DocketDBJsonl.create_new_jsonl(path)
+		if created == null: return "could not create %s" % path
+		created.close()
+	var state := AppState.new()
+	state.load_schema()
+	state.load_projects([clean_path, dirty_path])
+	var dirty := state.get_db_for_project("Dirty") as DocketDBJsonl
+	if dirty == null or state.get_db_for_project("Clean") == null: return "projects did not load"
+	var r = A.eq(dirty.set_project_meta_checked({"hypothesis": "save-probe-1"}), "", "first mutation journals")
+	if r is String: return _close_all(state, r)
+	var clean_bytes := FileAccess.get_file_as_bytes(clean_path)
+	var clean_mtime := FileAccess.get_modified_time(clean_path)
+	# Past the file's whole second, so any rewrite of Clean would move its mtime.
+	while Time.get_unix_time_from_system() < clean_mtime + 1.1: OS.delay_msec(50)
+
+	# Save snapshots Dirty now; the canonical is replaced only on a later commit.
+	state.flush_all()
+	r = A.eq(dirty.set_project_meta_checked({"success_criteria": "save-probe-2"}), "", "a mutation while the write is in flight journals")
+	if r is String: return _close_all(state, r)
+	r = A.eq(dirty.finish_settle(), "", "background settle commits")
+	if r is String: return _close_all(state, r)
+	var settled := FileAccess.get_file_as_string(dirty_path)
+	r = A.is_true(settled.contains("save-probe-1") and not settled.contains("save-probe-2") and _sidecar_lines(dirty_path) == 1 and FileAccess.get_file_as_string(dirty_path + ".log").contains("save-probe-2"), "the canonical holds what was journaled before Save; the later record stays in the sidecar")
+	if r is String: return _close_all(state, r)
+
+	# Save again and quit at once: quit waits for that write and commits it.
+	state.flush_all()
+	DocketDBJsonl.settle_projects(state.get_project_dbs(), false)
+	var final_text := FileAccess.get_file_as_string(dirty_path)
+	var parsed := JSONLParser.parse_file(dirty_path)
+	r = A.is_true(str(parsed.get("error", "")).is_empty() and not (parsed.get("meta", {}) as Dictionary).is_empty() and final_text.contains("save-probe-1") and final_text.contains("save-probe-2") and _sidecar_lines(dirty_path) == 0, "after quit the canonical parses and holds both records, and no sidecar is left")
+	if r is String: return _close_all(state, r)
+	for name in DirAccess.get_files_at(DIR):
+		r = A.is_false(name.contains(".tmp."), "no temp file is left behind (%s)" % name)
+		if r is String: return _close_all(state, r)
+	r = A.is_true(FileAccess.get_file_as_bytes(clean_path) == clean_bytes and FileAccess.get_modified_time(clean_path) == clean_mtime and _sidecar_lines(clean_path) == 0, "the project with an empty sidecar keeps its bytes and mtime")
+	return _close_all(state, r)
+
+
+func _close_all(state: AppState, result: Variant) -> Variant:
+	for name in state.get_project_dbs().keys():
+		state.remove_project(str(name))
+	return result

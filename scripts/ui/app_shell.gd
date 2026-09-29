@@ -96,6 +96,25 @@ func _ready() -> void:
 	_poll_timer.start()
 	_last_poll_mtime = _get_dct_mtime()
 	_last_projects_token = _get_projects_token()
+	# _process runs only while a File → Save settle is in flight.
+	set_process(false)
+
+
+func _process(_delta: float) -> void:
+	## Commits each File → Save background settle on the first frame after its
+	## worker finishes, so the canonical is on disk for a git add right after
+	## Save; stops once nothing is in flight.
+	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
+	for pdb in _state.get_project_dbs().values():
+		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): return
+	set_process(false)
+
+
+func _save_projects() -> void:
+	## File → Save and Save As: start the background settles, then poll them
+	## every frame until they commit.
+	_state.save()
+	set_process(true)
 
 
 func _notification(what: int) -> void:
@@ -669,7 +688,7 @@ func _on_menu_action(action: String) -> void:
 		"open":
 			_open_dialog.popup_centered(Vector2i(600, 400))
 		"save":
-			_state.save()
+			_save_projects()
 		"reload":
 			_on_reload_from_disk()
 		"vault":
@@ -740,7 +759,7 @@ func _on_open_file_selected(path: String) -> void:
 
 func _on_save_as_file_selected(path: String) -> void:
 	_state.dct_path = path
-	_state.save()
+	_save_projects()
 	_add_to_recent(path)
 	_update_window_title()
 

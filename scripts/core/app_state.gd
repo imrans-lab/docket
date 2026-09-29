@@ -712,20 +712,24 @@ func reload_all() -> Array:
 
 
 func flush_all() -> Array:
-	## Settle every JSONL project: rewrite its canonical from the cache and
-	## empty its write-ahead sidecar. Mutations only append to the sidecar, so
-	## this is the explicit "settle the files before I commit" step.
+	## File → Save: settle, in the background, every JSONL project with anything
+	## pending (its own unsettled appends or a non-empty sidecar). The frame loop
+	## keeps running while workers format and write; each canonical is replaced
+	## on a later settle_projects tick. A clean project is not rewritten.
+	## Returns the projects with a settle in flight.
 	var flushed: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
 		if pdb is DocketDBJsonl:
-			(pdb as DocketDBJsonl).flush()
-			flushed.append(proj_name)
+			var jsonl_db: DocketDBJsonl = pdb
+			var error := jsonl_db.settle_in_background()
+			if not error.is_empty(): push_warning("AppState: save of %s deferred: %s" % [proj_name, error])
+			if jsonl_db.is_settling(): flushed.append(proj_name)
 	return flushed
 
 
 func save() -> void:
-	# File → Save: settle every project so git sees the canonical content.
+	# File → Save: settle every project with pending changes so git sees them.
 	flush_all()
 	data_changed.emit()
 

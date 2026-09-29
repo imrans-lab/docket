@@ -6,11 +6,16 @@ class_name DocketDBJsonl
 ## Mutations pass a source-freshness gate and stage their rows in a
 ## transaction on the disposable SQLite cache; the outermost one appends one
 ## record to the write-ahead sidecar (JSONLSidecar, beside the canonical) and
-## commits the transaction under one FileLock hold. The canonical is rewritten atomically only when it settles: on
-## an idle debounce (settle_projects), on close() with pending records, on
-## flush() (File → Save, docket_flush), on open when a sidecar survived, and at
-## once for changes the sidecar does not journal (type registry, secrets,
-## saved queries).
+## commits the transaction under one FileLock hold. The canonical is rewritten
+## atomically only when it settles: on an idle debounce (settle_projects), on
+## close() with pending records, on File → Save (settle_in_background), on
+## flush() (docket_flush), on open when a sidecar survived, and at once for
+## changes the sidecar does not journal (type registry, secrets, saved queries).
+##
+## The debounce and File → Save settle in the background (JSONLSettleJob): the
+## cache is read on the main thread, formatting and the temp-file write run on
+## a worker, and the rename commits on a later main-thread tick. Every other
+## settle is synchronous and first waits for a background one to commit.
 ##
 ## Opening flow:
 ##   1. If JSONL exists and cache is fresh → open cache via DocketDB.open()
@@ -42,6 +47,8 @@ const SETTLE_MAX_AGE_MS := 30000
 # Ticks of this process's first and latest unsettled sidecar append; 0 = none.
 var _pending_first_ms: int = 0
 var _pending_last_ms: int = 0
+# The background settle in flight, or null. At most one per project.
+var _settle_job: JSONLSettleJob = null
 
 # Reason the most recent open_jsonl() returned null (e.g. unresolved conflict
 # markers). Read immediately after a null return.
@@ -198,6 +205,10 @@ func reload() -> bool:
 	## discarding cached state. Returns true on success.
 	if _mutation_depth > 0 or _jsonl_path.is_empty():
 		return false
+	# A snapshot of the cache being discarded must never reach the canonical.
+	if _settle_job != null:
+		_settle_job.discard()
+		_settle_job = null
 
 	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 
@@ -227,6 +238,21 @@ func reload() -> bool:
 	return true
 
 
+# Settle verbs. Sync returns after the canonical is replaced (or refused);
+# async returns with a background settle (JSONLSettleJob) in flight.
+#   verb                  called by                                  mode
+#   flush, flush_checked  docket_flush (MCP tool), tests             sync
+#   settle_in_background  File → Save (AppState.flush_all)           async
+#   settle_if_idle        settle_projects(idle_only)                 async: commits a finished
+#                                                                    job or starts one when idle
+#   settle_if_pending     close(), settle_projects(quit)             sync
+#   finish_settle         every sync settle, before reading cache    sync: wait + commit
+#   settle_projects       idle: DocketHttpServer._process, AppShell  per project, see above
+#                         _process and 3 s poll; quit: _exit_tree,
+#                         AppShell._quit
+#   close                 remove project, upgrade                    settle_if_pending first
+# Sync paths end in _settle_canonical; async ones in _start/_commit_settle_job.
+
 func flush() -> void:
 	## Settle: rewrite the canonical from the cache and empty the sidecar.
 	flush_checked()
@@ -243,27 +269,74 @@ func has_pending_sidecar() -> bool:
 	return _pending_first_ms != 0
 
 
+func is_settling() -> bool:
+	## True while a background settle has not committed yet.
+	return _settle_job != null
+
+
+func settle_in_background() -> String:
+	## File → Save. Starts a background settle when this process has unsettled
+	## appends or the sidecar holds anything; a clean project is not rewritten.
+	## A request while one is in flight is coalesced: that settle covers
+	## everything journaled before it started, and a follow-up for later appends
+	## starts when it commits.
+	if not _uses_sidecar(): return flush_checked()
+	if not _is_open or _mutation_depth > 0: return ""
+	if _settle_job != null:
+		if not _settle_job.is_done():
+			_settle_job.resettle = true
+			return ""
+		var error := _poll_settle_job()
+		if not error.is_empty() or _settle_job != null: return error
+	if not has_pending_sidecar() and not JSONLSidecar.has_content(JSONLSidecar.path_for(_jsonl_path)): return ""
+	return _start_settle_job()
+
+
+func finish_settle() -> String:
+	## Wait for the background settle, if any, and commit it.
+	if _settle_job == null: return ""
+	return _commit_settle_job()
+
+
 func settle_if_pending() -> String:
-	return _settle_canonical() if has_pending_sidecar() and _is_open else ""
+	## Close and quit: nothing this process journaled is left unsettled.
+	var error := finish_settle()
+	if has_pending_sidecar() and _is_open: return _settle_canonical()
+	return error
 
 
 func settle_if_idle(now_ms: int) -> String:
+	## Debounce tick: commit a finished background settle, or start one once
+	## the appends have been idle (or old) long enough.
 	# Mid-mutation the cache holds uncommitted rows; never settle them.
-	if _mutation_depth > 0 or not has_pending_sidecar(): return ""
-	if now_ms - _pending_last_ms < SETTLE_IDLE_MS and now_ms - _pending_first_ms < SETTLE_MAX_AGE_MS: return ""
-	var error := settle_if_pending()
+	if _mutation_depth > 0: return ""
+	var error := ""
+	if _settle_job != null:
+		error = _poll_settle_job()
+	elif has_pending_sidecar() and _is_open and (now_ms - _pending_last_ms >= SETTLE_IDLE_MS or now_ms - _pending_first_ms >= SETTLE_MAX_AGE_MS):
+		error = _start_settle_job()
 	# Back off a failing settle to the next idle window instead of every tick.
 	if not error.is_empty(): _pending_last_ms = now_ms
 	return error
 
 
 static func settle_projects(project_dbs: Dictionary, idle_only: bool) -> void:
-	## Debounce tick (idle_only) and quit hook (all pending) for a project map.
+	## Debounce tick (idle_only) and quit hook for a project map. On quit every
+	## project with pending appends starts formatting first, so the workers run
+	## in parallel; then each is waited for and committed, and anything
+	## appended meanwhile settles synchronously. Quit returns only after that.
 	var now_ms := Time.get_ticks_msec()
+	var jsonl_dbs := {}
 	for project_name in project_dbs:
-		var pdb = project_dbs[project_name]
-		if not pdb is DocketDBJsonl: continue
-		var jsonl_db: DocketDBJsonl = pdb
+		if project_dbs[project_name] is DocketDBJsonl: jsonl_dbs[project_name] = project_dbs[project_name]
+	if not idle_only:
+		for project_name in jsonl_dbs:
+			var jsonl_db: DocketDBJsonl = jsonl_dbs[project_name]
+			if jsonl_db._settle_job == null and jsonl_db.has_pending_sidecar() and jsonl_db._is_open and jsonl_db._mutation_depth == 0:
+				var start_error := jsonl_db._start_settle_job()
+				if not start_error.is_empty(): push_warning("DocketDBJsonl: settle of %s deferred: %s" % [project_name, start_error])
+	for project_name in jsonl_dbs:
+		var jsonl_db: DocketDBJsonl = jsonl_dbs[project_name]
 		var error := jsonl_db.settle_if_idle(now_ms) if idle_only else jsonl_db.settle_if_pending()
 		if not error.is_empty(): push_warning("DocketDBJsonl: settle of %s deferred: %s" % [project_name, error])
 
@@ -464,6 +537,11 @@ func _settle_canonical() -> String:
 	## identity (canonical + sidecar) again after acquisition.
 	if _jsonl_path.is_empty():
 		return "canonical path is empty"
+	# One settle at a time: a background one commits (or fails and reloads)
+	# before this one reads the cache.
+	var join_error := finish_settle()
+	if not join_error.is_empty():
+		return join_error
 	if _write_blocked:
 		return last_write_error
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
@@ -520,11 +598,126 @@ func _settle_canonical() -> String:
 	return ""
 
 
+func _start_settle_job() -> String:
+	## Main-thread half of a background settle: the synchronous settle's checks,
+	## except the per-item envelope check, which the worker runs on the snapshot.
+	##
+	## One FileLock hold covers the source check against the stored jsonl_hash,
+	## the type-pointer check, the cache snapshot and the sidecar read. Every
+	## journaled mutation checks, appends, stores its identity and commits its
+	## cache rows under the same lock (_commit_mutation), so no other process's
+	## append or rows land between any two of them: the prefix is exactly the
+	## sidecar the snapshot and the stored identity stand for. The
+	## hold is reads only (one freshness-gated hash of each file, SQLite
+	## selects, one sidecar read); formatting runs on the worker. Nothing inside
+	## appends or settles, so it never waits on this process's own lock.
+	if _write_blocked:
+		return last_write_error
+	if not FileAccess.file_exists(_jsonl_path):
+		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
+	_last_sql_error = ""
+	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
+	if lock == null:
+		return _fail_flush("could not acquire advisory lock for %s" % _jsonl_path)
+	var stored := super.get_meta_value("jsonl_hash", "")
+	if _source_fingerprint(lock.contended) != stored:
+		lock.release()
+		return _fail_flush("canonical source changed; reload before writing")
+	var pointer_error := _validate_type_pointers()
+	var snapshot := {}
+	if pointer_error.is_empty(): snapshot = JSONLSerializer.snapshot(self)
+	var prefix := JSONLSidecar.read_bytes(JSONLSidecar.path_for(_jsonl_path))
+	lock.release()
+	if not pointer_error.is_empty(): return _fail_flush(pointer_error)
+	if not _last_sql_error.is_empty():
+		return _fail_flush("cache read failed during serialization: %s" % _last_sql_error)
+	if not str(prefix.error).is_empty():
+		push_error("DocketDBJsonl: %s" % prefix.error)
+		return _fail_flush(str(prefix.error))
+	_settle_job = JSONLSettleJob.start(_jsonl_path, snapshot, JSONLSidecar.canonical_part(stored), prefix.bytes)
+	return ""
+
+
+func _poll_settle_job() -> String:
+	## Commit a finished background settle; start the coalesced follow-up.
+	if _settle_job == null or not _settle_job.is_done(): return ""
+	var follow_up := _settle_job.resettle
+	var error := _commit_settle_job()
+	if error.is_empty() and follow_up and has_pending_sidecar(): error = _start_settle_job()
+	return error
+
+
+func _commit_settle_job() -> String:
+	## Main-thread commit of a background settle: under the lock, verify, then
+	## mark, rename, keep only the tail. The freshness state and the stored
+	## identity change only after the rename.
+	##
+	## The verify step needs all three to hold (the job's snapshot, canonical_sha
+	## and sidecar_prefix were captured under one lock hold, _start_settle_job):
+	## - the files' fingerprint equals the stored jsonl_hash: nothing but this
+	##   process's own appends (which keep jsonl_hash current) touched them;
+	## - the stored canonical part equals job.canonical_sha: the canonical is
+	##   still the one the snapshot was taken over, not replaced since;
+	## - the sidecar still starts with job.sidecar_prefix: the records the
+	##   snapshot holds are still its head, so everything after is a tail of
+	##   later appends that the new canonical does not contain.
+	## With a tail left, _pending_first_ms becomes job.started_ms: every tail
+	## record was appended after the snapshot, so its oldest is no older than
+	## that, and the max-age debounce counts from there.
+	var job := _settle_job
+	_settle_job = null
+	job.wait()
+	if not job.error.is_empty():
+		job.remove_temp()
+		return _fail_flush(job.error)
+	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
+	if lock == null:
+		job.remove_temp()
+		return _fail_flush("could not acquire advisory lock for %s" % _jsonl_path)
+	var stored := super.get_meta_value("jsonl_hash", "")
+	var sidecar_read := JSONLSidecar.read_bytes(JSONLSidecar.path_for(_jsonl_path))
+	if not str(sidecar_read.error).is_empty():
+		lock.release()
+		job.remove_temp()
+		push_error("DocketDBJsonl: %s" % sidecar_read.error)
+		return _fail_flush(str(sidecar_read.error))
+	var sidecar_now: PackedByteArray = sidecar_read.bytes
+	if _source_fingerprint(lock.contended) != stored or JSONLSidecar.canonical_part(stored) != job.canonical_sha or not job.holds_prefix_of(sidecar_now):
+		lock.release()
+		job.remove_temp()
+		return _fail_flush("canonical source changed while settling")
+	var write_error := job.mark_sidecar(sidecar_now)
+	if write_error.is_empty():
+		write_error = job.replace_canonical()
+	var fingerprint := ""
+	if write_error.is_empty():
+		_freshness.forget()
+		var retire_error := job.retire_prefix(sidecar_now)
+		# The canonical is complete; a leftover prefix is skipped by its marker.
+		if not retire_error.is_empty(): push_warning("DocketDBJsonl: %s" % retire_error)
+		# The worker hashed exactly the bytes now renamed into place.
+		fingerprint = JSONLSidecar.fingerprint_with(job.text_sha, _jsonl_path)
+	lock.release()
+	if not write_error.is_empty():
+		job.remove_temp()
+		return _fail_flush(write_error)
+	super.set_meta_value("jsonl_hash", fingerprint)
+	if job.tail_of(sidecar_now).is_empty():
+		_pending_first_ms = 0
+		_pending_last_ms = 0
+	else:
+		_pending_first_ms = job.started_ms
+	last_write_error = ""
+	return ""
+
+
 func _validate_cache_for_flush() -> String:
-	for row in _exec_select("SELECT id,fields_json,extras_json FROM items;"):
-		for key in ["fields_json", "extras_json"]:
-			if not JSON.parse_string(str(row.get(key, ""))) is Dictionary:
-				return "malformed %s for item %s; refusing canonical flush" % [key, row.id]
+	var malformed := JSONLSerializer.malformed_item(_exec_select("SELECT id,fields_json,extras_json FROM items;"))
+	if not malformed.is_empty(): return malformed
+	return _validate_type_pointers()
+
+
+func _validate_type_pointers() -> String:
 	for row in _exec_select("SELECT d.id,d.current_revision,v.type_id FROM type_defs d LEFT JOIN type_def_versions v ON v.id=d.current_revision;"):
 		if row.get("type_id") == null or str(row.type_id) != str(row.id): return "invalid current type revision pointer for %s" % row.id
 	return ""
@@ -554,20 +747,31 @@ func _source_fingerprint(force_full: bool = false) -> String:
 
 static func _atomic_write(path: String, content: String) -> String:
 	## Write content to a file atomically: write to .tmp, then rename.
+	var written := _write_temp(path, content)
+	if not str(written.error).is_empty():
+		return str(written.error)
+	return _rename_over(str(written.path), path)
+
+
+static func _write_temp(path: String, content: String) -> Dictionary:
+	## {"path": temp file beside path holding content, "error": ""}. Touches only
+	## that temp file, so a worker thread may call it.
 	var tmp_path := path + ".tmp.%d" % OS.get_process_id()
 
 	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
 	if f == null:
-		return "cannot open temp file %s for writing" % tmp_path
+		return {"path": "", "error": "cannot open temp file %s for writing" % tmp_path}
 	f.store_string(content)
 	f.flush()
 	var file_error := f.get_error()
 	f.close()
 	if file_error != OK:
 		DirAccess.remove_absolute(tmp_path)
-		return "temp file write failed (error %d)" % file_error
+		return {"path": "", "error": "temp file write failed (error %d)" % file_error}
+	return {"path": tmp_path, "error": ""}
 
-	# Atomic rename
+
+static func _rename_over(tmp_path: String, path: String) -> String:
 	var err := DirAccess.rename_absolute(tmp_path, path)
 	if err != OK:
 		push_error("DocketDBJsonl: rename %s → %s failed (error %d)" % [tmp_path, path, err])

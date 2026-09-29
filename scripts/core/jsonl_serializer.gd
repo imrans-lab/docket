@@ -4,6 +4,10 @@ class_name JSONLSerializer
 ##
 ## Each serialize_* method returns a String (possibly empty).
 ## serialize_all() returns the complete JSONL file content (ends with \n).
+##
+## serialize_all is snapshot() then format_all(). snapshot() does every cache
+## read and must run on the thread that owns the SQLite connection; format_all()
+## touches no database, so a background settle runs it on a worker thread.
 
 const JSONL_VERSION := "1.0.0"
 
@@ -12,52 +16,73 @@ const JSONL_VERSION := "1.0.0"
 ## file's own content depend on the cache built from it.
 const _EPHEMERAL_META_KEYS := ["jsonl_hash", "jsonl_version", "registry_diagnostics"]
 
+const _EVENTS_SQL := "SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events%s ORDER BY item_id ASC, timestamp ASC, id ASC;"
+const _COMMENTS_SQL := "SELECT * FROM comments%s ORDER BY item_id ASC, id ASC;"
+const _LINKS_SQL := "SELECT from_id, to_id, relation FROM item_links%s ORDER BY from_id ASC, to_id ASC, relation ASC;"
+const _ATTACHMENTS_SQL := "SELECT * FROM attachments%s ORDER BY item_id ASC, id ASC;"
+
 
 # -- Public API ---------------------------------------------------------------
 
 static func serialize_all(db: DocketDB) -> String:
 	## Full JSONL file from DB state. Lines in spec order, file ends with \n.
+	return format_all(snapshot(db))
+
+
+static func snapshot(db: DocketDB) -> Dictionary:
+	## Every cache read serialize_all needs, as the meta line plus plain row
+	## arrays (the binding returns copies, so no row aliases the connection).
+	return {
+		"meta": serialize_meta(db),
+		"type_defs": db._exec_select("SELECT * FROM type_defs ORDER BY slug,id;"),
+		"type_def_versions": db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"),
+		"items": db._exec_select("SELECT * FROM items ORDER BY id ASC;"),
+		"tags": db._exec_select("SELECT item_id, tag FROM item_tags ORDER BY item_id ASC, tag ASC;"),
+		"events": db._exec_select(_EVENTS_SQL % ""),
+		"comments": db._exec_select(_COMMENTS_SQL % ""),
+		"links": db._exec_select(_LINKS_SQL % ""),
+		"attachments": db._exec_select(_ATTACHMENTS_SQL % ""),
+		"secrets": db._exec_select("SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"),
+		"secret_versions": db._exec_select("SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;"),
+		"saved_queries": db._exec_select("SELECT name, query_json FROM saved_queries ORDER BY name ASC;"),
+	}
+
+
+static func format_all(snap: Dictionary) -> String:
+	## serialize_all's text from a snapshot(). No database access.
+	var tags_by_item := {}
+	for row in snap.tags:
+		var item_id := str(row.get("item_id", ""))
+		if not tags_by_item.has(item_id): tags_by_item[item_id] = []
+		tags_by_item[item_id].append(str(row.get("tag", "")))
+	var sections: Array = [
+		snap.meta,
+		_format_type_registry(snap.type_defs, snap.type_def_versions),
+		_format_items(snap.items, tags_by_item),
+		_format_events(snap.events),
+		_format_comments(snap.comments),
+		_format_links(snap.links),
+		_format_attachments(snap.attachments),
+		_format_secrets(snap.secrets, snap.secret_versions),
+		_format_saved_queries(snap.saved_queries),
+	]
 	var parts: PackedStringArray = []
-
-	var meta_line := serialize_meta(db)
-	if not meta_line.is_empty():
-		parts.append(meta_line)
-
-	var registry_lines := serialize_type_registry(db)
-	if not registry_lines.is_empty():
-		parts.append(registry_lines)
-
-	var items_lines := serialize_items(db)
-	if not items_lines.is_empty():
-		parts.append(items_lines)
-
-	var events_lines := serialize_events(db)
-	if not events_lines.is_empty():
-		parts.append(events_lines)
-
-	var comments_lines := serialize_comments(db)
-	if not comments_lines.is_empty():
-		parts.append(comments_lines)
-
-	var links_lines := serialize_links(db)
-	if not links_lines.is_empty():
-		parts.append(links_lines)
-
-	var attachments_lines := serialize_attachments(db)
-	if not attachments_lines.is_empty():
-		parts.append(attachments_lines)
-
-	var secrets_lines := serialize_secrets(db)
-	if not secrets_lines.is_empty():
-		parts.append(secrets_lines)
-
-	var queries_lines := serialize_saved_queries(db)
-	if not queries_lines.is_empty():
-		parts.append(queries_lines)
-
+	for section: String in sections:
+		if not section.is_empty():
+			parts.append(section)
 	if parts.is_empty():
 		return ""
 	return "\n".join(parts) + "\n"
+
+
+static func malformed_item(rows: Array) -> String:
+	## The first item row whose fields/extras envelope is not a JSON object, as a
+	## refusal message; "" when all are sound. No database access.
+	for row in rows:
+		for key in ["fields_json", "extras_json"]:
+			if not JSON.parse_string(str(row.get(key, ""))) is Dictionary:
+				return "malformed %s for item %s; refusing canonical flush" % [key, row.id]
+	return ""
 
 
 static func serialize_meta(db: DocketDB) -> String:
@@ -129,12 +154,26 @@ static func serialize_items(db: DocketDB) -> String:
 	return "\n".join(lines)
 
 
-static func serialize_type_registry(db: DocketDB) -> String:
+static func _format_items(rows: Array, tags_by_item: Dictionary) -> String:
+	## serialize_items from prefetched rows; tags_by_item maps id → sorted tags.
 	var lines: PackedStringArray = []
-	for row in db._exec_select("SELECT * FROM type_defs ORDER BY slug,id;"):
+	for row in rows:
+		var line := _format_item_row(row, tags_by_item.get(str(row.get("id", "")), []))
+		if line.is_empty(): return ""
+		lines.append(line)
+	return "\n".join(lines)
+
+
+static func serialize_type_registry(db: DocketDB) -> String:
+	return _format_type_registry(db._exec_select("SELECT * FROM type_defs ORDER BY slug,id;"), db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"))
+
+
+static func _format_type_registry(definitions: Array, revisions: Array) -> String:
+	var lines: PackedStringArray = []
+	for row in definitions:
 		var provenance = JSON.parse_string(str(row.provenance_json))
 		lines.append(_to_ordered_json({"_type": "type_def", "id": row.id, "slug": row.slug, "lifecycle": row.lifecycle, "current_revision": row.current_revision, "provenance": provenance if provenance is Dictionary else {}}))
-	for row in db._exec_select("SELECT * FROM type_def_versions ORDER BY type_id,id;"):
+	for row in revisions:
 		var definition = JSON.parse_string(str(row.definition_json))
 		var record := {"_type": "type_def_version", "id": row.id, "type_id": row.type_id, "definition": definition if definition is Dictionary else {}, "author": row.author, "created_at": row.created_at, "reason": row.reason}
 		var parent_value = row.get("parent_revision")
@@ -149,10 +188,10 @@ static func serialize_events(db: DocketDB, only_item: String = "") -> String:
 	## We read events ordered by (item_id, id ASC) and compute seq within each item.
 	# Chronological within each item — see DocketDB.get_events. This is what
 	# normalizes event order back to truth after a merge interleaved the lines.
-	var rows := db._exec_select(
-		"SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events%s ORDER BY item_id ASC, timestamp ASC, id ASC;" % _scope("item_id", only_item),
-		_scope_bindings(only_item)
-	)
+	return _format_events(db._exec_select(_EVENTS_SQL % _scope("item_id", only_item), _scope_bindings(only_item)))
+
+
+static func _format_events(rows: Array) -> String:
 	if rows.is_empty():
 		return ""
 
@@ -196,10 +235,10 @@ static func serialize_events(db: DocketDB, only_item: String = "") -> String:
 
 static func serialize_comments(db: DocketDB, only_item: String = "") -> String:
 	## All comment lines sorted by (item_id ASC, id ASC); optionally one item's.
-	var rows := db._exec_select(
-		"SELECT * FROM comments%s ORDER BY item_id ASC, id ASC;" % _scope("item_id", only_item),
-		_scope_bindings(only_item)
-	)
+	return _format_comments(db._exec_select(_COMMENTS_SQL % _scope("item_id", only_item), _scope_bindings(only_item)))
+
+
+static func _format_comments(rows: Array) -> String:
 	if rows.is_empty():
 		return ""
 
@@ -250,10 +289,10 @@ static func serialize_comments(db: DocketDB, only_item: String = "") -> String:
 static func serialize_links(db: DocketDB, only_from: String = "") -> String:
 	## All link lines sorted by (from_id ASC, to_id ASC, relation ASC);
 	## optionally only the links leaving one item.
-	var rows := db._exec_select(
-		"SELECT from_id, to_id, relation FROM item_links%s ORDER BY from_id ASC, to_id ASC, relation ASC;" % _scope("from_id", only_from),
-		_scope_bindings(only_from)
-	)
+	return _format_links(db._exec_select(_LINKS_SQL % _scope("from_id", only_from), _scope_bindings(only_from)))
+
+
+static func _format_links(rows: Array) -> String:
 	if rows.is_empty():
 		return ""
 
@@ -272,7 +311,10 @@ static func serialize_links(db: DocketDB, only_from: String = "") -> String:
 static func serialize_attachments(db: DocketDB, only_item: String = "") -> String:
 	## All attachment lines sorted by (item_id ASC, id ASC); optionally one item's.
 	## Uses raw query_with_bindings to retrieve BLOB data.
-	var rows: Array = db._exec_select("SELECT * FROM attachments%s ORDER BY item_id ASC, id ASC;" % _scope("item_id", only_item), _scope_bindings(only_item))
+	return _format_attachments(db._exec_select(_ATTACHMENTS_SQL % _scope("item_id", only_item), _scope_bindings(only_item)))
+
+
+static func _format_attachments(rows: Array) -> String:
 	if rows.is_empty():
 		return ""
 
@@ -315,13 +357,13 @@ static func serialize_attachments(db: DocketDB, only_item: String = "") -> Strin
 
 static func serialize_secrets(db: DocketDB) -> String:
 	## secret lines sorted by handle ASC, then secret_version lines sorted by (handle, version).
-	var secret_rows := db._exec_select(
-		"SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"
-	)
-	var version_rows := db._exec_select(
-		"SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;"
+	return _format_secrets(
+		db._exec_select("SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"),
+		db._exec_select("SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;")
 	)
 
+
+static func _format_secrets(secret_rows: Array, version_rows: Array) -> String:
 	if secret_rows.is_empty() and version_rows.is_empty():
 		return ""
 
@@ -388,7 +430,10 @@ static func serialize_secrets(db: DocketDB) -> String:
 
 static func serialize_saved_queries(db: DocketDB) -> String:
 	## Saved query lines sorted by name ASC.
-	var rows := db._exec_select("SELECT name, query_json FROM saved_queries ORDER BY name ASC;")
+	return _format_saved_queries(db._exec_select("SELECT name, query_json FROM saved_queries ORDER BY name ASC;"))
+
+
+static func _format_saved_queries(rows: Array) -> String:
 	if rows.is_empty():
 		return ""
 
@@ -421,13 +466,17 @@ static func _scope_bindings(id: String) -> Array:
 
 static func _serialize_item_row(db: DocketDB, row: Dictionary) -> String:
 	## Serialize a single item row (already fetched from DB) to a JSONL line.
-	var id := str(row.get("id", ""))
-
-	# Fetch tags for this item
-	var tag_rows := db._exec_select("SELECT tag FROM item_tags WHERE item_id=? ORDER BY tag ASC;", [id])
+	var tag_rows := db._exec_select("SELECT tag FROM item_tags WHERE item_id=? ORDER BY tag ASC;", [str(row.get("id", ""))])
 	var tags: Array = []
 	for tag_row in tag_rows:
 		tags.append(str(tag_row.get("tag", "")))
+	return _format_item_row(row, tags)
+
+
+static func _format_item_row(row: Dictionary, tags: Array) -> String:
+	## One item line from its row and its tags sorted ascending; "" when the
+	## fields/extras envelope is malformed.
+	var id := str(row.get("id", ""))
 
 	# Build dict in spec-defined field order (section 5.2), omitting empty/zero/null
 	# Always-present: _type, id, type, status, title, created_at, updated_at

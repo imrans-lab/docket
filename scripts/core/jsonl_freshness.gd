@@ -12,9 +12,10 @@ class_name JSONLFreshness
 ## the window and so carries a newer mtime. A rename carries the renamed file's
 ## mtime, not the rename's time, so a writer that replaces the canonical by
 ## rename writes the temp file's last byte immediately before the rename, under
-## the FileLock (DocketDBJsonl._atomic_write). A hash taken inside the window
-## (typically right after our own settle) is used once and not reused; the
-## first check past the window hashes again and is reused from then on. The window is 2 s so that 2-second FAT timestamps are covered too.
+## the FileLock (DocketDBJsonl._atomic_write, JSONLSettleJob.replace_canonical).
+## A hash taken inside the window (typically right after our own settle) is
+## used once and not reused; the first check past the window hashes again and
+## is reused from then on. The window is 2 s so that 2-second FAT timestamps are covered too.
 ##
 ## Lock evidence: a lock file naming another process (another Docket, or
 ## Minerva's integrated Docket, which uses the same .lock format) means a

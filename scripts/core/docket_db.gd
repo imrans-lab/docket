@@ -1572,7 +1572,9 @@ func _exec_select(sql: String, bindings: Array = []) -> Array:
 		if _last_sql_error.is_empty(): _last_sql_error = msg
 		push_error("DocketDB: %s — %s" % [msg, sql.left(120)])
 		return []
-	return _db.query_result if _db.query_result else []
+	# The binding deep-copies query_result on every read; read it once.
+	var rows: Array = _db.query_result
+	return rows if rows else []
 
 
 func _begin() -> void:
