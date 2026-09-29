@@ -11,6 +11,8 @@ extends Node
 ##   docket --headless --serve --file my.dct --port 3010
 ##   docket --file my.dct
 
+const FrameProbe := preload("res://scripts/ui/frame_probe.gd")
+
 var _test_runner: Node
 var _http_server: Node
 
@@ -222,6 +224,12 @@ func _start_gui(opts: Dictionary) -> void:
 	server.external_state = state
 	add_child(server)
 	print("Embedded MCP server on 127.0.0.1:%d" % opts.port)
+
+	# Measurement hook for File → Save; absent unless its environment variable is set.
+	if FrameProbe.enabled():
+		var probe := FrameProbe.new()
+		add_child(probe)
+		probe.watch(shell.menu_builder())
 
 	# Load .dcq query file if specified (shell is already in tree and ready)
 	var query_path: String = str(opts.get("query", ""))

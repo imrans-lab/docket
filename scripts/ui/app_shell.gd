@@ -65,6 +65,11 @@ func init(state: AppState) -> void:
 	_build_ui()
 
 
+## The menu bar's action source; File → Save arrives on it as "save".
+func menu_builder() -> MenuBuilder:
+	return _menu_builder
+
+
 func _ready() -> void:
 	# Quitting waits for the memory-project answer instead of exiting on close.
 	get_tree().set_auto_accept_quit(false)
