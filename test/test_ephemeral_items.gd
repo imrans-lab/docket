@@ -447,6 +447,47 @@ func test_links_between_ephemeral_items_are_written_once_both_are_kept() -> Vari
 	return A.eq(links, expected, "both links are written once both ends are durable")
 
 
+## The grid's Storage column and filter (QueryGrid via StorageBadge): the query
+## path the grid runs, filtered on storage, returns exactly the ephemeral item;
+## an unfiltered run gives each row the word its creation implies; sorting on
+## the column orders rows by that word.
+## Oracle: the storage and project each item was created with.
+func test_grid_storage_filter_and_words() -> Variant:
+	var path := DIR + "/badge.dct"
+	var out := FileAccess.open(path, FileAccess.WRITE); out.store_string(FileAccess.get_file_as_string(FIXTURE)); out.close()
+	var db := DocketDBJsonl.open_jsonl(path)
+	if db == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
+	var mem: DocketDBMemory = DocketDBMemory.create("badge-mem")
+	if mem == null: db.close(); return "memory project create failed"
+	var state := AppState.new()
+	state.schema = TypeRegistryBootstrap.load_shipped_schema()
+	state._project_dbs = {"badge-file": db, "badge-mem": mem}
+	state._type_registries = {"badge-file": TypeRegistry.for_db(db, "badge-file"), "badge-mem": TypeRegistry.for_db(mem, "badge-mem")}
+	var durable: Dictionary = state._type_registries["badge-file"].create_item({"type": "widget", "title": "durable-probe", "storage": "durable"}, "tester")
+	var ephemeral: Dictionary = state._type_registries["badge-file"].create_item({"type": "widget", "title": "ephemeral-probe", "storage": "ephemeral"}, "tester")
+	var in_memory: Dictionary = state._type_registries["badge-mem"].create_item({"type": "work_item", "title": "memory-probe"}, "tester")
+	var r = A.is_true(not durable.has("error") and not ephemeral.has("error") and not in_memory.has("error"), "creates succeed (%s / %s / %s)" % [durable.get("error", ""), ephemeral.get("error", ""), in_memory.get("error", "")])
+	if r is String: db.close(); mem.close(); return r
+
+	var filter := QueryTypeScope.compile_catalog_conditions([{"field": StorageBadge.FIELD, "op": "eq", "value": ItemStorage.EPHEMERAL}], [], true)
+	var filtered: Array = state.execute_cross_project_query({"filter": filter}).map(func(row: Dictionary) -> String: return str(row.id))
+	r = A.is_true(state.last_cross_project_query_error.is_empty() and filtered == [str(ephemeral.id)], "storage = ephemeral narrows to the ephemeral item: %s %s" % [filtered, state.last_cross_project_query_error])
+	if r is String: db.close(); mem.close(); return r
+
+	var expected := {str(durable.id): StorageBadge.FILE, str(ephemeral.id): StorageBadge.EPHEMERAL, str(in_memory.id): StorageBadge.MEMORY}
+	var modes := StorageBadge.project_modes(state.get_project_dbs())
+	var word_of := func(row: Dictionary) -> String: return StorageBadge.word(str(modes.get(str(row.get("project", "")), "")), str(row.get("storage", "")))
+	var rows: Array = state.execute_cross_project_query({"filter": {}}).filter(func(row: Dictionary) -> bool: return expected.has(str(row.id)))
+	var words := {}
+	for row in rows: words[str(row.id)] = word_of.call(row)
+	r = A.eq(words, expected, "each row's word matches how it was created")
+	if r is String: db.close(); mem.close(); return r
+	StorageBadge.sort_rows(rows, word_of, false)
+	var order: Array = rows.map(func(row: Dictionary) -> String: return words[str(row.id)])
+	db.close(); mem.close()
+	return A.eq(order, [StorageBadge.EPHEMERAL, StorageBadge.FILE, StorageBadge.MEMORY], "sorting on the column orders by the shown word")
+
+
 ## Two connections share one cache file. A rebuilds it (reload), unlinking the
 ## file B still holds; B then creates an ephemeral item. Then a capture
 ## retires the file under an open mutation of B's.

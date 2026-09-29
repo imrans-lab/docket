@@ -5,7 +5,7 @@ class_name QueryTypeScope
 ## conditions pin; project/type pairs stay coupled until compilation so a slug
 ## shared by two projects binds each project's own type definition.
 
-const UNIVERSAL_FIELDS := ["type", "status", "priority", "severity", "title", "description", "assigned_to", "directed_to", "tags", "has_attachment", "id", "created_at", "updated_at", "project", "blocked_by", "parent"]
+const UNIVERSAL_FIELDS := ["type", "status", "priority", "severity", "title", "description", "assigned_to", "directed_to", "tags", "has_attachment", "id", "created_at", "updated_at", "project", "blocked_by", "parent", "storage"]
 
 static func branch_index(conditions: Array, row_index: int) -> int:
 	var branch := 0

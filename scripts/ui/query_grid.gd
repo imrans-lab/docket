@@ -28,7 +28,7 @@ const _QUERY_FIELDS := [
 	"type", "status", "priority", "severity", "title", "description",
 	"assigned_to", "directed_to", "tags", "has_attachment", "id", "component", "key",
 	"resolution", "environment", "created_at", "updated_at", "project",
-	"blocked_by", "parent",
+	"blocked_by", "parent", "storage",
 ]
 
 # Field → applicable operators
@@ -48,11 +48,12 @@ const _OP_LABELS := {
 }
 
 # Fields whose value is chosen from a list (EnumValuePicker), never typed.
-const _ENUM_FIELDS := ["type", "status", "project", "priority", "severity", "has_attachment"]
+const _ENUM_FIELDS := ["type", "status", "project", "priority", "severity", "has_attachment", "storage"]
 const _FIXED_ENUM_VALUES := {
 	"priority": ["1", "2", "3", "4"],
 	"severity": ["1", "2", "3", "4"],
 	"has_attachment": ["true", "false"],
+	"storage": ItemStorage.MODES,
 }
 const _ADD_PROJECT_LABEL := "add…"
 var _type_catalog: Array = []
@@ -85,12 +86,12 @@ func _enum_values(field_name: String, scope: Dictionary) -> Array:
 	return _FIXED_ENUM_VALUES.get(field_name, [])
 
 # Column index → data field name (dynamic — may include "project" when multi-project)
-var _col_fields: Array = ["id", "type", "status", "priority", "title"]
-var _col_titles: Array = ["ID", "Type", "Status", "Pri", "Title"]
-var _col_min_widths: Array = [50, 40, 50, 30, 80]
+var _col_fields: Array = ["id", "type", "status", "priority", "storage", "title"]
+var _col_titles: Array = ["ID", "Type", "Status", "Pri", "Storage", "Title"]
+var _col_min_widths: Array = [50, 40, 50, 30, 40, 80]
 
 # Column widths (pixel values, managed by header drag)
-var _col_widths: Array = [90, 70, 100, 40, 0]  # last col = fill remaining
+var _col_widths: Array = [90, 70, 100, 40, 70, 0]  # last col = fill remaining
 
 # Multi-project mode tracking
 var _multi_project: bool = false
@@ -262,15 +263,15 @@ func _rebuild_columns() -> void:
 		_col_min_widths = []
 		_col_widths = []
 	elif _multi_project:
-		_col_fields = ["id", "project", "type", "status", "priority", "title"]
-		_col_titles = ["ID", "Project", "Type", "Status", "Pri", "Title"]
-		_col_min_widths = [50, 50, 40, 50, 30, 80]
-		_col_widths = [90, 80, 70, 100, 40, 0]
+		_col_fields = ["id", "project", "type", "status", "priority", "storage", "title"]
+		_col_titles = ["ID", "Project", "Type", "Status", "Pri", "Storage", "Title"]
+		_col_min_widths = [50, 50, 40, 50, 30, 40, 80]
+		_col_widths = [90, 80, 70, 100, 40, 70, 0]
 	else:
-		_col_fields = ["id", "type", "status", "priority", "title"]
-		_col_titles = ["ID", "Type", "Status", "Pri", "Title"]
-		_col_min_widths = [50, 40, 50, 30, 80]
-		_col_widths = [90, 70, 100, 40, 0]
+		_col_fields = ["id", "type", "status", "priority", "storage", "title"]
+		_col_titles = ["ID", "Type", "Status", "Pri", "Storage", "Title"]
+		_col_min_widths = [50, 40, 50, 30, 40, 80]
+		_col_widths = [90, 70, 100, 40, 70, 0]
 	for binding_value in _dcq_columns:
 		if binding_value is String:
 			var field_key := str(binding_value)
@@ -764,7 +765,8 @@ func _run_query() -> void:
 		return
 	var filter := _build_conditions_filter()
 	var query := {"filter": filter}
-	if not _sort_field.is_empty():
+	# Storage sorts here, on the word the column shows (StorageBadge.word).
+	if not _sort_field.is_empty() and _sort_field != StorageBadge.FIELD:
 		var sort_value: Dictionary = _sort_binding.duplicate(true)
 		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
 		query["sort"] = [sort_value]
@@ -787,6 +789,9 @@ func _run_query() -> void:
 			return
 	else:
 		_current_results = []
+	if _sort_field == StorageBadge.FIELD:
+		var modes := StorageBadge.project_modes(_state.get_project_dbs())
+		StorageBadge.sort_rows(_current_results, func(item: Dictionary) -> String: return _storage_word(item, modes), _sort_dir == "desc")
 	_populate_tree()
 
 
@@ -859,6 +864,7 @@ const _STATUS_COLORS := {
 func _populate_tree() -> void:
 	_tree.clear()
 	var root := _tree.create_item()
+	var storage_modes := StorageBadge.project_modes(_state.get_project_dbs())
 
 	for item in _current_results:
 		var row := _tree.create_item(root)
@@ -882,6 +888,8 @@ func _populate_tree() -> void:
 				var state_color := _pinned_state_color(item)
 				if state_color.a > 0.0:
 					row.set_custom_color(col_idx, state_color)
+			elif field == StorageBadge.FIELD and not column is Dictionary:
+				row.set_text(col_idx, _storage_word(item, storage_modes))
 			elif column is Dictionary:
 				row.set_text(col_idx, _render_bound_column(item, column))
 			else:
@@ -941,6 +949,9 @@ func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
 	if fields[binding.field_key] is Array or fields[binding.field_key] is Dictionary:
 		return JSON.stringify(fields[binding.field_key])
 	return str(fields[binding.field_key])
+
+func _storage_word(item: Dictionary, modes: Dictionary) -> String:
+	return StorageBadge.word(str(modes.get(_item_project(item), "")), str(item.get("storage", "")))
 
 func _item_project(item: Dictionary) -> String:
 	var project: String = str(item.get("project", ""))

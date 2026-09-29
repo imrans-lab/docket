@@ -169,6 +169,7 @@ var _is_draft: bool = false  # true when item hasn't been saved to DB yet
 var _draft_item: Dictionary = {}  # in-memory item before first save
 var _current_project: String = ""  # project name that owns current item
 var _project_label: Label  # shows [project] badge in header
+var _storage_badge: StorageBadge  # file / ephemeral / memory beside the id
 var _project_option: OptionButton  # project selector for new items (visible when 2+ projects)
 var _project_inline_label: Label  # "Project:" label next to _project_option in meta row
 var _move_btn: Button  # "Move to..." button (visible when 2+ projects, item saved)
@@ -244,6 +245,8 @@ func _build_ui() -> void:
 	_id_label.text = "(select or create an item)"
 	_id_label.add_theme_font_size_override("font_size", 16)
 	header.add_child(_id_label)
+	_storage_badge = (load("res://scenes/ui/storage_badge.tscn") as PackedScene).instantiate() as StorageBadge
+	header.add_child(_storage_badge)
 	_project_label = Label.new()
 	_project_label.text = ""
 	_project_label.add_theme_font_size_override("font_size", 13)
@@ -1199,6 +1202,7 @@ func load_item(id: String, project: String = "") -> void:
 	_current_id = id
 	_is_draft = false
 	_draft_item = {}
+	_storage_badge.show_for(_state, project, id)
 
 	# Search across all project DBs for the item
 	var item_db: DocketDB = _state.get_db_for_project(project) if not project.is_empty() else null
@@ -1305,6 +1309,7 @@ func load_draft(type_name: String, item: Dictionary, project: String = "") -> vo
 	_loaded_item_token = ""
 	_revision_label.text = ""
 	_id_label.text = "(new — unsaved)"
+	_storage_badge.clear()
 	_project_label.text = ""
 	_rebuild_project_options()
 	if not project.is_empty():
