@@ -3,22 +3,43 @@ class_name DocketDBJsonl
 ## DocketDB subclass that writes through to both SQLite (cache) and JSONL (canonical).
 ##
 ## JSONL is the source of truth; SQLite is a fast query cache.
-## Mutations pass a source-freshness gate, update the disposable SQLite cache,
-## then rewrite the entire JSONL file atomically.
+## Mutations pass a source-freshness gate and stage their rows in a
+## transaction on the disposable SQLite cache; the outermost one appends one
+## record to the write-ahead sidecar (JSONLSidecar, beside the canonical) and
+## commits the transaction under one FileLock hold. The canonical is rewritten atomically only when it settles: on
+## an idle debounce (settle_projects), on close() with pending records, on
+## flush() (File → Save, docket_flush), on open when a sidecar survived, and at
+## once for changes the sidecar does not journal (type registry, secrets,
+## saved queries).
 ##
 ## Opening flow:
 ##   1. If JSONL exists and cache is fresh → open cache via DocketDB.open()
-##   2. If cache is stale or missing → rebuild from JSONL via JSONLCache
+##   2. If cache is stale or missing → rebuild from JSONL + sidecar via JSONLCache
 ##   3. If neither exists → create new (fresh JSONL + SQLite cache)
+##   4. A non-empty sidecar is then compacted into the canonical
 
 var _jsonl_path: String
 var last_write_error: String = ""
 var _write_blocked: bool = false
 var _allow_initial_write: bool = false
 var _lock_timeout_ms: int = 5000
+## Test seam for a mutation's durable write, called as (target_path, text) in
+## place of it: target is the canonical (full replacement text) on a settle,
+## or the sidecar (one record line to append) on an ordinary mutation.
 var _atomic_write_hook: Callable
 var _mutation_depth: int = 0
 var _mutation_error: String = ""
+# The committed mutation changed a table the sidecar does not journal.
+var _settle_after_commit: bool = false
+
+## Settle once no record has been appended for this long...
+const SETTLE_IDLE_MS := 2000
+## ...or once the oldest unsettled record is this old, so a steady stream of
+## mutations cannot keep the canonical from converging.
+const SETTLE_MAX_AGE_MS := 30000
+# Ticks of this process's first and latest unsettled sidecar append; 0 = none.
+var _pending_first_ms: int = 0
+var _pending_last_ms: int = 0
 
 # Reason the most recent open_jsonl() returned null (e.g. unresolved conflict
 # markers). Read immediately after a null return.
@@ -66,6 +87,15 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 
 	# Transfer the opened SQLite connection to our wrapper (which IS a DocketDB)
 	wrapper._adopt(cache_db)
+
+	# A sidecar that outlived its writer (crash, kill) is already replayed into
+	# the cache; compact it now. On failure the records stay journaled and
+	# visible, and the next settle retries. While another process holds the
+	# lock it is writing this sidecar, so it is replayed but left in place.
+	if JSONLSidecar.has_content(JSONLSidecar.path_for(path)) and not FileLock.held_by_other(path):
+		var compact_error := wrapper._settle_canonical()
+		if not compact_error.is_empty():
+			push_warning("DocketDBJsonl: sidecar for %s not compacted: %s" % [path, compact_error])
 
 	return wrapper
 
@@ -124,9 +154,12 @@ func get_path() -> String:
 
 func close() -> void:
 	if _mutation_depth > 0: return
-	# Durable mutations already replace canonical JSONL before reporting success.
-	# Close only releases the disposable cache, so read-only sessions and rejected
-	# operations cannot normalize or rewrite source bytes as a side effect.
+	# Only this process's own unsettled appends are written back, so read-only
+	# sessions and rejected operations cannot normalize or rewrite source bytes
+	# as a side effect of closing.
+	var settle_error := settle_if_pending()
+	if not settle_error.is_empty():
+		push_warning("DocketDBJsonl: %s stays journaled in its sidecar: %s" % [_jsonl_path, settle_error])
 	super.close()
 
 
@@ -193,13 +226,48 @@ func reload() -> bool:
 
 
 func flush() -> void:
-	## Force a JSONL write. Public counterpart to the internal _flush_jsonl().
+	## Settle: rewrite the canonical from the cache and empty the sidecar.
 	flush_checked()
 
 func flush_checked() -> String:
 	## An empty result inside a nested mutation means the flush is deferred; the
 	## outermost completion remains responsible for durable commit and errors.
-	return _flush_jsonl()
+	if _mutation_depth > 0: return ""
+	return _settle_canonical()
+
+
+func has_pending_sidecar() -> bool:
+	## True while this process has sidecar appends the canonical does not hold.
+	return _pending_first_ms != 0
+
+
+func settle_if_pending() -> String:
+	return _settle_canonical() if has_pending_sidecar() and _is_open else ""
+
+
+func settle_if_idle(now_ms: int) -> String:
+	# Mid-mutation the cache holds uncommitted rows; never settle them.
+	if _mutation_depth > 0 or not has_pending_sidecar(): return ""
+	if now_ms - _pending_last_ms < SETTLE_IDLE_MS and now_ms - _pending_first_ms < SETTLE_MAX_AGE_MS: return ""
+	var error := settle_if_pending()
+	# Back off a failing settle to the next idle window instead of every tick.
+	if not error.is_empty(): _pending_last_ms = now_ms
+	return error
+
+
+static func settle_projects(project_dbs: Dictionary, idle_only: bool) -> void:
+	## Debounce tick (idle_only) and quit hook (all pending) for a project map.
+	var now_ms := Time.get_ticks_msec()
+	for project_name in project_dbs:
+		var pdb = project_dbs[project_name]
+		if not pdb is DocketDBJsonl: continue
+		var jsonl_db: DocketDBJsonl = pdb
+		var error := jsonl_db.settle_if_idle(now_ms) if idle_only else jsonl_db.settle_if_pending()
+		if not error.is_empty(): push_warning("DocketDBJsonl: settle of %s deferred: %s" % [project_name, error])
+
+
+func _uses_sidecar() -> bool:
+	return true
 
 
 func _adopt(source: DocketDB) -> void:
@@ -213,6 +281,11 @@ func _adopt(source: DocketDB) -> void:
 	var diagnostics := super.get_meta_value("registry_diagnostics", "")
 	_write_blocked = not diagnostics.is_empty()
 	if _write_blocked: last_write_error = "unresolved type definition data; project is read-only: %s" % diagnostics
+	if _uses_sidecar():
+		var tracking_error := JSONLSidecar.install_dirty_tracking(self)
+		if not tracking_error.is_empty():
+			_write_blocked = true
+			last_write_error = tracking_error
 
 
 func get_storage_diagnostics() -> Array:
@@ -253,13 +326,15 @@ func _complete_canonical_mutation(error: String = "") -> String:
 	_mutation_depth -= 1
 	if _mutation_depth > 0: return _mutation_error
 	_work_fields.clear()
-	if _mutation_error.is_empty(): _mutation_error = _exec_checked("COMMIT;")
+	if _mutation_error.is_empty(): _mutation_error = _commit_mutation()
 	if not _mutation_error.is_empty():
 		var failed := _mutation_error
 		_rollback()
-		reload()
-		last_write_error = failed
 		_mutation_error = ""
+		_settle_after_commit = false  # nothing committed, so nothing to settle
+		# A memory project has no files to rebuild from; the rollback is enough.
+		if _uses_sidecar(): return _fail_flush(failed)
+		last_write_error = failed
 		return failed
 	var flush_error := _flush_jsonl()
 	_mutation_error = ""
@@ -308,15 +383,85 @@ func apply_registry_change(type_def: Dictionary, revision: Dictionary, item_bind
 
 # -- JSONL write-through ------------------------------------------------------
 
+func _commit_mutation() -> String:
+	## COMMIT of the outermost mutation's cache transaction. A change the sidecar
+	## journals is appended first: one FileLock hold covers the source check,
+	## the append, the stored identity and the COMMIT, so a process that reads
+	## the cache under the lock never sees rows the sidecar does not hold. On
+	## any failure inside the hold the sidecar is cut back to its length before
+	## the append, and the error is returned with the transaction still open for
+	## the caller to roll back. Other changes only commit here; _flush_jsonl
+	## settles them.
+	if not _uses_sidecar() or _allow_initial_write: return _exec_checked("COMMIT;")
+	if _write_blocked: return last_write_error
+	if not FileAccess.file_exists(_jsonl_path): return "canonical source is missing; refusing to recreate it from cache"
+	var expected_source := super.get_meta_value("jsonl_hash", "")
+	var built := JSONLSidecar.build_record(self, JSONLSidecar.canonical_part(expected_source))
+	if built.has("error"): return str(built.error)
+	if built.get("full", false):
+		_settle_after_commit = true
+		return _exec_checked("COMMIT;")
+	if str(built.line).is_empty(): return _exec_checked("COMMIT;")
+
+	# Same lock and strong source check as a canonical write: a record may only
+	# extend the exact canonical + sidecar this cache was built from.
+	var sidecar := JSONLSidecar.path_for(_jsonl_path)
+	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
+	if lock == null:
+		return "could not acquire advisory lock for %s" % _jsonl_path
+	if _file_fingerprint(_jsonl_path) != expected_source:
+		lock.release()
+		return "canonical source changed while acquiring write lock"
+	var length_before := JSONLSidecar.length_of(sidecar)
+	if length_before < 0 and FileAccess.file_exists(sidecar):
+		lock.release()
+		return "cannot read sidecar %s before appending" % sidecar
+	var error: String = str(_atomic_write_hook.call(sidecar, built.line)) if _atomic_write_hook.is_valid() else JSONLSidecar.append(sidecar, built.line)
+	if error.is_empty():
+		# The cache now holds exactly canonical + sidecar; this identity commits
+		# with the rows, so this process's own append does not read as a
+		# foreign change.
+		super.set_meta_value("jsonl_hash", JSONLSidecar.fingerprint_with(JSONLSidecar.canonical_part(expected_source), _jsonl_path))
+		error = _last_sql_error
+	if error.is_empty(): error = JSONLSidecar.clear_dirty(self)
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty():
+		var undo_error := JSONLSidecar.truncate(sidecar, length_before)
+		if not undo_error.is_empty():
+			push_error("DocketDBJsonl: %s" % undo_error)
+			error = "%s; %s" % [error, undo_error]
+	lock.release()
+	if not error.is_empty(): return error
+
+	var now_ms := Time.get_ticks_msec()
+	if _pending_first_ms == 0: _pending_first_ms = now_ms
+	_pending_last_ms = now_ms
+	last_write_error = ""
+	return ""
+
+
 func _flush_jsonl() -> String:
-	## Serialize current DB state to JSONL and write atomically.
-	## Nested mutations defer serialization until their outer transaction commits.
-	## Acquires the supported advisory sidecar before writing and validates the
-	## canonical content again after acquisition.
+	## Durable step after the outermost mutation commits. Nested mutations defer
+	## to their outer transaction. Journaled changes were appended by
+	## _commit_mutation; the first write of a new file and changes the sidecar
+	## does not journal settle the canonical here.
 	if _jsonl_path.is_empty():
 		return "canonical path is empty"
 	if _mutation_depth > 0:
 		return ""  # We're inside a compound mutation — will flush when outermost returns
+	var settle := _allow_initial_write or _settle_after_commit
+	_settle_after_commit = false
+	if _write_blocked:
+		return last_write_error
+	return _settle_canonical() if settle else ""
+
+
+func _settle_canonical() -> String:
+	## Serialize the cache to the canonical atomically and retire the sidecar.
+	## Acquires the advisory lock before writing and validates the source
+	## identity (canonical + sidecar) again after acquisition.
+	if _jsonl_path.is_empty():
+		return "canonical path is empty"
 	if _write_blocked:
 		return last_write_error
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
@@ -334,7 +479,7 @@ func _flush_jsonl() -> String:
 	if jsonl_text.is_empty():
 		return _fail_flush("serializer produced empty output")
 
-	# The sidecar only reduces overlap. Recheck the strong source identity after
+	# The lock only reduces overlap. Recheck the strong source identity after
 	# acquiring it so a writer in the serialization window cannot be overwritten.
 	var lock := FileLock.acquire(_jsonl_path, _lock_timeout_ms)
 	if lock == null:
@@ -343,18 +488,30 @@ func _flush_jsonl() -> String:
 		lock.release()
 		return _fail_flush("canonical source changed while acquiring write lock")
 
-	var write_error: String = str(_atomic_write_hook.call(_jsonl_path, jsonl_text)) if _atomic_write_hook.is_valid() else _atomic_write(_jsonl_path, jsonl_text)
-
-	if lock != null:
-		lock.release()
+	# Canonical first, sidecar second. The marker lets a replay after a crash
+	# between the two recognise that the canonical already holds every record.
+	var sidecar := JSONLSidecar.path_for(_jsonl_path)
+	var write_error := ""
+	if JSONLSidecar.has_content(sidecar):
+		write_error = JSONLSidecar.append(sidecar, JSONLSidecar.settle_marker(jsonl_text.sha256_text()))
+	if write_error.is_empty():
+		write_error = str(_atomic_write_hook.call(_jsonl_path, jsonl_text)) if _atomic_write_hook.is_valid() else _atomic_write(_jsonl_path, jsonl_text)
+	if write_error.is_empty():
+		var remove_error := JSONLSidecar.remove(sidecar)
+		# The canonical is complete; a leftover sidecar is skipped by its marker.
+		if not remove_error.is_empty(): push_warning("DocketDBJsonl: %s" % remove_error)
+	var fingerprint := _file_fingerprint(_jsonl_path)
+	lock.release()
 	if not write_error.is_empty():
 		return _fail_flush(write_error)
 
 	# Update cache fingerprint so it stays valid
-	var fingerprint := _file_fingerprint(_jsonl_path)
 	if not fingerprint.is_empty():
 		# Use super to avoid triggering another flush
 		super.set_meta_value("jsonl_hash", fingerprint)
+	JSONLSidecar.clear_dirty(self)
+	_pending_first_ms = 0
+	_pending_last_ms = 0
 	last_write_error = ""
 	return ""
 
@@ -383,10 +540,9 @@ func _fail_flush(message: String) -> String:
 
 static func _file_fingerprint(path: String) -> String:
 	## Strong content identity prevents a same-size, same-timestamp external edit
-	## from being overwritten by a cache that only appeared fresh.
-	if not FileAccess.file_exists(path):
-		return ""
-	return FileAccess.get_sha256(path)
+	## from being overwritten by a cache that only appeared fresh. It covers the
+	## sidecar too, so another process's append also reads as a change.
+	return JSONLSidecar.source_fingerprint(path)
 
 
 static func _atomic_write(path: String, content: String) -> String:
@@ -416,7 +572,7 @@ static func _atomic_write(path: String, content: String) -> String:
 
 # -- Overridden mutating methods ----------------------------------------------
 
-# Each override: call super (SQLite), then flush JSONL.
+# Each override: call super (SQLite), then commit durably via _flush_jsonl().
 
 
 func insert_item(id: String, item: Dictionary) -> String:

@@ -37,7 +37,7 @@ func _tools(db: DocketDBJsonl) -> ToolRegistry:
 ## {"article": String, "entries": Array of decoded notes, "revision": int} from the file.
 func _on_disk(id: String) -> Dictionary:
 	var result: Dictionary = {"article":"", "entries":[], "revision":0}
-	for line in FileAccess.get_file_as_string(_path()).split("\n", false):
+	for line in A.durable_text(_path()).split("\n", false):
 		var record: Variant = JSON.parse_string(line)
 		if not record is Dictionary: continue
 		var row: Dictionary = record

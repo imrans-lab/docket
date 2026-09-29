@@ -1,6 +1,6 @@
 extends Node
 ## Unit tests for DocketDBJsonl — verifies that mutations write through
-## to both SQLite (cache) and JSONL (canonical).
+## to SQLite (cache) and reach the JSONL canonical once it settles.
 
 var A := AssertHelpers
 var _test_dir := "user://test_docket_db_jsonl"
@@ -45,6 +45,7 @@ func teardown() -> void:
 # -- Helpers ------------------------------------------------------------------
 
 func _read_jsonl() -> String:
+	_settle()
 	var f := FileAccess.open(_jsonl_path, FileAccess.READ)
 	if f == null:
 		return ""
@@ -54,7 +55,14 @@ func _read_jsonl() -> String:
 
 
 func _parse_jsonl() -> Dictionary:
+	_settle()
 	return JSONLParser.parse_file(_jsonl_path)
+
+
+func _settle() -> void:
+	## Mutations append to the sidecar; the canonical holds them once settled.
+	if _db and _db.is_open():
+		_db.flush()
 
 
 func _count_lines_of_type(jsonl_text: String, type_name: String) -> int:

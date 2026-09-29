@@ -470,6 +470,7 @@ func test_import_and_delete_failures_roll_back_complete_operations() -> Variant:
 	var db := DocketDBJsonl.open_jsonl(path)
 	db.update_item_fields_checked("ORD-0001", {"tags":["must-survive"]})
 	db.add_event_checked("ORD-0001", "prepared", "tester")
+	db.flush()  # settle, so the byte baseline holds every acknowledged write
 	var original := _read_file(path)
 	var expected_events := db.get_events("ORD-0001")
 	var exported := db.export_item_full("ORD-0001")
@@ -516,6 +517,7 @@ func test_comment_resolution_event_failure_rolls_back_open_comment() -> Variant:
 	var db := DocketDBJsonl.open_jsonl(path)
 	var created := db.add_comment("ORD-0001", "reviewer", "keep this open")
 	var comment_id := int(created.id)
+	db.flush()  # settle, so the byte baseline holds every acknowledged write
 	var canonical_before := _read_file(path)
 	var events_before := db.get_events("ORD-0001")
 	db._exec("CREATE TRIGGER reject_resolution_event BEFORE INSERT ON item_events BEGIN SELECT RAISE(ABORT, 'resolution audit rejected'); END;")
@@ -647,7 +649,7 @@ func test_serializer_read_failure_preserves_canonical_and_rebuilds_complete_cach
 	var original := _read_file(path)
 	var db := DocketDBJsonl.open_jsonl(path)
 	db._exec_checked("DROP TABLE attachments;")
-	var error := db._flush_jsonl()
+	var error := db.flush_checked()
 	var r = A.contains(error, "cache read failed", "failed serializer SELECT reaches persistence caller")
 	if r is String: db.close(); return r
 	r = A.eq(_read_file(path), original, "serializer read failure performs no atomic replacement")

@@ -7,6 +7,12 @@ class_name JSONLCache
 ##
 ## Cache freshness is content-addressed. Size/mtime can collide for rapid
 ## same-length edits, which is unacceptable at a write boundary.
+##
+## The cache is built from the canonical plus its write-ahead sidecar
+## (JSONLSidecar): a rebuild replays the sidecar's records, and the stored
+## fingerprint is the hash of the very bytes it parsed from both files, so a
+## record appended by any process, even during the rebuild, makes every other
+## cache of this canonical stale.
 
 
 # Reason the most recent rebuild_cache() returned null. Read it immediately
@@ -34,8 +40,28 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 	## Parse the JSONL file and write a fresh SQLite cache.
 	## Returns an open DocketDB on success, null on failure.
 
+	# Canonical and sidecar are each read once. The cache is built from these
+	# bytes and its stored fingerprint is their hash, so a write by another
+	# process after the read makes this cache stale instead of hiding inside it.
+	if not FileAccess.file_exists(jsonl_path):
+		last_error = "file not found: %s" % jsonl_path
+		push_error("JSONLCache: %s" % last_error)
+		return null
+	var canonical_bytes := FileAccess.get_file_as_bytes(jsonl_path)
+	if FileAccess.get_open_error() != OK:
+		last_error = "cannot open file: %s" % jsonl_path
+		push_error("JSONLCache: %s" % last_error)
+		return null
+	var sidecar_read := JSONLSidecar.read_bytes(JSONLSidecar.path_for(jsonl_path))
+	if not str(sidecar_read.error).is_empty():
+		last_error = str(sidecar_read.error)
+		push_error("JSONLCache: %s" % last_error)
+		return null
+	var sidecar_bytes: PackedByteArray = sidecar_read.bytes
+	var canonical_sha := JSONLSidecar.sha256_bytes(canonical_bytes)
+
 	# Parse the JSONL source
-	var parsed := JSONLParser.parse_file(jsonl_path)
+	var parsed := JSONLParser.parse_bytes(canonical_bytes, jsonl_path)
 	# A hard parse error (conflict markers, unreadable file) must abort before we
 	# touch the cache. Rebuilding from a conflicted file would union both sides,
 	# and the next flush would write that back over the file.
@@ -51,6 +77,13 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 	var expected_cache_path := cache_path_for_version(jsonl_path, str(parsed.meta.version))
 	if cache_path != expected_cache_path:
 		last_error = "format %s requires cache path %s" % [parsed.meta.version, expected_cache_path]
+		return null
+	# Same refusal rule as the canonical: a sidecar that cannot be replayed
+	# faithfully aborts before the cache is touched.
+	var replay_error := JSONLSidecar.replay_into(parsed, jsonl_path, canonical_sha, sidecar_bytes)
+	if not replay_error.is_empty():
+		last_error = replay_error
+		push_error("JSONLCache: %s" % replay_error)
 		return null
 	last_error = ""
 
@@ -91,9 +124,8 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 		var injected_error := str(rebuild_failure_hook.call())
 		if not injected_error.is_empty() and db._last_sql_error.is_empty(): db._last_sql_error = injected_error
 
-	# Store a fingerprint so we can validate freshness later
-	var fingerprint := _file_fingerprint(jsonl_path)
-	db.set_meta_value("jsonl_hash", fingerprint)
+	# Store the identity of exactly the bytes parsed above.
+	db.set_meta_value("jsonl_hash", JSONLSidecar.fingerprint_of(canonical_sha, sidecar_bytes))
 
 	if not db._last_sql_error.is_empty():
 		db._rollback()
@@ -156,9 +188,7 @@ static func delete_cache_family(jsonl_path: String) -> String:
 
 
 static func _file_fingerprint(path: String) -> String:
-	if not FileAccess.file_exists(path):
-		return ""
-	return FileAccess.get_sha256(path)
+	return JSONLSidecar.source_fingerprint(path)
 
 
 static func _delete_cache_files(cache_path: String) -> String:

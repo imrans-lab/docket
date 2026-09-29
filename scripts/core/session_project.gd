@@ -200,11 +200,13 @@ static func outstanding_items(db: DocketDB) -> Array[Dictionary]:
 
 
 static func discard_files(path: String) -> String:
-	## Remove a closed session_file project's canonical file and its cache family.
+	## Remove a closed session_file project's canonical file, its write-ahead
+	## sidecar (left by a settle that failed) and its cache family.
 	var cache_error := JSONLCache.delete_cache_family(path)
 	if not cache_error.is_empty():
 		return cache_error
 	var absolute := _absolute(path)
-	if FileAccess.file_exists(absolute) and DirAccess.remove_absolute(absolute) != OK:
-		return "could not delete %s" % absolute
+	for file_path in [JSONLSidecar.path_for(absolute), absolute]:
+		if FileAccess.file_exists(file_path) and DirAccess.remove_absolute(file_path) != OK:
+			return "could not delete %s" % file_path
 	return ""

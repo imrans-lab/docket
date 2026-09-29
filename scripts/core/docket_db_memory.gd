@@ -103,3 +103,13 @@ func _flush_jsonl() -> String:
 		return ""
 	revision += 1
 	return ""
+
+
+func flush_checked() -> String:
+	## Nothing to settle; a flush is a committed point like any mutation.
+	return _flush_jsonl()
+
+
+func _uses_sidecar() -> bool:
+	## No canonical file, so no write-ahead sidecar and no dirty tracking.
+	return false

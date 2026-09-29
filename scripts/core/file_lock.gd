@@ -71,6 +71,13 @@ func is_locked() -> bool:
 	return _locked
 
 
+static func held_by_other(path: String) -> bool:
+	## True when path's lock file exists and does not name this process. An
+	## unreadable lock counts as another holder.
+	var lock_path := path + ".lock"
+	return FileAccess.file_exists(lock_path) and _read_lock_pid(lock_path) != OS.get_process_id()
+
+
 static func is_pid_running(pid: int) -> bool:
 	## Liveness check shared with owner records; errs toward "running".
 	return _is_pid_running(pid)

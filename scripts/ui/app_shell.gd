@@ -117,6 +117,7 @@ func _request_quit() -> void:
 func _quit() -> void:
 	_save_current_work_state()
 	_persist_last_query()
+	DocketDBJsonl.settle_projects(_state.get_project_dbs(), false)
 	get_tree().quit()
 
 
@@ -514,6 +515,8 @@ func _on_poll_external_changes() -> void:
 	## Pick up external edits to the .dct (git pull, MCP server, another
 	## instance). Re-querying alone is not enough: the grid reads the SQLite
 	## cache, so without an actual reload it would redisplay stale rows.
+	## Also the GUI's own idle-debounced settle of sidecar appends.
+	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
 	var current_token := _get_projects_token()
 	if current_token == _last_projects_token:
 		return

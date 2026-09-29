@@ -31,7 +31,7 @@ func _db(name: String) -> DocketDBJsonl:
 ## Project events on disk, in eid order: [{eid, item_id, kind, actor, fields}].
 func _events(path: String) -> Array:
 	var events: Array = []
-	for line in FileAccess.get_file_as_string(path).split("\n", false):
+	for line in A.durable_text(path).split("\n", false):
 		var record: Variant = JSON.parse_string(line)
 		if not record is Dictionary: continue
 		var row: Dictionary = record
@@ -43,7 +43,7 @@ func _events(path: String) -> Array:
 ## Item revision from the file's event lines (W1 rule).
 func _revision(path: String, id: String) -> int:
 	var count: int = 0
-	for line in FileAccess.get_file_as_string(path).split("\n", false):
+	for line in A.durable_text(path).split("\n", false):
 		var record: Variant = JSON.parse_string(line)
 		if not record is Dictionary or (record as Dictionary).get("_type") != "event" or (record as Dictionary).get("item_id") != id: continue
 		var kind: String = str((record as Dictionary).get("event_type", ""))
@@ -280,7 +280,7 @@ func _stored(id: String) -> Dictionary:
 
 ## The status a comment has on the .dct ("open" when the line has none).
 func _comment_status(path: String, comment_id: int) -> String:
-	for line in FileAccess.get_file_as_string(path).split("\n", false):
+	for line in A.durable_text(path).split("\n", false):
 		var record: Variant = JSON.parse_string(line)
 		if record is Dictionary and (record as Dictionary).get("_type") == "comment" and int((record as Dictionary).get("id", 0)) == comment_id:
 			return str((record as Dictionary).get("status", "open"))

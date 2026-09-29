@@ -45,6 +45,9 @@ export_presets_local.cfg
 *.dct-wal
 *.dct.lock
 *.dct.tmp.*
+# Write-ahead sidecar: unsettled mutations, compacted into the .dct
+*.dct.log
+*.dct.log.tmp.*
 # Vault access audit sidecar — local forensic record, never shared
 *.dct.audit.jsonl
 # Exception: curated sample data may be committed. Only the .dct itself —

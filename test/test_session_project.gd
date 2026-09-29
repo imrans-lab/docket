@@ -209,7 +209,7 @@ func _dct_records(path: String) -> Dictionary:
 	var items := {}
 	var links: Array = []
 	var events := {}
-	for line in FileAccess.get_file_as_string(path).split("\n", false):
+	for line in A.durable_text(path).split("\n", false):
 		var record: Variant = JSON.parse_string(line)
 		if not record is Dictionary:
 			continue

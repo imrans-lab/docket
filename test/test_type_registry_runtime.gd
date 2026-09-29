@@ -545,6 +545,7 @@ func test_protected_historical_timestamp_is_preserved_but_malformed_and_custom_v
 	var seed_error: String = db.update_item_fields_checked(skill.id, {"last_reviewed":historical})
 	var update_error: String = registry.update_item(skill.id, {"title":"Still old"}, "tester")
 	var transition_error: String = registry.transition_item(skill.id, "active", "tester")
+	db.flush()
 	var text: String = FileAccess.get_file_as_string(db.get_path())
 	var r = A.is_true(seed_error.is_empty() and update_error.is_empty() and transition_error.is_empty() and db.get_item(skill.id).last_reviewed == historical and text.contains(historical), "ordinary builtin edits preserve a valid historical UTC timestamp byte value")
 	if r is String:

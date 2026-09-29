@@ -712,9 +712,9 @@ func reload_all() -> Array:
 
 
 func flush_all() -> Array:
-	## Force every JSONL project to serialize to disk. Writes are already
-	## immediate, so this is a no-op in practice — it exists as an explicit
-	## "settle the file before I commit" step.
+	## Settle every JSONL project: rewrite its canonical from the cache and
+	## empty its write-ahead sidecar. Mutations only append to the sidecar, so
+	## this is the explicit "settle the files before I commit" step.
 	var flushed: Array = []
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
@@ -725,8 +725,7 @@ func flush_all() -> Array:
 
 
 func save() -> void:
-	# JSONL writes happen on every mutation, so this is belt-and-braces — but
-	# it does now actually write, rather than only emitting a signal.
+	# File → Save: settle every project so git sees the canonical content.
 	flush_all()
 	data_changed.emit()
 

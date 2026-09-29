@@ -6,9 +6,10 @@ func get_definition() -> Dictionary:
 	return {
 		"name": "docket_flush",
 		"description": (
-			"Force every loaded project to serialize to its .dct file. Writes are "
-			+ "already immediate, so this is normally a no-op — call it as an explicit "
-			+ "'settle the files' step before running git add/commit."
+			"Settle every loaded project: rewrite its .dct from the current state and "
+			+ "empty its write-ahead sidecar (<file>.dct.log). Mutations append to the "
+			+ "sidecar and the .dct settles on its own after a short idle period — call "
+			+ "this as an explicit 'settle the files' step before running git add/commit."
 		),
 		"inputSchema": {
 			"type": "object",

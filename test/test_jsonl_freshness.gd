@@ -20,7 +20,7 @@ func before_each() -> void:
 
 
 func _cleanup() -> void:
-	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".lock"]:
+	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".lock", ".log"]:
 		var p := _path + suffix
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
@@ -145,8 +145,8 @@ func test_mutation_after_pull_does_not_clobber() -> Variant:
 		"created_at": "2026-01-02T00:00:00", "updated_at": "2026-01-02T00:00:00",
 	})
 
-	var text := _read()
 	db.close()
+	var text := _read()
 	var r = A.contains(text, "\"a2\"", "pulled item survived the local write")
 	if r != true:
 		return r

@@ -143,13 +143,15 @@ static func serialize_type_registry(db: DocketDB) -> String:
 	return "\n".join(lines)
 
 
-static func serialize_events(db: DocketDB) -> String:
+static func serialize_events(db: DocketDB, only_item: String = "") -> String:
 	## All event lines sorted by (item_id, seq) where seq is 1-based per-item.
+	## A non-empty only_item limits the output to that item's events.
 	## We read events ordered by (item_id, id ASC) and compute seq within each item.
 	# Chronological within each item — see DocketDB.get_events. This is what
 	# normalizes event order back to truth after a merge interleaved the lines.
 	var rows := db._exec_select(
-		"SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events ORDER BY item_id ASC, timestamp ASC, id ASC;"
+		"SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events%s ORDER BY item_id ASC, timestamp ASC, id ASC;" % _scope("item_id", only_item),
+		_scope_bindings(only_item)
 	)
 	if rows.is_empty():
 		return ""
@@ -192,10 +194,11 @@ static func serialize_events(db: DocketDB) -> String:
 	return "\n".join(lines)
 
 
-static func serialize_comments(db: DocketDB) -> String:
-	## All comment lines sorted by (item_id ASC, id ASC).
+static func serialize_comments(db: DocketDB, only_item: String = "") -> String:
+	## All comment lines sorted by (item_id ASC, id ASC); optionally one item's.
 	var rows := db._exec_select(
-		"SELECT * FROM comments ORDER BY item_id ASC, id ASC;"
+		"SELECT * FROM comments%s ORDER BY item_id ASC, id ASC;" % _scope("item_id", only_item),
+		_scope_bindings(only_item)
 	)
 	if rows.is_empty():
 		return ""
@@ -244,10 +247,12 @@ static func serialize_comments(db: DocketDB) -> String:
 	return "\n".join(lines)
 
 
-static func serialize_links(db: DocketDB) -> String:
-	## All link lines sorted by (from_id ASC, to_id ASC, relation ASC).
+static func serialize_links(db: DocketDB, only_from: String = "") -> String:
+	## All link lines sorted by (from_id ASC, to_id ASC, relation ASC);
+	## optionally only the links leaving one item.
 	var rows := db._exec_select(
-		"SELECT from_id, to_id, relation FROM item_links ORDER BY from_id ASC, to_id ASC, relation ASC;"
+		"SELECT from_id, to_id, relation FROM item_links%s ORDER BY from_id ASC, to_id ASC, relation ASC;" % _scope("from_id", only_from),
+		_scope_bindings(only_from)
 	)
 	if rows.is_empty():
 		return ""
@@ -264,10 +269,10 @@ static func serialize_links(db: DocketDB) -> String:
 	return "\n".join(lines)
 
 
-static func serialize_attachments(db: DocketDB) -> String:
-	## All attachment lines sorted by (item_id ASC, id ASC).
+static func serialize_attachments(db: DocketDB, only_item: String = "") -> String:
+	## All attachment lines sorted by (item_id ASC, id ASC); optionally one item's.
 	## Uses raw query_with_bindings to retrieve BLOB data.
-	var rows: Array = db._exec_select("SELECT * FROM attachments ORDER BY item_id ASC, id ASC;")
+	var rows: Array = db._exec_select("SELECT * FROM attachments%s ORDER BY item_id ASC, id ASC;" % _scope("item_id", only_item), _scope_bindings(only_item))
 	if rows.is_empty():
 		return ""
 
@@ -404,6 +409,15 @@ static func serialize_saved_queries(db: DocketDB) -> String:
 
 
 # -- Internal helpers ---------------------------------------------------------
+
+static func _scope(column: String, id: String) -> String:
+	## WHERE clause limiting a section query to one item; empty means all rows.
+	return "" if id.is_empty() else " WHERE %s=?" % column
+
+
+static func _scope_bindings(id: String) -> Array:
+	return [] if id.is_empty() else [id]
+
 
 static func _serialize_item_row(db: DocketDB, row: Dictionary) -> String:
 	## Serialize a single item row (already fetched from DB) to a JSONL line.

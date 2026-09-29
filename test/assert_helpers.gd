@@ -79,6 +79,50 @@ static func gte(actual: Variant, threshold: Variant, label: String = "") -> Vari
 	return true
 
 
+static func durable_text(canonical_path: String) -> String:
+	## A canonical's content as a reader that honours its write-ahead sidecar
+	## (<canonical>.log) sees it: canonical lines with each journaled record's
+	## sections replaced in order. Built from the sidecar's line format alone,
+	## not from the code that writes or replays it.
+	var text := FileAccess.get_file_as_string(canonical_path)
+	var sidecar := canonical_path + ".log"
+	if not FileAccess.file_exists(sidecar): return text
+	var canonical_sha := FileAccess.get_sha256(canonical_path)
+	var records: Array = []
+	for raw: String in FileAccess.get_file_as_string(sidecar).split("\n", false):
+		var record: Variant = JSON.parse_string(raw)
+		if not record is Dictionary: continue
+		if record.get("_type") == "settle" and str(record.get("target")) == canonical_sha: records.clear()
+		elif record.get("_type") == "wal": records.append(record)
+	var lines: Array = Array(text.split("\n", false))
+	for record: Dictionary in records:
+		var replaced := {}
+		var present := {}
+		for value: Dictionary in record.records: present[_durable_key(value)] = true
+		for pair: Array in record["replace"]:
+			replaced["%s\t%s" % [pair[0], pair[1]]] = true
+			if pair[1] == "item" and not present.has("%s\titem" % pair[0]):
+				for section: String in ["events", "comments", "links", "attachments"]: replaced["%s\t%s" % [pair[0], section]] = true
+		var kept: Array = []
+		for line: String in lines:
+			var row: Variant = JSON.parse_string(line)
+			if not (row is Dictionary and replaced.has(_durable_key(row))): kept.append(line)
+		for value: Dictionary in record.records: kept.append(JSON.stringify(value))
+		lines = kept
+	return "\n".join(PackedStringArray(lines)) + "\n"
+
+
+static func _durable_key(row: Dictionary) -> String:
+	match str(row.get("_type", "")):
+		"meta": return "\tmeta"
+		"item": return "%s\titem" % row.get("id", "")
+		"event": return "%s\tevents" % row.get("item_id", "")
+		"comment": return "%s\tcomments" % row.get("item_id", "")
+		"link": return "%s\tlinks" % row.get("from_id", "")
+		"attachment": return "%s\tattachments" % row.get("item_id", "")
+	return ""
+
+
 static func _fmt(msg: String, label: String) -> String:
 	if label.is_empty():
 		return msg

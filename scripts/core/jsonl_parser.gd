@@ -20,9 +20,7 @@ const CONFLICT_MARKERS := ["<<<<<<<", "=======", ">>>>>>>", "|||||||"]
 # -- Public API ---------------------------------------------------------------
 
 static func parse_file(path: String) -> Dictionary:
-	## Read a .dct.jsonl file and return structured data.
-	## Returns meta, registry records, items, related records and diagnostics.
-	## meta is a Dictionary; all others are Arrays of Dictionaries.
+	## Read a .dct.jsonl file and return structured data (see parse_bytes).
 	var empty := _empty_result()
 
 	if not FileAccess.file_exists(path):
@@ -30,17 +28,28 @@ static func parse_file(path: String) -> Dictionary:
 		empty["error"] = "file not found: %s" % path
 		return empty
 
-	var file := FileAccess.open(path, FileAccess.READ)
-	if file == null:
+	var bytes := FileAccess.get_file_as_bytes(path)
+	if FileAccess.get_open_error() != OK:
 		push_warning("JSONLParser: cannot open file: %s" % path)
 		empty["error"] = "cannot open file: %s" % path
 		return empty
+	return parse_bytes(bytes, path)
+
+
+static func parse_bytes(bytes: PackedByteArray, path: String) -> Dictionary:
+	## Parse a canonical's exact bytes; path only names the file in messages. A
+	## caller that must know which bytes it parsed reads them once and passes
+	## them here (JSONLCache.rebuild_cache fingerprints the same bytes).
+	## Returns meta, registry records, items, related records and diagnostics.
+	## meta is a Dictionary; all others are Arrays of Dictionaries.
+	# UTF-8 decoding stops at a NUL, which would silently drop every later line.
+	if bytes.has(0):
+		return _corrupt(path, 0, "the file contains a NUL byte", "")
 
 	var result := _empty_result()
 	var line_number := 0
 
-	while not file.eof_reached():
-		var raw_line: String = file.get_line()
+	for raw_line: String in bytes.get_string_from_utf8().split("\n"):
 		line_number += 1
 		var line: String = raw_line.strip_edges()
 		if line.is_empty():
@@ -51,7 +60,6 @@ static func parse_file(path: String) -> Dictionary:
 		# keeps the caller from building a cache that would later be flushed
 		# back over the conflicted file, erasing it.
 		if _is_conflict_marker(line):
-			file.close()
 			var conflicted := _empty_result()
 			conflicted["error"] = (
 				"unresolved git conflict marker at line %d: '%s'. " % [line_number, line.substr(0, 20)]
@@ -69,16 +77,13 @@ static func parse_file(path: String) -> Dictionary:
 		# Unknown record kinds are fatal for the same loss-prevention reason.
 		var parsed = _parse_json_line(line, line_number)
 		if parsed == null:
-			file.close()
 			return _corrupt(path, line_number, "not valid JSON", line)
 
 		if not parsed is Dictionary:
-			file.close()
 			return _corrupt(path, line_number, "not a JSON object", line)
 
 		var type_val = parsed.get("_type")
 		if type_val == null:
-			file.close()
 			return _corrupt(path, line_number, "missing the _type field", line)
 
 		var line_type: String = str(type_val)
@@ -88,7 +93,6 @@ static func parse_file(path: String) -> Dictionary:
 			# line the next flush deletes. Tolerating it was destructive, not
 			# lenient. A genuinely newer format must announce itself with a
 			# higher meta.version, which is refused separately and clearly.
-			file.close()
 			return _corrupt(path, line_number,
 				"unknown record type '%s' — written by a newer Docket?" % line_type, line)
 
@@ -102,7 +106,6 @@ static func parse_file(path: String) -> Dictionary:
 			"meta":
 				record = _parse_meta(parsed)
 				if record.is_empty():
-					file.close()
 					return _corrupt(path, line_number, "meta line is missing required fields", line)
 				result["meta"] = record
 			"item":
@@ -138,12 +141,10 @@ static func parse_file(path: String) -> Dictionary:
 
 		if not bucket.is_empty():
 			if record.is_empty():
-				file.close()
 				return _corrupt(path, line_number,
 					"%s record is missing required fields" % line_type, line)
 			result[bucket].append(record)
 
-	file.close()
 	var version := str(result.meta.get("version", ""))
 	if version not in SUPPORTED_VERSIONS:
 		return _corrupt(path, 0, "unsupported format version '%s'" % version, "")
@@ -167,7 +168,12 @@ static func parse_line(json_text: String) -> Dictionary:
 	var parsed = _parse_json_line(line, -1)
 	if parsed == null or not parsed is Dictionary:
 		return {}
+	return parse_record(parsed)
 
+
+static func parse_record(parsed: Dictionary) -> Dictionary:
+	## Parse one already-decoded record object. Returns the normalized record
+	## with _type included, or an empty dict when it is not a valid record.
 	var type_val = parsed.get("_type")
 	if type_val == null:
 		push_warning("JSONLParser.parse_line: missing _type field")

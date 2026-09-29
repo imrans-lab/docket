@@ -30,7 +30,7 @@ func _db(name: String) -> DocketDBJsonl:
 ## Reads one item from the canonical file: {"item": Dictionary, "revision": int}.
 func _on_disk(db: DocketDBJsonl, id: String) -> Dictionary:
 	var result: Dictionary = {"item":{}, "revision":0}
-	for line in FileAccess.get_file_as_string(db.get_jsonl_path()).split("\n", false):
+	for line in A.durable_text(db.get_jsonl_path()).split("\n", false):
 		var record: Variant = JSON.parse_string(line)
 		if not record is Dictionary: continue
 		var row: Dictionary = record

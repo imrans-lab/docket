@@ -70,15 +70,15 @@ func _count_lines_of_type(jsonl_text: String, type_name: String) -> int:
 	return count
 
 
-func _close_and_silence(db: DocketDBJsonl) -> void:
-	## Close a DocketDBJsonl without triggering a flush (for teardown).
+func _close(db: DocketDBJsonl) -> void:
+	## Close a DocketDBJsonl, which settles this handle's pending sidecar records
+	## into the canonical, so the test can read the canonical afterwards.
 	if db:
-		db._jsonl_path = ""
 		db.close()
 
 
 func _delete_files(base: String) -> void:
-	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".tmp"]:
+	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm", ".tmp", ".log"]:
 		DirAccess.remove_absolute(base + suffix)
 
 
@@ -92,11 +92,11 @@ func test_fresh_lifecycle_jsonl_is_text() -> Variant:
 	var db := DocketDBJsonl.create_new_jsonl(jsonl_path)
 	var r = A.not_null(db, "db created")
 	if r is String:
-		_close_and_silence(db)
+		_close(db)
 		return r
 
 	var text := _read_file(jsonl_path)
-	_close_and_silence(db)
+	_close(db)
 
 	# Must start with a JSON meta line (not SQLite binary magic)
 	r = A.is_false(text.begins_with("SQLite format 3"), "not SQLite binary")
@@ -109,7 +109,7 @@ func test_fresh_lifecycle_cache_is_sqlite() -> Variant:
 	## The .dct.jsonl.cache must be a SQLite file.
 	var jsonl_path := _test_dir + "/fresh.dct.jsonl"
 	var db := DocketDBJsonl.create_new_jsonl(jsonl_path)
-	_close_and_silence(db)
+	_close(db)
 
 	var cache_path := JSONLCache.cache_path_for(jsonl_path)
 	return A.is_true(JSONLMigration.is_sqlite_dct(cache_path), "cache is SQLite")
@@ -129,7 +129,7 @@ func test_fresh_lifecycle_items_appear_in_jsonl() -> Variant:
 	})
 	db.add_event(id, "status_changed", "tester", "open -> active")
 	db.add_comment(id, "alice", "Looks bad")
-	_close_and_silence(db)
+	_close(db)
 
 	var parsed := JSONLParser.parse_file(jsonl_path)
 	var r = A.eq(parsed["items"].size(), 1, "1 item in JSONL")
@@ -637,7 +637,7 @@ func test_determinism_identical_data_produces_identical_output() -> Variant:
 	})
 	db_a.add_event(id_a, "created", "tester", "Item created")
 	db_a.save_query("open-bugs", {"filter": {"type": "bug"}})
-	_close_and_silence(db_a)
+	_close(db_a)
 
 	# Build docket B with identical data
 	var db_b := DocketDBJsonl.create_new_jsonl(path_b)
@@ -652,7 +652,7 @@ func test_determinism_identical_data_produces_identical_output() -> Variant:
 	})
 	db_b.add_event(id_a, "created", "tester", "Item created")
 	db_b.save_query("open-bugs", {"filter": {"type": "bug"}})
-	_close_and_silence(db_b)
+	_close(db_b)
 
 	# Normalise wall-clock timestamps before comparing.
 	#
@@ -698,7 +698,7 @@ func test_determinism_line_order_meta_first() -> Variant:
 	db.add_comment(id1, "alice", "A comment")
 	db.add_link(id1, id2, "blocks")
 	db.save_query("all", {"filter": {}})
-	_close_and_silence(db)
+	_close(db)
 
 	var text := _read_file(jsonl_path)
 	var lines := text.split("\n")
@@ -763,7 +763,7 @@ func test_determinism_items_sorted_by_id() -> Variant:
 		"type": "bug", "status": "open", "title": "B",
 		"created_at": "2026-03-27T10:00:00Z", "updated_at": "2026-03-27T10:00:00Z",
 	})
-	_close_and_silence(db)
+	_close(db)
 
 	var parsed := JSONLParser.parse_file(jsonl_path)
 	var items: Array = parsed["items"]
@@ -847,7 +847,7 @@ func test_multi_type_jsonl_line_count_matches() -> Variant:
 			"type": "bug", "status": "open", "title": "Bug %d" % (i + 1),
 			"created_at": "2026-03-27T10:00:00Z", "updated_at": "2026-03-27T10:00:00Z",
 		})
-	_close_and_silence(db)
+	_close(db)
 
 	var text := _read_file(jsonl_path)
 	return A.eq(_count_lines_of_type(text, "item"), 5, "5 item lines in JSONL")
@@ -1056,7 +1056,7 @@ func test_concurrent_simulation_shared_items_consistent() -> Variant:
 		"type": "hint", "status": "draft", "title": "Item only in A",
 		"created_at": "2026-03-27T10:02:00Z", "updated_at": "2026-03-27T10:02:00Z",
 	})
-	_close_and_silence(db_a)
+	_close(db_a)
 
 	var db_b := DocketDBJsonl.create_new_jsonl(path_b)
 	db_b.set_id_prefix("SHR")
@@ -1073,7 +1073,7 @@ func test_concurrent_simulation_shared_items_consistent() -> Variant:
 		"type": "discussion", "status": "open", "title": "Item only in B",
 		"created_at": "2026-03-27T10:03:00Z", "updated_at": "2026-03-27T10:03:00Z",
 	})
-	_close_and_silence(db_b)
+	_close(db_b)
 
 	# Parse both and find shared items
 	var parsed_a := JSONLParser.parse_file(path_a)
@@ -1130,7 +1130,7 @@ func test_e2e_jsonl_file_structure_valid_after_many_mutations() -> Variant:
 	db.save_query("all-bugs", {"filter": {"type": "bug"}})
 	db.save_query("open", {"filter": {"status": "open"}})
 
-	_close_and_silence(db)
+	_close(db)
 
 	var text := _read_file(jsonl_path)
 	var r = A.is_true(text.ends_with("\n"), "file ends with newline")
@@ -1163,7 +1163,7 @@ func test_e2e_empty_optional_fields_omitted() -> Variant:
 		"created_at": "2026-03-27T10:00:00Z", "updated_at": "2026-03-27T10:00:00Z",
 		# No description, no tags, no priority, no severity, etc.
 	})
-	_close_and_silence(db)
+	_close(db)
 
 	var text := _read_file(jsonl_path)
 	var item_line := ""
@@ -1201,7 +1201,7 @@ func test_e2e_comment_open_status_omitted() -> Variant:
 		"created_at": "2026-03-27T10:00:00Z", "updated_at": "2026-03-27T10:00:00Z",
 	})
 	db.add_comment(id, "alice", "Open comment (default status)")
-	_close_and_silence(db)
+	_close(db)
 
 	var text := _read_file(jsonl_path)
 	var comment_line := ""
@@ -1230,7 +1230,7 @@ func test_e2e_resolved_comment_status_present() -> Variant:
 	var comment := db.add_comment(id, "alice", "Needs resolution")
 	var cid: int = comment.get("id", 0)
 	db.resolve_comment(cid, "accepted", "reviewer")
-	_close_and_silence(db)
+	_close(db)
 
 	var text := _read_file(jsonl_path)
 	var comment_line := ""
