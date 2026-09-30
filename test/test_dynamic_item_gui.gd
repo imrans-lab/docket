@@ -561,8 +561,8 @@ func test_saved_type_bindings_open_as_their_field_key() -> Variant:
 	if r is String:
 		return r
 	var saved := {
-		"rc6": {"project":"beta", "type_id":str(beta.get_type("review").id), "field_key":"findings", "label":"Beta findings", "kind":"markdown"},
-		"rc7": {"type":"review", "field_key":"findings", "label":"Review — Findings", "kind":"markdown"},
+		"project_bound": {"project":"beta", "type_id":str(beta.get_type("review").id), "field_key":"findings", "label":"Beta findings", "kind":"markdown"},
+		"type_bound": {"type":"review", "field_key":"findings", "label":"Review — Findings", "kind":"markdown"},
 	}
 	for form: String in saved:
 		var path := "%s/%s.dcq" % [DIR, form]

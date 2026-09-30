@@ -305,15 +305,15 @@ func resolve_item_memo(item: Dictionary, memo: Dictionary) -> Dictionary:
 
 ## The value of `key` on `item` under its pinned semantics `resolved`
 ## (resolve_item, without error): a derived state key's value, a declared
-## field's value, or null when the pinned type does not declare `key`.
-## Protected builtins and universal keys store their values on the item, other
-## declared fields in the "fields" envelope.
+## field's value where _stored_descriptor_value finds it, or null when the
+## pinned type does not declare `key` or the row holds no value for it.
 static func declared_value(item: Dictionary, resolved: Dictionary, key: String) -> Variant:
 	if key in RegistryQuery.DERIVED_FIELDS: return resolved[key]
-	if not (resolved.definition.fields as Array).any(func(descriptor: Dictionary) -> bool: return str(descriptor.key) == key): return null
-	if bool(resolved.definition.get("protected", false)) or key in UNIVERSAL_MUTABLE: return item.get(key)
-	var fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
-	return fields.get(key)
+	for descriptor: Dictionary in resolved.definition.fields:
+		if str(descriptor.key) == key:
+			var stored: Dictionary = _stored_descriptor_value(item, descriptor, resolved.definition)
+			return stored.value if bool(stored.present) else null
+	return null
 
 func define_type(slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary = {}) -> Dictionary:
 	var refresh_error := refresh_if_changed()
@@ -940,7 +940,10 @@ func _candidate_values(item: Dictionary, definition: Dictionary) -> Dictionary:
 		if item.has(key): result[key] = item[key]
 	return result
 
-func _stored_descriptor_value(item: Dictionary, descriptor: Dictionary, definition: Dictionary) -> Dictionary:
+## Where a declared field's value lives: custom types keep theirs in the
+## "fields" envelope; protected builtins and universal keys on the item, falling
+## back to the envelope. {present: false} when neither holds it.
+static func _stored_descriptor_value(item: Dictionary, descriptor: Dictionary, definition: Dictionary) -> Dictionary:
 	var key: String = str(descriptor.key)
 	var custom: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
 	var custom_authority: bool = not bool(definition.get("protected", false)) and key not in UNIVERSAL_MUTABLE

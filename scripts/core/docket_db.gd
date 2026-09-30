@@ -970,6 +970,11 @@ var last_query_error: String = ""
 var _items_columns_cache: Array = []
 
 
+## Whether `field` is a column of the items table: the fields a sort can put
+## in ORDER BY as they are, which the query engines check sort fields against.
+func is_items_column(field: String) -> bool:
+	return _item_columns().has(field)
+
 func _item_columns() -> Array:
 	## Column names of the items table, read once per connection.
 	if not _items_columns_cache.is_empty():

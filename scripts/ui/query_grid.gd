@@ -782,13 +782,13 @@ func _query_rows() -> void:
 	if not _sort_field.is_empty() and _sort_field != StorageBadge.FIELD:
 		query["sort"] = [_sort_spec()]
 
-	# SQL sorts one project on an items-table column (DocketDB._ITEM_COLS, the id
-	# key, or storage, which sorts here). Project is no column, nor are tags, and
-	# a type field is read through each row's pinned type; the cross-project path
-	# evaluates all three, so it also serves a single loaded project when a row
-	# filters on project or the sort is on one of them.
+	# SQL sorts one project on an items-table column (DocketDB.is_items_column).
+	# Project is no column, nor are tags, and a type field is read through each
+	# row's pinned type; the cross-project path evaluates all three, so it also
+	# serves a single loaded project when a row filters on project or the sort
+	# is on one of them.
 	var filters_project: bool = _condition_snapshots().any(func(cond): return cond.field == "project")
-	var sql_sort: bool = not ColumnBinding.is_typed(_sort_field) and (_sort_field in ["id", StorageBadge.FIELD] or DocketDB._ITEM_COLS.has(_sort_field))
+	var sql_sort: bool = not ColumnBinding.is_typed(_sort_field) and _state.db != null and _state.db.is_items_column(_sort_field)
 	_loaded_keys = _row_keys()
 	if _state._project_dbs.size() > 1 or ((filters_project or not (_sort_field.is_empty() or sql_sort)) and not _state._project_dbs.is_empty()):
 		_current_results = _state.execute_cross_project_query(query, "rows", _loaded_keys)
