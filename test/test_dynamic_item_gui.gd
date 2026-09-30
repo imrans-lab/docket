@@ -526,6 +526,12 @@ func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 	r = A.eq(_row_order(grid, title_column), ["beta/old", "beta/new", "alpha/old", "alpha/new", "alpha/audit"], "a descending sort on a type column reverses that order and keeps other types last")
 	if r is String:
 		return r
+	var typed := {"type":"review", "field_key":"findings", "label":"Review — Findings", "kind":"markdown"}
+	grid._show_columns_menu(anchor)
+	var typed_index := _chooser_index(grid, typed)
+	r = A.is_true(typed_index >= 0 and grid._columns_menu.is_item_checked(typed_index), "the chooser shows a ticked type column as ticked")
+	if r is String:
+		return r
 	var beta_review: Dictionary = state.get_type_registry("beta").get_type("review")
 	var saved := {"project":"beta", "type_id":str(beta_review.id), "field_key":"findings", "label":"Beta findings"}
 	grid.apply_dcq({"columns":["id", "project", "title", saved]})
@@ -533,11 +539,34 @@ func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 	r = A.eq(_column_cells(grid, 2, 3), {"beta/old":"beta old", "beta/new":"beta new"}, "a saved per-project binding still shows its column for its project's rows")
 	if r is String:
 		return r
+	# The type column joins the saved project column; each renders and ticks on its own.
 	grid._show_columns_menu(anchor)
-	var saved_index := -1
+	grid._toggle_result_column(_chooser_index(grid, typed))
+	grid._run_query()
+	r = A.is_true(_column_cells(grid, 2, 3) == {"beta/old":"beta old", "beta/new":"beta new"} and _column_cells(grid, 2, 4) == findings, "a saved project column and a type column for the same field render side by side")
+	if r is String:
+		return r
+	grid._show_columns_menu(anchor)
+	var saved_index := _chooser_index(grid, saved)
+	typed_index = _chooser_index(grid, typed)
+	r = A.is_true(saved_index >= 0 and typed_index >= 0 and saved_index != typed_index and grid._columns_menu.is_item_checked(saved_index) and grid._columns_menu.is_item_checked(typed_index), "the chooser ticks the saved project column and the type column as separate entries")
+	if r is String:
+		return r
+	var path := "%s/both_bindings.dcq" % DIR
+	grid.save_dcq(path)
+	r = A.eq(QueryGrid.read_dcq(path).get("columns"), ["id", "project", "title", saved, typed], "a saved query file keeps both bindings and the string columns in order")
+	if r is String:
+		return r
+	grid._toggle_result_column(saved_index)
+	grid._run_query()
+	return A.is_true(grid._dcq_columns == ["id", "project", "title", typed] and _column_cells(grid, 2, 3) == findings, "unticking the saved project column keeps the type column")
+
+## Index of `binding` among the chooser's entries, or -1.
+func _chooser_index(grid: QueryGrid, binding: Dictionary) -> int:
 	for i in grid._column_candidates.size():
-		if ColumnBinding.same(grid._column_candidates[i], saved): saved_index = i
-	return A.is_true(saved_index >= 0 and grid._columns_menu.is_item_checked(saved_index), "the chooser keeps a saved per-project binding as a ticked entry")
+		if ColumnBinding.same(grid._column_candidates[i], binding):
+			return i
+	return -1
 
 ## A grid over `state` whose Columns chooser has been opened once.
 func _chooser_grid(state: AppState) -> QueryGrid:
