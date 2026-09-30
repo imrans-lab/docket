@@ -874,11 +874,14 @@ func _build_conditions_filter() -> Dictionary:
 
 
 func _serialize_all_conditions() -> Dictionary:
-	## Like _build_conditions_filter() but keeps (any) rows for UI state.
+	## Like _build_conditions_filter() but keeps (any) rows for UI state. A row
+	## with nothing typed keeps its empty value, whatever its field, since typing
+	## would turn it into a value (0, false) the user never entered.
 	var conditions: Array = []
 	for snapshot in _condition_snapshots():
 		var cond: Dictionary = snapshot
-		conditions.append(cond if _ENUM_FIELDS.has(cond.field) and str(cond.value).is_empty() else _typed_condition(cond))
+		var untyped: bool = str(cond.value).is_empty() and cond.op not in ["is_empty", "is_not_empty"]
+		conditions.append(cond if untyped else _typed_condition(cond))
 	if conditions.size() == 0:
 		return {}
 	return {"conditions": conditions}
@@ -1280,7 +1283,7 @@ static func _condition_text(value: Variant) -> String:
 	## The text a condition row holds for a saved value. JSON reads every number
 	## back as a float, so a whole number is written without a decimal point, as
 	## it is typed.
-	if value is float and is_finite(value) and value == floorf(value) and absf(value) < 9007199254740992.0:
+	if value is float and value == floorf(value) and absf(value) < 9007199254740992.0:
 		return str(int(value))
 	return str(value)
 

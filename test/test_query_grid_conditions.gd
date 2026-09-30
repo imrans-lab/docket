@@ -237,9 +237,14 @@ func test_project_value_lists_loaded_projects_and_add_selects_new_one() -> Varia
 ## P, titles containing "h" with retrieval_count >= 2 (free text) in Work entry
 ## R. Both are restored by switching Work entries, R through a saved .dcq, and
 ## P from .dcq files holding the value as a JSON integer, a JSON decimal and a
-## string. Oracles: after every restore the numeric row shows the text typed
-## ("2") and the rows equal the rows before the restore and a core query with
-## literal numbers.
+## string. P, with its own columns and a descending title sort, is also saved
+## and reopened through the shell's File > Save Query and File > Open Query
+## handlers. Entry E holds one retrieval_count row with nothing typed, then with
+## 0 typed, each restored by a Work-entry switch and E's empty row also through
+## those handlers. Oracles: after every restore the numeric row shows the text
+## typed ("2", "0" or nothing) and the rows equal the rows before the restore
+## and a core query with literal numbers (every fixture row for the empty row);
+## the reopened P has its saved columns and descending order.
 func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	var state := AppState.new()
 	state.load_schema()
@@ -256,7 +261,6 @@ func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	state._project_dbs = {"numbers": db}
 	state._type_registries = {"numbers": registry}
 	state.db = db
-	state.dct_path = db.get_path()
 	var shell := AppShell.new()
 	shell.init(state)
 	add_child(shell)
@@ -306,8 +310,65 @@ func test_numeric_conditions_survive_save_and_restore() -> Variant:
 		r = _numeric_restored(loaded, "priority", p_rows, "entry P from a .dcq holding %s" % form)
 		loaded.queue_free()
 		if r is String: shell.queue_free(); return r
+
+	shell._activate_work_entry(p_entry)
+	grid.set_result_columns(["id", "title", "priority"])
+	grid._toggle_sort(grid._col_fields.find("title"))
+	grid._toggle_sort(grid._col_fields.find("title"))
+	var descending: Array = ["c4", "c3", "c2"]
+	r = A.eq(_ordered(grid), descending, "fixture: entry P sorted by title, descending")
+	if r is String: shell.queue_free(); return r
+	var menu_path := _db_dir + "/menu_p.dcq"
+	shell._on_save_query_selected(menu_path)
+	shell._activate_work_entry(r_entry)
+	grid.set_result_columns(["id", "title", "status"])
+	grid._toggle_sort(grid._col_fields.find("title"))
+	shell._on_open_query_selected(menu_path)
+	r = _numeric_restored(grid, "priority", p_rows, "entry P from File > Open Query")
+	if r is String: shell.queue_free(); return r
+	r = A.eq([grid._col_fields, _ordered(grid)], [["id", "title", "priority"], descending], "entry P from File > Open Query keeps its columns and sort")
+	if r is String: shell.queue_free(); return r
+
+	var every: Array = ["c1", "c2", "c3", "c4", "h0", "h1", "h2", "h3"]
+	var zero_rows: Array = ["c1", "c2", "c3", "c4", "h0"]
+	r = A.eq(_core_titles(state, [{"field": "retrieval_count", "op": "eq", "value": 0}]), zero_rows, "fixture: core retrieval_count = 0")
+	if r is String: shell.queue_free(); return r
+	var e_entry := shell._add_work_entry("query", "E", "", "")
+	for typed: String in ["", "0"]:
+		shell._activate_work_entry(e_entry)
+		grid.set_filter("")
+		_set_field(grid, 0, "retrieval_count")
+		_set_op(grid, 0, "equals")
+		grid._condition_rows[0].value.text = typed
+		grid._run_query()
+		var expected: Array = every if typed.is_empty() else zero_rows
+		r = _single_restored(grid, typed, expected, "entry E with '%s' typed" % typed)
+		if r is String: shell.queue_free(); return r
+		shell._activate_work_entry(p_entry)
+		shell._activate_work_entry(e_entry)
+		r = _single_restored(grid, typed, expected, "entry E with '%s' typed, after a Work-entry switch" % typed)
+		if r is String: shell.queue_free(); return r
+		if typed.is_empty():
+			var empty_path := _db_dir + "/menu_e.dcq"
+			shell._on_save_query_selected(empty_path)
+			shell._activate_work_entry(p_entry)
+			shell._on_open_query_selected(empty_path)
+			r = _single_restored(grid, typed, expected, "entry E with nothing typed, from File > Open Query")
+			if r is String: shell.queue_free(); return r
 	shell.queue_free()
 	return true
+
+
+func _ordered(grid: QueryGrid) -> Array:
+	return grid._current_results.map(func(row: Dictionary) -> String: return str(row.title))
+
+
+func _single_restored(grid: QueryGrid, typed: String, rows: Array, label: String) -> Variant:
+	## Row 1 is retrieval_count equals `typed`, and the rows are `rows`.
+	var row: Dictionary = grid._condition_rows[0]
+	var r = A.eq([row.field.get_item_text(row.field.selected), row.value.text], ["retrieval_count", typed], "%s: the row shows what was typed" % label)
+	if r is String: return r
+	return A.eq(_titles(grid._current_results), rows, "%s: rows" % label)
 
 
 func _type_numeric(grid: QueryGrid, title_part: String, field_name: String) -> void:

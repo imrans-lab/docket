@@ -455,9 +455,16 @@ func _activate_work_entry(idx: int) -> void:
 
 func _show_query_entry(idx: int) -> void:
 	## The one grid serves every query entry. Returning to the entry it already
-	## holds keeps its rows as they are; another entry's filter is applied.
+	## holds keeps its rows as they are; another entry's filter is applied. An
+	## entry opened from a .dcq file (its "dcq" key) is loaded from that file
+	## once, with its columns and sort (QueryGrid.load_dcq).
 	if idx != _grid_entry_idx:
-		_query_grid.set_filter(str(_work_entries[idx].filter))
+		var entry: Dictionary = _work_entries[idx]
+		if entry.has("dcq"):
+			_query_grid.load_dcq(str(entry.dcq))
+			entry.erase("dcq")
+		else:
+			_query_grid.set_filter(str(entry.filter))
 		_grid_entry_idx = idx
 	switch_view(ViewMode.QUERY)
 
@@ -1046,8 +1053,8 @@ func _on_open_query_selected(path: String) -> void:
 	if not parsed is Dictionary:
 		return
 	var label: String = str(parsed.get("name", path.get_file().get_basename()))
-	var filter_json: String = JSON.stringify(parsed.get("filter", {}))
-	var idx := _add_work_entry("query", label, filter_json, "")
+	var idx := _add_work_entry("query", label, "", "")
+	_work_entries[idx]["dcq"] = path
 	_activate_work_entry(idx)
 
 
