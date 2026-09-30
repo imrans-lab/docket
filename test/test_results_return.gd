@@ -35,9 +35,11 @@ extends Node
 ## To cover another kind of change, add an entry to _changes().
 ##
 ## test_other_paths_back_to_the_results covers the other ways back to the
-## results on the same fixture: the split view, the Project Types screen,
-## switching Work entries, loading a project and closing one. Its oracles are
-## queries, rows and node as above, plus which of the views is visible.
+## results on the same fixture: the split view (unchanged, a save, and a
+## canonical edit and a sidecar-only append by other writers while the grid
+## stays visible), the Project Types screen, switching Work entries, loading a
+## project and closing one. Its oracles are queries, rows and node as above,
+## plus which of the views is visible and the retitled rows' literal titles.
 ##
 ## test_retrieval_reads_edited_away_without_a_query: a retrieval column hidden,
 ## or a retrieval condition edited, without a query before a hint read; see its
@@ -228,6 +230,24 @@ func test_other_paths_back_to_the_results() -> Variant:
 	if saved is String and not str(saved).is_empty(): return "split view save failed: %s" % saved
 	r = _after_path("split view, record saved", 1, MATCH, {})
 	if r is String: return r
+
+	# Split view while another writer retitles a shown beta row, in the
+	# canonical file and then in the sidecar only; Back with no poll driven.
+	for writer: Dictionary in [{"kind": "canonical edit", "apply": _external_edit_unpolled}, {"kind": "sidecar append elsewhere", "apply": _append_sidecar_elsewhere}]:
+		held = await _select_row("")
+		_open_origin = held.get("origin", {})
+		_state.results_queries = 0
+		_shell._on_menu_action("view_split")
+		grid._on_item_selected()
+		var written: String = (writer.apply as Callable).call()
+		if not written.is_empty(): return "split view, %s: %s" % [writer.kind, written]
+		form._back_btn.pressed.emit()
+		await get_tree().process_frame
+		r = _after_path("split view, %s" % writer.kind, 1, MATCH, {})
+		if r is String: return r
+		r = _written_elsewhere_shown("split view, %s" % writer.kind)
+		if r is String: return r
+	_open_origin = {}
 
 	# Project Types and back through the Work menu, with nothing changed.
 	held = await _select_row("")

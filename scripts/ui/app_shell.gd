@@ -492,12 +492,16 @@ func _rebuild_work_menu() -> void:
 func switch_view(mode: ViewMode) -> void:
 	## Shows the views of `mode` without reparenting any: a grid shown again
 	## keeps its rows, scroll and selection (QueryGrid re-queries only if a
-	## change arrived while it was hidden).
+	## change arrived while it was hidden). A grid that was already visible
+	## gets no visibility notification, so it is asked directly
+	## (QueryGrid.refresh_if_changed).
+	var grid_was_visible := _query_grid.is_visible_in_tree()
 	_current_mode = mode
 	_query_grid.visible = mode == ViewMode.QUERY or mode == ViewMode.SPLIT
 	_record_form.visible = mode == ViewMode.DETAIL or mode == ViewMode.SPLIT
 	_split_container.visible = mode != ViewMode.TYPES
 	_project_types.visible = mode == ViewMode.TYPES
+	if grid_was_visible and _query_grid.is_visible_in_tree(): _query_grid.refresh_if_changed()
 
 
 # -- External change polling -----------------------------------------------

@@ -26,7 +26,7 @@ var _context_menu: PopupMenu
 var _current_results: Array = []
 
 # Hidden results are not re-queried: a change marks them stale and the next
-# showing runs the query once (_show_current_results).
+# showing runs the query once (refresh_if_changed).
 var _results_stale := false
 # True while a showing hands a disk change to its listener; refresh() then
 # defers to the showing's own query.
@@ -500,7 +500,7 @@ func _notification(what: int) -> void:
 		_sync_tree_columns()
 		_header.queue_redraw()
 	elif what == NOTIFICATION_VISIBILITY_CHANGED and _tree and is_visible_in_tree():
-		_show_current_results()
+		refresh_if_changed()
 
 
 # -- Condition row builder -------------------------------------------------
@@ -1346,9 +1346,10 @@ func _is_hidden() -> bool:
 	return is_inside_tree() and not is_visible_in_tree()
 
 
-func _show_current_results() -> void:
-	## The grid became visible: the rows it holds stand unless a change arrived
-	## while it was hidden, in which case the query runs once. A project whose
+func refresh_if_changed() -> void:
+	## Runs when the grid becomes visible, and when the shell returns to results
+	## that stayed visible: the rows it holds stand unless a change arrived since
+	## they were queried, in which case the query runs once. A project whose
 	## canonical file changed on disk is first handed to disk_change_found.
 	if _changed_on_disk():
 		_handing_off = true
