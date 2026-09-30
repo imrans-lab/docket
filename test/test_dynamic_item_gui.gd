@@ -33,13 +33,19 @@ func _state(name: String) -> AppState:
 	var db := DocketDBJsonl.create_new_jsonl(path)
 	assert(db != null, "failed to create JSONL fixture %s" % path)
 	_dbs.append(db)
+	return _state_over({name:db})
+
+## A state over already open project databases; the first is the primary one.
+func _state_over(dbs: Dictionary) -> AppState:
 	var state := AppState.new()
 	state.schema = TypeRegistryBootstrap.load_shipped_schema()
 	state.prefs = UserPrefs.new()
-	state.db = db
-	state.dct_path = path
-	state._project_dbs = {name:db}
-	state._type_registries = {name:TypeRegistry.for_db(db, name)}
+	var primary := str(dbs.keys()[0])
+	state.db = dbs[primary]
+	state.dct_path = "%s/%s.dct" % [DIR, primary]
+	for name: String in dbs:
+		state._project_dbs[name] = dbs[name]
+		state._type_registries[name] = TypeRegistry.for_db(dbs[name], name)
 	return state
 
 func _active_registry(state: AppState, project: String) -> TypeRegistry:
@@ -392,17 +398,15 @@ func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Var
 	var findings_candidates: Array[int] = []
 	var all_findings_count := 0
 	var builtin_findings_present := false
-	var review_type: Dictionary = registry.get_type("review")
-	var custom_type_ids: Array[String] = [str(review_type.id), str(second.type.id)]
 	for i in grid._column_candidates.size():
 		var candidate: Dictionary = grid._column_candidates[i]
 		if candidate.field_key == "findings":
 			all_findings_count += 1
-			if str(candidate.type_id) in custom_type_ids:
+			if str(candidate.type) in ["review", "audit"]:
 				findings_candidates.append(i)
 			else:
 				builtin_findings_present = true
-	var r = A.is_true(findings_candidates.size() == 2 and all_findings_count >= 3 and builtin_findings_present, "actual Columns menu keeps both exact custom type identities alongside the builtin findings field")
+	var r = A.is_true(findings_candidates.size() == 2 and all_findings_count >= 3 and builtin_findings_present, "actual Columns menu keeps both custom types' findings alongside the builtin findings field")
 	if r is String:
 		return r
 	grid._toggle_result_column(findings_candidates[0])
@@ -410,12 +414,11 @@ func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Var
 	var custom_column := grid._col_fields.size() - 1
 	grid._toggle_sort(custom_column)
 	var typed: Array = grid._dcq_columns.filter(func(value): return value is Dictionary)
-	return A.is_true(typed.size() == 2 and typed[0].type_id != typed[1].type_id and grid._dcq_columns.has("id") and grid._dcq_columns.has("status") and grid._dcq_columns.has("title") and grid._sort_binding.project == "fields" and not str(grid._sort_binding.type_id).is_empty() and grid._sort_binding.field_key == "findings", "first custom selections preserve displayed defaults while typed columns and sort retain complete project/type/field identity")
+	return A.is_true(typed.size() == 2 and typed[0].type != typed[1].type and grid._dcq_columns.has("id") and grid._dcq_columns.has("status") and grid._dcq_columns.has("title") and str(grid._sort_binding.type) == str(typed[1].type) and grid._sort_binding.field_key == "findings", "first custom selections preserve displayed defaults while typed columns and sort retain type/field identity")
 
-func test_column_menu_uses_query_branch_scope_and_project_labels() -> Variant:
+func test_column_menu_uses_query_branch_scope() -> Variant:
 	var state := _state("alpha")
-	var beta_path := "%s/beta.dct" % DIR
-	var beta_db := DocketDBJsonl.create_new_jsonl(beta_path)
+	var beta_db := DocketDBJsonl.create_new_jsonl("%s/beta.dct" % DIR)
 	_dbs.append(beta_db)
 	state._project_dbs.beta = beta_db
 	state._type_registries.beta = TypeRegistry.for_db(beta_db, "beta")
@@ -425,47 +428,111 @@ func test_column_menu_uses_query_branch_scope_and_project_labels() -> Variant:
 	add_child(grid)
 	grid.init(state)
 	grid._rebuild_type_catalog()
-	var alpha_review: Dictionary = {}
-	var beta_review: Dictionary = {}
-	for record_value in grid._type_catalog:
-		var record: Dictionary = record_value
-		if record.project == "alpha" and record.slug == "review":
-			alpha_review = record
-		elif record.project == "beta" and record.slug == "review":
-			beta_review = record
-	if alpha_review.is_empty() or beta_review.is_empty():
-		return "review catalog records missing"
 	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"alpha"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}]}))
 	var anchor := Button.new()
 	grid.add_child(anchor)
 	grid._show_columns_menu(anchor)
-	var scoped_projects: Dictionary = {}
-	for candidate_value in grid._column_candidates:
-		var candidate: Dictionary = candidate_value
-		scoped_projects[str(candidate.project)] = true
-	var r = A.is_true(scoped_projects.keys() == ["alpha"] and str(grid._column_candidates[0].label).contains("[alpha]"), "known type scope limits column candidates and disambiguates project labels")
+	var r = A.is_true(not grid._column_candidates.is_empty() and grid._column_candidates.all(func(candidate: Dictionary) -> bool: return candidate.type == "review" and not candidate.has("project")), "known type scope limits column candidates to that type, without project qualification")
 	if r is String:
 		return r
-	var selected_alpha: Dictionary = grid._column_candidates[0]
+	var selected: Dictionary = grid._column_candidates[0]
 	grid._toggle_result_column(0)
-	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"beta"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}]}))
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"eq", "value":"bug"}]}))
 	grid._show_columns_menu(anchor)
-	var retained := false
-	for candidate_value in grid._column_candidates:
-		var candidate: Dictionary = candidate_value
-		if candidate.project == selected_alpha.project and candidate.type_id == selected_alpha.type_id and candidate.field_key == selected_alpha.field_key:
-			retained = true
-			break
-	r = A.is_true(retained, "selected typed columns remain available when the current query scope changes")
+	r = A.is_true(grid._column_candidates.any(func(candidate: Dictionary) -> bool: return ColumnBinding.same(candidate, selected)), "selected typed columns remain available when the current query scope changes")
 	if r is String:
 		return r
 	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"alpha"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}, {"field":"title", "op":"contains", "value":"open branch", "conj":"or"}]}))
 	grid._show_columns_menu(anchor)
-	var unconstrained_projects: Dictionary = {}
-	for candidate_value in grid._column_candidates:
-		var candidate: Dictionary = candidate_value
-		unconstrained_projects[str(candidate.project)] = true
-	return A.is_true(unconstrained_projects.has("alpha") and unconstrained_projects.has("beta"), "an unconstrained OR branch expands the column menu to every possible type scope")
+	var types: Dictionary = {}
+	for candidate: Dictionary in grid._column_candidates:
+		types[str(candidate.type)] = true
+	return A.is_true(types.has("review") and types.has("bug"), "an unconstrained OR branch expands the column menu to every possible type scope")
+
+## Two projects each define "review" (distinct type ids) and share the builtin
+## types; each holds one review pinned to the first revision and one to the
+## evolved revision.
+func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
+	var dbs: Dictionary = {}
+	for name: String in ["alpha", "beta"]:
+		var db := DocketDBJsonl.create_new_jsonl("%s/%s.dct" % [DIR, name])
+		_dbs.append(db)
+		dbs[name] = db
+	var state := _state_over(dbs)
+	var evolved := _definition()
+	(evolved.fields as Array).append({"key":"notes", "label":"Notes", "type":"string", "required":false, "nullable":true, "mutable":true})
+	var findings: Dictionary = {}  # "project/title" -> findings
+	for name: String in dbs:
+		var registry := _active_registry(state, name)
+		registry.create_item({"type":"review", "title":"old", "revision":"abc", "source":"origin", "findings":"%s old" % name}, "tester")
+		var preview := registry.preview_evolution("review", evolved, str(registry.get_type("review").current_revision))
+		var evolve_error := registry.apply_evolution(preview, "tester", "add notes")
+		if not evolve_error.is_empty():
+			return evolve_error
+		registry.create_item({"type":"review", "title":"new", "revision":"def", "source":"origin", "findings":"%s new" % name}, "tester")
+		findings["%s/old" % name] = "%s old" % name
+		findings["%s/new" % name] = "%s new" % name
+	var grid := _chooser_grid(state)
+	var entries := _chooser_entries(grid)
+	var seen: Dictionary = {}
+	for candidate: Dictionary in grid._column_candidates:
+		if seen.has(ColumnBinding.key(candidate)):
+			return "duplicate chooser entry: %s" % candidate.label
+		seen[ColumnBinding.key(candidate)] = true
+	var r = A.is_true(entries.has(_chooser_entry("review", "findings", "Review — Findings")) and entries.has(_chooser_entry("review", "notes", "Review — Notes")) and entries.has(_chooser_entry("review", "is_terminal", "Review — is_terminal")) and entries.has(_chooser_entry("bug", "state_category", "Bug — state_category")), "the chooser names each type's fields and derived columns without project qualification")
+	if r is String:
+		return r
+	for name: String in dbs:
+		r = A.eq(_chooser_entries(_chooser_grid(_state_over({name: dbs[name]}))), entries, "two projects sharing their types offer the same chooser entries as %s alone" % name)
+		if r is String:
+			return r
+	grid._toggle_result_column(entries.find(_chooser_entry("review", "findings", "Review — Findings")))
+	grid._run_query()
+	r = A.eq(_column_cells(grid, grid._col_fields.find("title"), grid._col_fields.size() - 1), findings, "one ticked type column shows the field for every project's rows, whichever revision they are pinned to")
+	if r is String:
+		return r
+	var beta_review: Dictionary = state.get_type_registry("beta").get_type("review")
+	var saved := {"project":"beta", "type_id":str(beta_review.id), "field_key":"findings", "label":"Beta findings"}
+	grid.apply_dcq({"columns":["id", "project", "title", saved]})
+	grid._run_query()
+	r = A.eq(_column_cells(grid, 2, 3), {"beta/old":"beta old", "beta/new":"beta new"}, "a saved per-project binding still shows its column for its project's rows")
+	if r is String:
+		return r
+	var anchor := Button.new()
+	grid.add_child(anchor)
+	grid._show_columns_menu(anchor)
+	var saved_index := -1
+	for i in grid._column_candidates.size():
+		if ColumnBinding.same(grid._column_candidates[i], saved): saved_index = i
+	return A.is_true(saved_index >= 0 and grid._columns_menu.is_item_checked(saved_index), "the chooser keeps a saved per-project binding as a ticked entry")
+
+## A grid over `state` whose Columns chooser has been opened once.
+func _chooser_grid(state: AppState) -> QueryGrid:
+	var grid := QueryGrid.new()
+	add_child(grid)
+	grid.init(state)
+	var anchor := Button.new()
+	grid.add_child(anchor)
+	grid._show_columns_menu(anchor)
+	return grid
+
+func _chooser_entries(grid: QueryGrid) -> Array:
+	var entries: Array = []
+	for candidate: Dictionary in grid._column_candidates:
+		entries.append(_chooser_entry(str(candidate.type), str(candidate.field_key), str(candidate.label)))
+	return entries
+
+func _chooser_entry(type: String, field_key: String, label: String) -> String:
+	return "%s | %s" % [ColumnBinding.key({"type":type, "field_key":field_key}), label]
+
+## "project/title" -> text of `column`, for the rows where that text is not empty.
+func _column_cells(grid: QueryGrid, title_column: int, column: int) -> Dictionary:
+	var cells: Dictionary = {}
+	for row: TreeItem in grid._tree.get_root().get_children():
+		var origin: Dictionary = row.get_metadata(0)
+		if not row.get_text(column).is_empty():
+			cells["%s/%s" % [origin.project, row.get_text(title_column)]] = row.get_text(column)
+	return cells
 
 func test_dcq_string_columns_round_trip_in_explicit_order() -> Variant:
 	var state := _state("fields")

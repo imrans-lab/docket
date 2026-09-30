@@ -386,7 +386,7 @@ func _draw_header() -> void:
 		var title: String = _col_titles[i]
 		var header_field: String = str(_col_fields[i].get("field_key", "")) if _col_fields[i] is Dictionary else str(_col_fields[i])
 		var header_binding: Dictionary = _col_fields[i] if _col_fields[i] is Dictionary else {}
-		if header_field == _sort_field and (header_binding.is_empty() or _same_binding(header_binding, _sort_binding)):
+		if header_field == _sort_field and (header_binding.is_empty() or ColumnBinding.same(header_binding, _sort_binding)):
 			title += "  v" if _sort_dir == "asc" else "  ^"
 		var font := _header.get_theme_default_font()
 		var font_size := _header.get_theme_default_font_size()
@@ -473,7 +473,7 @@ func _toggle_sort(col: int) -> void:
 	var column: Variant = _col_fields[col]
 	var field: String = str(column.get("field_key", "")) if column is Dictionary else str(column)
 	var binding: Dictionary = column if column is Dictionary else {}
-	if _sort_field == field and (binding.is_empty() or _same_binding(binding, _sort_binding)):
+	if _sort_field == field and (binding.is_empty() or ColumnBinding.same(binding, _sort_binding)):
 		if _sort_dir == "asc":
 			_sort_dir = "desc"
 		else:
@@ -488,9 +488,6 @@ func _toggle_sort(col: int) -> void:
 			_sort_binding = binding.duplicate(true)
 	_header.queue_redraw()
 	_run_query()
-
-func _same_binding(left: Dictionary, right: Dictionary) -> bool:
-	return str(left.get("project", "")) == str(right.get("project", "")) and str(left.get("type_id", "")) == str(right.get("type_id", "")) and str(left.get("field_key", "")) == str(right.get("field_key", ""))
 
 
 # -- Header resize on parent resize ----------------------------------------
@@ -1009,11 +1006,8 @@ func _pinned_state_color(item: Dictionary) -> Color:
 			return Color(0.65, 0.7, 0.85)
 
 func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
-	var project := _item_project(item)
-	if not str(binding.get("project", "")).is_empty() and binding.project != project:
-		return ""
 	var resolved: Dictionary = _resolve_row(item)
-	if resolved.has("error") or str(resolved.revision.type_id) != str(binding.get("type_id", "")):
+	if resolved.has("error") or not ColumnBinding.applies(binding, _item_project(item), resolved):
 		return ""
 	if binding.field_key == "state_category":
 		return str(resolved.state_category)
@@ -1063,27 +1057,7 @@ func _show_column_change() -> void:
 
 func _show_columns_menu(anchor: Button) -> void:
 	_columns_menu.clear()
-	_column_candidates.clear()
-	var scoped_records: Array = _column_scope_records()
-	for record_value in scoped_records:
-		var record: Dictionary = record_value
-		var registry := _state.get_type_registry(str(record.project))
-		if registry == null:
-			continue
-		var type: Dictionary = registry.resolve_type_ref(str(record.id))
-		if type.has("error"):
-			continue
-		for descriptor_value in type.definition.fields:
-			var descriptor: Dictionary = descriptor_value
-			if descriptor.key in TypeRegistry.UNIVERSAL_MUTABLE:
-				continue
-			var owner_label := "%s [%s]" % [record.label, record.project] if _state.get_project_dbs().size() > 1 else str(record.label)
-			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":descriptor.key, "label":"%s — %s" % [owner_label, descriptor.get("label", descriptor.key)], "kind":descriptor.type})
-	for derived in ["state_category", "state_outcome", "is_terminal"]:
-		for record_value in scoped_records:
-			var record: Dictionary = record_value
-			var owner_label := "%s [%s]" % [record.label, record.project] if _state.get_project_dbs().size() > 1 else str(record.label)
-			_column_candidates.append({"project":record.project, "type_id":record.id, "field_key":derived, "label":"%s — %s" % [owner_label, derived], "kind":"string"})
+	_column_candidates = ColumnBinding.candidates(_column_scope_records(), _state)
 	for selected_value in _dcq_columns:
 		if selected_value is Dictionary and not _candidate_has_binding(selected_value):
 			_column_candidates.append((selected_value as Dictionary).duplicate(true))
@@ -1114,24 +1088,21 @@ func _column_scope_records() -> Array:
 
 func _candidate_has_binding(binding: Dictionary) -> bool:
 	for candidate_value in _column_candidates:
-		var candidate: Dictionary = candidate_value
-		if _same_binding(candidate, binding):
+		if ColumnBinding.same(candidate_value, binding):
 			return true
 	return false
 
 func _has_result_column(binding: Dictionary) -> bool:
 	for selected_value in _dcq_columns:
-		if selected_value is Dictionary:
-			var selected: Dictionary = selected_value
-			if selected.get("project") == binding.project and selected.get("type_id") == binding.type_id and selected.get("field_key") == binding.field_key:
-				return true
+		if selected_value is Dictionary and ColumnBinding.same(selected_value, binding):
+			return true
 	return false
 
 func _toggle_result_column(index: int) -> void:
 	var binding: Dictionary = _column_candidates[index]
 	for i in range(_dcq_columns.size() - 1, -1, -1):
 		var selected: Variant = _dcq_columns[i]
-		if selected is Dictionary and selected.get("project") == binding.project and selected.get("type_id") == binding.type_id and selected.get("field_key") == binding.field_key:
+		if selected is Dictionary and ColumnBinding.same(selected, binding):
 			_dcq_columns.remove_at(i)
 			_show_column_change()
 			return

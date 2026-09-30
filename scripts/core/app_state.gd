@@ -624,9 +624,11 @@ func _compare_query_rows(a: Dictionary, b: Dictionary, specs: Array) -> bool:
 
 func _query_sort_value(item: Dictionary, spec: Dictionary, registries: Dictionary, resolved_states: Dictionary):
 	## registries: project → TypeRegistry; resolved_states: resolve_item_memo's
-	## memo, one per project registry.
+	## memo, one per project registry. A spec's "type" (a grid type binding's
+	## slug) limits it to that type's rows in every project.
 	var type_id: String = str(spec.get("type_id", ""))
 	if not type_id.is_empty() and str(item.get("type_id", "")) != type_id: return null
+	if spec.has("type") and str(item.get("type", "")) != str(spec.type): return null
 	var field: String = str(spec.get("field_key", spec.get("field", "")))
 	if field in RegistryQuery.DERIVED_FIELDS: return item.get(field)
 	if spec.has("field_key"):
