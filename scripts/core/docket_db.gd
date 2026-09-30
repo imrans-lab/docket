@@ -227,6 +227,15 @@ func short_id(full_id: String) -> String:
 	return full_id
 
 
+func short_ids(full_ids: Array) -> Dictionary:
+	## short_id() of each of `full_ids`, reading this project's ids once rather
+	## than scanning them once per id.
+	var all_ids: Array = []
+	for row in _exec_select("SELECT id FROM items;"):
+		all_ids.append(row.id)
+	return ItemRows.shortest_prefixes(all_ids, full_ids)
+
+
 static func _is_uuid7(id: String) -> bool:
 	## Check if an ID looks like a UUID7 (32 lowercase hex chars).
 	return id.length() == 32 and id.is_valid_hex_number(false)
@@ -910,7 +919,18 @@ func _item_columns() -> Array:
 	return cols
 
 
-func execute_query(query: Dictionary, detail: String = "full") -> Array:
+func type_counts() -> Dictionary:
+	## Type slug → number of items of that type, ephemeral ones included.
+	var counts: Dictionary = {}
+	for row in _exec_select("SELECT type,COUNT(*) AS count FROM items GROUP BY type;"):
+		counts[str(row.type)] = int(row.count)
+	return counts
+
+
+## Query details: "full" (complete items), "full_stripped" (complete items
+## without empty values), "lean" ({id, title} and ephemeral storage) and
+## "rows" (ItemRows: only the item keys named in `keys`).
+func execute_query(query: Dictionary, detail: String = "full", keys: PackedStringArray = PackedStringArray()) -> Array:
 	var filter = query.get("filter", {})
 	var sort_spec: Array = query.get("sort", [])
 	var limit: int = int(query.get("limit", 0))
@@ -936,11 +956,12 @@ func execute_query(query: Dictionary, detail: String = "full") -> Array:
 		last_query_error = str(translated["error"])
 		return []
 	last_query_error = ""
+	if detail == "rows" and not ItemRows.projectable(keys): detail = "full"
 
 	var where_clause: String = translated.where
 	var bindings: Array = translated.bindings
 
-	var sql := "SELECT * FROM items"
+	var sql := "SELECT %s FROM items" % _item_select(detail, keys)
 	if not where_clause.is_empty():
 		sql += " WHERE " + where_clause
 
@@ -991,14 +1012,11 @@ func execute_query(query: Dictionary, detail: String = "full") -> Array:
 		return _build_lean_rows(rows)
 
 	var results: Array = []
-	for row in rows:
-		var item := _build_item_dict(row)
-		if detail == "full_stripped":
-			item = _strip_empty(item)
-		results.append(item)
+	for item: Dictionary in _query_items(rows, detail, keys, where_clause, bindings):
+		results.append(_strip_empty(item) if detail == "full_stripped" else item)
 	return results
 
-func execute_registry_query(query: Dictionary, registry: TypeRegistry, detail: String = "full") -> Array:
+func execute_registry_query(query: Dictionary, registry: TypeRegistry, detail: String = "full", keys: PackedStringArray = PackedStringArray()) -> Array:
 	## Typed bindings are compiled separately so legacy literal filters keep their
 	## historical meaning and cannot be widened by partial translation.
 	var compiled: Dictionary = RegistryQuery.compile(query, registry, _item_columns())
@@ -1006,7 +1024,8 @@ func execute_registry_query(query: Dictionary, registry: TypeRegistry, detail: S
 		last_query_error = str(compiled.error)
 		return []
 	last_query_error = ""
-	var sql := "SELECT * FROM items"
+	if detail == "rows" and not ItemRows.projectable(keys): detail = "full"
+	var sql := "SELECT %s FROM items" % _item_select(detail, keys)
 	if not str(compiled.where).is_empty(): sql += " WHERE " + str(compiled.where)
 	var bindings: Array = compiled.bindings.duplicate()
 	if not str(compiled.order).is_empty():
@@ -1021,18 +1040,28 @@ func execute_registry_query(query: Dictionary, registry: TypeRegistry, detail: S
 		return []
 	if detail == "lean": return _build_lean_rows(rows)
 	var results: Array = []
-	for row in rows:
-		var item: Dictionary = _build_item_dict(row)
-		var semantics: Dictionary = registry.resolve_item(item)
+	var resolved_states: Dictionary = {}
+	for item: Dictionary in _query_items(rows, detail, keys, str(compiled.where), compiled.bindings):
+		var semantics: Dictionary = registry.resolve_item_memo(item, resolved_states)
 		if not semantics.has("error"):
 			item["state_category"] = semantics.state_category
 			item["state_outcome"] = semantics.state_outcome
 			item["is_terminal"] = semantics.is_terminal
 		else:
 			item["type_diagnostic"] = semantics.error
-		if detail == "full_stripped": item = _strip_empty(item)
-		results.append(item)
+		results.append(_strip_empty(item) if detail == "full_stripped" else item)
 	return results
+
+func _item_select(detail: String, keys: PackedStringArray) -> String:
+	## A query's SELECT column list: every column unless detail is "rows".
+	return ItemRows.select_list(ItemRows.key_set(keys), _item_columns()) if detail == "rows" else "*"
+
+func _query_items(rows: Array, detail: String, keys: PackedStringArray, where: String, bindings: Array) -> Array:
+	## Items for a query's rows: "rows" items (ItemRows) or complete ones.
+	if detail == "rows": return ItemRows.items(self, rows, ItemRows.key_set(keys), where, bindings)
+	var items: Array = []
+	for row in rows: items.append(_build_item_dict(row))
+	return items
 
 
 # -- Hint helpers -------------------------------------------------------------
@@ -1671,91 +1700,9 @@ static func _build_lean_hint_rows(rows: Array) -> Array:
 
 
 func _build_item_dict(row: Dictionary) -> Dictionary:
-	## Convert a raw SQLite row into the same Dictionary format as old JSON items.
-	var item := {}
-	var id: String = str(row.get("id", ""))
-
-	# Copy all scalar fields
-	item["id"] = id
-	item["type"] = str(row.get("type", ""))
-	item["status"] = str(row.get("status", ""))
-	item["title"] = str(row.get("title", ""))
-	item["type_id"] = str(row.get("type_id", ""))
-	item["type_revision"] = str(row.get("type_revision", ""))
-	item["storage"] = str(row.get("storage", ItemStorage.DURABLE))
-	for envelope in ["fields", "extras"]:
-		var raw := str(row.get("%s_json" % envelope, "{}"))
-		var decoded = JSON.parse_string(raw)
-		if decoded is Dictionary:
-			item[envelope] = decoded
-		else:
-			item[envelope] = {}
-			item["_storage_error"] = "malformed %s_json for item %s" % [envelope, id]
-	item["description"] = str(row.get("description", ""))
-	item["created_at"] = str(row.get("created_at", ""))
-	item["updated_at"] = str(row.get("updated_at", ""))
-	item["created_by"] = str(row.get("created_by", ""))
-	item["assigned_to"] = str(row.get("assigned_to", ""))
-	item["directed_to"] = str(row.get("directed_to", ""))
-	item["priority"] = int(row.get("priority", 0))
-	item["severity"] = int(row.get("severity", 0))
-	item["retrieval_count"] = int(row.get("retrieval_count", 0))
-	item["research_cost"] = int(row.get("research_cost", 0))
-	item["quality"] = int(row.get("quality", 0))
-
-	# Nullable type-specific text fields
-	for col in ["resolution", "environment", "repro_steps", "assumed", "corrected",
-				 "findings", "answer", "occurred_at", "detected_at", "reported_at",
-				 "why_chain", "significant_events", "contributing_factors",
-				 "value", "component", "key", "topic", "subtopic", "confidence",
-				 "surprise", "surfaced_from", "blocked_by", "parent",
-				 "test_setup", "test_steps", "expected_result", "last_reviewed",
-				 "command", "usage", "prompt_text", "preconditions",
-				 "summary", "article", "parameters",
-				 "steps", "outcome", "target",
-				 "source", "pristine_hash"]:
-		var val = row.get(col)
-		if val != null:
-			item[col] = str(val)
-		else:
-			item[col] = ""
-
-	# Plugin-shipped skills boolean fields (Minerva DCR 019df57b).  Stored as
-	# INTEGER 0/1 in SQLite; expose as bool to consumers.
-	item["customised"] = int(row.get("customised", 0)) != 0
-	item["deprecated"] = int(row.get("deprecated", 0)) != 0
-
-	var tool_deps_raw = row.get("tool_deps")
-	if tool_deps_raw != null and not str(tool_deps_raw).is_empty():
-		var parsed_tool_deps = JSON.parse_string(str(tool_deps_raw))
-		item["tool_deps"] = parsed_tool_deps if parsed_tool_deps is Array else []
-	else:
-		item["tool_deps"] = []
-
-	var optimization_raw = row.get("optimization")
-	if optimization_raw != null and not str(optimization_raw).is_empty():
-		var parsed_optimization = JSON.parse_string(str(optimization_raw))
-		item["optimization"] = parsed_optimization if parsed_optimization is Dictionary else {}
-	else:
-		item["optimization"] = {}
-
-	# pristine_content: JSON-encoded dict (Minerva DCR 019df57b).  Stores the
-	# upstream plugin manifest's skill entry verbatim for later diff prompts.
-	var pristine_raw = row.get("pristine_content")
-	if pristine_raw != null and not str(pristine_raw).is_empty():
-		var parsed_pristine = JSON.parse_string(str(pristine_raw))
-		item["pristine_content"] = parsed_pristine if parsed_pristine is Dictionary else {}
-	else:
-		item["pristine_content"] = {}
-
-	# unsatisfied_deps: JSON-encoded list[str] (Minerva DCR 019df57b).  tool_deps
-	# not currently resolvable in the active registry.
-	var unsat_raw = row.get("unsatisfied_deps")
-	if unsat_raw != null and not str(unsat_raw).is_empty():
-		var parsed_unsat = JSON.parse_string(str(unsat_raw))
-		item["unsatisfied_deps"] = parsed_unsat if parsed_unsat is Array else []
-	else:
-		item["unsatisfied_deps"] = []
+	## Convert a raw SQLite row into the complete item Dictionary.
+	var item := ItemRows.scalars(row)
+	var id: String = item.id
 
 	# Fetch tags
 	var tag_rows := _exec_select("SELECT tag FROM item_tags WHERE item_id=?;", [id])

@@ -23,6 +23,32 @@ extends Node
 ##   files    each project's .dct sha256 and mtime are unchanged by opening the
 ##            record and by Back.
 ## To cover another kind of change, add an entry to _changes().
+##
+## A refresh reads only the item keys the grid's columns and sort need
+## (ItemRows). Fixture: _open_views_fixture() builds alpha and beta with chores
+## and a custom "review" type; alpha's review type is evolved with only two
+## items repinned, and tags, attachments, statuses, a link, an ephemeral row,
+## two alpha ids sharing ten characters and one id present in both projects are
+## added. For each entry of _views() the grid's columns, filter and sort are set.
+##
+## Oracles:
+##   values   every row's project, id, cell texts and status colour, in order,
+##            equal those derived from the complete records that the
+##            full-detail core query (DocketDB.execute_registry_query, detail
+##            "full") returns for the view's conditions, ordered by the view's
+##            sort key here. Bound cells and colours come from the grid's
+##            renderers fed those complete records outside a refresh.
+##   short    each shown ID is its originating project's DocketDB.short_id (a
+##            LIKE count per prefix length, independent of the refresh's bulk
+##            computation) and unique among that project's rows; the id both
+##            projects contain shows a different prefix in each.
+##   reads    SELECT statements issued by one refresh, counted by a
+##            pass-through DocketDB subclass over two SQLite projects, are the
+##            same with ROWS_SMALL and 4 x ROWS_SMALL rows per project.
+##   record   the record opened from a results row shows its complete record:
+##            description, tags, every event of its history and its typed field
+##            value; the project's copy keeps its link.
+## To cover another grid configuration, add an entry to _views().
 
 const A = preload("res://test/assert_helpers.gd")
 const DIR := "user://fixtures/results_return"
@@ -30,14 +56,23 @@ const PROJECTS := ["alpha", "beta"]
 const MATCH := "row"
 const ROWS_PER_PROJECT := 40  # enough rows for the grid to scroll
 const OPEN_ROW := 60  # grid row the record is opened from
+const ROWS_SMALL := 10  # rows per project in the reads oracle's smaller set
 
 ## Counts results queries; everything else is AppState's own behavior.
 class CountingState extends AppState:
 	var results_queries := 0
 
-	func execute_cross_project_query(query: Dictionary, detail: String = "full") -> Array:
+	func execute_cross_project_query(query: Dictionary, detail: String = "full", keys: PackedStringArray = PackedStringArray()) -> Array:
 		results_queries += 1
-		return super.execute_cross_project_query(query, detail)
+		return super.execute_cross_project_query(query, detail, keys)
+
+## Counts SELECT statements; everything else is DocketDB's own behavior.
+class CountingDB extends DocketDB:
+	var selects := 0
+
+	func _exec_select(sql: String, bindings: Array = []) -> Array:
+		selects += 1
+		return super._exec_select(sql, bindings)
 
 var _dbs: Array[DocketDB] = []
 var _state: CountingState
@@ -45,6 +80,7 @@ var _shell: AppShell
 var _tools: ToolRegistry
 var _open_origin: Dictionary = {}
 var _ephemeral: Dictionary = {}  # label -> id of an ephemeral item made by a change
+var _fixture_ids: Dictionary = {}  # label -> id of a views-fixture item
 
 
 func setup() -> void:
@@ -65,6 +101,7 @@ func _reset_fixtures() -> void:
 			db.close()
 	_dbs.clear()
 	_ephemeral.clear()
+	_fixture_ids.clear()
 	_open_origin = {}
 	for filename in DirAccess.get_files_at(DIR):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path("%s/%s" % [DIR, filename]))
@@ -86,6 +123,59 @@ func test_back_shows_retained_results_and_requeries_once_after_a_change() -> Var
 		if r is String:
 			return "%s: %s" % [change.kind, r]
 	return true
+
+
+func test_refresh_rows_match_complete_records() -> Variant:
+	var fixture_error := _open_views_fixture()
+	if not fixture_error.is_empty():
+		return fixture_error
+	var grid := _shell._query_grid
+	for view: Dictionary in _views():
+		_show_view(view)
+		await get_tree().process_frame
+		var shown := _view_rows_shown()
+		var r = A.eq(shown, _view_rows_expected(view), "%s: rows shown equal the complete records" % view.name)
+		if r is String: return r
+		r = _short_ids_distinct(shown, 2 + grid._col_fields.find("id"))
+		if r is String: return "%s: %s" % [view.name, r]
+	_show_view(_views()[0])
+	var shared: String = _fixture_ids["shared"]
+	var shown_shared: Dictionary = {}
+	for cells: Array in _view_rows_shown():
+		if cells[1] == shared: shown_shared[cells[0]] = cells[2 + grid._col_fields.find("id")]
+	var r = A.is_true(shown_shared.size() == 2 and shown_shared.alpha != shown_shared.beta, "the id in both projects shows each project's own prefix: %s" % shown_shared)
+	if r is String: return r
+	return _open_complete_record()
+
+
+func test_refresh_reads_do_not_grow_with_rows() -> Variant:
+	_new_state()
+	for project: String in PROJECTS:
+		var path := "%s/%s_reads.dct" % [DIR, project]
+		var created := DocketDB.create_new(path)
+		if created == null: return "fixture %s was not created" % path
+		created.close()
+		var db := CountingDB.new()
+		if not db.open(path): return "fixture %s did not open" % path
+		_add_project(project, db)
+		var inserted := _insert_reads_rows(db, project, 0, ROWS_SMALL)
+		if not inserted.is_empty(): return inserted
+	_state.db = _dbs[0]
+	var grid := QueryGrid.new()
+	add_child(grid)
+	grid.init(_state)
+	grid.set_result_columns(["id", "project", "title", "status", "tags"])
+	grid._toggle_sort(grid._col_fields.find("title"))
+	var small: int = await _refresh_selects(grid)
+	var small_rows := grid._tree.get_root().get_child_count()
+	for i in PROJECTS.size():
+		var inserted := _insert_reads_rows(_dbs[i], PROJECTS[i], ROWS_SMALL, 4 * ROWS_SMALL)
+		if not inserted.is_empty(): return inserted
+	var large: int = await _refresh_selects(grid)
+	var large_rows := grid._tree.get_root().get_child_count()
+	var r = A.eq([small_rows, large_rows], [2 * ROWS_SMALL, 8 * ROWS_SMALL], "fixture: rows shown before and after adding rows")
+	if r is String: return r
+	return A.eq(large, small, "SELECT statements of one refresh with %d rows versus %d rows" % [large_rows, small_rows])
 
 
 ## Each change runs while a record is open. `queries` is the number of results
@@ -225,17 +315,12 @@ func _ephemeral_drop() -> String:
 # -- Fixture and observations -------------------------------------------------
 
 func _open_fixture() -> String:
-	_state = CountingState.new()
-	_state.schema = TypeRegistryBootstrap.load_shipped_schema()
-	_state.prefs = UserPrefs.new()
+	_new_state()
 	for project: String in PROJECTS:
 		var path := "%s/%s.dct" % [DIR, project]
 		var db := DocketDBJsonl.create_new_jsonl(path)
 		if db == null: return "fixture %s did not open: %s" % [path, DocketDBJsonl.last_open_error]
-		_dbs.append(db)
-		var registry := TypeRegistry.for_db(db, project)
-		_state._project_dbs[project] = db
-		_state._type_registries[project] = registry
+		var registry := _add_project(project, db)
 		var titles: Array[String] = []
 		for i in ROWS_PER_PROJECT: titles.append("%s %s%02d" % [MATCH, project.left(1), i])
 		for i in 3: titles.append("other %s%02d" % [project.left(1), i])
@@ -244,6 +329,26 @@ func _open_fixture() -> String:
 			if made.has("error"): return "fixture item %s: %s" % [title, made.error]
 		var flushed := db.flush_checked()
 		if not flushed.is_empty(): return "fixture settle: %s" % flushed
+	_start_shell()
+	return ""
+
+
+func _new_state() -> void:
+	_state = CountingState.new()
+	_state.schema = TypeRegistryBootstrap.load_shipped_schema()
+	_state.prefs = UserPrefs.new()
+
+
+func _add_project(project: String, db: DocketDB) -> TypeRegistry:
+	_dbs.append(db)
+	var registry := TypeRegistry.for_db(db, project)
+	_state._project_dbs[project] = db
+	_state._type_registries[project] = registry
+	return registry
+
+
+func _start_shell() -> void:
+	## The primary is the first project; the shell's poll is stopped.
 	_state.db = _dbs[0]
 	_state.dct_path = _dbs[0].get_path()
 	_tools = ToolRegistry.new()
@@ -252,7 +357,6 @@ func _open_fixture() -> String:
 	_shell.init(_state)
 	add_child(_shell)
 	_shell._poll_timer.stop()
-	return ""
 
 
 func _shown_rows() -> Array:
@@ -297,3 +401,229 @@ func _file_stamps() -> Dictionary:
 		var path := _state.get_db_for_project(project).get_path()
 		stamps[project] = [FileAccess.get_sha256(path), FileAccess.get_modified_time(path)]
 	return stamps
+
+
+# -- Refresh content and cost --------------------------------------------------
+
+const RECORD_DESCRIPTION := "review body a00"
+
+func _open_views_fixture() -> String:
+	_new_state()
+	for project: String in PROJECTS:
+		var path := "%s/%s.dct" % [DIR, project]
+		var db := DocketDBJsonl.create_new_jsonl(path)
+		if db == null: return "fixture %s did not open: %s" % [path, DocketDBJsonl.last_open_error]
+		var registry := _add_project(project, db)
+		var made: Dictionary = registry.define_type("review", _review_definition(), "tester", "fixture")
+		if made.has("error"): return "fixture review type: %s" % made.error
+		var activated := registry.activate_type("review", str(made.type.current_revision), "tester", "fixture")
+		if not activated.is_empty(): return "fixture review activation: %s" % activated
+		for i in 12:
+			var fields := {"type": "chore", "title": "%s %s%02d" % [MATCH, project.left(1), i], "description": "chore %d" % i, "tags": [["red"], ["blue", "red"], []][i % 3]}
+			if i % 5 != 0: fields["priority"] = i % 5
+			var chore := registry.create_item(fields, "tester")
+			if chore.has("error"): return "fixture chore: %s" % chore.error
+			var steps: Array = [["in_progress"], ["in_progress", "done"]][i % 2] if i % 3 == 0 else []
+			for step: String in steps:
+				var moved := registry.transition_item(str(chore.id), step, "tester")
+				if not moved.is_empty(): return "fixture chore transition: %s" % moved
+			if i % 4 == 0:
+				var attached := db.attach_file(str(chore.id), "note.txt", "attached".to_utf8_buffer())
+				if attached.has("error"): return "fixture attachment: %s" % attached.error
+		for i in 6:
+			var description := RECORD_DESCRIPTION if project == "alpha" and i == 0 else "review %d" % i
+			var review := registry.create_item({"type": "review", "title": "%s %s review %02d" % [MATCH, project.left(1), i], "description": description, "tags": ["red"] if i % 2 == 0 else [], "revision": "r%02d" % (5 - i)}, "tester")
+			if review.has("error"): return "fixture review: %s" % review.error
+			_fixture_ids["%s review %d" % [project, i]] = str(review.id)
+			if i % 3 == 0:
+				var approved := registry.transition_item(str(review.id), "approved", "tester")
+				if not approved.is_empty(): return "fixture review transition: %s" % approved
+	var alpha_error := _pin_and_link_alpha()
+	if not alpha_error.is_empty(): return alpha_error
+	var collision_error := _insert_collisions()
+	if not collision_error.is_empty(): return collision_error
+	for db in _dbs:
+		var flushed := (db as DocketDBJsonl).flush_checked()
+		if not flushed.is_empty(): return "fixture settle: %s" % flushed
+	_start_shell()
+	var ephemeral := _tools.call_tool("docket_create", {"type": "chore", "title": "%s ephemeral" % MATCH, "project": "alpha", "storage": ItemStorage.EPHEMERAL, "tags": ["red"]})
+	return str(ephemeral.get("error", ""))
+
+
+func _pin_and_link_alpha() -> String:
+	## Evolves alpha's review type with an "extra" field and repins only
+	## reviews 0 and 1, sets extra on review 1 and links review 0 to review 1.
+	var registry := _state.get_type_registry("alpha")
+	var current := registry.get_type("review")
+	var evolved: Dictionary = (current.definition as Dictionary).duplicate(true)
+	evolved.fields.append({"key": "extra", "label": "Extra", "type": "string", "required": false, "nullable": true, "mutable": true})
+	var repinned := [_fixture_ids["alpha review 0"], _fixture_ids["alpha review 1"]]
+	var preview := registry.preview_evolution("review", evolved, str(current.current_revision), repinned)
+	if preview.has("error"): return "fixture evolution: %s" % preview.error
+	var applied := registry.apply_evolution(preview, "tester", "fixture")
+	if not applied.is_empty(): return "fixture evolution: %s" % applied
+	var updated := registry.update_item(repinned[1], {"extra": "x1"}, "tester")
+	if not updated.is_empty(): return "fixture extra: %s" % updated
+	_fixture_ids["record"] = repinned[0]
+	return (_state.get_db_for_project("alpha") as DocketDBJsonl).add_link_checked(repinned[0], repinned[1], "relates")
+
+
+func _insert_collisions() -> String:
+	## Two alpha ids sharing their first ten characters, and the first of them
+	## also in beta, away from every generated id's time prefix.
+	var shared := "0f0f0f0f0f" + DocketDB.generate_uuid7().substr(10)
+	var twin := shared.left(10) + ("1" if shared[10] == "0" else "0") + DocketDB.generate_uuid7().substr(11)
+	_fixture_ids["shared"] = shared
+	for entry: Array in [["alpha", shared], ["alpha", twin], ["beta", shared]]:
+		var registry := _state.get_type_registry(entry[0])
+		var chore := registry.get_type("chore")
+		var error: String = _state.get_db_for_project(entry[0]).insert_item(entry[1], {"type": "chore", "type_id": str(chore.id), "type_revision": str(chore.current_revision), "status": str(chore.definition.lifecycle.initial_state), "title": "%s collide %s %s" % [MATCH, entry[0], entry[1].left(11)], "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "tags": ["red"]})
+		if not error.is_empty(): return "fixture collision row: %s" % error
+	return ""
+
+
+func _review_definition() -> Dictionary:
+	return {"slug": "review", "label": "Review", "description": "Review a revision", "use_when": "a revision needs approval", "protected": false, "protected_behavior": {"regular_creation_allowed": true},
+		"fields": [{"key": "revision", "label": "Revision", "type": "string", "required": true, "nullable": false, "mutable": true}],
+		"lifecycle": {"initial_state": "requested", "states": [{"key": "requested", "label": "Requested", "state_category": "queued", "state_outcome": ""}, {"key": "approved", "label": "Approved", "state_category": "terminal", "state_outcome": "success"}],
+			"terminal_states": ["approved"], "transitions": {"requested": ["approved"], "approved": []}, "guards": {}, "enforcement": "strict"}}
+
+
+## Grid configurations: columns ([] for the default layout), conditions as the
+## condition rows hold them, and the sort column (a field or a binding).
+func _views() -> Array[Dictionary]:
+	var alpha_review := _state.get_type_registry("alpha").get_type("review")
+	var beta_review := _state.get_type_registry("beta").get_type("review")
+	var revision := {"project": "alpha", "type_id": str(alpha_review.id), "field_key": "revision", "label": "Revision"}
+	var extra := {"project": "alpha", "type_id": str(alpha_review.id), "field_key": "extra", "label": "Extra"}
+	var beta_revision := {"project": "beta", "type_id": str(beta_review.id), "field_key": "revision", "label": "Beta revision"}
+	var typed_columns: Array = ["id", "project", "title", "status", "tags", StorageBadge.FIELD, revision, extra, beta_revision]
+	return [
+		{"name": "default columns", "columns": [], "conditions": [], "sort": "title"},
+		{"name": "tag filter", "columns": typed_columns, "conditions": [{"field": "tags", "op": "eq", "value": "red"}], "sort": "title"},
+		{"name": "attachment filter", "columns": typed_columns, "conditions": [{"field": "title", "op": "contains", "value": MATCH}, {"field": "has_attachment", "op": "eq", "value": true, "conj": "and"}], "sort": "title"},
+		{"name": "sorted by a custom field", "columns": ["id", "project", "title", "priority", revision], "conditions": [], "sort": revision},
+	]
+
+
+func _show_view(view: Dictionary) -> void:
+	var grid := _shell._query_grid
+	grid._sort_field = ""
+	grid._sort_dir = "asc"
+	grid._sort_binding = {}
+	grid.set_result_columns(view.columns)
+	grid.set_filter(JSON.stringify({"conditions": view.conditions}) if not (view.conditions as Array).is_empty() else "")
+	grid._toggle_sort(grid._col_fields.find(view.sort))
+
+
+func _view_rows_shown() -> Array:
+	## [project, id, each cell's text..., status cell colour] per grid row.
+	var grid := _shell._query_grid
+	var status_col := grid._col_fields.find("status")
+	var rows: Array = []
+	var root := grid._tree.get_root()
+	if root == null: return rows
+	for row in root.get_children():
+		var origin: Dictionary = row.get_metadata(0)
+		var cells: Array = [str(origin.project), str(origin.id)]
+		for col in grid._col_fields.size(): cells.append(row.get_text(col))
+		cells.append(row.get_custom_color(status_col) if status_col >= 0 else Color())
+		rows.append(cells)
+	return rows
+
+
+func _view_rows_expected(view: Dictionary) -> Array:
+	## _view_rows_shown's shape, from the complete records.
+	var grid := _shell._query_grid
+	var modes := StorageBadge.project_modes(_state.get_project_dbs())
+	var items: Array = []
+	for project: String in PROJECTS:
+		var query := {"filter": {"conditions": view.conditions}} if not (view.conditions as Array).is_empty() else {}
+		for item: Dictionary in _state.get_db_for_project(project).execute_registry_query(query, _state.get_type_registry(project)):
+			item["project"] = project
+			items.append(item)
+	items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return _view_order(a, b, view.sort))
+	var rows: Array = []
+	for item: Dictionary in items:
+		var cells: Array = [str(item.project), str(item.id)]
+		for column: Variant in grid._col_fields: cells.append(_expected_cell(item, column, modes))
+		var colour: Color = grid._pinned_state_color(item) if grid._col_fields.has("status") else Color()
+		cells.append(colour if colour.a > 0.0 else Color())
+		rows.append(cells)
+	return rows
+
+
+func _view_order(a: Dictionary, b: Dictionary, sort: Variant) -> bool:
+	## Ascending by the sort value, rows without one last, then project and id.
+	var values: Array = []
+	for item: Dictionary in [a, b]:
+		if sort is Dictionary: values.append((item.fields as Dictionary).get(sort.field_key) if str(item.type_id) == str(sort.type_id) else null)
+		else: values.append(item.get(str(sort)))
+	if (values[0] == null) != (values[1] == null): return values[1] == null
+	if values[0] != null and values[0] != values[1]: return str(values[0]) < str(values[1])
+	if a.project != b.project: return str(a.project) < str(b.project)
+	return str(a.id) < str(b.id)
+
+
+func _expected_cell(item: Dictionary, column: Variant, modes: Dictionary) -> String:
+	if column is Dictionary: return _shell._query_grid._render_bound_column(item, column)
+	match str(column):
+		"id": return _state.get_db_for_project(str(item.project)).short_id(str(item.id))
+		"priority": return str(item.priority) if int(item.priority) != 0 else ""
+		StorageBadge.FIELD: return StorageBadge.word(str(modes[item.project]), str(item.get("storage", "")))
+	return str(item.get(str(column), ""))
+
+
+func _short_ids_distinct(shown: Array, id_cell: int) -> Variant:
+	## Each shown ID is a prefix of its full id and unique within its project.
+	var seen := {}
+	for cells: Array in shown:
+		var short := str(cells[id_cell])
+		if not str(cells[1]).begins_with(short): return "shown ID %s is not a prefix of %s" % [short, cells[1]]
+		var key := "%s:%s" % [cells[0], short]
+		if seen.has(key): return "shown ID %s repeats within %s" % [short, cells[0]]
+		seen[key] = true
+	return true
+
+
+func _open_complete_record() -> Variant:
+	## Opens the fixture's record row from the results.
+	var grid := _shell._query_grid
+	var record_id: String = _fixture_ids["record"]
+	var target: TreeItem = null
+	for row in grid._tree.get_root().get_children():
+		var origin: Dictionary = row.get_metadata(0)
+		if origin.id == record_id and origin.project == "alpha": target = row
+	if target == null: return "the record row is not shown"
+	target.select(0)
+	grid._on_item_activated()
+	var form := _shell._record_form
+	var db := _state.get_db_for_project("alpha")
+	var events := db.get_events(record_id)
+	var r = A.is_true(form._current_id == record_id and form._current_project == "alpha", "the activated row opens its record")
+	if r is String: return r
+	r = A.eq([form._desc_edit.text, form._tags_edit.text], [RECORD_DESCRIPTION, "red"], "the record shows its description and tags")
+	if r is String: return r
+	r = A.is_true(events.size() >= 3 and form._events_list.item_count == events.size(), "the record shows its whole history (%d of %d events)" % [form._events_list.item_count, events.size()])
+	if r is String: return r
+	r = A.eq((form._dynamic_fields._rows["revision"].editor as LineEdit).text, "r05", "the record shows its typed field")
+	if r is String: return r
+	return A.eq(db.get_item(record_id).links, [{"to": _fixture_ids["alpha review 1"], "relation": "relates"}], "the record keeps its link")
+
+
+func _insert_reads_rows(db: DocketDB, project: String, from: int, to: int) -> String:
+	for i in range(from, to):
+		var error := db.insert_item(DocketDB.generate_uuid7(), {"type": "chore", "status": "open", "title": "%s %s%03d" % [MATCH, project.left(1), i], "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "tags": ["red"] if i % 2 == 0 else []})
+		if not error.is_empty(): return "fixture row: %s" % error
+	return ""
+
+
+func _refresh_selects(grid: QueryGrid) -> int:
+	## SELECT statements across the projects while the visible grid refreshes
+	## once, starting on a fresh frame so per-frame registry checks run in each.
+	await get_tree().process_frame
+	for db in _dbs: (db as CountingDB).selects = 0
+	grid.refresh()
+	var total := 0
+	for db in _dbs: total += (db as CountingDB).selects
+	return total

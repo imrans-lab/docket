@@ -295,6 +295,14 @@ func resolve_item(item: Dictionary) -> Dictionary:
 	if state.is_empty(): return {"error":"historical status '%s' is absent from pinned revision" % item.get("status", ""),"semantics":"unknown","read_only":true,"revision":revision.duplicate(true)}
 	return {"project":_project,"revision":revision.duplicate(true),"definition":definition.duplicate(true),"state_category":state.state_category,"state_outcome":state.get("state_outcome", ""),"is_terminal":definition.lifecycle.terminal_states.has(item.status),"read_only":false}
 
+## resolve_item() through `memo`, which a caller keeps for one pass over many
+## items: the result depends only on the item's type pin and status, so items
+## sharing them share one resolution. Callers must not modify the result.
+func resolve_item_memo(item: Dictionary, memo: Dictionary) -> Dictionary:
+	var key := JSON.stringify([item.get("type_revision", ""), item.get("type_id", ""), item.get("type", ""), item.get("status", "")])
+	if not memo.has(key): memo[key] = resolve_item(item)
+	return memo[key]
+
 func define_type(slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary = {}) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}

@@ -519,8 +519,10 @@ func _project_like(value: String, pattern: String) -> bool:
 	return previous[text.length()]
 
 
-func execute_cross_project_query(query: Dictionary, detail: String = "full") -> Array:
+func execute_cross_project_query(query: Dictionary, detail: String = "full", keys: PackedStringArray = PackedStringArray()) -> Array:
 	## Run a query across all loaded projects, inject "project" field into results.
+	## detail and keys are DocketDB.execute_query's; with "rows", `keys` must
+	## name what the sort reads.
 	# Strip sort/limit from per-DB queries — "project" is a pseudo-field that
 	# doesn't exist in SQL, and sort/limit must apply to the merged union.
 	var db_query := query.duplicate(true)
@@ -530,7 +532,8 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 
 	var all_results: Array = []
 	var sort_spec: Array = query.get("sort", [])
-	var query_detail: String = "full" if _sort_requires_registry_values(sort_spec) else detail
+	var query_detail: String = "full" if detail != "rows" and _sort_requires_registry_values(sort_spec) else detail
+	var registries: Dictionary = {}
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
 		var project_query := _bind_project_conditions(db_query, proj_name)
@@ -544,8 +547,9 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 		if registry == null or not registry.get_diagnostic().is_empty():
 			last_cross_project_query_error = registry.get_diagnostic() if registry != null else "type registry unavailable for project '%s'" % proj_name
 			return []
+		registries[proj_name] = registry
 		var typed: bool = _query_has_typed_binding(project_query.query)
-		var results: Array = pdb.execute_registry_query(project_query.query, registry, query_detail) if typed or _sort_requires_registry_values(sort_spec) else pdb.execute_query(project_query.query, query_detail)
+		var results: Array = pdb.execute_registry_query(project_query.query, registry, query_detail, keys) if typed or _sort_requires_registry_values(sort_spec) else pdb.execute_query(project_query.query, query_detail, keys)
 		if not pdb.last_query_error.is_empty():
 			last_cross_project_query_error = "%s: %s" % [proj_name,pdb.last_query_error]
 			return []
@@ -558,7 +562,7 @@ func execute_cross_project_query(query: Dictionary, detail: String = "full") -> 
 
 	# Apply sort across union
 	if sort_spec.size() > 0:
-		all_results.sort_custom(func(a, b): return _compare_query_rows(a, b, sort_spec))
+		all_results = _sorted_query_rows(all_results, sort_spec, registries)
 
 	# Apply limit across union
 	var limit: int = int(query.get("limit", 0))
@@ -586,12 +590,27 @@ func _query_has_typed_binding(value) -> bool:
 			if _query_has_typed_binding(child): return true
 	return false
 
+func _sorted_query_rows(rows: Array, specs: Array, registries: Dictionary) -> Array:
+	## Each row's sort values are read once, then compared (_compare_query_rows).
+	var resolved_states: Dictionary = {}
+	var keyed: Array = []
+	for item: Dictionary in rows:
+		var values: Array = []
+		for spec in specs:
+			values.append(_query_sort_value(item, spec, registries, resolved_states) if spec is Dictionary else null)
+		keyed.append({"item": item, "values": values})
+	keyed.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return _compare_query_rows(a, b, specs))
+	var sorted: Array = []
+	for entry: Dictionary in keyed: sorted.append(entry.item)
+	return sorted
+
 func _compare_query_rows(a: Dictionary, b: Dictionary, specs: Array) -> bool:
-	for value in specs:
-		if not value is Dictionary: continue
-		var spec: Dictionary = value
-		var av = _query_sort_value(a, spec)
-		var bv = _query_sort_value(b, spec)
+	## a and b are {item, values}, values holding each spec's sort value.
+	for index in specs.size():
+		if not specs[index] is Dictionary: continue
+		var spec: Dictionary = specs[index]
+		var av = a.values[index]
+		var bv = b.values[index]
 		var a_null: bool = av == null
 		var b_null: bool = bv == null
 		if a_null != b_null: return b_null if str(spec.get("nulls", "last")) == "last" else a_null
@@ -599,19 +618,23 @@ func _compare_query_rows(a: Dictionary, b: Dictionary, specs: Array) -> bool:
 		if av == bv: continue
 		var less: bool = str(av) < str(bv) if typeof(av) != typeof(0) and typeof(av) != typeof(0.0) else float(av) < float(bv)
 		return not less if str(spec.get("dir", "asc")) == "desc" else less
-	var project_compare: int = str(a.get("project", "")).casecmp_to(str(b.get("project", "")))
+	var project_compare: int = str(a.item.get("project", "")).casecmp_to(str(b.item.get("project", "")))
 	if project_compare != 0: return project_compare < 0
-	return str(a.get("id", "")) < str(b.get("id", ""))
+	return str(a.item.get("id", "")) < str(b.item.get("id", ""))
 
-func _query_sort_value(item: Dictionary, spec: Dictionary):
+func _query_sort_value(item: Dictionary, spec: Dictionary, registries: Dictionary, resolved_states: Dictionary):
+	## registries: project → TypeRegistry; resolved_states: resolve_item_memo's
+	## memo, one per project registry.
 	var type_id: String = str(spec.get("type_id", ""))
 	if not type_id.is_empty() and str(item.get("type_id", "")) != type_id: return null
 	var field: String = str(spec.get("field_key", spec.get("field", "")))
 	if field in RegistryQuery.DERIVED_FIELDS: return item.get(field)
 	if spec.has("field_key"):
-		var registry: TypeRegistry = get_type_registry(str(item.get("project", "")))
+		var project := str(item.get("project", ""))
+		var registry: TypeRegistry = registries.get(project)
 		if registry == null: return null
-		var resolved: Dictionary = registry.resolve_item(item)
+		if not resolved_states.has(project): resolved_states[project] = {}
+		var resolved: Dictionary = registry.resolve_item_memo(item, resolved_states[project])
 		if resolved.has("error"): return null
 		var declared: bool = false
 		for descriptor in resolved.definition.fields:

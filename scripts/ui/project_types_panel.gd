@@ -240,9 +240,7 @@ func _refresh_list() -> void:
 		_summary.text = "The selected project is no longer open."
 		_set_editor_enabled(false)
 		return
-	var counts: Dictionary = {}
-	for row in db._exec_select("SELECT type,COUNT(*) AS count FROM items GROUP BY type;"):
-		counts[str(row.type)] = int(row.count)
+	var counts: Dictionary = db.type_counts()
 	var listed: Array = registry.list_types(_show_deprecated.button_pressed)
 	if not listed.is_empty() and listed[0] is Dictionary and listed[0].has("error"):
 		_summary.text = "Type registry unavailable for %s: %s" % [_project_name(), listed[0].error]

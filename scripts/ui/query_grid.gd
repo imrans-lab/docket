@@ -25,6 +25,11 @@ var _catalog_stale := false
 # Project name → DocketDB.cache_generation() when the rows were last queried,
 # so a write no signal reported (an MCP tool call) still marks them stale.
 var _results_generation: Dictionary = {}
+# Item keys _current_results were queried with (_row_keys).
+var _loaded_keys := PackedStringArray()
+# Per-_populate_tree registries and type resolutions (_resolve_row); empty
+# outside a pass.
+var _pass_semantics: Dictionary = {}
 
 # Visual query builder
 var _conditions_container: VBoxContainer
@@ -168,12 +173,8 @@ func _rebuild_type_catalog() -> void:
 		return
 	for project_value in projects:
 		var project := str(project_value)
-		var counts := {}
-		var project_db = _state.get_db_for_project(project)
-		if project_db != null:
-			for item in project_db.execute_query({"filter": {}}):
-				var slug: String = str(item.get("type", ""))
-				counts[slug] = int(counts.get(slug, 0)) + 1
+		var project_db: DocketDB = _state.get_db_for_project(project)
+		var counts: Dictionary = project_db.type_counts() if project_db != null else {}
 		var registry: TypeRegistry = _state.get_type_registry(project)
 		var catalog_result: Dictionary = TypeCatalog.from_registry_checked(registry, counts) if registry != null else {"records":[],"error":"type registry is unavailable"}
 		if registry != null and registry.get_diagnostic().is_empty() and str(catalog_result.error).is_empty():
@@ -794,15 +795,16 @@ func _query_rows() -> void:
 	# Project is not a database column; the cross-project path evaluates it,
 	# so it also serves a single loaded project when a row filters on project.
 	var filters_project: bool = _condition_snapshots().any(func(cond): return cond.field == "project")
+	_loaded_keys = _row_keys()
 	if _state._project_dbs.size() > 1 or (filters_project and not _state._project_dbs.is_empty()):
-		_current_results = _state.execute_cross_project_query(query)
+		_current_results = _state.execute_cross_project_query(query, "rows", _loaded_keys)
 		if not _state.last_cross_project_query_error.is_empty():
 			_tree.clear()
 			_count_label.text = _state.last_cross_project_query_error
 			return
 	elif _state.db:
 		var registry: TypeRegistry = _state.get_type_registry()
-		_current_results = _state.db.execute_registry_query(query, registry) if registry != null else _state.db.execute_query(query)
+		_current_results = _state.db.execute_registry_query(query, registry, "rows", _loaded_keys) if registry != null else _state.db.execute_query(query, "rows", _loaded_keys)
 		if not _state.db.last_query_error.is_empty():
 			_tree.clear()
 			_count_label.text = _state.db.last_query_error
@@ -813,6 +815,20 @@ func _query_rows() -> void:
 		var modes := StorageBadge.project_modes(_state.get_project_dbs())
 		StorageBadge.sort_rows(_current_results, func(item: Dictionary) -> String: return _storage_word(item, modes), _sort_dir == "desc")
 	_populate_tree()
+
+
+func _row_keys() -> PackedStringArray:
+	## Item keys the rows are queried with (ItemRows): what the columns show and
+	## what the union sort reads. Identity, type pin, status and storage are
+	## always included.
+	var keys := PackedStringArray()
+	for column: Variant in _col_fields:
+		keys.append(str(column.get("field_key", "")) if column is Dictionary else str(column))
+		if column is Dictionary: keys.append("fields")
+	if not _sort_field.is_empty():
+		keys.append(_sort_field)
+		keys.append("fields")
+	return keys
 
 
 func _build_conditions_filter() -> Dictionary:
@@ -885,6 +901,9 @@ func _populate_tree() -> void:
 	_tree.clear()
 	var root := _tree.create_item()
 	var storage_modes := StorageBadge.project_modes(_state.get_project_dbs())
+	var short_ids := _short_ids()
+	# Registries and type resolutions are looked up once for the whole pass.
+	_pass_semantics = {"registries": {}, "resolved": {}}
 
 	for item in _current_results:
 		var row := _tree.create_item(root)
@@ -898,10 +917,8 @@ func _populate_tree() -> void:
 				row.set_text(col_idx, str(int(pri)) if pri else "")
 			elif field == "id" and DocketDB._is_uuid7(full_id):
 				# Display short ID for UUID7, set tooltip to full ID
-				var display_id := full_id.substr(0, 7)
-				if _state.db:
-					display_id = _state.db.short_id(full_id)
-				row.set_text(col_idx, display_id)
+				var project_ids: Dictionary = short_ids.get(_item_project(item), {})
+				row.set_text(col_idx, str(project_ids.get(full_id, full_id.substr(0, 7))))
 				row.set_tooltip_text(col_idx, full_id)
 			elif field == "status":
 				row.set_text(col_idx, item_status)
@@ -917,14 +934,45 @@ func _populate_tree() -> void:
 		# Metadata always stores full ID for selection signals
 		row.set_metadata(0, {"id":full_id,"project":_item_project(item)})
 
+	_pass_semantics = {}
 	_count_label.text = "%d items" % _current_results.size()
 
-func _pinned_state_color(item: Dictionary) -> Color:
+func _short_ids() -> Dictionary:
+	## Project → {full id → shortest unique prefix within that project} for the
+	## UUID7 ids of the current rows, when the ID column is shown.
+	var by_project := {}
+	if not _row_keys().has("id"):
+		return by_project
+	for item in _current_results:
+		var full_id: String = str(item.get("id", ""))
+		if not DocketDB._is_uuid7(full_id): continue
+		var project := _item_project(item)
+		if not by_project.has(project): by_project[project] = []
+		(by_project[project] as Array).append(full_id)
+	for project: String in by_project.keys():
+		# A row without a project comes from the primary database.
+		var project_db: DocketDB = _state.get_db_for_project(project) if not project.is_empty() else _state.db
+		by_project[project] = project_db.short_ids(by_project[project]) if project_db != null else {}
+	return by_project
+
+func _resolve_row(item: Dictionary) -> Dictionary:
+	## TypeRegistry.resolve_item for a row, through the pass's memo while
+	## _populate_tree runs. A missing registry resolves to an error.
 	var project := _item_project(item)
-	var registry := _state.get_type_registry(project)
-	if registry == null:
-		return Color.TRANSPARENT
-	var resolved: Dictionary = registry.resolve_item(item)
+	if _pass_semantics.is_empty():
+		var registry := _state.get_type_registry(project)
+		return registry.resolve_item(item) if registry != null else {"error": "type registry is unavailable"}
+	var registries: Dictionary = _pass_semantics.registries
+	if not registries.has(project):
+		registries[project] = _state.get_type_registry(project)
+		_pass_semantics.resolved[project] = {}
+	var project_registry: TypeRegistry = registries[project]
+	if project_registry == null:
+		return {"error": "type registry is unavailable"}
+	return project_registry.resolve_item_memo(item, _pass_semantics.resolved[project])
+
+func _pinned_state_color(item: Dictionary) -> Color:
+	var resolved: Dictionary = _resolve_row(item)
 	if resolved.has("error"):
 		return Color.TRANSPARENT
 	match str(resolved.state_category):
@@ -941,10 +989,7 @@ func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
 	var project := _item_project(item)
 	if not str(binding.get("project", "")).is_empty() and binding.project != project:
 		return ""
-	var registry := _state.get_type_registry(project)
-	if registry == null:
-		return ""
-	var resolved: Dictionary = registry.resolve_item(item)
+	var resolved: Dictionary = _resolve_row(item)
 	if resolved.has("error") or str(resolved.revision.type_id) != str(binding.get("type_id", "")):
 		return ""
 	if binding.field_key == "state_category":
@@ -981,7 +1026,16 @@ func _item_project(item: Dictionary) -> String:
 
 func set_result_columns(bindings: Array) -> void:
 	_dcq_columns = bindings.duplicate(true)
+	_show_column_change()
+
+func _show_column_change() -> void:
+	## Rows are queried with only the keys the columns read, so a column whose
+	## keys were not loaded re-runs the query.
 	_rebuild_columns()
+	for key in _row_keys():
+		if not _loaded_keys.has(key):
+			_run_query()
+			return
 	_populate_tree()
 
 func _show_columns_menu(anchor: Button) -> void:
@@ -1056,14 +1110,12 @@ func _toggle_result_column(index: int) -> void:
 		var selected: Variant = _dcq_columns[i]
 		if selected is Dictionary and selected.get("project") == binding.project and selected.get("type_id") == binding.type_id and selected.get("field_key") == binding.field_key:
 			_dcq_columns.remove_at(i)
-			_rebuild_columns()
-			_populate_tree()
+			_show_column_change()
 			return
 	if _dcq_columns.is_empty():
 		_dcq_columns = _col_fields.duplicate(true)
 	_dcq_columns.append(binding.duplicate(true))
-	_rebuild_columns()
-	_populate_tree()
+	_show_column_change()
 
 
 func _on_item_selected() -> void:
