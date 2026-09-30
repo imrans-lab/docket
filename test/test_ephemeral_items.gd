@@ -608,10 +608,11 @@ const TINY_AREA := Vector2(240, 170)
 ## Oracle: Godot's own layout after the popup settles. In every case the
 ## dialog's rectangle, title bar included, lies inside the root's visible rect,
 ## and each of Keep, Drop and Cancel is shown, has an area and lies inside the
-## dialog. At the preferred size the message area is exactly as tall as the
-## label's own wrapped content (Label.get_minimum_size) and the item list is
-## taller than it. At scale 3 the item list has a height and a vertical scroll
-## bar that can move.
+## dialog. At the preferred size the message area is no taller than the label's
+## own wrapped content (Label.get_minimum_size) and no taller than its share of
+## the dialog, and the item list is taller than the failure report it shares
+## the remaining height with; none of that depends on the font's metrics. At
+## scale 3 the item list has a height and a vertical scroll bar that can move.
 func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 	var db := _open_fixture("dialog.dct")
 	if db == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
@@ -641,6 +642,8 @@ func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 		var preferred := dialog.min_size == EphemeralItemsDialog.PREFERRED_SIZE
 		var message_needs := (dialog.get_node("%Message") as Label).get_minimum_size().y
 		var message_height := (dialog.get_node("%MessageScroll") as Control).size.y
+		var message_share := dialog.min_size.y * EphemeralItemsDialog.MESSAGE_SHARE
+		var failure_height := (dialog.get_node("%FailureScroll") as Control).size.y
 		dialog.free()
 		var label := "scale %.2f" % scale
 		if scale == tiny_scale:
@@ -652,7 +655,9 @@ func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 		if scale == 1.0:
 			r = A.is_true(preferred, "fixture: the unscaled visible area %s holds the preferred size" % unscaled)
 			if r is String: break
-			r = A.is_true(absf(message_height - message_needs) <= 1.0 and list_height > message_height, "at the preferred size the message area (%s) is as tall as the wrapped message (%s) and the item list (%s) is taller" % [message_height, message_needs, list_height])
+			r = A.is_true(message_height > 0.0 and message_height <= message_needs + 1.0 and message_height <= message_share + 1.0, "at the preferred size the message area (%s) is no taller than the wrapped message (%s) or its share (%s)" % [message_height, message_needs, message_share])
+			if r is String: break
+			r = A.is_true(list_height > failure_height and failure_height > 0.0, "at the preferred size the item list (%s) is taller than the failure report (%s)" % [list_height, failure_height])
 			if r is String: break
 		if scale == 3.0:
 			r = A.is_true(list_height > 0.0 and scrolls, "the item list has height %s and scrolls" % list_height)
