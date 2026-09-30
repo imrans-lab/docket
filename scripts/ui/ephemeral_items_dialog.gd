@@ -19,7 +19,7 @@ var _after: Callable
 func init(state: AppState) -> void:
 	_state = state
 	add_button("Drop", false, "drop")
-	(%Message as Label).resized.connect(_fit_message)
+	(%Message as Label).resized.connect(_fit_message, CONNECT_DEFERRED)
 	confirmed.connect(_on_keep)
 	custom_action.connect(_on_custom_action)
 	canceled.connect(func() -> void: _after = Callable())
@@ -48,9 +48,13 @@ func ask(pending: Dictionary, after: Callable, failure: String = "") -> void:
 	popup_centered(min_size)
 
 
-## Sizes the message area to the wrapped message at its current width, up to
-## MESSAGE_SHARE of min_size's height; a longer message scrolls. The item list
-## takes the rest. Runs again whenever the label's width changes its wrapping.
+## Sizes the message area to the wrapped message at the label's current width,
+## up to MESSAGE_SHARE of min_size's height; a longer message scrolls. The item
+## list takes the rest. The label reports its new wrapping only after its
+## resized signal has been emitted, so the call on resize is deferred: it runs
+## in the same flush of deferred calls as the container layout, before the
+## frame is drawn. Before the first layout the label has no width, and ask()'s
+## call sets the cap.
 func _fit_message() -> void:
 	var needed := (%Message as Label).get_minimum_size().y
 	(%MessageScroll as ScrollContainer).custom_minimum_size.y = minf(needed, min_size.y * MESSAGE_SHARE)

@@ -319,19 +319,37 @@ func _write_project_file(path: String) -> String:
 	return "" if flushed.is_empty() else "fixture settle: %s" % flushed
 
 
-## The retrieval count column is shown (its values are queried) and hidden
-## again without a query; a record is opened, an MCP hint read bumps the
-## hint's count, Back is pressed and the column is shown again. Oracles:
-## queries (exactly 1 from opening the record through Back) and rows (with the
-## retrieval column shown again, every row's count equals a fresh core query's).
-func test_hidden_retrieval_column_shows_a_fresh_count() -> Variant:
-	var fixture_error := _open_fixture()
-	if not fixture_error.is_empty():
-		return fixture_error
+## Retrieval counts read by a query and then left unread by an edit that runs
+## no query. Each path starts from a fresh fixture, so no retrieval change
+## precedes its query. In both, a record is opened, an MCP hint read bumps the
+## hint's count, and Back is pressed.
+##   column     the retrieval count column is shown (its values are queried)
+##              and hidden again; after Back it is shown again.
+##   condition  the rows are queried with titles containing MATCH and
+##              retrieval_count < 1, which the hint meets until its read; that
+##              condition row is then edited to titles containing "hint".
+## Oracles: queries (exactly 1 from opening the record through Back: the read
+## changes what the rows' own query returns, so they cannot stand) and rows
+## (column: every row's count, shown again, equals a fresh core query's;
+## condition: the rows equal a fresh core query for the conditions the grid
+## now holds, the only ones a query from the grid can run).
+func test_retrieval_reads_edited_away_without_a_query() -> Variant:
+	for path: String in ["column", "condition"]:
+		_reset_fixtures()
+		var fixture_error := _open_fixture()
+		if not fixture_error.is_empty():
+			return fixture_error
+		var grid := _shell._query_grid
+		grid.set_filter(_title_filter(MATCH))
+		grid._toggle_sort(grid._col_fields.find("title"))
+		await get_tree().process_frame
+		var r: Variant = await _hidden_column_path() if path == "column" else await _edited_condition_path()
+		if r is String: return "%s: %s" % [path, r]
+	return true
+
+
+func _hidden_column_path() -> Variant:
 	var grid := _shell._query_grid
-	grid.set_filter(_title_filter(MATCH))
-	grid._toggle_sort(grid._col_fields.find("title"))
-	await get_tree().process_frame
 	var show_then_hide := func() -> String:
 		grid.set_result_columns(RETRIEVAL_COLUMNS)
 		grid.set_result_columns(RETRIEVAL_COLUMNS.slice(0, -1))
@@ -341,6 +359,19 @@ func test_hidden_retrieval_column_shows_a_fresh_count() -> Variant:
 	grid.set_result_columns(RETRIEVAL_COLUMNS)
 	await get_tree().process_frame
 	return _rows_match(MATCH, "the retrieval column shown again equals a fresh query")
+
+
+func _edited_condition_path() -> Variant:
+	var grid := _shell._query_grid
+	var queried: Array = _title_is(MATCH) + [{"field": "retrieval_count", "op": "lt", "value": 1, "conj": "and"}]
+	var edited := {"field": "title", "op": "contains", "value": "hint", "conj": "and"}
+	var query_then_edit := func() -> String:
+		grid.set_filter(JSON.stringify({"conditions": queried}))
+		if not _shown_rows().any(func(row: Array) -> bool: return row[1] == _hint_id):
+			return "the rows queried with retrieval_count < 1 do not include the hint"
+		grid._apply_condition(1, edited)
+		return ""
+	return await _open_change_and_return({"kind": "edited retrieval condition", "queries": 1, "before": query_then_edit, "apply": _hint_retrieval, "expected": _title_is(MATCH) + [edited]})
 
 
 func test_refresh_rows_match_complete_records() -> Variant:
@@ -399,7 +430,8 @@ func test_refresh_reads_do_not_grow_with_rows() -> Variant:
 
 
 ## Each change runs while a record is open; its optional `before` runs first,
-## while the results are shown. `queries` is the number of results queries
+## while the results are shown, and its optional `expected` holds the
+## conditions the rows after Back must match (titles containing MATCH if absent). `queries` is the number of results queries
 ## expected from opening the record through Back. Entries run in order and
 ## build on each other: the settle lands the local edit's append.
 func _changes() -> Array[Dictionary]:
@@ -467,7 +499,7 @@ func _open_change_and_return(change: Dictionary) -> Variant:
 	if r is String: return r
 	r = A.is_true(exits[0] == 0 and grid.get_parent() == parent_before, "the grid is never reparented")
 	if r is String: return r
-	r = _rows_match(MATCH, "rows shown after Back equal a fresh query")
+	r = _rows_match_conditions(change.get("expected", _title_is(MATCH)), "rows shown after Back equal a fresh query")
 	if r is String: return r
 	r = A.eq(files_opened, files_before, "opening a record writes no project file")
 	if r is String: return r
@@ -660,15 +692,15 @@ func _shown_rows() -> Array:
 	return rows
 
 
-func _expected_rows(title_part: String = MATCH) -> Array:
-	## The same rows straight from each loaded project's cache, merged and
-	## sorted by title (the fixture's titles are unique).
+func _expected_rows(conditions: Array) -> Array:
+	## The rows for `conditions` straight from each loaded project's cache,
+	## merged and sorted by title (the fixture's titles are unique).
 	var modes := StorageBadge.project_modes(_state.get_project_dbs())
 	var retrieval_shown := _shell._query_grid._col_fields.has("retrieval_count")
 	var rows: Array = []
 	for project: String in _state.get_project_dbs():
 		var db: DocketDB = _state.get_db_for_project(project)
-		for item: Dictionary in db.execute_query({"filter": {"conditions": [{"field": "title", "op": "contains", "value": title_part}]}}):
+		for item: Dictionary in db.execute_query({"filter": {"conditions": conditions}}):
 			var cells: Array = [project, str(item.id), str(item.title), StorageBadge.word(str(modes[project]), str(item.get("storage", "")))]
 			if retrieval_shown: cells.append(str(int(item.get("retrieval_count", 0))))
 			rows.append(cells)
@@ -677,15 +709,23 @@ func _expected_rows(title_part: String = MATCH) -> Array:
 
 
 func _rows_match(title_part: String, message: String) -> Variant:
-	## The grid shows rows, and they equal _expected_rows(title_part).
+	return _rows_match_conditions(_title_is(title_part), message)
+
+
+func _rows_match_conditions(conditions: Array, message: String) -> Variant:
+	## The grid shows rows, and they equal _expected_rows(conditions).
 	var shown := _shown_rows()
 	var r = A.is_true(not shown.is_empty(), "%s: the grid shows rows" % message)
 	if r is String: return r
-	return A.eq(shown, _expected_rows(title_part), message)
+	return A.eq(shown, _expected_rows(conditions), message)
+
+
+func _title_is(title_part: String) -> Array:
+	return [{"field": "title", "op": "contains", "value": title_part}]
 
 
 func _title_filter(title_part: String) -> String:
-	return JSON.stringify({"conditions": [{"field": "title", "op": "contains", "value": title_part}]})
+	return JSON.stringify({"conditions": _title_is(title_part)})
 
 
 func _other_shown_row(project: String) -> Array:

@@ -595,17 +595,22 @@ func test_rebuild_that_finds_the_source_moved_twice_keeps_the_peers_rows() -> Va
 	return A.is_true(fresh, "the cache's fingerprint is the one the peer committed")
 
 
+## The small area the dialog is opened in: smaller on both axes than the
+## wrapped message, button row and margins need together (256x192 with the
+## default theme), so the dialog fits only while its message area scrolls.
 const TINY_AREA := Vector2(240, 170)
 
 ## The Keep / Drop / Cancel dialog opened for hundreds of long-titled ephemeral
-## items, with a failure report, at content scales that leave a small window:
-## one third of the unscaled visible area, and TINY_AREA, smaller on both axes
-## than 256x192, the content minimum of a message that does not scroll above
-## the buttons.
-## Oracle: Godot's own layout after the popup settles. The dialog's rectangle,
-## title bar included, lies inside the root's visible rect; each of Keep, Drop
-## and Cancel is shown, has an area and lies inside the dialog; at the first
-## scale the item list has a height and a vertical scroll bar that can move.
+## items, with a failure report, at three content scales: 1 (the preferred
+## size, when the unscaled visible area holds it), 3, and the smallest scale
+## whose visible area is at most TINY_AREA on both axes.
+## Oracle: Godot's own layout after the popup settles. At every scale the
+## dialog's rectangle, title bar included, lies inside the root's visible rect,
+## and each of Keep, Drop and Cancel is shown, has an area and lies inside the
+## dialog. At the preferred size the message area is exactly as tall as the
+## label's own wrapped content (Label.get_minimum_size) and the item list is
+## taller than it. At scale 3 the item list has a height and a vertical scroll
+## bar that can move.
 func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 	var db := _open_fixture("dialog.dct")
 	if db == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
@@ -621,8 +626,9 @@ func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 	root.content_scale_factor = 1.0
 	await get_tree().process_frame
 	var unscaled := root.get_visible_rect().size
+	var tiny_scale := maxf(unscaled.x / TINY_AREA.x, unscaled.y / TINY_AREA.y)
 	var r: Variant = true
-	for scale: float in [3.0, maxf(unscaled.x / TINY_AREA.x, unscaled.y / TINY_AREA.y)]:
+	for scale: float in [1.0, 3.0, tiny_scale]:
 		root.content_scale_factor = scale
 		var dialog := (load("res://scenes/ui/ephemeral_items_dialog.tscn") as PackedScene).instantiate() as EphemeralItemsDialog
 		dialog.init(state)
@@ -641,9 +647,21 @@ func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 		var scroll := items.get_v_scroll_bar()
 		var scrolls := scroll.is_visible_in_tree() and scroll.max_value > scroll.page
 		var list_height := items.size.y
+		var preferred := dialog.min_size == EphemeralItemsDialog.PREFERRED_SIZE
+		var message_needs := (dialog.get_node("%Message") as Label).get_minimum_size().y
+		var message_height := (dialog.get_node("%MessageScroll") as Control).size.y
 		dialog.free()
-		r = _dialog_fits(outer, area, inside, buttons, "scale %.2f" % scale)
+		var label := "scale %.2f" % scale
+		if scale == tiny_scale:
+			r = A.is_true(area.size.x <= TINY_AREA.x and area.size.y <= TINY_AREA.y, "fixture: the visible area %s is at most %s" % [area.size, TINY_AREA])
+			if r is String: break
+		r = _dialog_fits(outer, area, inside, buttons, label)
 		if r is String: break
+		if scale == 1.0:
+			r = A.is_true(preferred, "fixture: the unscaled visible area %s holds the preferred size" % unscaled)
+			if r is String: break
+			r = A.is_true(absf(message_height - message_needs) <= 1.0 and list_height > message_height, "at the preferred size the message area (%s) is as tall as the wrapped message (%s) and the item list (%s) is taller" % [message_height, message_needs, list_height])
+			if r is String: break
 		if scale == 3.0:
 			r = A.is_true(list_height > 0.0 and scrolls, "the item list has height %s and scrolls" % list_height)
 			if r is String: break
