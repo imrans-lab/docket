@@ -182,16 +182,22 @@ func test_saved_query_roundtrip_keeps_identity_field_state_and_sort_bindings() -
 	r = A.is_true(preview.saved_query_impact.size() == 1 and preview.saved_query_impact[0].references.has("field:score") and preview.saved_query_impact[0].references.has("status:queued"), "evolution impact reads actual typed field and state bindings")
 	db.close(); return r
 
-func test_dcq_roundtrip_preserves_typed_sort_binding_verbatim() -> Variant:
+func test_dcq_roundtrip_keeps_sort_field_direction_and_nulls() -> Variant:
 	var db: DocketDBJsonl = _db("DCQ"); var registry: TypeRegistry = _registry_with_widget(db); var type_id: String = registry.get_type("widget").id
 	var state: AppState = AppState.new(); state.db = db; state.schema = {}; state._project_dbs = {"DCQ":db}; state._type_registries = {"DCQ":registry}
 	var grid: QueryGrid = QueryGrid.new(); add_child(grid); grid.init(state)
 	grid._dcq_columns = ["id", "score", "state_category"]
-	grid._sort_field = "score"; grid._sort_dir = "desc"; grid._sort_binding = {"field_key":"score","type_id":type_id,"nulls":"first"}
+	grid._sort_field = "score"; grid._sort_dir = "desc"; grid._sort_nulls = "first"
 	var path: String = DIR + "/typed.dcq"; grid.save_dcq(path)
 	var loaded: QueryGrid = QueryGrid.new(); add_child(loaded); loaded.init(state); loaded.load_dcq(path)
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
-	var r = A.is_true(parsed is Dictionary and parsed.sort[0].type_id == type_id and parsed.columns == ["id", "score", "state_category"] and loaded._dcq_columns == parsed.columns and loaded._sort_binding.type_id == type_id and loaded._sort_binding.nulls == "first" and loaded._sort_dir == "desc", "dcq load/save keeps stable field identity, columns, and null ordering")
+	var r = A.is_true(parsed is Dictionary and parsed.sort == [{"field_key":"score","dir":"desc","nulls":"first"}] and parsed.columns == ["id", "score", "state_category"] and loaded._dcq_columns == parsed.columns and loaded._sort_spec() == parsed.sort[0], "dcq load/save keeps the columns, the sort field, its direction and null ordering")
+	if r is String: grid.queue_free(); loaded.queue_free(); db.close(); return r
+	# A sort bound to a type identity by an older build opens as the plain field.
+	var bound_path: String = DIR + "/bound.dcq"
+	var file := FileAccess.open(bound_path, FileAccess.WRITE); file.store_string(JSON.stringify({"sort":[{"field_key":"score","type_id":type_id,"dir":"desc","nulls":"first"}]})); file.close()
+	loaded.load_dcq(bound_path)
+	r = A.eq(loaded._sort_spec(), {"field_key":"score","dir":"desc","nulls":"first"}, "a type-bound saved sort opens as a sort on its field")
 	grid.queue_free(); loaded.queue_free(); db.close(); return r
 
 func test_custom_field_colliding_with_builtin_column_keeps_custom_kind_and_authority() -> Variant:

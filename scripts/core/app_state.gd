@@ -624,11 +624,10 @@ func _compare_query_rows(a: Dictionary, b: Dictionary, specs: Array) -> bool:
 
 func _query_sort_value(item: Dictionary, spec: Dictionary, registries: Dictionary, resolved_states: Dictionary):
 	## registries: project → TypeRegistry; resolved_states: resolve_item_memo's
-	## memo, one per project registry. A spec's "type" (a grid type binding's
-	## slug) limits it to that type's rows in every project.
+	## memo, one per project registry. A "field_key" spec reads the field on the
+	## rows whose pinned type declares it (TypeRegistry.declared_value).
 	var type_id: String = str(spec.get("type_id", ""))
 	if not type_id.is_empty() and str(item.get("type_id", "")) != type_id: return null
-	if spec.has("type") and str(item.get("type", "")) != str(spec.type): return null
 	var field: String = str(spec.get("field_key", spec.get("field", "")))
 	if field in RegistryQuery.DERIVED_FIELDS: return item.get(field)
 	if spec.has("field_key"):
@@ -638,12 +637,7 @@ func _query_sort_value(item: Dictionary, spec: Dictionary, registries: Dictionar
 		if not resolved_states.has(project): resolved_states[project] = {}
 		var resolved: Dictionary = registry.resolve_item_memo(item, resolved_states[project])
 		if resolved.has("error"): return null
-		var declared: bool = false
-		for descriptor in resolved.definition.fields:
-			if str(descriptor.key) == field: declared = true
-		if not declared: return null
-		var typed_fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
-		return typed_fields.get(field)
+		return TypeRegistry.declared_value(item, resolved, field)
 	if item.has(field): return item[field]
 	var custom: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
 	return custom.get(field)

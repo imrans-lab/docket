@@ -303,6 +303,18 @@ func resolve_item_memo(item: Dictionary, memo: Dictionary) -> Dictionary:
 	if not memo.has(key): memo[key] = resolve_item(item)
 	return memo[key]
 
+## The value of `key` on `item` under its pinned semantics `resolved`
+## (resolve_item, without error): a derived state key's value, a declared
+## field's value, or null when the pinned type does not declare `key`.
+## Protected builtins and universal keys store their values on the item, other
+## declared fields in the "fields" envelope.
+static func declared_value(item: Dictionary, resolved: Dictionary, key: String) -> Variant:
+	if key in RegistryQuery.DERIVED_FIELDS: return resolved[key]
+	if not (resolved.definition.fields as Array).any(func(descriptor: Dictionary) -> bool: return str(descriptor.key) == key): return null
+	if bool(resolved.definition.get("protected", false)) or key in UNIVERSAL_MUTABLE: return item.get(key)
+	var fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
+	return fields.get(key)
+
 func define_type(slug: String, definition: Dictionary, author: String, reason: String, provenance: Dictionary = {}) -> Dictionary:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return {"error":refresh_error}

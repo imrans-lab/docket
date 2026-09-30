@@ -66,7 +66,7 @@ extends Node
 ##            equal those derived from the complete records that the
 ##            full-detail core query (DocketDB.execute_registry_query, detail
 ##            "full") returns for the view's conditions, ordered by the view's
-##            sort key here. Bound cells and colours come from the grid's
+##            sort key here. Type-field cells and colours come from the grid's
 ##            renderers fed those complete records outside a refresh.
 ##   pinned   in the tag filter view, three reviews' status, revision cells and
 ##            status colour equal literals the fixture sets (_pinned_cells).
@@ -981,7 +981,8 @@ func _expected_rows(conditions: Array) -> Array:
 		if db is DocketDBJsonl: (db as DocketDBJsonl).ensure_fresh()
 		for item: Dictionary in db.execute_query({"filter": {"conditions": conditions}}):
 			var cells: Array = [project, str(item.id), str(item.title), StorageBadge.word(str(modes[project]), str(item.get("storage", "")))]
-			if retrieval_shown: cells.append(str(int(item.get("retrieval_count", 0))))
+			# Of this fixture's types only the hint declares retrieval_count.
+			if retrieval_shown: cells.append(str(int(item.get("retrieval_count", 0))) if str(item.type) == "hint" else "")
 			rows.append(cells)
 	rows.sort_custom(func(a: Array, b: Array) -> bool: return str(a[2]) < str(b[2]))
 	return rows
@@ -1111,19 +1112,14 @@ func _review_definition() -> Dictionary:
 
 
 ## Grid configurations: columns ([] for the default layout), conditions as the
-## condition rows hold them, and the sort column (a field or a binding).
+## condition rows hold them, and the sort column's field key.
 func _views() -> Array[Dictionary]:
-	var alpha_review := _state.get_type_registry("alpha").get_type("review")
-	var beta_review := _state.get_type_registry("beta").get_type("review")
-	var revision := {"project": "alpha", "type_id": str(alpha_review.id), "field_key": "revision", "label": "Revision"}
-	var extra := {"project": "alpha", "type_id": str(alpha_review.id), "field_key": "extra", "label": "Extra"}
-	var beta_revision := {"project": "beta", "type_id": str(beta_review.id), "field_key": "revision", "label": "Beta revision"}
-	var typed_columns: Array = ["id", "project", "title", "status", "tags", StorageBadge.FIELD, revision, extra, beta_revision]
+	var typed_columns: Array = ["id", "project", "title", "status", "tags", StorageBadge.FIELD, "revision", "extra"]
 	return [
 		{"name": "default columns", "columns": [], "conditions": [], "sort": "title"},
 		{"name": "tag filter", "columns": typed_columns, "conditions": [{"field": "tags", "op": "eq", "value": "red"}], "sort": "title"},
 		{"name": "attachment filter", "columns": typed_columns, "conditions": [{"field": "title", "op": "contains", "value": MATCH}, {"field": "has_attachment", "op": "eq", "value": true, "conj": "and"}], "sort": "title"},
-		{"name": "sorted by a custom field", "columns": ["id", "project", "title", "priority", revision], "conditions": [], "sort": revision},
+		{"name": "sorted by a custom field", "columns": ["id", "project", "title", "priority", "revision"], "conditions": [], "sort": "revision"},
 	]
 
 
@@ -1131,15 +1127,14 @@ func _show_view(view: Dictionary) -> void:
 	var grid := _shell._query_grid
 	grid._sort_field = ""
 	grid._sort_dir = "asc"
-	grid._sort_binding = {}
 	grid.set_result_columns(view.columns)
 	grid.set_filter(JSON.stringify({"conditions": view.conditions}) if not (view.conditions as Array).is_empty() else "")
 	grid._toggle_sort(grid._col_fields.find(view.sort))
 
 
 func _pinned_cells() -> Variant:
-	## The tag filter view's cells for three reviews, against values the
-	## fixture sets: revision "r%02d" % (5 - i), approved for review 0 and
+	## The tag filter view's cells for three reviews of both projects, against
+	## values the fixture sets: revision "r%02d" % (5 - i), approved for review 0 and
 	## requested for review 2, and the grid's status colours for a terminal
 	## and a queued state.
 	var grid := _shell._query_grid
@@ -1148,28 +1143,20 @@ func _pinned_cells() -> Variant:
 	var terminal := Color(0.55, 0.55, 0.6)
 	var queued := Color(0.65, 0.7, 0.85)
 	var pins := {
-		_fixture_ids["alpha review 0"]: ["alpha", "approved", "r05", "", terminal],
-		_fixture_ids["alpha review 2"]: ["alpha", "requested", "r03", "", queued],
-		_fixture_ids["beta review 0"]: ["beta", "approved", "", "r05", terminal],
+		_fixture_ids["alpha review 0"]: ["alpha", "approved", "r05", terminal],
+		_fixture_ids["alpha review 2"]: ["alpha", "requested", "r03", queued],
+		_fixture_ids["beta review 0"]: ["beta", "approved", "r05", terminal],
 	}
 	var status_col := grid._col_fields.find("status")
-	var revision_col := _bound_column("Revision")
-	var beta_revision_col := _bound_column("Beta revision")
+	var revision_col := grid._col_fields.find("revision")
 	var found := 0
 	for cells: Array in _view_rows_shown():
 		if not pins.has(cells[1]) or cells[0] != (pins[cells[1]] as Array)[0]: continue
 		found += 1
-		var actual := [cells[0], cells[2 + status_col], cells[2 + revision_col], cells[2 + beta_revision_col], cells[cells.size() - 1]]
+		var actual := [cells[0], cells[2 + status_col], cells[2 + revision_col], cells[cells.size() - 1]]
 		var r = A.eq(actual, pins[cells[1]], "pinned cells of %s" % cells[1])
 		if r is String: return r
 	return A.eq(found, pins.size(), "pinned reviews shown in the tag filter view")
-
-
-func _bound_column(label: String) -> int:
-	var columns: Array = _shell._query_grid._col_fields
-	for i in columns.size():
-		if columns[i] is Dictionary and str((columns[i] as Dictionary).get("label", "")) == label: return i
-	return -1
 
 
 func _view_rows_shown() -> Array:
@@ -1202,28 +1189,29 @@ func _view_rows_expected(view: Dictionary) -> Array:
 	var rows: Array = []
 	for item: Dictionary in items:
 		var cells: Array = [str(item.project), str(item.id)]
-		for column: Variant in grid._col_fields: cells.append(_expected_cell(item, column, modes))
+		for column: String in grid._col_fields: cells.append(_expected_cell(item, column, modes))
 		var colour: Color = grid._pinned_state_color(item) if grid._col_fields.has("status") else Color()
 		cells.append(colour if colour.a > 0.0 else Color())
 		rows.append(cells)
 	return rows
 
 
-func _view_order(a: Dictionary, b: Dictionary, sort: Variant) -> bool:
+func _view_order(a: Dictionary, b: Dictionary, sort: String) -> bool:
 	## Ascending by the sort value, rows without one last, then project and id.
+	## A type field's value is in the fields envelope of the rows that have it
+	## (the fixture's custom review type).
 	var values: Array = []
 	for item: Dictionary in [a, b]:
-		if sort is Dictionary: values.append((item.fields as Dictionary).get(sort.field_key) if str(item.type_id) == str(sort.type_id) else null)
-		else: values.append(item.get(str(sort)))
+		values.append((item.fields as Dictionary).get(sort) if ColumnBinding.is_typed(sort) else item.get(sort))
 	if (values[0] == null) != (values[1] == null): return values[1] == null
 	if values[0] != null and values[0] != values[1]: return str(values[0]) < str(values[1])
 	if a.project != b.project: return str(a.project) < str(b.project)
 	return str(a.id) < str(b.id)
 
 
-func _expected_cell(item: Dictionary, column: Variant, modes: Dictionary) -> String:
-	if column is Dictionary: return _shell._query_grid._render_bound_column(item, column)
-	match str(column):
+func _expected_cell(item: Dictionary, column: String, modes: Dictionary) -> String:
+	if ColumnBinding.is_typed(column): return _shell._query_grid._render_typed_column(item, column)
+	match column:
 		"id": return _state.get_db_for_project(str(item.project)).short_id(str(item.id))
 		"priority": return str(item.priority) if int(item.priority) != 0 else ""
 		StorageBadge.FIELD: return StorageBadge.word(str(modes[item.project]), str(item.get("storage", "")))

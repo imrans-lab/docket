@@ -356,31 +356,28 @@ func test_draft_save_refuses_closed_origin_without_falling_back_or_losing_edits(
 	var save_error = await form._save_changes()
 	return A.is_true(save_error is String and str(save_error).contains("originating project is closed") and state.db.execute_query({}, "lean").is_empty() and form._title_edit.text == "Retained draft" and form._is_draft, "closed draft origin refuses save without fallback writes and retains local edits")
 
-func test_result_columns_require_pinned_type_identity() -> Variant:
+func test_result_columns_render_by_pinned_type_declaration() -> Variant:
 	var state := _state("fields")
 	var registry := _active_registry(state, "fields")
 	var created := registry.create_item({"type":"review", "title":"Columns", "revision":"abc", "source":"origin", "findings":"visible"}, "tester")
 	var item := state.db.get_item(str(created.id))
 	item.project = "fields"
-	var type := registry.get_type("review")
 	var grid := QueryGrid.new()
 	add_child(grid)
 	grid.init(state)
-	var binding := {"project":"fields", "type_id":type.id, "field_key":"findings", "label":"Findings"}
-	var wrong := binding.duplicate(true)
-	wrong.type_id = "type:unrelated"
-	var r = A.eq(grid._render_bound_column(item, binding), "visible", "custom result column renders from fields under the pinned descriptor")
-	if r is String:
-		return r
-	r = A.eq(grid._render_bound_column(item, wrong), "", "unrelated type identity cannot reinterpret a custom result column")
+	var r = A.eq(grid._render_typed_column(item, "findings"), "visible", "a custom field renders from the fields envelope under the pinned descriptor")
 	if r is String:
 		return r
 	var builtin := registry.get_type("bug")
-	var builtin_item := {"type":"bug", "type_id":builtin.id, "type_revision":builtin.current_revision, "status":"new", "resolution":"fixed", "fields":{}, "project":"fields"}
-	var builtin_binding := {"project":"fields", "type_id":builtin.id, "field_key":"resolution", "label":"Resolution"}
-	return A.eq(grid._render_bound_column(builtin_item, builtin_binding), "fixed", "builtin descriptor columns use their flat storage authority")
+	var builtin_item := {"type":"bug", "type_id":builtin.id, "type_revision":builtin.current_revision, "status":"new", "resolution":"fixed", "findings":"stray", "fields":{"findings":"stray"}, "project":"fields"}
+	r = A.eq(grid._render_typed_column(builtin_item, "findings"), "", "a field the row's pinned type does not declare renders blank, whatever the row holds")
+	if r is String:
+		return r
+	return A.eq(grid._render_typed_column(builtin_item, "resolution"), "fixed", "builtin descriptor columns use their flat storage authority")
 
-func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Variant:
+## Two custom types declare "findings" (so does the builtin question): one
+## column shows it for both, and sorting on it orders both types' rows.
+func test_colliding_field_keys_share_one_column() -> Variant:
 	var state := _state("fields")
 	var registry := _active_registry(state, "fields")
 	var second_definition := _definition()
@@ -388,33 +385,22 @@ func test_column_picker_and_sort_keep_identity_for_colliding_field_keys() -> Var
 	second_definition.label = "Audit"
 	var second := registry.define_type("audit", second_definition, "tester", "collision")
 	registry.activate_type("audit", second.type.current_revision, "tester", "ready")
-	var grid := QueryGrid.new()
-	add_child(grid)
-	grid.init(state)
-	grid._rebuild_type_catalog()
-	var anchor := Button.new()
-	grid.add_child(anchor)
-	grid._show_columns_menu(anchor)
-	var findings_candidates: Array[int] = []
-	var all_findings_count := 0
-	var builtin_findings_present := false
-	for i in grid._column_candidates.size():
-		var candidate: Dictionary = grid._column_candidates[i]
-		if candidate.field_key == "findings":
-			all_findings_count += 1
-			if str(candidate.type) in ["review", "audit"]:
-				findings_candidates.append(i)
-			else:
-				builtin_findings_present = true
-	var r = A.is_true(findings_candidates.size() == 2 and all_findings_count >= 3 and builtin_findings_present, "actual Columns menu keeps both custom types' findings alongside the builtin findings field")
+	registry.create_item({"type":"review", "title":"review", "revision":"abc", "source":"origin", "findings":"b"}, "tester")
+	registry.create_item({"type":"audit", "title":"audit", "revision":"abc", "source":"origin", "findings":"a"}, "tester")
+	registry.create_item({"type":"bug", "title":"bug"}, "tester")
+	var grid := _chooser_grid(state)
+	var label := _chooser_label(grid, "findings")
+	var r = A.is_true(grid._column_candidates.count("findings") == 1 and label.begins_with("Findings — ") and ["review", "audit", "question"].all(func(slug: String) -> bool: return label.contains(slug)), "the chooser offers findings once, naming every type that declares it: %s" % label)
 	if r is String:
 		return r
-	grid._toggle_result_column(findings_candidates[0])
-	grid._toggle_result_column(findings_candidates[1])
-	var custom_column := grid._col_fields.size() - 1
-	grid._toggle_sort(custom_column)
-	var typed: Array = grid._dcq_columns.filter(func(value): return value is Dictionary)
-	return A.is_true(typed.size() == 2 and typed[0].type != typed[1].type and grid._dcq_columns.has("id") and grid._dcq_columns.has("status") and grid._dcq_columns.has("title") and str(grid._sort_binding.type) == str(typed[1].type) and grid._sort_binding.field_key == "findings", "first custom selections preserve displayed defaults while typed columns and sort retain type/field identity")
+	grid._toggle_result_column(grid._column_candidates.find("findings"))
+	var title_column := grid._col_fields.find("title")
+	var findings_column := grid._col_fields.find("findings")
+	r = A.is_true(grid._dcq_columns.has("id") and grid._dcq_columns.has("status") and grid._dcq_columns.has("title") and _column_cells(grid, title_column, findings_column) == {"fields/review":"b", "fields/audit":"a"}, "the first tick keeps the displayed defaults and one column shows both types' findings")
+	if r is String:
+		return r
+	grid._toggle_sort(findings_column)
+	return A.is_true(_row_order(grid, title_column) == ["fields/audit", "fields/review", "fields/bug"] and grid._sort_spec() == {"field_key":"findings", "dir":"asc", "nulls":"last"}, "sorting the shared column orders both types' rows by the field, the bug last")
 
 func test_column_menu_uses_query_branch_scope() -> Variant:
 	var state := _state("alpha")
@@ -429,171 +415,221 @@ func test_column_menu_uses_query_branch_scope() -> Variant:
 	grid.init(state)
 	grid._rebuild_type_catalog()
 	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"alpha"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}]}))
-	var anchor := Button.new()
-	grid.add_child(anchor)
-	grid._show_columns_menu(anchor)
-	var r = A.is_true(not grid._column_candidates.is_empty() and grid._column_candidates.all(func(candidate: Dictionary) -> bool: return candidate.type == "review" and not candidate.has("project")), "known type scope limits column candidates to that type, without project qualification")
+	_open_chooser(grid)
+	var r = A.eq(_sorted(_type_section(grid)), _declared_fields(state, "alpha", "review"), "a known type scope limits the type fields to that type's")
 	if r is String:
 		return r
-	var selected: Dictionary = grid._column_candidates[0]
-	grid._toggle_result_column(0)
+	r = A.eq(grid._column_candidates.slice(0, ColumnBinding.item_entries().size()), ColumnBinding.ITEM_COLUMNS + RegistryQuery.DERIVED_FIELDS, "the columns every row has are offered whatever the scope")
+	if r is String:
+		return r
+	grid._toggle_result_column(grid._column_candidates.find("revision"))
 	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"eq", "value":"bug"}]}))
-	grid._show_columns_menu(anchor)
-	r = A.is_true(grid._column_candidates.any(func(candidate: Dictionary) -> bool: return ColumnBinding.same(candidate, selected)), "selected typed columns remain available when the current query scope changes")
+	_open_chooser(grid)
+	var revision_id := grid._column_candidates.find("revision")
+	r = A.is_true(revision_id >= 0 and grid._columns_menu.is_item_checked(grid._columns_menu.get_item_index(revision_id)), "a shown type column stays offered, ticked, when the query scope no longer reaches it")
 	if r is String:
 		return r
 	grid.set_filter(JSON.stringify({"conditions":[{"field":"project", "op":"eq", "value":"alpha"}, {"field":"type", "op":"eq", "value":"review", "conj":"and"}, {"field":"title", "op":"contains", "value":"open branch", "conj":"or"}]}))
-	grid._show_columns_menu(anchor)
-	var types: Dictionary = {}
-	for candidate: Dictionary in grid._column_candidates:
-		types[str(candidate.type)] = true
-	return A.is_true(types.has("review") and types.has("bug"), "an unconstrained OR branch expands the column menu to every possible type scope")
+	_open_chooser(grid)
+	var fields := _type_section(grid)
+	return A.is_true(fields.has("revision") and fields.has("repro_steps") and fields.has("component"), "an unconstrained OR branch expands the type fields to every possible type")
 
-## Two projects each define "review" and "audit" (distinct type ids) and share
-## the builtin types; each holds one review pinned to the first revision and one
-## to the evolved revision, and alpha holds an audit whose findings would sort
-## between the reviews. Later beta alone evolves review again.
-func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
+## The shipped types, in one project and in two: the columns every row has,
+## then each type-declared field once.
+func test_column_chooser_offers_each_field_once() -> Variant:
 	var dbs: Dictionary = {}
 	for name: String in ["alpha", "beta"]:
 		var db := DocketDBJsonl.create_new_jsonl("%s/%s.dct" % [DIR, name])
 		_dbs.append(db)
 		dbs[name] = db
 	var state := _state_over(dbs)
-	var evolved := _definition()
-	(evolved.fields as Array).append({"key":"notes", "label":"Notes", "type":"string", "required":false, "nullable":true, "mutable":true})
-	var findings: Dictionary = {}  # "project/title" -> findings
-	for name: String in dbs:
-		var registry := _active_registry(state, name)
-		registry.create_item({"type":"review", "title":"old", "revision":"abc", "source":"origin", "findings":"%s old" % name}, "tester")
-		var preview := registry.preview_evolution("review", evolved, str(registry.get_type("review").current_revision))
-		var evolve_error := registry.apply_evolution(preview, "tester", "add notes")
-		if not evolve_error.is_empty():
-			return evolve_error
-		registry.create_item({"type":"review", "title":"new", "revision":"def", "source":"origin", "findings":"%s new" % name}, "tester")
-		findings["%s/old" % name] = "%s old" % name
-		findings["%s/new" % name] = "%s new" % name
-		var audit := _definition()
-		audit.slug = "audit"
-		audit.label = "Audit"
-		var made := registry.define_type("audit", audit, "tester", "same field key")
-		registry.activate_type("audit", made.type.current_revision, "tester", "ready")
-	state.get_type_registry("alpha").create_item({"type":"audit", "title":"audit", "revision":"ghi", "source":"origin", "findings":"alpha zzz"}, "tester")
 	var grid := _chooser_grid(state)
-	var entries := _chooser_entries(grid)
 	var r = _unique_candidates(grid)
 	if r is String:
 		return r
-	r = A.is_true(entries.has(_chooser_entry("review", "findings", "Review — Findings")) and entries.has(_chooser_entry("review", "notes", "Review — Notes")) and entries.has(_chooser_entry("review", "is_terminal", "Review — is_terminal")) and entries.has(_chooser_entry("bug", "state_category", "Bug — state_category")), "the chooser names each type's fields and derived columns without project qualification")
+	var keys := grid._column_candidates
+	r = A.is_true(keys.count("created_by") == 1 and keys.count("created_at") == 1 and keys.count("component") == 1 and RegistryQuery.DERIVED_FIELDS.all(func(key: String) -> bool: return keys.count(key) == 1), "created_by, created_at, component and each derived column are offered once")
+	if r is String:
+		return r
+	r = A.is_true(_chooser_label(grid, "component").begins_with("Component — hint"), "a type field is labelled with the types that declare it: %s" % _chooser_label(grid, "component"))
 	if r is String:
 		return r
 	for name: String in dbs:
-		r = A.eq(_chooser_entries(_chooser_grid(_state_over({name: dbs[name]}))), entries, "two projects sharing their types offer the same chooser entries as %s alone" % name)
+		r = A.eq(_chooser_entries(_chooser_grid(_state_over({name: dbs[name]}))), _chooser_entries(grid), "two projects offer the same chooser entries as %s alone" % name)
 		if r is String:
 			return r
-	# Only beta's review gains "scope": the chooser offers the union of fields,
-	# not just those of the first catalogue record (alpha: label, then project).
-	var scoped := evolved.duplicate(true)
-	(scoped.fields as Array).append({"key":"scope", "label":"Scope", "type":"string", "required":false, "nullable":true, "mutable":true})
-	var beta_registry := state.get_type_registry("beta")
-	var scope_error := beta_registry.apply_evolution(beta_registry.preview_evolution("review", scoped, str(beta_registry.get_type("review").current_revision)), "tester", "add scope")
-	if not scope_error.is_empty():
-		return scope_error
-	grid._rebuild_type_catalog()
+	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"eq", "value":"bug"}]}))
+	_open_chooser(grid)
+	var bug_fields := _declared_fields(state, "alpha", "bug")
+	return A.is_true(not bug_fields.is_empty() and _sorted(_type_section(grid)) == bug_fields, "with type = bug the type fields are bug's: %s" % [_type_section(grid)])
+
+## alpha: a hint, a kb and a test carrying component, a bug and a review
+## (revision "r2", "r1"); beta: a test carrying component and a bug. Every
+## builtin row names its creator; the review's creator is the actor.
+func test_ticked_field_columns_fill_and_sort_in_one_project_and_two() -> Variant:
+	var dbs: Dictionary = {}
+	for name: String in ["alpha", "beta"]:
+		var db := DocketDBJsonl.create_new_jsonl("%s/%s.dct" % [DIR, name])
+		_dbs.append(db)
+		dbs[name] = db
+	var state := _state_over(dbs)
+	var alpha := _active_registry(state, "alpha")
+	var beta := state.get_type_registry("beta")
+	alpha.create_item({"type":"hint", "title":"hint", "value":"v", "component":"c", "created_by":"ann"}, "tester")
+	alpha.create_item({"type":"kb", "title":"kb", "component":"a", "created_by":"ann"}, "tester")
+	alpha.create_item({"type":"bug", "title":"bug", "created_by":"bob"}, "tester")
+	alpha.create_item({"type":"review", "title":"review 2", "revision":"r2", "source":"origin"}, "tester")
+	alpha.create_item({"type":"review", "title":"review 1", "revision":"r1", "source":"origin"}, "tester")
+	beta.create_item({"type":"test", "title":"test", "component":"b", "created_by":"cy"}, "tester")
+	beta.create_item({"type":"bug", "title":"bug", "created_by":"dee"}, "tester")
+	var grid := _chooser_grid(state)
+	grid._toggle_result_column(grid._column_candidates.find("created_by"))
+	var title_column := grid._col_fields.find("title")
+	var r = A.eq(_column_cells(grid, title_column, grid._col_fields.find("created_by")), {"alpha/hint":"ann", "alpha/kb":"ann", "alpha/bug":"bob", "alpha/review 2":"tester", "alpha/review 1":"tester", "beta/test":"cy", "beta/bug":"dee"}, "Created by fills the rows of every type")
+	if r is String:
+		return r
+	grid._toggle_result_column(grid._column_candidates.find("component"))
+	var component_column := grid._col_fields.find("component")
+	r = A.eq(_column_cells(grid, title_column, component_column), {"alpha/hint":"c", "alpha/kb":"a", "beta/test":"b"}, "Component fills the rows whose type declares it and leaves bug and review rows blank")
+	if r is String:
+		return r
+	grid._toggle_result_column(grid._column_candidates.find("created_at"))
+	r = A.eq(_column_cells(grid, title_column, grid._col_fields.find("created_at")).size(), 7, "created_at shows a value on every row")
+	if r is String:
+		return r
+	var lacking := ["alpha/bug", "alpha/review 1", "alpha/review 2", "beta/bug"]
+	grid._toggle_sort(component_column)
+	var order := _row_order(grid, title_column)
+	r = A.is_true(state.last_cross_project_query_error.is_empty() and order.slice(0, 3) == ["alpha/kb", "beta/test", "alpha/hint"] and _sorted(order.slice(3)) == lacking, "two projects: sorting on Component orders every project's rows by it, rows lacking it last: %s" % [order])
+	if r is String:
+		return r
+	grid._toggle_sort(component_column)
+	order = _row_order(grid, title_column)
+	r = A.is_true(order.slice(0, 3) == ["alpha/hint", "beta/test", "alpha/kb"] and _sorted(order.slice(3)) == lacking, "a descending sort reverses the rows carrying the field and keeps the rest last: %s" % [order])
+	if r is String:
+		return r
+	var one := QueryGrid.new()
+	add_child(one)
+	one.init(_state_over({"alpha": dbs.alpha}))
+	one.set_result_columns(["id", "title", "component", "revision"])
+	# A type field sorts on the cross-project path, which tags each row with its
+	# project; an items-table column sorts in SQL, whose rows carry no project.
+	for field: String in ["component", "revision", "title"]:
+		one._toggle_sort(one._col_fields.find(field))
+		r = A.is_true(one._current_results.size() == 5 and one._tree.get_root() != null, "one project: sorting on %s runs: %s" % [field, one._count_label.text])
+		if r is String:
+			return r
+		var routed := field != "title"
+		r = A.eq(one._current_results.all(func(item: Dictionary) -> bool: return item.has("project")), routed, "one project: %s sorts %s" % [field, "on the cross-project path" if routed else "in SQL"])
+		if r is String:
+			return r
+		var expected: Array = {"component": ["alpha/kb", "alpha/hint"], "revision": ["alpha/review 1", "alpha/review 2"], "title": ["alpha/bug", "alpha/hint"]}[field]
+		r = A.eq(_row_order(one, 1).slice(0, 2), expected, "one project: sorting on %s orders the rows by it, those carrying it first" % field)
+		if r is String:
+			return r
+	return true
+
+## Two projects each hold a review of the first "review" revision; beta then
+## evolves review with "notes" and adds a review of the new revision, and alpha
+## holds an audit that shares "findings".
+func test_saved_type_bindings_open_as_their_field_key() -> Variant:
+	var dbs: Dictionary = {}
+	for name: String in ["alpha", "beta"]:
+		var db := DocketDBJsonl.create_new_jsonl("%s/%s.dct" % [DIR, name])
+		_dbs.append(db)
+		dbs[name] = db
+	var state := _state_over(dbs)
+	for name: String in dbs:
+		_active_registry(state, name).create_item({"type":"review", "title":"old", "revision":"abc", "source":"origin", "findings":"%s old" % name}, "tester")
+	var beta := state.get_type_registry("beta")
+	var evolved := _definition()
+	(evolved.fields as Array).append({"key":"notes", "label":"Notes", "type":"string", "required":false, "nullable":true, "mutable":true})
+	var evolve_error := beta.apply_evolution(beta.preview_evolution("review", evolved, str(beta.get_type("review").current_revision)), "tester", "add notes")
+	if not evolve_error.is_empty():
+		return evolve_error
+	beta.create_item({"type":"review", "title":"new", "revision":"def", "source":"origin", "findings":"beta new"}, "tester")
+	var alpha := state.get_type_registry("alpha")
+	var audit := _definition()
+	audit.slug = "audit"
+	audit.label = "Audit"
+	alpha.activate_type("audit", alpha.define_type("audit", audit, "tester", "same field key").type.current_revision, "tester", "ready")
+	alpha.create_item({"type":"audit", "title":"audit", "revision":"ghi", "source":"origin", "findings":"alpha zzz"}, "tester")
+	alpha.create_item({"type":"bug", "title":"bug"}, "tester")
+	var findings := {"alpha/old":"alpha old", "beta/old":"beta old", "beta/new":"beta new", "alpha/audit":"alpha zzz"}
+	var grid := _chooser_grid(state)
+	var r = A.is_true(grid._column_candidates.count("notes") == 1 and _chooser_label(grid, "notes") == "Notes — review", "a field one project's type revision adds is offered once")
+	if r is String:
+		return r
+	var saved := {
+		"rc6": {"project":"beta", "type_id":str(beta.get_type("review").id), "field_key":"findings", "label":"Beta findings", "kind":"markdown"},
+		"rc7": {"type":"review", "field_key":"findings", "label":"Review — Findings", "kind":"markdown"},
+	}
+	for form: String in saved:
+		var path := "%s/%s.dcq" % [DIR, form]
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		file.store_string(JSON.stringify({"columns":["id", "project", "title", saved[form]], "sort":[(saved[form] as Dictionary).merged({"dir":"desc"})]}))
+		file.close()
+		grid.apply_dcq(QueryGrid.read_dcq(path))
+		grid._run_query()
+		r = A.is_true(grid._col_fields == ["id", "project", "title", "findings"] and _column_cells(grid, 2, 3) == findings, "a %s binding opens as the findings column for every project's rows whose type has it" % form)
+		if r is String:
+			return r
+		r = A.is_true(state.last_cross_project_query_error.is_empty() and _row_order(grid, 2) == ["beta/old", "beta/new", "alpha/audit", "alpha/old", "alpha/bug"], "a %s sort opens as a descending findings sort across types: %s" % [form, _row_order(grid, 2)])
+		if r is String:
+			return r
+	var path := "%s/resaved.dcq" % DIR
+	grid.save_dcq(path)
+	return A.eq(QueryGrid.read_dcq(path).get("columns"), ["id", "project", "title", "findings"], "a reopened binding saves as its field key")
+
+func _open_chooser(grid: QueryGrid) -> void:
 	var anchor := Button.new()
 	grid.add_child(anchor)
 	grid._show_columns_menu(anchor)
-	var union := _chooser_entries(grid)
-	r = _unique_candidates(grid)
-	if r is String:
-		return r
-	r = A.is_true(union.has(_chooser_entry("review", "scope", "Review — Scope")) and union.size() == entries.size() + 1 and entries.all(func(entry: String) -> bool: return union.has(entry)), "a field one project's type adds is offered once beside the shared entries")
-	if r is String:
-		return r
-	grid._toggle_result_column(union.find(_chooser_entry("review", "findings", "Review — Findings")))
-	grid._run_query()
-	var title_column := grid._col_fields.find("title")
-	var findings_column := grid._col_fields.size() - 1
-	r = A.eq(_column_cells(grid, title_column, findings_column), findings, "one ticked type column shows the field for every project's rows, whichever revision they are pinned to")
-	if r is String:
-		return r
-	# The audit row has no review findings, so it sorts as null: last either way.
-	grid._toggle_sort(findings_column)
-	r = A.eq(_row_order(grid, title_column), ["alpha/new", "alpha/old", "beta/new", "beta/old", "alpha/audit"], "sorting a type column orders every project's rows of that type by the field")
-	if r is String:
-		return r
-	grid._toggle_sort(findings_column)
-	r = A.eq(_row_order(grid, title_column), ["beta/old", "beta/new", "alpha/old", "alpha/new", "alpha/audit"], "a descending sort on a type column reverses that order and keeps other types last")
-	if r is String:
-		return r
-	var typed := {"type":"review", "field_key":"findings", "label":"Review — Findings", "kind":"markdown"}
-	grid._show_columns_menu(anchor)
-	var typed_index := _chooser_index(grid, typed)
-	r = A.is_true(typed_index >= 0 and grid._columns_menu.is_item_checked(typed_index), "the chooser shows a ticked type column as ticked")
-	if r is String:
-		return r
-	var beta_review: Dictionary = state.get_type_registry("beta").get_type("review")
-	var saved := {"project":"beta", "type_id":str(beta_review.id), "field_key":"findings", "label":"Beta findings"}
-	grid.apply_dcq({"columns":["id", "project", "title", saved]})
-	grid._run_query()
-	r = A.eq(_column_cells(grid, 2, 3), {"beta/old":"beta old", "beta/new":"beta new"}, "a saved per-project binding still shows its column for its project's rows")
-	if r is String:
-		return r
-	# The type column joins the saved project column; each renders and ticks on its own.
-	grid._show_columns_menu(anchor)
-	grid._toggle_result_column(_chooser_index(grid, typed))
-	grid._run_query()
-	r = A.is_true(_column_cells(grid, 2, 3) == {"beta/old":"beta old", "beta/new":"beta new"} and _column_cells(grid, 2, 4) == findings, "a saved project column and a type column for the same field render side by side")
-	if r is String:
-		return r
-	grid._show_columns_menu(anchor)
-	var saved_index := _chooser_index(grid, saved)
-	typed_index = _chooser_index(grid, typed)
-	r = A.is_true(saved_index >= 0 and typed_index >= 0 and saved_index != typed_index and grid._columns_menu.is_item_checked(saved_index) and grid._columns_menu.is_item_checked(typed_index), "the chooser ticks the saved project column and the type column as separate entries")
-	if r is String:
-		return r
-	var path := "%s/both_bindings.dcq" % DIR
-	grid.save_dcq(path)
-	r = A.eq(QueryGrid.read_dcq(path).get("columns"), ["id", "project", "title", saved, typed], "a saved query file keeps both bindings and the string columns in order")
-	if r is String:
-		return r
-	grid._toggle_result_column(saved_index)
-	grid._run_query()
-	return A.is_true(grid._dcq_columns == ["id", "project", "title", typed] and _column_cells(grid, 2, 3) == findings, "unticking the saved project column keeps the type column")
-
-## Index of `binding` among the chooser's entries, or -1.
-func _chooser_index(grid: QueryGrid, binding: Dictionary) -> int:
-	for i in grid._column_candidates.size():
-		if ColumnBinding.same(grid._column_candidates[i], binding):
-			return i
-	return -1
 
 ## A grid over `state` whose Columns chooser has been opened once.
 func _chooser_grid(state: AppState) -> QueryGrid:
 	var grid := QueryGrid.new()
 	add_child(grid)
 	grid.init(state)
-	var anchor := Button.new()
-	grid.add_child(anchor)
-	grid._show_columns_menu(anchor)
+	_open_chooser(grid)
 	return grid
 
+## The menu text of the chooser entry for `field_key`, or "".
+func _chooser_label(grid: QueryGrid, field_key: String) -> String:
+	var id := grid._column_candidates.find(field_key)
+	return grid._columns_menu.get_item_text(grid._columns_menu.get_item_index(id)) if id >= 0 else ""
+
+## "field key | menu text" of each chooser entry, in menu order.
 func _chooser_entries(grid: QueryGrid) -> Array:
 	var entries: Array = []
-	for candidate: Dictionary in grid._column_candidates:
-		entries.append(_chooser_entry(str(candidate.type), str(candidate.field_key), str(candidate.label)))
+	for field_key: String in grid._column_candidates:
+		entries.append("%s | %s" % [field_key, _chooser_label(grid, field_key)])
 	return entries
 
-func _chooser_entry(type: String, field_key: String, label: String) -> String:
-	return "%s | %s" % [ColumnBinding.key({"type":type, "field_key":field_key}), label]
+## The field keys of the chooser's second section.
+func _type_section(grid: QueryGrid) -> Array:
+	return Array(grid._column_candidates.slice(ColumnBinding.item_entries().size()))
+
+## The sorted keys `slug` declares in `project` that are read through the type.
+func _declared_fields(state: AppState, project: String, slug: String) -> Array:
+	var keys: Array = []
+	for descriptor: Dictionary in state.get_type_registry(project).get_type(slug).definition.fields:
+		if ColumnBinding.is_typed(str(descriptor.key)):
+			keys.append(str(descriptor.key))
+	return _sorted(keys)
+
+func _sorted(values: Array) -> Array:
+	var copy := values.duplicate()
+	copy.sort()
+	return copy
 
 ## A failure naming the first chooser entry offered twice, or null.
 func _unique_candidates(grid: QueryGrid) -> Variant:
 	var seen: Dictionary = {}
-	for candidate: Dictionary in grid._column_candidates:
-		if seen.has(ColumnBinding.key(candidate)):
-			return "duplicate chooser entry: %s" % candidate.label
-		seen[ColumnBinding.key(candidate)] = true
+	for field_key: String in grid._column_candidates:
+		if seen.has(field_key):
+			return "duplicate chooser entry: %s" % field_key
+		seen[field_key] = true
 	return null
 
 ## "project/title" of the shown rows, in grid order.

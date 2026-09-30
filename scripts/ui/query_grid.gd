@@ -125,12 +125,13 @@ var _multi_project: bool = false
 # Sort state
 var _sort_field: String = ""
 var _sort_dir: String = "asc"
-var _sort_binding: Dictionary = {}
-var _dcq_columns: Array = []
+var _sort_nulls: String = "last"
+# Field keys of the chosen columns (ColumnBinding); empty for the default layout.
+var _dcq_columns: Array[String] = []
 var _last_context_copy_id: String = ""
 var _catalog_diagnostic: String = ""
 var _columns_menu: PopupMenu
-var _column_candidates: Array = []
+var _column_candidates: Array[String] = []  # field key of each chooser id
 
 # Header drag state
 var _drag_col: int = -1   # index of column whose RIGHT edge is being dragged
@@ -298,22 +299,10 @@ func _rebuild_columns() -> void:
 		_col_titles = ["ID", "Type", "Status", "Pri", "Storage", "Title"]
 		_col_min_widths = [50, 40, 50, 30, 40, 80]
 		_col_widths = [90, 70, 100, 40, 70, 0]
-	for binding_value in _dcq_columns:
-		if binding_value is String:
-			var field_key := str(binding_value)
-			_col_fields.append(field_key)
-			_col_titles.append({"id":"ID", "project":"Project", "type":"Type", "status":"Status", "priority":"Pri", "title":"Title"}.get(field_key, field_key.capitalize()))
-			_col_min_widths.append(50)
-			_col_widths.append(120)
-			continue
-		if not binding_value is Dictionary:
-			continue
-		var binding: Dictionary = binding_value
-		if str(binding.get("field_key", "")).is_empty():
-			continue
-		_col_fields.append(binding.duplicate(true))
-		_col_titles.append(str(binding.get("label", binding.field_key)))
-		_col_min_widths.append(60)
+	for field_key in _dcq_columns:
+		_col_fields.append(field_key)
+		_col_titles.append(ColumnBinding.title(field_key))
+		_col_min_widths.append(50)
 		_col_widths.append(120)
 	if not _col_widths.is_empty():
 		_col_widths[_col_widths.size() - 1] = 0
@@ -384,9 +373,7 @@ func _draw_header() -> void:
 
 		# Title text
 		var title: String = _col_titles[i]
-		var header_field: String = str(_col_fields[i].get("field_key", "")) if _col_fields[i] is Dictionary else str(_col_fields[i])
-		var header_binding: Dictionary = _col_fields[i] if _col_fields[i] is Dictionary else {}
-		if header_field == _sort_field and (header_binding.is_empty() or ColumnBinding.same(header_binding, _sort_binding)):
+		if _col_fields[i] == _sort_field:
 			title += "  v" if _sort_dir == "asc" else "  ^"
 		var font := _header.get_theme_default_font()
 		var font_size := _header.get_theme_default_font_size()
@@ -470,22 +457,13 @@ func _hit_column(mx: float) -> int:
 
 
 func _toggle_sort(col: int) -> void:
-	var column: Variant = _col_fields[col]
-	var field: String = str(column.get("field_key", "")) if column is Dictionary else str(column)
-	var binding: Dictionary = column if column is Dictionary else {}
-	if _sort_field == field and (binding.is_empty() or ColumnBinding.same(binding, _sort_binding)):
-		if _sort_dir == "asc":
-			_sort_dir = "desc"
-		else:
-			_sort_field = ""
-			_sort_dir = "asc"
-			_sort_binding.clear()
+	var field: String = _col_fields[col]
+	if _sort_field == field and _sort_dir == "asc":
+		_sort_dir = "desc"
 	else:
-		_sort_field = field
+		_sort_field = "" if _sort_field == field else field
 		_sort_dir = "asc"
-		_sort_binding.clear()
-		if column is Dictionary:
-			_sort_binding = binding.duplicate(true)
+	_sort_nulls = "last"
 	_header.queue_redraw()
 	_run_query()
 
@@ -802,15 +780,17 @@ func _query_rows() -> void:
 	var query := {"filter": filter}
 	# Storage sorts here, on the word the column shows (StorageBadge.word).
 	if not _sort_field.is_empty() and _sort_field != StorageBadge.FIELD:
-		var sort_value: Dictionary = _sort_binding.duplicate(true)
-		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
-		query["sort"] = [sort_value]
+		query["sort"] = [_sort_spec()]
 
-	# Project is not a database column; the cross-project path evaluates it,
-	# so it also serves a single loaded project when a row filters on project.
+	# SQL sorts one project on an items-table column (DocketDB._ITEM_COLS, the id
+	# key, or storage, which sorts here). Project is no column, nor are tags, and
+	# a type field is read through each row's pinned type; the cross-project path
+	# evaluates all three, so it also serves a single loaded project when a row
+	# filters on project or the sort is on one of them.
 	var filters_project: bool = _condition_snapshots().any(func(cond): return cond.field == "project")
+	var sql_sort: bool = not ColumnBinding.is_typed(_sort_field) and (_sort_field in ["id", StorageBadge.FIELD] or DocketDB._ITEM_COLS.has(_sort_field))
 	_loaded_keys = _row_keys()
-	if _state._project_dbs.size() > 1 or (filters_project and not _state._project_dbs.is_empty()):
+	if _state._project_dbs.size() > 1 or ((filters_project or not (_sort_field.is_empty() or sql_sort)) and not _state._project_dbs.is_empty()):
 		_current_results = _state.execute_cross_project_query(query, "rows", _loaded_keys)
 		if not _state.last_cross_project_query_error.is_empty():
 			_tree.clear()
@@ -836,13 +816,15 @@ func _row_keys() -> PackedStringArray:
 	## what the union sort reads. Identity, type pin, status and storage are
 	## always included.
 	var keys := PackedStringArray()
-	for column: Variant in _col_fields:
-		keys.append(str(column.get("field_key", "")) if column is Dictionary else str(column))
-		if column is Dictionary: keys.append("fields")
-	if not _sort_field.is_empty():
-		keys.append(_sort_field)
-		keys.append("fields")
+	for field_key: String in _col_fields + ([_sort_field] if not _sort_field.is_empty() else []):
+		keys.append(field_key)
+		if ColumnBinding.is_typed(field_key): keys.append("fields")
 	return keys
+
+func _sort_spec() -> Dictionary:
+	## The sort as the query engines take it; a type field sorts by field_key,
+	## which reads it only on rows whose pinned type declares it.
+	return {("field_key" if ColumnBinding.is_typed(_sort_field) else "field"): _sort_field, "dir": _sort_dir, "nulls": _sort_nulls}
 
 
 func _build_conditions_filter() -> Dictionary:
@@ -930,8 +912,7 @@ func _populate_tree() -> void:
 		var full_id: String = str(item.get("id", ""))
 		var item_status: String = str(item.get("status", ""))
 		for col_idx in range(_col_fields.size()):
-			var column: Variant = _col_fields[col_idx]
-			var field: String = str(column.get("field_key", "")) if column is Dictionary else str(column)
+			var field: String = _col_fields[col_idx]
 			if field == "priority":
 				var pri = item.get("priority", 0)
 				row.set_text(col_idx, str(int(pri)) if pri else "")
@@ -945,10 +926,10 @@ func _populate_tree() -> void:
 				var state_color := _pinned_state_color(item)
 				if state_color.a > 0.0:
 					row.set_custom_color(col_idx, state_color)
-			elif field == StorageBadge.FIELD and not column is Dictionary:
+			elif field == StorageBadge.FIELD:
 				row.set_text(col_idx, _storage_word(item, storage_modes))
-			elif column is Dictionary:
-				row.set_text(col_idx, _render_bound_column(item, column))
+			elif ColumnBinding.is_typed(field):
+				row.set_text(col_idx, _render_typed_column(item, field))
 			else:
 				row.set_text(col_idx, str(item.get(field, "")))
 		# Metadata always stores full ID for selection signals
@@ -1005,32 +986,13 @@ func _pinned_state_color(item: Dictionary) -> Color:
 		_:
 			return Color(0.65, 0.7, 0.85)
 
-func _render_bound_column(item: Dictionary, binding: Dictionary) -> String:
+func _render_typed_column(item: Dictionary, field_key: String) -> String:
+	## Blank unless the row's pinned type declares field_key.
 	var resolved: Dictionary = _resolve_row(item)
-	if resolved.has("error") or not ColumnBinding.applies(binding, _item_project(item), resolved):
+	var value: Variant = null if resolved.has("error") else TypeRegistry.declared_value(item, resolved, field_key)
+	if value == null:
 		return ""
-	if binding.field_key == "state_category":
-		return str(resolved.state_category)
-	if binding.field_key == "state_outcome":
-		return str(resolved.state_outcome)
-	if binding.field_key == "is_terminal":
-		return str(resolved.is_terminal)
-	var declared := false
-	for descriptor_value in resolved.definition.fields:
-		var descriptor: Dictionary = descriptor_value
-		if descriptor.key == binding.field_key:
-			declared = true
-			break
-	if not declared:
-		return ""
-	var fields: Dictionary = item.get("fields", {}) if item.get("fields", {}) is Dictionary else {}
-	if bool(resolved.definition.get("protected", false)) or binding.field_key in TypeRegistry.UNIVERSAL_MUTABLE:
-		return str(item[binding.field_key]) if item.has(binding.field_key) else ""
-	if not fields.has(binding.field_key):
-		return ""
-	if fields[binding.field_key] is Array or fields[binding.field_key] is Dictionary:
-		return JSON.stringify(fields[binding.field_key])
-	return str(fields[binding.field_key])
+	return JSON.stringify(value) if value is Array or value is Dictionary else str(value)
 
 func _storage_word(item: Dictionary, modes: Dictionary) -> String:
 	return StorageBadge.word(str(modes.get(_item_project(item), "")), str(item.get("storage", "")))
@@ -1041,9 +1003,17 @@ func _item_project(item: Dictionary) -> String:
 		project = str(_state.get_project_dbs().keys()[0])
 	return project
 
-func set_result_columns(bindings: Array) -> void:
-	_dcq_columns = bindings.duplicate(true)
+## Shows `columns`: field keys, or saved Dictionary bindings (ColumnBinding.key).
+func set_result_columns(columns: Array) -> void:
+	_dcq_columns = _column_keys(columns)
 	_show_column_change()
+
+static func _column_keys(columns: Array) -> Array[String]:
+	var keys: Array[String] = []
+	for column: Variant in columns:
+		var field_key := ColumnBinding.key(column)
+		if not field_key.is_empty() and not keys.has(field_key): keys.append(field_key)
+	return keys
 
 func _show_column_change() -> void:
 	## Rows are queried with only the keys the columns read, so a column whose
@@ -1056,15 +1026,21 @@ func _show_column_change() -> void:
 	_populate_tree()
 
 func _show_columns_menu(anchor: Button) -> void:
+	## Two sections: the columns every row has, then the fields the query's type
+	## scope declares; a shown column outside that scope stays offered.
 	_columns_menu.clear()
-	_column_candidates = ColumnBinding.candidates(_column_scope_records(), _state)
-	for selected_value in _dcq_columns:
-		if selected_value is Dictionary and not _candidate_has_binding(selected_value):
-			_column_candidates.append((selected_value as Dictionary).duplicate(true))
-	for i in _column_candidates.size():
-		var binding: Dictionary = _column_candidates[i]
-		_columns_menu.add_check_item(str(binding.label), i)
-		_columns_menu.set_item_checked(i, _has_result_column(binding))
+	_column_candidates.clear()
+	var type_entries := ColumnBinding.type_entries(_column_scope_records(), _state)
+	for field_key: String in _col_fields:
+		if ColumnBinding.is_typed(field_key) and not type_entries.any(func(entry: Dictionary) -> bool: return entry.key == field_key):
+			type_entries.append({"key": field_key, "label": ColumnBinding.title(field_key)})
+	for section: Array in [["Every item", ColumnBinding.item_entries()], ["Type fields", type_entries]]:
+		_columns_menu.add_separator(section[0])
+		for entry: Dictionary in section[1]:
+			var id := _column_candidates.size()
+			_column_candidates.append(str(entry.key))
+			_columns_menu.add_check_item(str(entry.label), id)
+			_columns_menu.set_item_checked(_columns_menu.get_item_index(id), _col_fields.has(entry.key))
 	_columns_menu.popup(Rect2i(Vector2i(anchor.global_position.x, anchor.global_position.y + anchor.size.y), Vector2i(360, 0)))
 
 func _column_scope_records() -> Array:
@@ -1086,29 +1062,15 @@ func _column_scope_records() -> Array:
 			records.append(record_value)
 	return records
 
-func _candidate_has_binding(binding: Dictionary) -> bool:
-	for candidate_value in _column_candidates:
-		if ColumnBinding.same(candidate_value, binding):
-			return true
-	return false
-
-func _has_result_column(binding: Dictionary) -> bool:
-	for selected_value in _dcq_columns:
-		if selected_value is Dictionary and ColumnBinding.same(selected_value, binding):
-			return true
-	return false
-
-func _toggle_result_column(index: int) -> void:
-	var binding: Dictionary = _column_candidates[index]
-	for i in range(_dcq_columns.size() - 1, -1, -1):
-		var selected: Variant = _dcq_columns[i]
-		if selected is Dictionary and ColumnBinding.same(selected, binding):
-			_dcq_columns.remove_at(i)
-			_show_column_change()
-			return
+func _toggle_result_column(id: int) -> void:
+	## The first change to the default layout starts from the columns it shows.
+	var field_key := _column_candidates[id]
 	if _dcq_columns.is_empty():
-		_dcq_columns = _col_fields.duplicate(true)
-	_dcq_columns.append(binding.duplicate(true))
+		_dcq_columns = _column_keys(_col_fields)
+	if _dcq_columns.has(field_key):
+		_dcq_columns.erase(field_key)
+	else:
+		_dcq_columns.append(field_key)
 	_show_column_change()
 
 
@@ -1293,21 +1255,16 @@ func load_dcq(path: String) -> void:
 
 
 func apply_dcq(parsed: Dictionary) -> void:
-	## Load a saved query's filter, columns and sort; identity-bearing
-	## dictionaries remain opaque so a missing project/type binding is surfaced
-	## during execution.
+	## Load a saved query's filter, columns and sort. A saved column or sort
+	## may be a Dictionary binding of an older build; only its field key is read.
 	# Columns and sort are set before the filter, so its one query loads every
 	# key the saved columns read. A file without a sort opens unsorted, and one
 	# without condition rows opens with one empty row.
-	_dcq_columns = parsed.get("columns", []).duplicate(true) if parsed.get("columns", []) is Array else []
-	if parsed.get("sort") is Array and not parsed.sort.is_empty() and parsed.sort[0] is Dictionary:
-		_sort_field = str(parsed.sort[0].get("field_key", parsed.sort[0].get("field", "")))
-		_sort_dir = str(parsed.sort[0].get("dir", "asc"))
-		_sort_binding = parsed.sort[0].duplicate(true)
-	else:
-		_sort_field = ""
-		_sort_dir = "asc"
-		_sort_binding = {}
+	_dcq_columns = _column_keys(parsed.columns) if parsed.get("columns") is Array else []
+	var sort: Dictionary = parsed.sort[0] if parsed.get("sort") is Array and not parsed.sort.is_empty() and parsed.sort[0] is Dictionary else {}
+	_sort_field = str(sort.get("field_key", sort.get("field", "")))
+	_sort_dir = "desc" if str(sort.get("dir", "")).to_lower() == "desc" else "asc"
+	_sort_nulls = "first" if str(sort.get("nulls", "")).to_lower() == "first" else "last"
 	if parsed.has("ui_filter"):
 		set_filter(JSON.stringify(parsed.ui_filter))
 	elif parsed.has("filter") and parsed.filter is Dictionary and parsed.filter.has("conditions"):
@@ -1322,13 +1279,10 @@ func save_dcq(path: String) -> void:
 	# catalog identities needed to reconstruct the chooser without rebinding.
 	var ui_filter := _serialize_all_conditions()
 	var filter := _build_conditions_filter()
-	var saved_columns: Array = _dcq_columns.duplicate(true) if not _dcq_columns.is_empty() else _col_fields.duplicate()
-	var dcq := {"filter": filter, "ui_filter": ui_filter, "columns":saved_columns}
-	# Include sort if active
+	var columns: Array = _dcq_columns.duplicate() if not _dcq_columns.is_empty() else _col_fields.duplicate()
+	var dcq := {"filter": filter, "ui_filter": ui_filter, "columns": columns}
 	if not _sort_field.is_empty():
-		var sort_value: Dictionary = _sort_binding.duplicate(true)
-		sort_value["field"] = _sort_field; sort_value["dir"] = _sort_dir
-		dcq["sort"] = [sort_value]
+		dcq["sort"] = [_sort_spec()]
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(dcq, "\t"))
