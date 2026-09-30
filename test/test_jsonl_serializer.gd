@@ -61,6 +61,65 @@ func test_ordered_json_string_escape() -> Variant:
 	return A.contains(json, '"hello\\nworld\\t\\"quoted\\""', "escape sequences correct")
 
 
+func test_json_escape_byte_identical_to_char_loop() -> Variant:
+	## _json_escape matches the original per-character escaper on every ASCII
+	## code point from 0x01, mixed control/quote/backslash runs, non-ASCII, an
+	## astral code point and "".
+	# A Godot String cannot hold U+0000 or a lone surrogate (U+D800-U+DFFF):
+	# String.chr and every UTF-32 append replace each with U+FFFD and report an
+	# error, so the corpus cannot cover them. U+FFFD itself is covered. Above
+	# the BMP a String holds the code point itself, never a surrogate pair.
+	var c := func(code: int) -> String: return String.chr(code)
+	# Each code point the corpus is built from must come back as that one code
+	# point, or its entry would test U+FFFD (or "") instead.
+	for code: int in range(0x01, 0x80) + [0xFFFD, 0x1F600]:
+		var ch: String = c.call(code)
+		if ch.length() != 1 or ch.unicode_at(0) != code: return "String.chr(0x%x) does not hold that code point" % code
+	var all_ascii := ""
+	var corpus: Array[String] = ["", "plain", 'a"b\\c', "\t\r\n", "\\\\\"\"",
+		"é中" + c.call(0x1F600), "x" + c.call(0x7F) + "y", c.call(0xFFFD),
+		c.call(0xFFFD) + c.call(0x01), c.call(0xFFFD) + "\n"]
+	for code in range(0x01, 0x80):
+		corpus.append(c.call(code))
+		all_ascii += c.call(code)
+	corpus.append(all_ascii)
+	corpus.append(all_ascii + all_ascii)
+	corpus.append("\\" + c.call(0x08) + '"' + c.call(0x0C) + "\n" + c.call(0x01)
+		+ c.call(0x1F) + "é" + c.call(0x0B) + "\t" + c.call(0x1F600) + c.call(0x1B) + "\\u0001")
+	for text: String in corpus:
+		var r = A.eq(JSONLSerializer._json_escape(text), _char_loop_escape(text),
+				"escape of %s" % str(text.to_utf32_buffer()))
+		if r is String: return r
+	# Pin the oracle itself on the classes JSON.stringify would render differently.
+	return A.eq(JSONLSerializer._json_escape(c.call(0x08) + c.call(0x0C) + c.call(0x1F)),
+			"\\u0008\\u000c\\u001f", "\\b \\f and 0x1f as lowercase \\u00xx")
+
+
+static func _char_loop_escape(s: String) -> String:
+	## The original per-character escaper, kept as the byte-identity oracle.
+	var result := ""
+	for i in s.length():
+		var ch := s[i]
+		match ch:
+			'"':
+				result += '\\"'
+			'\\':
+				result += '\\\\'
+			'\n':
+				result += '\\n'
+			'\r':
+				result += '\\r'
+			'\t':
+				result += '\\t'
+			_:
+				var code := ch.unicode_at(0)
+				if code < 0x20:
+					result += "\\u%04x" % code
+				else:
+					result += ch
+	return result
+
+
 func test_ordered_json_int() -> Variant:
 	var d := {"_type": "test", "count": 42}
 	var json := JSONLSerializer._to_ordered_json(d)

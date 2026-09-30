@@ -713,26 +713,21 @@ static func _json_value(val) -> String:
 
 
 static func _json_escape(s: String) -> String:
-	## Escape a string for use inside JSON double-quotes.
-	var result := ""
-	for i in s.length():
-		var c := s[i]
-		match c:
-			'"':
-				result += '\\"'
-			'\\':
-				result += '\\\\'
-			'\n':
-				result += '\\n'
-			'\r':
-				result += '\\r'
-			'\t':
-				result += '\\t'
-			_:
-				var code := c.unicode_at(0)
-				if code < 0x20:
-					# Control character — use \uXXXX
-					result += "\\u%04x" % code
-				else:
-					result += c
-	return result
+	## Escape a string for use inside JSON double-quotes. " and \ are
+	## backslash-escaped, LF/CR/TAB become \n \r \t, any other code point below
+	## 0x20 becomes \u00xx in lowercase hex, and everything else passes through.
+	## Each step is one native linear pass. Backslash goes first so the
+	## backslashes added by later escapes are not doubled.
+	var out := s.replace("\\", "\\\\").replace('"', '\\"') \
+		.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+	# strip_escapes drops every code point below 0x20; with \n \r \t already
+	# gone, a shorter result means some other control character is present.
+	if out.strip_escapes().length() == out.length():
+		return out
+	# From 0x01: a String cannot hold U+0000 (String.chr(0) returns U+FFFD), so
+	# code 0 would rewrite every U+FFFD as \u0000.
+	for code in range(0x01, 0x20):
+		var ch := String.chr(code)
+		if out.contains(ch):
+			out = out.replace(ch, "\\u%04x" % code)
+	return out
