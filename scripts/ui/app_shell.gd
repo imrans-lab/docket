@@ -456,12 +456,13 @@ func _activate_work_entry(idx: int) -> void:
 func _show_query_entry(idx: int) -> void:
 	## The one grid serves every query entry. Returning to the entry it already
 	## holds keeps its rows as they are; another entry's filter is applied. An
-	## entry opened from a .dcq file (its "dcq" key) is loaded from that file
-	## once, with its columns and sort (QueryGrid.load_dcq).
+	## entry opened from a .dcq file holds the file's parsed content under "dcq"
+	## until its first showing applies it, with its columns and sort
+	## (QueryGrid.apply_dcq).
 	if idx != _grid_entry_idx:
 		var entry: Dictionary = _work_entries[idx]
 		if entry.has("dcq"):
-			_query_grid.load_dcq(str(entry.dcq))
+			_query_grid.apply_dcq(entry.dcq)
 			entry.erase("dcq")
 		else:
 			_query_grid.set_filter(str(entry.filter))
@@ -1046,15 +1047,17 @@ func _on_add_project_selected(path: String) -> void:
 
 
 func _on_open_query_selected(path: String) -> void:
-	var f := FileAccess.open(path, FileAccess.READ)
-	if not f:
-		return
-	var parsed = JSON.parse_string(f.get_as_text())
-	if not parsed is Dictionary:
+	## File > Open Query: the file is read once; a file that is not a saved
+	## query is reported and adds no entry.
+	var parsed := QueryGrid.read_dcq(path)
+	if parsed.is_empty():
+		_info_dialog.title = "Could not open query"
+		_info_dialog.dialog_text = "%s\n\nThe file could not be read as a saved query." % path
+		_info_dialog.popup_centered()
 		return
 	var label: String = str(parsed.get("name", path.get_file().get_basename()))
 	var idx := _add_work_entry("query", label, "", "")
-	_work_entries[idx]["dcq"] = path
+	_work_entries[idx]["dcq"] = parsed
 	_activate_work_entry(idx)
 
 

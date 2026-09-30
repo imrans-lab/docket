@@ -247,7 +247,9 @@ func test_project_value_lists_loaded_projects_and_add_selects_new_one() -> Varia
 ## the reopened P has its saved columns and descending order. Last, a file
 ## holding only {"filter": {}} is opened while P is shown sorted: it must show
 ## one empty row and every fixture row in creation order, and P keeps its own
-## condition.
+## condition. A missing file and a non-JSON file are reported and add no entry;
+## a retrieval_count bound of 2^53 restores as its integer text. Restored
+## conditions are compared whole: field, operator and value text of every row.
 func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	var state := AppState.new()
 	state.load_schema()
@@ -379,6 +381,29 @@ func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	if r is String: shell.queue_free(); return r
 	shell._activate_work_entry(p_entry)
 	r = _numeric_restored(grid, "priority", p_rows, "entry P after the all-items file was opened")
+	if r is String: shell.queue_free(); return r
+
+	# A missing file and a file that is not JSON: reported, no entry added, and
+	# the entry shown keeps its conditions.
+	var bad_path := _db_dir + "/not_json.dcq"
+	var bad_file := FileAccess.open(bad_path, FileAccess.WRITE)
+	bad_file.store_string("not json")
+	bad_file.close()
+	for failing: String in [_db_dir + "/missing.dcq", bad_path]:
+		var entries_before := shell._work_entries.size()
+		shell._on_open_query_selected(failing)
+		var reported := shell._info_dialog.visible
+		shell._info_dialog.hide()
+		r = A.is_true(reported and shell._work_entries.size() == entries_before and shell._current_work_idx == p_entry, "%s: reported, no entry added, entry P still shown" % failing.get_file())
+		if r is String: shell.queue_free(); return r
+		r = _numeric_restored(grid, "priority", p_rows, "entry P after %s failed to open" % failing.get_file())
+		if r is String: shell.queue_free(); return r
+
+	# A whole number past 2^53 that the saved JSON still holds exactly.
+	grid.set_filter('{"conditions":[{"field":"title","op":"contains","value":"h"},{"conj":"and","field":"retrieval_count","op":"lt","value":9007199254740992}]}')
+	r = A.eq(grid._condition_snapshots(), [{"field": "title", "op": "contains", "value": "h"}, {"field": "retrieval_count", "op": "lt", "value": "9007199254740992", "conj": "and"}], "a large whole number restores as its integer text")
+	if r is String: shell.queue_free(); return r
+	r = A.eq(_titles(grid._current_results), ["h0", "h1", "h2", "h3"], "retrieval_count below 2^53 selects every hint")
 	shell.queue_free()
 	return r
 
@@ -409,11 +434,12 @@ func _type_numeric(grid: QueryGrid, title_part: String, field_name: String) -> v
 
 
 func _numeric_restored(grid: QueryGrid, field_name: String, rows: Array, label: String) -> Variant:
-	## The second row holds field_name >= "2" as typed, and the rows are `rows`.
-	var row: Dictionary = grid._condition_rows[1] if grid._condition_rows.size() > 1 else {}
-	if row.is_empty(): return "%s: the numeric row is missing" % label
-	var shown: String = row.value_picker.get_value() if row.value_picker.visible else row.value.text
-	var r = A.eq([row.field.get_item_text(row.field.selected), shown], [field_name, "2"], "%s: the numeric row shows what was typed" % label)
+	## The rows hold exactly what _type_numeric typed for field_name (title
+	## contains "c" for priority, "h" for retrieval_count; field_name >= "2"),
+	## and the results are `rows`.
+	var title_part := "c" if field_name == "priority" else "h"
+	var typed := [{"field": "title", "op": "contains", "value": title_part}, {"field": field_name, "op": "gte", "value": "2", "conj": "and"}]
+	var r = A.eq(grid._condition_snapshots(), typed, "%s: the rows show what was typed" % label)
 	if r is String: return r
 	return A.eq(_titles(grid._current_results), rows, "%s: rows" % label)
 

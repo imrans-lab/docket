@@ -1281,9 +1281,11 @@ func _apply_condition(row_idx: int, cond: Dictionary) -> void:
 
 static func _condition_text(value: Variant) -> String:
 	## The text a condition row holds for a saved value. JSON reads every number
-	## back as a float, so a whole number is written without a decimal point, as
-	## it is typed.
-	if value is float and value == floorf(value) and absf(value) < 9007199254740992.0:
+	## back as a float, so a whole number is written as integer text, as it is
+	## typed; one past the integer range is written as the nearest end of it.
+	if value is float and value == floorf(value):
+		if value >= 9223372036854775807.0: return str(9223372036854775807)
+		if value <= -9223372036854775807.0: return str(-9223372036854775807 - 1)
 		return str(int(value))
 	return str(value)
 
@@ -1303,15 +1305,26 @@ func get_filter_summary() -> String:
 	return summary if not summary.is_empty() else "All Items"
 
 
-func load_dcq(path: String) -> void:
-	## Load both filter and sort; identity-bearing dictionaries remain opaque so
-	## a missing project/type binding is surfaced during execution.
+static func read_dcq(path: String) -> Dictionary:
+	## The saved query at path, or {} when the file cannot be read or does not
+	## hold a JSON object with anything in it.
 	var f := FileAccess.open(path, FileAccess.READ)
 	if not f:
-		return
-	var parsed = JSON.parse_string(f.get_as_text())
-	if not parsed is Dictionary:
-		return
+		return {}
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	return parsed if parsed is Dictionary else {}
+
+
+func load_dcq(path: String) -> void:
+	## read_dcq, then apply_dcq; a file that cannot be read changes nothing.
+	var parsed := read_dcq(path)
+	if not parsed.is_empty(): apply_dcq(parsed)
+
+
+func apply_dcq(parsed: Dictionary) -> void:
+	## Load a saved query's filter, columns and sort; identity-bearing
+	## dictionaries remain opaque so a missing project/type binding is surfaced
+	## during execution.
 	# Columns and sort are set before the filter, so its one query loads every
 	# key the saved columns read. A file without a sort opens unsorted, and one
 	# without condition rows opens with one empty row.
