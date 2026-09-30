@@ -8,9 +8,6 @@ class_name ColumnBinding
 ##                   to one type identity (and one project unless "project" is
 ##                   empty); saved queries and Work entries may still hold these.
 
-const DERIVED := ["state_category", "state_outcome", "is_terminal"]
-
-
 ## Chooser entries for catalog `records`: each type slug once, its fields once
 ## (first declaring project's label), then its derived state columns, however
 ## many projects carry the type.
@@ -40,7 +37,7 @@ static func candidates(records: Array, state: AppState) -> Array:
 	for slug in order:
 		var group: Dictionary = groups[slug]
 		result.append_array(group.fields)
-		for derived: String in DERIVED:
+		for derived: String in RegistryQuery.DERIVED_FIELDS:
 			result.append({"type": slug, "field_key": derived, "label": "%s — %s" % [group.label, derived], "kind": "string"})
 	return result
 

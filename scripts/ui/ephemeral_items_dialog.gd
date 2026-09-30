@@ -2,7 +2,7 @@ extends ConfirmationDialog
 class_name EphemeralItemsDialog
 ## Quit and project close with ephemeral items outstanding
 ## (scenes/ui/ephemeral_items_dialog.tscn): Save writes them to their project
-## files (ItemStorage.keep, then the normal settle), Delete deletes them
+## files (ItemStorage.keep, then the normal settle), Delete discards them
 ## (ItemStorage.drop), Cancel returns and the quit or close does not happen.
 ## After Save or Delete the caller's continuation runs; when any item fails, the
 ## dialog asks again for what is left.

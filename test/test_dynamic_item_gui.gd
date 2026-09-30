@@ -451,7 +451,7 @@ func test_column_menu_uses_query_branch_scope() -> Variant:
 
 ## Two projects each define "review" (distinct type ids) and share the builtin
 ## types; each holds one review pinned to the first revision and one to the
-## evolved revision.
+## evolved revision. Later alpha alone evolves review again.
 func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 	var dbs: Dictionary = {}
 	for name: String in ["alpha", "beta"]:
@@ -474,21 +474,47 @@ func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 		findings["%s/new" % name] = "%s new" % name
 	var grid := _chooser_grid(state)
 	var entries := _chooser_entries(grid)
-	var seen: Dictionary = {}
-	for candidate: Dictionary in grid._column_candidates:
-		if seen.has(ColumnBinding.key(candidate)):
-			return "duplicate chooser entry: %s" % candidate.label
-		seen[ColumnBinding.key(candidate)] = true
-	var r = A.is_true(entries.has(_chooser_entry("review", "findings", "Review — Findings")) and entries.has(_chooser_entry("review", "notes", "Review — Notes")) and entries.has(_chooser_entry("review", "is_terminal", "Review — is_terminal")) and entries.has(_chooser_entry("bug", "state_category", "Bug — state_category")), "the chooser names each type's fields and derived columns without project qualification")
+	var r = _unique_candidates(grid)
+	if r is String:
+		return r
+	r = A.is_true(entries.has(_chooser_entry("review", "findings", "Review — Findings")) and entries.has(_chooser_entry("review", "notes", "Review — Notes")) and entries.has(_chooser_entry("review", "is_terminal", "Review — is_terminal")) and entries.has(_chooser_entry("bug", "state_category", "Bug — state_category")), "the chooser names each type's fields and derived columns without project qualification")
 	if r is String:
 		return r
 	for name: String in dbs:
 		r = A.eq(_chooser_entries(_chooser_grid(_state_over({name: dbs[name]}))), entries, "two projects sharing their types offer the same chooser entries as %s alone" % name)
 		if r is String:
 			return r
-	grid._toggle_result_column(entries.find(_chooser_entry("review", "findings", "Review — Findings")))
+	# Only alpha's review gains "scope": the chooser offers the union of fields.
+	var scoped := evolved.duplicate(true)
+	(scoped.fields as Array).append({"key":"scope", "label":"Scope", "type":"string", "required":false, "nullable":true, "mutable":true})
+	var alpha_registry := state.get_type_registry("alpha")
+	var scope_error := alpha_registry.apply_evolution(alpha_registry.preview_evolution("review", scoped, str(alpha_registry.get_type("review").current_revision)), "tester", "add scope")
+	if not scope_error.is_empty():
+		return scope_error
+	grid._rebuild_type_catalog()
+	var anchor := Button.new()
+	grid.add_child(anchor)
+	grid._show_columns_menu(anchor)
+	var union := _chooser_entries(grid)
+	r = _unique_candidates(grid)
+	if r is String:
+		return r
+	r = A.is_true(union.has(_chooser_entry("review", "scope", "Review — Scope")) and union.size() == entries.size() + 1 and entries.all(func(entry: String) -> bool: return union.has(entry)), "a field one project's type adds is offered once beside the shared entries")
+	if r is String:
+		return r
+	grid._toggle_result_column(union.find(_chooser_entry("review", "findings", "Review — Findings")))
 	grid._run_query()
-	r = A.eq(_column_cells(grid, grid._col_fields.find("title"), grid._col_fields.size() - 1), findings, "one ticked type column shows the field for every project's rows, whichever revision they are pinned to")
+	var title_column := grid._col_fields.find("title")
+	var findings_column := grid._col_fields.size() - 1
+	r = A.eq(_column_cells(grid, title_column, findings_column), findings, "one ticked type column shows the field for every project's rows, whichever revision they are pinned to")
+	if r is String:
+		return r
+	grid._toggle_sort(findings_column)
+	r = A.eq(_row_order(grid, title_column), ["alpha/new", "alpha/old", "beta/new", "beta/old"], "sorting a type column orders every project's rows by that field")
+	if r is String:
+		return r
+	grid._toggle_sort(findings_column)
+	r = A.eq(_row_order(grid, title_column), ["beta/old", "beta/new", "alpha/old", "alpha/new"], "a descending sort on a type column reverses that order")
 	if r is String:
 		return r
 	var beta_review: Dictionary = state.get_type_registry("beta").get_type("review")
@@ -498,8 +524,6 @@ func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 	r = A.eq(_column_cells(grid, 2, 3), {"beta/old":"beta old", "beta/new":"beta new"}, "a saved per-project binding still shows its column for its project's rows")
 	if r is String:
 		return r
-	var anchor := Button.new()
-	grid.add_child(anchor)
 	grid._show_columns_menu(anchor)
 	var saved_index := -1
 	for i in grid._column_candidates.size():
@@ -524,6 +548,23 @@ func _chooser_entries(grid: QueryGrid) -> Array:
 
 func _chooser_entry(type: String, field_key: String, label: String) -> String:
 	return "%s | %s" % [ColumnBinding.key({"type":type, "field_key":field_key}), label]
+
+## A failure naming the first chooser entry offered twice, or null.
+func _unique_candidates(grid: QueryGrid) -> Variant:
+	var seen: Dictionary = {}
+	for candidate: Dictionary in grid._column_candidates:
+		if seen.has(ColumnBinding.key(candidate)):
+			return "duplicate chooser entry: %s" % candidate.label
+		seen[ColumnBinding.key(candidate)] = true
+	return null
+
+## "project/title" of the shown rows, in grid order.
+func _row_order(grid: QueryGrid, title_column: int) -> Array:
+	var order: Array = []
+	for row: TreeItem in grid._tree.get_root().get_children():
+		var origin: Dictionary = row.get_metadata(0)
+		order.append("%s/%s" % [origin.project, row.get_text(title_column)])
+	return order
 
 ## "project/title" -> text of `column`, for the rows where that text is not empty.
 func _column_cells(grid: QueryGrid, title_column: int, column: int) -> Dictionary:

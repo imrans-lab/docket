@@ -23,7 +23,7 @@ unique_name_in_owner = true
 size_flags_horizontal = 3
 autowrap_mode = 3
 text = "These items are ephemeral: they were never written to their project files and will be lost.
-Save writes them to their project files. Delete deletes them. Cancel goes back."
+Save writes them to their project files. Delete discards them. Cancel goes back."
 
 [node name="FailureScroll" type="ScrollContainer" parent="Box"]
 unique_name_in_owner = true
