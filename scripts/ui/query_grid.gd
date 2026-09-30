@@ -8,6 +8,11 @@ signal item_activated(id: String, project: String)
 ## A project condition's "add…" entry was chosen; the shell runs its
 ## add-project flow and the grid selects the newly loaded project.
 signal add_project_requested
+## A project's canonical file changed on disk since its cache was built, found
+## while the grid is being shown. The shell answers with its external-change
+## poll, which reloads the project, raises the open record's conflict handling
+## and refreshes this grid before the showing goes on.
+signal disk_change_found
 
 var _state: AppState
 var _run_btn: Button
@@ -785,7 +790,7 @@ func _run_query() -> void:
 
 
 func _query_rows() -> void:
-	_rebuild_columns()
+	## Runs after _run_query has rebuilt the columns.
 	if not _catalog_diagnostic.is_empty():
 		_current_results.clear()
 		_tree.clear()
@@ -1338,13 +1343,22 @@ func _is_hidden() -> bool:
 func _show_current_results() -> void:
 	## The grid became visible: the rows it holds stand unless a change arrived
 	## while it was hidden, in which case the query runs once. A project whose
-	## canonical file changed on disk is reloaded first (AppState.reload_stale,
-	## as the shell's poll does), and its rows and type catalogue are rebuilt.
-	var reloaded := _state.reload_stale()
-	if _catalog_stale or not reloaded.is_empty():
+	## canonical file changed on disk is first handed to disk_change_found.
+	if _changed_on_disk(): disk_change_found.emit()
+	if _catalog_stale:
 		_on_file_changed()
 	elif _results_stale or not _generations_unchanged():
 		_run_query()
+
+
+func _changed_on_disk() -> bool:
+	## DocketDBJsonl.is_stale per project: a stat of the canonical file while
+	## its recorded hash can be reused, plus the sidecar's hash when it holds
+	## anything. This process's own writes keep the cache's stored identity
+	## current, so only another writer's change reads as stale.
+	for project_db: DocketDB in _state.get_project_dbs().values():
+		if project_db is DocketDBJsonl and project_db.is_open() and (project_db as DocketDBJsonl).is_stale(): return true
+	return false
 
 
 func _generations_unchanged() -> bool:

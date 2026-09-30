@@ -9,7 +9,8 @@ extends Node
 ## `before` step runs while the results are shown, a row is opened from the
 ## grid, the change runs while the record is open, and Back is pressed. The
 ## shell's 3 s poll timer is stopped so steps land only where a change puts
-## them; the external change and the settle drive the poll themselves.
+## them; the settle and one external change drive the poll themselves, another
+## external change leaves it to the grid being shown.
 ##
 ## Oracles:
 ##   queries  calls to AppState.execute_cross_project_query (the grid's results
@@ -23,7 +24,8 @@ extends Node
 ##   rows     the rows shown after Back (project, id, title, storage word and,
 ##            while that column is shown, retrieval count, in order) are not
 ##            empty and equal each loaded project's DocketDB.execute_query with
-##            the same condition, merged and sorted by title here.
+##            the same condition, merged and sorted by title here, after the
+##            test brings each cache up to its canonical file on disk.
 ##   files    each project's .dct sha256 and mtime are unchanged by opening the
 ##            record and by Back.
 ##   landed   a settle, preference or retrieval step reports whether its write
@@ -36,6 +38,13 @@ extends Node
 ## results on the same fixture: the split view, the Project Types screen,
 ## switching Work entries, loading a project and closing one. Its oracles are
 ## queries, rows and node as above, plus which of the views is visible.
+##
+## test_retrieval_reads_edited_away_without_a_query: a retrieval column hidden,
+## or a retrieval condition edited, without a query before a hint read; see its
+## own comment. test_external_edit_of_the_open_record_raises_the_conflict: the
+## open record's item edited on disk and the split view shown with no poll;
+## oracles are the shell's reload conflict dialog, the form keeping its unsaved
+## title, and rows as above.
 ##
 ## A refresh reads only the item keys the grid's columns and sort need
 ## (ItemRows). Fixture: _open_views_fixture() builds alpha and beta with chores
@@ -51,6 +60,8 @@ extends Node
 ##            "full") returns for the view's conditions, ordered by the view's
 ##            sort key here. Bound cells and colours come from the grid's
 ##            renderers fed those complete records outside a refresh.
+##   pinned   in the tag filter view, three reviews' status, revision cells and
+##            status colour equal literals the fixture sets (_pinned_cells).
 ##   short    each shown ID is its originating project's DocketDB.short_id (a
 ##            LIKE count per prefix length, independent of the refresh's bulk
 ##            computation) and unique among that project's rows; the id both
@@ -62,6 +73,11 @@ extends Node
 ##            description, tags, every event of its history and its typed field
 ##            value; the project's copy keeps its link.
 ## To cover another grid configuration, add an entry to _views().
+##
+## test_saved_query_loads_its_columns_in_one_query loads .dcq files with and
+## without a sort on the same fixture. Oracles: queries (exactly 1 per load)
+## and cells (each shown row's description equals its record's, from a fresh
+## core query).
 
 const A = preload("res://test/assert_helpers.gd")
 const DIR := "user://fixtures/results_return"
@@ -324,6 +340,46 @@ func _write_project_file(path: String) -> String:
 	var flushed := db.flush_checked()
 	db.close()
 	return "" if flushed.is_empty() else "fixture settle: %s" % flushed
+
+
+## The record opened from a beta row is given an unsaved title; another writer
+## edits that item's title in beta's canonical file; the split view is shown
+## with no poll driven. Oracles: the shell's reload conflict dialog is shown
+## naming a change on disk, the form still holds the unsaved title, and the
+## grid's rows equal a fresh core query.
+func test_external_edit_of_the_open_record_raises_the_conflict() -> Variant:
+	var fixture_error := _open_fixture()
+	if not fixture_error.is_empty():
+		return fixture_error
+	var grid := _shell._query_grid
+	var form := _shell._record_form
+	grid.set_filter(_title_filter(MATCH))
+	grid._toggle_sort(grid._col_fields.find("title"))
+	await get_tree().process_frame
+	for db in _dbs:
+		var flushed := (db as DocketDBJsonl).flush_checked()
+		if not flushed.is_empty(): return "fixture settle: %s" % flushed
+	var held: Dictionary = await _select_row("beta")
+	if held.is_empty(): return "no beta row to open"
+	grid._on_item_activated()
+	var opened_title := form._title_edit.text
+	form._title_edit.text = "row unsaved local title"
+	var path := _state.get_db_for_project("beta").get_path()
+	var text := FileAccess.get_file_as_string(path)
+	var quoted := JSON.stringify(opened_title)
+	if opened_title.is_empty() or not text.contains(quoted): return "fixture: title %s not found in %s" % [quoted, path]
+	var out := FileAccess.open(path, FileAccess.WRITE)
+	out.store_string(text.replace(quoted, JSON.stringify("%s edited on disk" % opened_title)))
+	out.close()
+	_shell._on_menu_action("view_split")
+	await get_tree().process_frame
+	var dialog := _shell._confirm_reload_dialog
+	var r = A.is_true(dialog.visible and dialog.dialog_text.contains("changed on disk"), "the reload conflict dialog is shown: %s" % dialog.dialog_text)
+	dialog.hide()
+	if r is String: return r
+	r = A.eq(form._title_edit.text, "row unsaved local title", "the form keeps its unsaved title")
+	if r is String: return r
+	return _rows_match(MATCH, "rows shown beside the record equal a fresh query")
 
 
 ## Retrieval counts read by a query and then left unread by an edit that runs
