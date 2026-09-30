@@ -449,9 +449,10 @@ func test_column_menu_uses_query_branch_scope() -> Variant:
 		types[str(candidate.type)] = true
 	return A.is_true(types.has("review") and types.has("bug"), "an unconstrained OR branch expands the column menu to every possible type scope")
 
-## Two projects each define "review" (distinct type ids) and share the builtin
-## types; each holds one review pinned to the first revision and one to the
-## evolved revision. Later alpha alone evolves review again.
+## Two projects each define "review" and "audit" (distinct type ids) and share
+## the builtin types; each holds one review pinned to the first revision and one
+## to the evolved revision, and alpha holds an audit whose findings would sort
+## between the reviews. Later beta alone evolves review again.
 func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 	var dbs: Dictionary = {}
 	for name: String in ["alpha", "beta"]:
@@ -472,6 +473,12 @@ func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 		registry.create_item({"type":"review", "title":"new", "revision":"def", "source":"origin", "findings":"%s new" % name}, "tester")
 		findings["%s/old" % name] = "%s old" % name
 		findings["%s/new" % name] = "%s new" % name
+		var audit := _definition()
+		audit.slug = "audit"
+		audit.label = "Audit"
+		var made := registry.define_type("audit", audit, "tester", "same field key")
+		registry.activate_type("audit", made.type.current_revision, "tester", "ready")
+	state.get_type_registry("alpha").create_item({"type":"audit", "title":"audit", "revision":"ghi", "source":"origin", "findings":"alpha zzz"}, "tester")
 	var grid := _chooser_grid(state)
 	var entries := _chooser_entries(grid)
 	var r = _unique_candidates(grid)
@@ -484,11 +491,12 @@ func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 		r = A.eq(_chooser_entries(_chooser_grid(_state_over({name: dbs[name]}))), entries, "two projects sharing their types offer the same chooser entries as %s alone" % name)
 		if r is String:
 			return r
-	# Only alpha's review gains "scope": the chooser offers the union of fields.
+	# Only beta's review gains "scope": the chooser offers the union of fields,
+	# not just those of the first catalogue record (alpha: label, then project).
 	var scoped := evolved.duplicate(true)
 	(scoped.fields as Array).append({"key":"scope", "label":"Scope", "type":"string", "required":false, "nullable":true, "mutable":true})
-	var alpha_registry := state.get_type_registry("alpha")
-	var scope_error := alpha_registry.apply_evolution(alpha_registry.preview_evolution("review", scoped, str(alpha_registry.get_type("review").current_revision)), "tester", "add scope")
+	var beta_registry := state.get_type_registry("beta")
+	var scope_error := beta_registry.apply_evolution(beta_registry.preview_evolution("review", scoped, str(beta_registry.get_type("review").current_revision)), "tester", "add scope")
 	if not scope_error.is_empty():
 		return scope_error
 	grid._rebuild_type_catalog()
@@ -509,12 +517,13 @@ func test_column_chooser_offers_each_type_once_across_projects() -> Variant:
 	r = A.eq(_column_cells(grid, title_column, findings_column), findings, "one ticked type column shows the field for every project's rows, whichever revision they are pinned to")
 	if r is String:
 		return r
+	# The audit row has no review findings, so it sorts as null: last either way.
 	grid._toggle_sort(findings_column)
-	r = A.eq(_row_order(grid, title_column), ["alpha/new", "alpha/old", "beta/new", "beta/old"], "sorting a type column orders every project's rows by that field")
+	r = A.eq(_row_order(grid, title_column), ["alpha/new", "alpha/old", "beta/new", "beta/old", "alpha/audit"], "sorting a type column orders every project's rows of that type by the field")
 	if r is String:
 		return r
 	grid._toggle_sort(findings_column)
-	r = A.eq(_row_order(grid, title_column), ["beta/old", "beta/new", "alpha/old", "alpha/new"], "a descending sort on a type column reverses that order")
+	r = A.eq(_row_order(grid, title_column), ["beta/old", "beta/new", "alpha/old", "alpha/new", "alpha/audit"], "a descending sort on a type column reverses that order and keeps other types last")
 	if r is String:
 		return r
 	var beta_review: Dictionary = state.get_type_registry("beta").get_type("review")
