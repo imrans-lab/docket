@@ -231,25 +231,13 @@ func test_project_value_lists_loaded_projects_and_add_selects_new_one() -> Varia
 
 
 
-## Numeric conditions typed into the builder of a real AppShell over one project
-## (chores c1..c4 with priority 1..4, hints h0..h3 retrieved 0..3 times):
-## titles containing "c" with priority >= 2 (an enumerated picker) in Work entry
-## P, titles containing "h" with retrieval_count >= 2 (free text) in Work entry
-## R. Both are restored by switching Work entries, R through a saved .dcq, and
-## P from .dcq files holding the value as a JSON integer, a JSON decimal and a
-## string. P, with its own columns and a descending title sort, is also saved
-## and reopened through the shell's File > Save Query and File > Open Query
-## handlers. Entry E holds one retrieval_count row with nothing typed, then with
-## 0 typed, each restored by a Work-entry switch and E's empty row also through
-## those handlers. Oracles: after every restore the numeric row shows the text
-## typed ("2", "0" or nothing) and the rows equal the rows before the restore
-## and a core query with literal numbers (every fixture row for the empty row);
-## the reopened P has its saved columns and descending order. Last, a file
-## holding only {"filter": {}} is opened while P is shown sorted: it must show
-## one empty row and every fixture row in creation order, and P keeps its own
-## condition. A missing file and a non-JSON file are reported and add no entry;
-## a retrieval_count bound of 2^53 restores as its integer text. Restored
-## conditions are compared whole: field, operator and value text of every row.
+## A real AppShell over one project: chores c1..c4 (priority 1..4) and hints
+## h0..h3 (retrieved 0..3 times). Numeric conditions are typed into Work
+## entries and restored by Work-entry switches, saved .dcq files and File >
+## Save/Open Query. Oracles: the restored condition rows equal literals (field,
+## operator, value text of every row); the rows equal literal titles that a
+## core query with literal values also returns; reopened columns and sort equal
+## what was saved. Files that are missing or not JSON add no entry.
 func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	var state := AppState.new()
 	state.load_schema()
@@ -376,8 +364,7 @@ func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	all_file.store_string('{"filter": {}}')
 	all_file.close()
 	shell._on_open_query_selected(all_path)
-	var creation_order: Array = ["c1", "h0", "c2", "h1", "c3", "h2", "c4", "h3"]
-	r = A.eq([grid._condition_snapshots(), _ordered(grid)], [[{"field": "type", "op": "eq", "value": ""}], creation_order], "an all-items file opens with one empty row, every row, unsorted")
+	r = A.eq([grid._condition_snapshots(), grid._sort_field, _titles(grid._current_results)], [[{"field": "type", "op": "eq", "value": ""}], "", ["c1", "c2", "c3", "c4", "h0", "h1", "h2", "h3"]], "an all-items file opens with one empty row, no sort and every row")
 	if r is String: shell.queue_free(); return r
 	shell._activate_work_entry(p_entry)
 	r = _numeric_restored(grid, "priority", p_rows, "entry P after the all-items file was opened")
@@ -413,9 +400,8 @@ func _ordered(grid: QueryGrid) -> Array:
 
 
 func _single_restored(grid: QueryGrid, typed: String, rows: Array, label: String) -> Variant:
-	## Row 1 is retrieval_count equals `typed`, and the rows are `rows`.
-	var row: Dictionary = grid._condition_rows[0]
-	var r = A.eq([row.field.get_item_text(row.field.selected), row.value.text], ["retrieval_count", typed], "%s: the row shows what was typed" % label)
+	## The only row is retrieval_count equals `typed`, and the rows are `rows`.
+	var r = A.eq(grid._condition_snapshots(), [{"field": "retrieval_count", "op": "eq", "value": typed}], "%s: the rows show what was typed" % label)
 	if r is String: return r
 	return A.eq(_titles(grid._current_results), rows, "%s: rows" % label)
 
