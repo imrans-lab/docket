@@ -50,6 +50,7 @@ var _current_font_size: String = "medium"
 var _work_entries: Array = []
 var _current_work_idx: int = -1
 var _nav_history: Array = []  # Stack of previous _current_work_idx values
+var _grid_entry_idx: int = -1  # Query entry whose filter the grid holds
 
 # Recent files
 const _RECENTS_PATH := "user://recent_dockets.json"
@@ -258,10 +259,18 @@ func _build_ui() -> void:
 	_project_types.init(_state)
 	_project_types.registry_changed.connect(func(_project: String): _query_grid.refresh())
 
+	# Every view stays parented for the shell's lifetime; switch_view only
+	# changes which are visible. The grid and form share the split container,
+	# which lays out whichever of them is visible.
 	_split_container = HSplitContainer.new()
 	_split_container.split_offset = 500
 	_split_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_split_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_split_container.add_child(_query_grid)
+	_split_container.add_child(_record_form)
+	_content_area.add_child(_split_container)
+	_content_area.add_child(_project_types)
+	switch_view(ViewMode.QUERY)
 
 	# File dialogs
 	_open_dialog = FileDialog.new()
@@ -432,8 +441,7 @@ func _activate_work_entry(idx: int) -> void:
 	var entry: Dictionary = _work_entries[idx]
 
 	if entry.type == "query":
-		_query_grid.set_filter(entry.filter)
-		switch_view(ViewMode.QUERY)
+		_show_query_entry(idx)
 	elif entry.type == "item":
 		switch_view(ViewMode.DETAIL)
 		_record_form.load_item(entry.item_id, str(entry.get("project", "")))
@@ -442,6 +450,15 @@ func _activate_work_entry(idx: int) -> void:
 		switch_view(ViewMode.TYPES)
 
 	_rebuild_work_menu()
+
+
+func _show_query_entry(idx: int) -> void:
+	## The one grid serves every query entry. Returning to the entry it already
+	## holds keeps its rows as they are; another entry's filter is applied.
+	if idx != _grid_entry_idx:
+		_query_grid.set_filter(str(_work_entries[idx].filter))
+		_grid_entry_idx = idx
+	switch_view(ViewMode.QUERY)
 
 
 func _save_current_work_state() -> void:
@@ -472,30 +489,14 @@ func _rebuild_work_menu() -> void:
 # -- View switching --------------------------------------------------------
 
 func switch_view(mode: ViewMode) -> void:
-	_detach_all()
+	## Shows the views of `mode` without reparenting any: a grid shown again
+	## keeps its rows, scroll and selection (QueryGrid re-queries only if a
+	## change arrived while it was hidden).
 	_current_mode = mode
-	match mode:
-		ViewMode.QUERY:
-			_content_area.add_child(_query_grid)
-		ViewMode.DETAIL:
-			_content_area.add_child(_record_form)
-		ViewMode.SPLIT:
-			_content_area.add_child(_split_container)
-			_split_container.add_child(_query_grid)
-			_split_container.add_child(_record_form)
-		ViewMode.TYPES:
-			_content_area.add_child(_project_types)
-
-
-func _detach_all() -> void:
-	if _query_grid and _query_grid.get_parent():
-		_query_grid.get_parent().remove_child(_query_grid)
-	if _record_form and _record_form.get_parent():
-		_record_form.get_parent().remove_child(_record_form)
-	if _split_container and _split_container.get_parent():
-		_split_container.get_parent().remove_child(_split_container)
-	if _project_types and _project_types.get_parent():
-		_project_types.get_parent().remove_child(_project_types)
+	_query_grid.visible = mode == ViewMode.QUERY or mode == ViewMode.SPLIT
+	_record_form.visible = mode == ViewMode.DETAIL or mode == ViewMode.SPLIT
+	_split_container.visible = mode != ViewMode.TYPES
+	_project_types.visible = mode == ViewMode.TYPES
 
 
 # -- External change polling -----------------------------------------------
@@ -565,8 +566,8 @@ func _on_poll_external_changes() -> void:
 	if reloaded.is_empty():
 		return
 
-	if _query_grid and _query_grid.is_visible_in_tree():
-		_query_grid.refresh()
+	# Hidden results are only marked stale here and re-query when shown.
+	_query_grid.refresh()
 
 	if open_id.is_empty():
 		return
@@ -613,8 +614,7 @@ func _on_reload_from_disk() -> void:
 	_last_poll_mtime = _get_dct_mtime()
 	_last_projects_token = _get_projects_token()
 
-	if _query_grid and _query_grid.is_visible_in_tree():
-		_query_grid.refresh()
+	_query_grid.refresh()
 	if not open_id.is_empty():
 		if _item_revision(open_id, open_project).is_empty():
 			_on_back_pressed()  # the open item no longer exists on disk
@@ -925,7 +925,7 @@ func _on_new_item_confirmed() -> void:
 	_create_and_edit_item(str(selection.slug), str(selection.project), false, str(selection.type_id), _new_item_storage.requested())
 
 func _on_item_selected(id: String, project: String = "") -> void:
-	if _record_form.is_inside_tree():
+	if _record_form.is_visible_in_tree():
 		_record_form.load_item(id, project)
 
 
@@ -989,8 +989,7 @@ func _on_back_pressed() -> void:
 		_current_work_idx = prev_idx
 		var entry: Dictionary = _work_entries[prev_idx]
 		if entry.type == "query":
-			_query_grid.set_filter(entry.filter)
-			switch_view(ViewMode.QUERY)
+			_show_query_entry(prev_idx)
 		elif entry.type == "item":
 			_record_form.load_item(entry.item_id, str(entry.get("project", "")))
 			switch_view(ViewMode.DETAIL)

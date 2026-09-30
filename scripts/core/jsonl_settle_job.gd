@@ -7,8 +7,8 @@ class_name JSONLSettleJob
 ##           that snapshot stands for: the canonical's sha and the sidecar's
 ##           bytes at that moment. A sliced job (begin_reading) first reads the
 ##           large row sets in chunks over several ticks (read_slice); the hold
-##           takes them only if the cache generation (DocketDBJsonl.
-##           _cache_generation) is the one the reads started under, so every
+##           takes them only if the cache generation (DocketDB.
+##           cache_generation) is the one the reads started under, so every
 ##           row stands for the same instant as the rest of the snapshot.
 ##   worker  _run: JSONLSerializer.format_all, sha256 of the text, and the full
 ##           write of the temp file. It touches no SQLite connection, sidecar,

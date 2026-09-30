@@ -652,9 +652,9 @@ func _start_settle_job(sliced: bool = false) -> String:
 		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
 	if not sliced or snapshot_slice_ms < 0:
 		return _seal_settle_job(null)
-	var cache_generation := _cache_generation()
-	if cache_generation.is_empty(): return _seal_settle_job(null)
-	_settle_job = JSONLSettleJob.begin_reading(_jsonl_path, cache_generation)
+	var generation := cache_generation()
+	if generation.is_empty(): return _seal_settle_job(null)
+	_settle_job = JSONLSettleJob.begin_reading(_jsonl_path, generation)
 	return _advance_settle_job()
 
 
@@ -663,14 +663,14 @@ func _advance_settle_job() -> String:
 	## connection's or another process's) restarts them; after
 	## MAX_SNAPSHOT_RESTARTS the snapshot is taken in one hold instead.
 	var job := _settle_job
-	var cache_generation := _cache_generation()
-	if cache_generation != job.generation or cache_generation.is_empty():
-		if job.restarts >= MAX_SNAPSHOT_RESTARTS or cache_generation.is_empty():
+	var generation := cache_generation()
+	if generation != job.generation or generation.is_empty():
+		if job.restarts >= MAX_SNAPSHOT_RESTARTS or generation.is_empty():
 			_settle_job = null
 			var fallback_error := _seal_settle_job(null)
 			if _settle_job != null: _settle_job.resettle = job.resettle
 			return fallback_error
-		job.restart_reading(cache_generation)
+		job.restart_reading(generation)
 	_last_sql_error = ""
 	var complete := job.read_slice(self, snapshot_slice_ms, snapshot_chunk_rows)
 	if not _last_sql_error.is_empty():
@@ -705,7 +705,7 @@ func _seal_settle_job(job: JSONLSettleJob) -> String:
 		lock.release()
 		_settle_job = null
 		return _fail_flush("canonical source changed; reload before writing")
-	if job != null and _cache_generation() != job.generation:
+	if job != null and cache_generation() != job.generation:
 		lock.release()
 		return ""
 	var pointer_error := _validate_type_pointers()
@@ -726,17 +726,6 @@ func _seal_settle_job(job: JSONLSettleJob) -> String:
 	else:
 		job.launch(snapshot, JSONLSidecar.canonical_part(stored), prefix.bytes)
 	return ""
-
-
-func _cache_generation() -> Array:
-	## Moves whenever the cache is written: total_changes() counts this
-	## connection's row writes, and PRAGMA data_version changes when another
-	## connection (another process sharing the cache file) commits. [] when
-	## either cannot be read.
-	var own := _exec_select("SELECT total_changes() AS n;")
-	var other := _exec_select("PRAGMA data_version;")
-	if own.is_empty() or other.is_empty(): return []
-	return [own[0].get("n"), other[0].get("data_version")]
 
 
 func _poll_settle_job() -> String:

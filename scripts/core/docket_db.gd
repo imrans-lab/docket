@@ -63,6 +63,17 @@ func is_open() -> bool:
 	return _is_open
 
 
+func cache_generation() -> Array:
+	## Moves whenever the cache is written: total_changes() counts this
+	## connection's row writes, and PRAGMA data_version changes when another
+	## connection (another process sharing the cache file) commits. A SELECT never
+	## moves it. [] when either cannot be read.
+	var own := _exec_select("SELECT total_changes() AS n;")
+	var other := _exec_select("PRAGMA data_version;")
+	if own.is_empty() or other.is_empty(): return []
+	return [own[0].get("n"), other[0].get("data_version")]
+
+
 static func create_new(path: String) -> DocketDB:
 	var db := DocketDB.new()
 	db._path = path

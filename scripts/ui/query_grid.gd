@@ -18,6 +18,14 @@ var _header: Control
 var _context_menu: PopupMenu
 var _current_results: Array = []
 
+# Hidden results are not re-queried: a change marks them stale and the next
+# showing runs the query once (_show_current_results).
+var _results_stale := false
+var _catalog_stale := false
+# Project name → DocketDB.cache_generation() when the rows were last queried,
+# so a write no signal reported (an MCP tool call) still marks them stale.
+var _results_generation: Dictionary = {}
+
 # Visual query builder
 var _conditions_container: VBoxContainer
 var _condition_rows: Array = []  # Array of {conj, field, op, value, hbox, remove_btn}
@@ -122,6 +130,10 @@ func init(state: AppState) -> void:
 
 
 func _on_file_changed() -> void:
+	if _is_hidden():
+		_catalog_stale = true
+		return
+	_catalog_stale = false
 	_rebuild_type_catalog()
 	_select_added_project()
 	_refresh_scoped_controls()
@@ -473,6 +485,8 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_RESIZED and _header:
 		_sync_tree_columns()
 		_header.queue_redraw()
+	elif what == NOTIFICATION_VISIBILITY_CHANGED and _tree and is_visible_in_tree():
+		_show_current_results()
 
 
 # -- Condition row builder -------------------------------------------------
@@ -757,6 +771,12 @@ func _op_label_to_key(label: String) -> String:
 # -- Query -----------------------------------------------------------------
 
 func _run_query() -> void:
+	_results_stale = false
+	_query_rows()
+	_results_generation = _project_generations()
+
+
+func _query_rows() -> void:
 	_rebuild_columns()
 	if not _catalog_diagnostic.is_empty():
 		_current_results.clear()
@@ -1235,4 +1255,33 @@ func save_dcq(path: String) -> void:
 
 
 func refresh() -> void:
+	## Re-runs the query now while the results are on screen; while they are
+	## hidden, marks them stale instead.
+	if _is_hidden():
+		_results_stale = true
+		return
 	_run_query()
+
+
+func _is_hidden() -> bool:
+	## In the tree but not visible: the shell keeps the grid parented and hides
+	## it behind a record. A grid outside any tree runs its queries at once.
+	return is_inside_tree() and not is_visible_in_tree()
+
+
+func _show_current_results() -> void:
+	## The grid became visible: the rows it holds stand unless a change arrived
+	## while it was hidden, in which case the query runs once.
+	if _catalog_stale:
+		_on_file_changed()
+	elif _results_stale or _results_generation != _project_generations():
+		_run_query()
+
+
+func _project_generations() -> Dictionary:
+	var generations := {}
+	var project_dbs := _state.get_project_dbs()
+	for project_name in project_dbs:
+		var project_db: DocketDB = project_dbs[project_name]
+		generations[project_name] = project_db.cache_generation() if project_db != null and project_db.is_open() else []
+	return generations
