@@ -8,10 +8,13 @@ signal item_activated(id: String, project: String)
 ## A project condition's "add…" entry was chosen; the shell runs its
 ## add-project flow and the grid selects the newly loaded project.
 signal add_project_requested
-## A project's canonical file changed on disk since its cache was built, found
-## while the grid is being shown. The shell answers with its external-change
-## poll, which reloads the project, raises the open record's conflict handling
-## and refreshes this grid before the showing goes on.
+## Emitted while the grid is being shown, when a project's cache no longer
+## matches its files on disk (_changed_on_disk), before the grid decides whether
+## to keep its rows. A listener is expected to reload the changed projects; a
+## refresh() it requests meanwhile only marks the rows stale. With no listener
+## the grid reloads them itself (AppState.reload_stale). When no project reads
+## as changed afterwards, the type catalogue is rebuilt and the showing runs
+## one query.
 signal disk_change_found
 
 var _state: AppState
@@ -26,6 +29,9 @@ var _current_results: Array = []
 # Hidden results are not re-queried: a change marks them stale and the next
 # showing runs the query once (_show_current_results).
 var _results_stale := false
+# True while a showing hands a disk change to its listener; refresh() then
+# defers to the showing's own query.
+var _handing_off := false
 var _catalog_stale := false
 # Project name → DocketDB.results_generation() when the rows were last queried,
 # so a write no signal reported (an MCP tool call) still marks them stale.
@@ -1327,8 +1333,9 @@ func save_dcq(path: String) -> void:
 
 func refresh() -> void:
 	## Re-runs the query now while the results are on screen; while they are
-	## hidden, marks them stale instead.
-	if _is_hidden():
+	## hidden, or while a showing hands a disk change to its listener, marks
+	## them stale instead.
+	if _is_hidden() or _handing_off:
 		_results_stale = true
 		return
 	_run_query()
@@ -1344,7 +1351,12 @@ func _show_current_results() -> void:
 	## The grid became visible: the rows it holds stand unless a change arrived
 	## while it was hidden, in which case the query runs once. A project whose
 	## canonical file changed on disk is first handed to disk_change_found.
-	if _changed_on_disk(): disk_change_found.emit()
+	if _changed_on_disk():
+		_handing_off = true
+		if disk_change_found.has_connections(): disk_change_found.emit()
+		else: _state.reload_stale()
+		_handing_off = false
+		if not _changed_on_disk(): _catalog_stale = true
 	if _catalog_stale:
 		_on_file_changed()
 	elif _results_stale or not _generations_unchanged():
@@ -1354,8 +1366,11 @@ func _show_current_results() -> void:
 func _changed_on_disk() -> bool:
 	## DocketDBJsonl.is_stale per project: a stat of the canonical file while
 	## its recorded hash can be reused, plus the sidecar's hash when it holds
-	## anything. This process's own writes keep the cache's stored identity
-	## current, so only another writer's change reads as stale.
+	## anything. A project reads as changed while the cache's stored identity
+	## differs from its files: after a change by a writer that does not share
+	## the cache, while a reload of it has failed, or while its canonical file
+	## is missing or unreadable. This process's own writes, and those of any
+	## writer sharing the cache file, keep the stored identity current.
 	for project_db: DocketDB in _state.get_project_dbs().values():
 		if project_db is DocketDBJsonl and project_db.is_open() and (project_db as DocketDBJsonl).is_stale(): return true
 	return false

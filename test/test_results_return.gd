@@ -44,7 +44,9 @@ extends Node
 ## own comment. test_external_edit_of_the_open_record_raises_the_conflict: the
 ## open record's item edited on disk and the split view shown with no poll;
 ## oracles are the shell's reload conflict dialog, the form keeping its unsaved
-## title, and rows as above.
+## title, and rows as above. test_external_type_change_with_a_stale_catalogue_
+## queries_once: a project loaded and a type added to beta's file on disk while
+## a record is open; oracles are queries and rows as above.
 ##
 ## A refresh reads only the item keys the grid's columns and sort need
 ## (ItemRows). Fixture: _open_views_fixture() builds alpha and beta with chores
@@ -340,6 +342,53 @@ func _write_project_file(path: String) -> String:
 	var flushed := db.flush_checked()
 	db.close()
 	return "" if flushed.is_empty() else "fixture settle: %s" % flushed
+
+
+## A record is open while a project is loaded (so the type catalogue goes
+## stale) and a writer that does not share beta's cache adds a type to beta's
+## canonical file; Back is pressed with no poll driven. Oracles: queries
+## (exactly 1 from opening the record through Back) and rows, as above.
+func test_external_type_change_with_a_stale_catalogue_queries_once() -> Variant:
+	var fixture_error := _open_fixture()
+	if not fixture_error.is_empty():
+		return fixture_error
+	var gamma_path := "%s/gamma.dct" % DIR
+	var gamma_error := _write_project_file(gamma_path)
+	if not gamma_error.is_empty(): return gamma_error
+	var grid := _shell._query_grid
+	grid.set_filter(_title_filter(MATCH))
+	grid._toggle_sort(grid._col_fields.find("title"))
+	await get_tree().process_frame
+	var load_and_edit := func() -> String:
+		_shell._on_add_project_selected(gamma_path)
+		var gamma: DocketDB = _state.get_db_for_project("gamma")
+		if gamma == null: return "gamma did not load"
+		_dbs.append(gamma)
+		var error := _define_type_elsewhere("beta")
+		if not error.is_empty(): return error
+		return "" if (_state.get_db_for_project("beta") as DocketDBJsonl).is_stale() else "fixture: beta's cache does not read as changed on disk"
+	return await _open_change_and_return({"kind": "external type change, project loaded", "queries": 1, "apply": load_and_edit})
+
+
+func _define_type_elsewhere(project: String) -> String:
+	## Writes to project's canonical file the text a Docket with its own cache
+	## produces after defining a "review" type: the settled file is copied, the
+	## type is defined in the copy, and the copy's text replaces the file.
+	var db := _state.get_db_for_project(project) as DocketDBJsonl
+	var flushed := db.flush_checked()
+	if not flushed.is_empty(): return "settle before the external edit: %s" % flushed
+	var path := db.get_path()
+	var copy_path := "%s/%s_elsewhere.dct" % [DIR, project]
+	if DirAccess.copy_absolute(ProjectSettings.globalize_path(path), ProjectSettings.globalize_path(copy_path)) != OK: return "copy of %s failed" % path
+	var copy := DocketDBJsonl.open_jsonl(copy_path)
+	if copy == null: return "copy did not open: %s" % DocketDBJsonl.last_open_error
+	var made := TypeRegistry.for_db(copy, project).define_type("review", _review_definition(), "tester", "elsewhere")
+	copy.close()
+	if made.has("error"): return "type definition in the copy failed: %s" % made.error
+	var out := FileAccess.open(path, FileAccess.WRITE)
+	out.store_string(FileAccess.get_file_as_string(copy_path))
+	out.close()
+	return ""
 
 
 ## The record opened from a beta row is given an unsaved title; another writer
