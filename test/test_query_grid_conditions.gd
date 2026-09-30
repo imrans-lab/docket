@@ -229,3 +229,105 @@ func test_project_value_lists_loaded_projects_and_add_selects_new_one() -> Varia
 	r = A.eq(_titles(grid._current_results), ["L bug new", "L bug resolved", "L chore new"], "a project condition also runs with a single project loaded")
 	grid.queue_free(); return r
 
+
+
+## Numeric conditions typed into the builder of a real AppShell over one project
+## (chores c1..c4 with priority 1..4, hints h0..h3 retrieved 0..3 times):
+## titles containing "c" with priority >= 2 (an enumerated picker) in Work entry
+## P, titles containing "h" with retrieval_count >= 2 (free text) in Work entry
+## R. Both are restored by switching Work entries, R through a saved .dcq, and
+## P from .dcq files holding the value as a JSON integer, a JSON decimal and a
+## string. Oracles: after every restore the numeric row shows the text typed
+## ("2") and the rows equal the rows before the restore and a core query with
+## literal numbers.
+func test_numeric_conditions_survive_save_and_restore() -> Variant:
+	var state := AppState.new()
+	state.load_schema()
+	state.prefs = UserPrefs.new()
+	var db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl("%s/numbers.dct" % _db_dir)
+	_dbs.append(db)
+	var registry := TypeRegistry.for_db(db, "numbers")
+	for i in 4:
+		var chore := registry.create_item({"type": "chore", "title": "c%d" % (i + 1), "priority": i + 1}, "tester")
+		if chore.has("error"): return "fixture chore: %s" % chore.error
+		var hint := registry.create_item({"type": "hint", "title": "h%d" % i, "value": "v", "component": "numbers", "key": "k%d" % i}, "tester")
+		if hint.has("error"): return "fixture hint: %s" % hint.error
+		for n in i: db.bump_retrieval(str(hint.id))
+	state._project_dbs = {"numbers": db}
+	state._type_registries = {"numbers": registry}
+	state.db = db
+	state.dct_path = db.get_path()
+	var shell := AppShell.new()
+	shell.init(state)
+	add_child(shell)
+	shell._poll_timer.stop()
+	var grid := shell._query_grid
+	var p_core := [{"field": "title", "op": "contains", "value": "c"}, {"field": "priority", "op": "gte", "value": 2, "conj": "and"}]
+	var r_core := [{"field": "title", "op": "contains", "value": "h"}, {"field": "retrieval_count", "op": "gte", "value": 2, "conj": "and"}]
+	var p_rows: Array = ["c2", "c3", "c4"]
+	var r_rows: Array = ["h2", "h3"]
+	var r = A.is_true(_core_titles(state, p_core) == p_rows and _core_titles(state, r_core) == r_rows, "fixture: the core queries return %s and %s" % [p_rows, r_rows])
+	if r is String: shell.queue_free(); return r
+
+	var p_entry := shell._current_work_idx
+	grid.set_filter("")
+	_type_numeric(grid, "c", "priority")
+	grid._run_query()
+	r = A.eq(_titles(grid._current_results), p_rows, "entry P as typed")
+	if r is String: shell.queue_free(); return r
+	var r_entry := shell._add_work_entry("query", "R", "", "")
+	shell._activate_work_entry(r_entry)
+	_type_numeric(grid, "h", "retrieval_count")
+	grid._run_query()
+	r = A.eq(_titles(grid._current_results), r_rows, "entry R as typed")
+	if r is String: shell.queue_free(); return r
+
+	shell._activate_work_entry(p_entry)
+	r = _numeric_restored(grid, "priority", p_rows, "entry P after a Work-entry switch")
+	if r is String: shell.queue_free(); return r
+	shell._activate_work_entry(r_entry)
+	r = _numeric_restored(grid, "retrieval_count", r_rows, "entry R after a Work-entry switch")
+	if r is String: shell.queue_free(); return r
+
+	var saved := _db_dir + "/numbers_r.dcq"
+	grid.save_dcq(saved)
+	var reopened := _grid(state)
+	reopened.load_dcq(saved)
+	r = _numeric_restored(reopened, "retrieval_count", r_rows, "entry R from a saved .dcq")
+	reopened.queue_free()
+	if r is String: shell.queue_free(); return r
+	for form: String in ["2", "2.0", "\"2\""]:
+		var path := _db_dir + "/numbers_p.dcq"
+		var out := FileAccess.open(path, FileAccess.WRITE)
+		out.store_string('{"ui_filter":{"conditions":[{"field":"title","op":"contains","value":"c"},{"conj":"and","field":"priority","op":"gte","value":%s}]}}' % form)
+		out.close()
+		var loaded := _grid(state)
+		loaded.load_dcq(path)
+		r = _numeric_restored(loaded, "priority", p_rows, "entry P from a .dcq holding %s" % form)
+		loaded.queue_free()
+		if r is String: shell.queue_free(); return r
+	shell.queue_free()
+	return true
+
+
+func _type_numeric(grid: QueryGrid, title_part: String, field_name: String) -> void:
+	## Row 1: title contains title_part; row 2: field_name >= 2, chosen or typed
+	## as a user would.
+	_set_field(grid, 0, "title")
+	_set_op(grid, 0, "contains")
+	grid._condition_rows[0].value.text = title_part
+	grid._add_condition_row(false)
+	_set_field(grid, 1, field_name)
+	_set_op(grid, 1, ">=")
+	if grid._condition_rows[1].value_picker.visible: _pick(grid, 1, "2")
+	else: grid._condition_rows[1].value.text = "2"
+
+
+func _numeric_restored(grid: QueryGrid, field_name: String, rows: Array, label: String) -> Variant:
+	## The second row holds field_name >= "2" as typed, and the rows are `rows`.
+	var row: Dictionary = grid._condition_rows[1] if grid._condition_rows.size() > 1 else {}
+	if row.is_empty(): return "%s: the numeric row is missing" % label
+	var shown: String = row.value_picker.get_value() if row.value_picker.visible else row.value.text
+	var r = A.eq([row.field.get_item_text(row.field.selected), shown], [field_name, "2"], "%s: the numeric row shows what was typed" % label)
+	if r is String: return r
+	return A.eq(_titles(grid._current_results), rows, "%s: rows" % label)

@@ -1265,12 +1265,21 @@ func _apply_condition(row_idx: int, cond: Dictionary) -> void:
 	for oi in row.op.item_count:
 		if row.op.get_item_text(oi) == op_label:
 			row.op.selected = oi
-	var value := str(cond.get("value", ""))
+	var value := _condition_text(cond.get("value", ""))
 	if _ENUM_FIELDS.has(field_name):
 		row.value_picker.set_value(value)
 	else:
 		row.value.text = value
 	_sync_value_widgets(row)
+
+
+static func _condition_text(value: Variant) -> String:
+	## The text a condition row holds for a saved value. JSON reads every number
+	## back as a float, so a whole number is written without a decimal point, as
+	## it is typed.
+	if value is float and is_finite(value) and value == floorf(value) and absf(value) < 9007199254740992.0:
+		return str(int(value))
+	return str(value)
 
 
 func get_filter_summary() -> String:
