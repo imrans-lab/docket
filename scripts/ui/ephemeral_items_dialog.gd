@@ -6,6 +6,9 @@ class_name EphemeralItemsDialog
 ## returns and the quit or close does not happen. After Keep or Drop the caller's
 ## continuation runs; when any item fails, the dialog asks again for what is left.
 
+const PREFERRED_SIZE := Vector2i(560, 380)
+const USABLE_RATIO := 0.9
+
 var _state: AppState
 var _pending: Dictionary = {}
 var _after: Callable
@@ -28,10 +31,24 @@ func ask(pending: Dictionary, after: Callable, failure: String = "") -> void:
 	for project_name in pending:
 		for row in pending[project_name]:
 			items.add_item("%s — %s (%s)" % [project_name, str(row.title), str(row.id).left(12)])
-	var message: Label = %Message
-	var text := "These items are ephemeral: they were never written to their project files and will be lost.\nKeep saves them to their project files. Drop deletes them. Cancel goes back."
-	message.text = text if failure.is_empty() else "Not done:\n%s\n\n%s" % [failure, text]
-	popup_centered()
+	var failure_label: Label = %Failure
+	failure_label.text = "Not done:\n%s" % failure
+	(%FailureScroll as ScrollContainer).visible = not failure.is_empty()
+	# A dialog opens at the larger of min_size and its content minimum. The item
+	# and failure lists scroll, so the content minimum stays small; min_size is
+	# the preferred size cut down to the usable area, which keeps the dialog and
+	# its buttons inside the window at any content scale, font size or item count.
+	min_size = PREFERRED_SIZE.min(Vector2i(Vector2(_usable_size()) * USABLE_RATIO))
+	popup_centered(min_size)
+
+
+## The area the dialog's content may use: the embedding viewport, or the
+## screen's usable rect for a native window, less the title bar.
+func _usable_size() -> Vector2i:
+	var area: Vector2i
+	if is_embedded(): area = Vector2i(get_parent().get_viewport().get_visible_rect().size)
+	else: area = DisplayServer.screen_get_usable_rect(current_screen).size
+	return area - Vector2i(0, get_theme_constant(&"title_height"))
 
 
 func _on_keep() -> void:

@@ -593,3 +593,54 @@ func test_rebuild_that_finds_the_source_moved_twice_keeps_the_peers_rows() -> Va
 	r = A.is_true(titles.has("peer-write-0") and titles.has("peer-write-1"), "both peer items are in the cache: %s" % str(titles))
 	if r is String: return r
 	return A.is_true(fresh, "the cache's fingerprint is the one the peer committed")
+
+
+## The Keep / Drop / Cancel dialog opened for hundreds of long-titled ephemeral
+## items, with a failure report, at a content scale that leaves a small window.
+## Oracle: Godot's own layout after the popup settles. The dialog's rectangle,
+## title bar included, lies inside the root's visible rect; each of Keep, Drop
+## and Cancel is shown, has an area and lies inside the dialog; the item list
+## has a height and a vertical scroll bar that can move.
+func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
+	var db := _open_fixture("dialog.dct")
+	if db == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
+	var project := db.get_project_name()
+	var registry := TypeRegistry.for_db(db, project)
+	for i in 200:
+		var created := registry.create_item({"type": "widget", "title": "dialog-probe-%d %s" % [i, "long title words ".repeat(20)], "storage": "ephemeral"}, "tester")
+		if created.has("error"): db.close(); return "create %d failed: %s" % [i, created.error]
+	var state := AppState.new()
+	state._project_dbs = {project: db}
+	var root := get_tree().root
+	var old_scale := root.content_scale_factor
+	root.content_scale_factor = 3.0
+	var dialog := (load("res://scenes/ui/ephemeral_items_dialog.tscn") as PackedScene).instantiate() as EphemeralItemsDialog
+	dialog.init(state)
+	add_child(dialog)
+	dialog.ask(ItemStorage.outstanding(state.get_project_dbs()), Callable(), "\n".join(range(60).map(func(i: int) -> String: return "error %d" % i)))
+	for i in 3: await get_tree().process_frame
+
+	var title_height := dialog.get_theme_constant(&"title_height")
+	var outer := Rect2(Vector2(dialog.position) - Vector2(0, title_height), Vector2(dialog.size) + Vector2(0, title_height))
+	var area := root.get_visible_rect()
+	var inside := Rect2(Vector2.ZERO, Vector2(dialog.size))
+	var buttons: Dictionary = {}
+	for button in dialog.get_ok_button().get_parent().get_children():
+		if button is Button and button.is_visible_in_tree(): buttons[button.text] = button.get_global_rect()
+	var items: ItemList = dialog.get_node("%Items")
+	var scroll := items.get_v_scroll_bar()
+	var scrolls := scroll.is_visible_in_tree() and scroll.max_value > scroll.page
+	var list_height := items.size.y
+	dialog.queue_free()
+	root.content_scale_factor = old_scale
+	db.close()
+
+	var r = A.is_true(area.encloses(outer), "the dialog %s lies inside the visible area %s" % [outer, area])
+	if r is String: return r
+	r = A.eq(buttons.keys().filter(func(text: String) -> bool: return text in ["Keep", "Drop", "Cancel"]).size(), 3, "Keep, Drop and Cancel are shown: %s" % str(buttons.keys()))
+	if r is String: return r
+	for text in ["Keep", "Drop", "Cancel"]:
+		var rect: Rect2 = buttons[text]
+		r = A.is_true(rect.has_area() and inside.encloses(rect), "%s %s lies inside the dialog %s" % [text, rect, inside])
+		if r is String: return r
+	return A.is_true(list_height > 0.0 and scrolls, "the item list has height %s and scrolls" % list_height)

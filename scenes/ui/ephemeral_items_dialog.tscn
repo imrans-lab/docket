@@ -5,7 +5,6 @@
 [node name="EphemeralItemsDialog" type="ConfirmationDialog"]
 title = "Items not saved to file"
 size = Vector2i(560, 380)
-min_size = Vector2i(560, 380)
 ok_button_text = "Keep"
 script = ExtResource("1")
 
@@ -17,9 +16,22 @@ offset_bottom = 331.0
 
 [node name="Message" type="Label" parent="Box"]
 unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 0)
 autowrap_mode = 3
 text = "These items are ephemeral: they were never written to their project files and will be lost.
 Keep saves them to their project files. Drop deletes them. Cancel goes back."
+
+[node name="FailureScroll" type="ScrollContainer" parent="Box"]
+unique_name_in_owner = true
+visible = false
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.5
+horizontal_scroll_mode = 0
+
+[node name="Failure" type="Label" parent="Box/FailureScroll"]
+unique_name_in_owner = true
+size_flags_horizontal = 3
+autowrap_mode = 3
 
 [node name="Items" type="ItemList" parent="Box"]
 unique_name_in_owner = true
