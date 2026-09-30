@@ -490,11 +490,10 @@ func _rebuild_work_menu() -> void:
 # -- View switching --------------------------------------------------------
 
 func switch_view(mode: ViewMode) -> void:
-	## Shows the views of `mode` without reparenting any: a grid shown again
-	## keeps its rows, scroll and selection (QueryGrid re-queries only if a
-	## change arrived while it was hidden). A grid that was already visible
-	## gets no visibility notification, so it is asked directly
-	## (QueryGrid.refresh_if_changed).
+	## Shows the views of `mode` without reparenting any. A grid left visible
+	## keeps its rows, scroll and selection and re-queries only if something
+	## changed since its last query (QueryGrid.refresh_if_changed); a grid that
+	## was already visible gets no visibility notification, so it is asked here.
 	var grid_was_visible := _query_grid.is_visible_in_tree()
 	_current_mode = mode
 	_query_grid.visible = mode == ViewMode.QUERY or mode == ViewMode.SPLIT
@@ -548,18 +547,14 @@ func _on_load_failed(path: String, reason: String) -> void:
 
 
 func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
-	## Pick up external edits to the .dct (git pull, MCP server, another
-	## instance). Re-querying alone is not enough: the grid reads the SQLite
-	## cache, so without an actual reload it would redisplay stale rows.
-	## Also the GUI's own idle-debounced settle of sidecar appends. The query
-	## grid calls it too (disk_change_found) when it is shown while a project's
-	## file changed on disk, so a change found there gets the same handling.
-	## The projects token below gates the timer's ticks only: per project, its
-	## name, the sha256 of get_path() and the mtime of get_path() + "-wal". For a
-	## JSONL project get_path() is the canonical .dct, which has no "-wal", so
-	## the token is the canonical files' hashes; a sidecar append leaves it
-	## unchanged. With changed_on_disk (the grid's own file and sidecar check
-	## found a change) the reload runs whatever the token says.
+	## Timer tick and the query grid's disk_change_found: runs the idle settle,
+	## then reloads projects changed on disk (the grid reads the SQLite cache,
+	## so re-querying alone would show stale rows), refreshes the grid and
+	## handles a change to the open record. The projects token gates timer
+	## ticks: per project, the name, get_path()'s sha256 and the mtime of
+	## get_path() + "-wal", which a JSONL project's .dct never has, so a sidecar
+	## append leaves it unchanged. changed_on_disk (the grid's file and sidecar
+	## check found a change) skips the gate.
 	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
 	# A debounce settle this tick started reads its slices on every frame.
 	for pdb in _state.get_project_dbs().values():

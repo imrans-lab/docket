@@ -8,12 +8,12 @@ signal item_activated(id: String, project: String)
 ## A project condition's "add…" entry was chosen; the shell runs its
 ## add-project flow and the grid selects the newly loaded project.
 signal add_project_requested
-## Emitted while the grid is being shown, when a project's cache no longer
-## matches its files on disk (_changed_on_disk), before the grid decides whether
-## to keep its rows. A listener is expected to reload the changed projects; a
+## Emitted from refresh_if_changed, when a project's cache no longer matches
+## its files on disk (_changed_on_disk), before the grid decides whether to
+## keep its rows. A listener is expected to reload the changed projects; a
 ## refresh() it requests meanwhile only marks the rows stale. With no listener
 ## the grid reloads them itself (AppState.reload_stale). Afterwards the type
-## catalogue is rebuilt and the showing runs one query.
+## catalogue is rebuilt and one query runs.
 signal disk_change_found
 
 var _state: AppState
@@ -26,10 +26,10 @@ var _context_menu: PopupMenu
 var _current_results: Array = []
 
 # Hidden results are not re-queried: a change marks them stale and the next
-# showing runs the query once (refresh_if_changed).
+# refresh_if_changed on a visible grid runs the query once.
 var _results_stale := false
-# True while a showing hands a disk change to its listener; refresh() then
-# defers to the showing's own query.
+# True while refresh_if_changed hands a disk change to its listener; refresh()
+# then defers to refresh_if_changed's own query.
 var _handing_off := false
 var _catalog_stale := false
 # Project name → DocketDB.results_generation() when the rows were last queried,
@@ -1350,7 +1350,9 @@ func refresh_if_changed() -> void:
 	## Runs when the grid becomes visible, and when the shell returns to results
 	## that stayed visible: the rows it holds stand unless a change arrived since
 	## they were queried, in which case the query runs once. A project whose
-	## canonical file changed on disk is first handed to disk_change_found.
+	## canonical file changed on disk is first handed to disk_change_found. On
+	## a hidden grid it does nothing; its next showing calls it again.
+	if _is_hidden(): return
 	if _changed_on_disk():
 		_handing_off = true
 		if disk_change_found.has_connections(): disk_change_found.emit()
