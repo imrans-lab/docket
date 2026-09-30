@@ -44,12 +44,13 @@ extends Node
 ## own comment. test_external_edit_of_the_open_record_raises_the_conflict: the
 ## open record's item edited on disk and the split view shown with no poll;
 ## oracles are the shell's reload conflict dialog, the form keeping its unsaved
-## title, and rows as above. test_external_type_change_with_a_stale_catalogue_
-## queries_once: a project loaded and a type added to beta's file on disk while
-## a record is open; oracles are queries, rows as above and the grid's type
-## catalogue. test_sidecar_append_elsewhere_refreshes_on_back: a sidecar-only
-## append by a Docket with its own cache while a record is open; oracles are
-## queries and rows as above.
+## title, and rows as above. test_external_type_change_reaches_the_catalogue_
+## in_one_query: a type added to a project's file on disk while a record is
+## open, alone and with a project loaded; oracles are queries, rows as above
+## and the grid's type catalogue. test_sidecar_append_elsewhere_refreshes_on_
+## back: a sidecar-only append by a Docket with its own cache, then an external
+## edit with no listener on the grid, each while a record is open; oracles are
+## queries, rows as above and the retitled row's literal title.
 ##
 ## A refresh reads only the item keys the grid's columns and sort need
 ## (ItemRows). Fixture: _open_views_fixture() builds alpha and beta with chores
@@ -126,6 +127,8 @@ var _open_origin: Dictionary = {}
 var _ephemeral: Dictionary = {}  # label -> id of an ephemeral item made by a change
 var _fixture_ids: Dictionary = {}  # label -> id of a views-fixture item
 var _hint_id := ""
+# [project, id, title] of the row a writer elsewhere last retitled.
+var _written_elsewhere: Array = []
 # The shell saves the session and recent files to the real prefs file when
 # projects load or close; its text before the tests, or null when absent.
 var _prefs_before: Variant = null
@@ -158,6 +161,7 @@ func _reset_fixtures() -> void:
 	_ephemeral.clear()
 	_fixture_ids.clear()
 	_hint_id = ""
+	_written_elsewhere = []
 	_open_origin = {}
 	for filename in DirAccess.get_files_at(DIR):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path("%s/%s" % [DIR, filename]))
@@ -347,12 +351,14 @@ func _write_project_file(path: String) -> String:
 	return "" if flushed.is_empty() else "fixture settle: %s" % flushed
 
 
-## A record is open while a project is loaded (so the type catalogue goes
-## stale) and a writer that does not share beta's cache adds a type to beta's
-## canonical file; Back is pressed with no poll driven. Oracles: queries
-## (exactly 1 from opening the record through Back), rows as above, and the
-## grid's type catalogue holding a beta "review" type after Back.
-func test_external_type_change_with_a_stale_catalogue_queries_once() -> Variant:
+## Two steps, each with a record open and Back pressed with no poll driven. A
+## writer that does not share the project's cache adds a "review" type to its
+## canonical file: first beta's alone, then alpha's while a third project is
+## loaded, so the type catalogue is stale for that reason too. Oracles: queries
+## (exactly 1 from opening the record through Back in each step), rows as
+## above, and the grid's type catalogue holding that project's "review" type
+## after Back.
+func test_external_type_change_reaches_the_catalogue_in_one_query() -> Variant:
 	var fixture_error := _open_fixture()
 	if not fixture_error.is_empty():
 		return fixture_error
@@ -363,26 +369,31 @@ func test_external_type_change_with_a_stale_catalogue_queries_once() -> Variant:
 	grid.set_filter(_title_filter(MATCH))
 	grid._toggle_sort(grid._col_fields.find("title"))
 	await get_tree().process_frame
-	var load_and_edit := func() -> String:
+	var edit_beta := func() -> String: return _define_type_elsewhere("beta")
+	var load_and_edit_alpha := func() -> String:
 		_shell._on_add_project_selected(gamma_path)
 		var gamma: DocketDB = _state.get_db_for_project("gamma")
 		if gamma == null: return "gamma did not load"
 		_dbs.append(gamma)
-		var error := _define_type_elsewhere("beta")
-		if not error.is_empty(): return error
-		return "" if (_state.get_db_for_project("beta") as DocketDBJsonl).is_stale() else "fixture: beta's cache does not read as changed on disk"
-	var r = await _open_change_and_return({"kind": "external type change, project loaded", "queries": 1, "apply": load_and_edit})
-	if r is String: return r
-	var beta_review := grid._type_catalog.filter(func(record: Dictionary) -> bool: return str(record.get("slug", "")) == "review" and str(record.get("project", "")) == "beta")
-	return A.eq(beta_review.size(), 1, "the grid's type catalogue holds beta's review type")
+		return _define_type_elsewhere("alpha")
+	for step: Array in [["beta", "external type change", edit_beta], ["alpha", "external type change, project loaded", load_and_edit_alpha]]:
+		var r = await _open_change_and_return({"kind": step[1], "queries": 1, "apply": step[2]})
+		if r is String: return "%s: %s" % [step[1], r]
+		var review := grid._type_catalog.filter(func(record: Dictionary) -> bool: return str(record.get("slug", "")) == "review" and str(record.get("project", "")) == step[0])
+		r = A.eq(review.size(), 1, "%s: the grid's type catalogue holds %s's review type" % [step[1], step[0]])
+		if r is String: return r
+	return true
 
 
 ## A Docket with its own cache retitles a beta row, and only its sidecar record
 ## reaches beta's sidecar file (the canonical file and this process's cache are
 ## untouched) while a record is open; Back is pressed with no poll driven.
-## Oracles: queries (exactly 1 from opening the record through Back) and rows
-## as above, which the test compares after bringing beta's cache up to its
-## files.
+## Then every listener is disconnected from the grid's disk_change_found, beta's
+## canonical file is edited on disk while a record is open, and Back is pressed
+## with no poll driven, so the grid reloads by itself.
+## Oracles: queries (exactly 1 from opening the record through Back each time),
+## rows as above, which the test compares after bringing beta's cache up to its
+## files, and the retitled row shown with the title the test wrote.
 func test_sidecar_append_elsewhere_refreshes_on_back() -> Variant:
 	var fixture_error := _open_fixture()
 	if not fixture_error.is_empty():
@@ -391,7 +402,20 @@ func test_sidecar_append_elsewhere_refreshes_on_back() -> Variant:
 	grid.set_filter(_title_filter(MATCH))
 	grid._toggle_sort(grid._col_fields.find("title"))
 	await get_tree().process_frame
-	return await _open_change_and_return({"kind": "sidecar append elsewhere", "queries": 1, "apply": _append_sidecar_elsewhere})
+	var r = await _open_change_and_return({"kind": "sidecar append elsewhere", "queries": 1, "apply": _append_sidecar_elsewhere})
+	if r is String: return r
+	r = _written_elsewhere_shown("sidecar append elsewhere")
+	if r is String: return r
+	for connection: Dictionary in grid.disk_change_found.get_connections():
+		grid.disk_change_found.disconnect(connection.callable)
+	r = await _open_change_and_return({"kind": "external edit, no listener", "queries": 1, "apply": _external_edit_unpolled})
+	if r is String: return r
+	return _written_elsewhere_shown("external edit, no listener")
+
+
+func _written_elsewhere_shown(label: String) -> Variant:
+	var shown := _shown_rows().any(func(row: Array) -> bool: return row.slice(0, 3) == _written_elsewhere)
+	return A.is_true(not _written_elsewhere.is_empty() and shown, "%s: the row retitled elsewhere is shown as %s" % [label, _written_elsewhere])
 
 
 func _append_sidecar_elsewhere() -> String:
@@ -414,6 +438,7 @@ func _append_sidecar_elsewhere() -> String:
 	var out := FileAccess.open(JSONLSidecar.path_for(beta.get_path()), FileAccess.WRITE)
 	out.store_buffer(appended)
 	out.close()
+	_written_elsewhere = ["beta", other[1], "%s zz appended elsewhere" % MATCH]
 	return "" if beta.is_stale() else "fixture: beta's cache does not read as changed on disk"
 
 
@@ -435,7 +460,7 @@ func _define_type_elsewhere(project: String) -> String:
 	var out := FileAccess.open(path, FileAccess.WRITE)
 	out.store_string(FileAccess.get_file_as_string(copy_path))
 	out.close()
-	return ""
+	return "" if db.is_stale() else "fixture: %s's cache does not read as changed on disk" % project
 
 
 ## The record opened from a beta row is given an unsaved title; another writer
@@ -761,6 +786,7 @@ func _external_edit_unpolled() -> String:
 	var out := FileAccess.open(path, FileAccess.WRITE)
 	out.store_string(text.replace(quoted, JSON.stringify("%s edited on disk" % other[2])))
 	out.close()
+	_written_elsewhere = ["beta", other[1], "%s edited on disk" % other[2]]
 	return ""
 
 

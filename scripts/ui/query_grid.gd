@@ -12,9 +12,8 @@ signal add_project_requested
 ## matches its files on disk (_changed_on_disk), before the grid decides whether
 ## to keep its rows. A listener is expected to reload the changed projects; a
 ## refresh() it requests meanwhile only marks the rows stale. With no listener
-## the grid reloads them itself (AppState.reload_stale). When no project reads
-## as changed afterwards, the type catalogue is rebuilt and the showing runs
-## one query.
+## the grid reloads them itself (AppState.reload_stale). Afterwards the type
+## catalogue is rebuilt and the showing runs one query.
 signal disk_change_found
 
 var _state: AppState
@@ -1356,7 +1355,7 @@ func _show_current_results() -> void:
 		if disk_change_found.has_connections(): disk_change_found.emit()
 		else: _state.reload_stale()
 		_handing_off = false
-		if not _changed_on_disk(): _catalog_stale = true
+		_catalog_stale = true
 	if _catalog_stale:
 		_on_file_changed()
 	elif _results_stale or not _generations_unchanged():

@@ -550,11 +550,12 @@ func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 	## Also the GUI's own idle-debounced settle of sidecar appends. The query
 	## grid calls it too (disk_change_found) when it is shown while a project's
 	## file changed on disk, so a change found there gets the same handling.
-	## The projects token below gates the timer's ticks only: it hashes the
-	## canonical files and stamps this process's cache WAL, which another
-	## writer's sidecar append leaves unchanged, so with changed_on_disk (the
-	## grid's own file and sidecar check found a change) the reload runs
-	## whatever the token says.
+	## The projects token below gates the timer's ticks only: per project, its
+	## name, the sha256 of get_path() and the mtime of get_path() + "-wal". For a
+	## JSONL project get_path() is the canonical .dct, which has no "-wal", so
+	## the token is the canonical files' hashes; a sidecar append leaves it
+	## unchanged. With changed_on_disk (the grid's own file and sidecar check
+	## found a change) the reload runs whatever the token says.
 	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
 	# A debounce settle this tick started reads its slices on every frame.
 	for pdb in _state.get_project_dbs().values():
