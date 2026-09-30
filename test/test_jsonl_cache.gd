@@ -540,6 +540,49 @@ func test_rebuild_replaces_existing_cache() -> Variant:
 	return r
 
 
+## An existing cache file that is not a usable cache: garbage bytes (SQLite:
+## "file is not a database") and a zero-byte file (opens as an empty database
+## with no items table). With cache_delete_hook failing, the rebuild is
+## refused; with the real delete, the file is replaced and the rebuild succeeds.
+## While another holder has the project's FileLock, the garbage file is left
+## alone and the rebuild refused once the lock's timeout (5 s) passes.
+## Oracle: rebuild_cache's return value, last_error, the garbage file's bytes
+## after each refusal and the rebuilt cache's item.
+func test_unusable_cache_file_is_replaced_or_refused() -> Variant:
+	var jsonl_path := _test_dir + "/unusable.dct.jsonl"
+	var cache_path := jsonl_path + ".cache"
+	_write_file(jsonl_path, _minimal_jsonl())
+	for garbage: String in ["not a sqlite database ".repeat(64), ""]:
+		_delete_db(cache_path)
+		_write_file(cache_path, garbage)
+		var label := "zero-byte file" if garbage.is_empty() else "garbage file"
+		if not garbage.is_empty():
+			var held := FileLock.acquire(jsonl_path)
+			var waited := JSONLCache.rebuild_cache(jsonl_path, cache_path)
+			if held != null: held.release()
+			var lock_reason := JSONLCache.last_error
+			var locked = A.is_true(held != null and waited == null and lock_reason.contains("could not be acquired") and FileAccess.get_file_as_bytes(cache_path) == garbage.to_utf8_buffer(), "%s: a held lock refuses the replacement and leaves the file (%s)" % [label, lock_reason])
+			if locked is String: _close_db(waited); return locked
+		JSONLCache.cache_delete_hook = func(_path: String) -> int: return ERR_CANT_CREATE
+		var refused := JSONLCache.rebuild_cache(jsonl_path, cache_path)
+		JSONLCache.cache_delete_hook = Callable()
+		var reason := JSONLCache.last_error
+		var r = A.is_true(refused == null and reason.contains("could not be replaced"), "%s: a failed delete refuses the rebuild (%s)" % [label, reason])
+		if r is String: _close_db(refused); return r
+		# Opening a zero-byte file lets migrate_schema create tables in it, so
+		# only the unreadable file is byte-for-byte unchanged by the refusal.
+		if not garbage.is_empty():
+			r = A.is_true(reason.containsn("not a database") and FileAccess.get_file_as_bytes(cache_path) == garbage.to_utf8_buffer(), "%s is named in the reason and left untouched" % label)
+			if r is String: return r
+		var db := JSONLCache.rebuild_cache(jsonl_path, cache_path)
+		r = A.not_null(db, "%s is replaced and the rebuild succeeds (%s)" % [label, JSONLCache.last_error])
+		if r is String: return r
+		r = A.eq(str(db.get_item("MNV-0001").get("title", "")), "Crash on empty config", "%s: the rebuilt cache holds the canonical's item" % label)
+		_close_db(db)
+		if r is String: return r
+	return true
+
+
 # -- is_cache_valid -----------------------------------------------------------
 
 func test_is_cache_valid_false_when_no_cache() -> Variant:

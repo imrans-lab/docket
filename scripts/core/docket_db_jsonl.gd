@@ -27,9 +27,10 @@ class_name DocketDBJsonl
 ## Ephemeral items (ItemStorage) live in the cache only and are never journaled
 ## or settled.
 ##
-## Another process's rebuild unlinks the cache file under this connection
-## (JSONLCache.cache_id_at). is_stale() reports it, reload() then reopens the
-## file at the path, and _commit_mutation refuses to commit to the unlinked one.
+## Every process on the machine shares one cache file, and a rebuild refreshes
+## it in place (JSONLCache.rebuild_cache), so this connection stays on the file
+## every other process uses; after another process's rebuild it reads the
+## rebuilt rows and the stored fingerprint that matches them.
 
 var _jsonl_path: String
 var last_write_error: String = ""
@@ -41,8 +42,6 @@ var _lock_timeout_ms: int = 5000
 ## or the sidecar (one record line to append) on an ordinary mutation.
 var _atomic_write_hook: Callable
 var _mutation_depth: int = 0
-# cache_id of the file this connection holds; "" when it could not be stamped.
-var _cache_id: String = ""
 var _mutation_error: String = ""
 # The committed mutation changed a table the sidecar does not journal.
 var _settle_after_commit: bool = false
@@ -200,12 +199,9 @@ func close() -> void:
 # ensure_fresh() at the top of each request (MCP) or poll tick (GUI).
 
 func is_stale() -> bool:
-	## True if the JSONL file no longer matches what this cache was built from,
-	## or another process has replaced the cache file this connection holds.
+	## True if the JSONL file no longer matches what this cache was built from.
 	if not _is_open or _jsonl_path.is_empty():
 		return false
-	if _cache_replaced():
-		return true
 	var current := _source_fingerprint()
 	if current.is_empty():
 		return true
@@ -224,13 +220,10 @@ func ensure_fresh() -> bool:
 
 func reload() -> bool:
 	## Force a rebuild of the SQLite cache from the canonical JSONL file,
-	## discarding cached state. Returns true on success. When another process
-	## has replaced the cache file, that file is opened instead if it is fresh:
-	## it already carries the ephemeral rows, and rebuilding it would unlink it
-	## under that process in turn.
+	## discarding cached durable state; ephemeral rows stay. Returns true on
+	## success.
 	if _mutation_depth > 0 or _jsonl_path.is_empty():
 		return false
-	var replaced := _is_open and _cache_replaced()
 	# A snapshot of the cache being discarded must never reach the canonical.
 	if _settle_job != null:
 		_settle_job.discard()
@@ -238,24 +231,19 @@ func reload() -> bool:
 
 	var cache_path := JSONLCache.cache_path_for(_jsonl_path)
 
-	# Release our connection first so the rebuild can replace the cache file
-	# cleanly on platforms that refuse to unlink an open file.
+	# The rebuild refreshes the file through its own connection, which this
+	# wrapper then adopts; this one is released first.
 	# NOTE: super.close() (not close()) — the override would flush our stale
 	# state over the very file we are trying to read.
 	if _is_open:
 		super.close()
 
-	var fresh: DocketDB = null
-	if replaced and JSONLCache.is_cache_valid(_jsonl_path, cache_path):
-		fresh = DocketDB.new()
-		if not fresh.open(cache_path): fresh = null
-	if fresh == null:
-		fresh = JSONLCache.rebuild_cache(_jsonl_path, cache_path)
+	var fresh := JSONLCache.rebuild_cache(_jsonl_path, cache_path)
 	if fresh == null:
 		last_open_error = JSONLCache.last_error
 		push_error("DocketDBJsonl: reload failed for %s — %s" % [_jsonl_path, last_open_error])
-		# rebuild_cache aborts before touching cache files when the JSONL itself
-		# is bad (conflict markers), so the old cache is usually still intact.
+		# A failed rebuild rolls back, or stops before touching the cache (bad
+		# JSONL, busy or unusable cache file), so the old rows are intact.
 		# Reopening it keeps the process usable and read-only-correct.
 		var fallback := DocketDB.new()
 		if fallback.open(cache_path):
@@ -391,13 +379,6 @@ func _adopt(source: DocketDB) -> void:
 	_is_open = true
 	source._db = null
 	source._is_open = false
-	_cache_id = ""
-	if _uses_sidecar():
-		# A cache made by create_new_jsonl or an older build has no id; the
-		# first connection to open it stamps one.
-		_exec("INSERT OR IGNORE INTO docket_meta(key,value) VALUES('cache_id',?);", [DocketDB.generate_uuid7()])
-		# A retired file stands for the id it had; _cache_replaced reports it.
-		_cache_id = JSONLCache.live_cache_id(super.get_meta_value("cache_id", ""))
 	var diagnostics := super.get_meta_value("registry_diagnostics", "")
 	_write_blocked = not diagnostics.is_empty()
 	if _write_blocked: last_write_error = "unresolved type definition data; project is read-only: %s" % diagnostics
@@ -406,16 +387,6 @@ func _adopt(source: DocketDB) -> void:
 		if not tracking_error.is_empty():
 			_write_blocked = true
 			last_write_error = tracking_error
-
-
-func _cache_replaced() -> bool:
-	## True when the cache file at this connection's path is no longer the one
-	## it holds: a rebuild in another process unlinked it (missing, a rebuild
-	## still in its transaction, or another cache_id), or retired it
-	## (ItemStorage.capture), whichever connection opened it. Writes through
-	## this connection would reach only a file the rebuild has already read.
-	var at_path := JSONLCache.cache_id_at(_path)
-	return at_path.begins_with(JSONLCache.RETIRED_PREFIX) or (not _cache_id.is_empty() and at_path != _cache_id)
 
 
 func get_storage_diagnostics() -> Array:
@@ -542,13 +513,6 @@ func _commit_mutation() -> String:
 	## settles them.
 	if not _uses_sidecar() or _allow_initial_write: return _exec_checked("COMMIT;")
 	if _write_blocked: return last_write_error
-	# A transaction that wrote holds the file's write lock until COMMIT, and a
-	# rebuild takes that lock to read the rows it carries and retire the file
-	# in one transaction (ItemStorage.capture). So if the file is at the path
-	# and not retired here, it stays so through COMMIT; if not, the rows would
-	# land only in a file the rebuild has already read. The caller rolls back
-	# and reloads.
-	if _cache_replaced(): return "the cache file was replaced by another process's rebuild; this change was not saved, retry"
 	if not FileAccess.file_exists(_jsonl_path): return "canonical source is missing; refusing to recreate it from cache"
 	var expected_source := super.get_meta_value("jsonl_hash", "")
 	var built := JSONLSidecar.build_record(self, JSONLSidecar.canonical_part(expected_source))

@@ -488,35 +488,108 @@ func test_grid_storage_filter_and_words() -> Variant:
 	return A.eq(order, [StorageBadge.EPHEMERAL, StorageBadge.FILE, StorageBadge.MEMORY], "sorting on the column orders by the shown word")
 
 
-## Two connections share one cache file. A rebuilds it (reload), unlinking the
-## file B still holds; B then creates an ephemeral item. Then a capture
-## retires the file under an open mutation of B's.
-## Oracle: A's connection, on the rebuilt file, holds both A's ephemeral item
-## from before the rebuild and B's from after it; B's commit to the retired
-## file is refused, and B's reload holds the first two and not the third.
+## Two connections share one cache file. A durable item's title is edited in
+## the canonical on disk, A rebuilds the cache (reload) while B holds it open,
+## and B then creates an ephemeral item.
+## Oracle: the rebuild succeeds; B's first read after it, a plain SELECT with
+## no B mutation before it (so no staleness check can reload B), returns the
+## edited title, which only a rebuild of the file B holds can put there; A's
+## connection holds both A's ephemeral item from before the rebuild and B's
+## from after it, and so does B's.
 func test_ephemeral_item_created_after_another_connections_rebuild_is_kept() -> Variant:
+	var path := DIR + "/two_connections.dct"
 	var a := _open_fixture("two_connections.dct")
 	if a == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
-	var b := DocketDBJsonl.open_jsonl(DIR + "/two_connections.dct")
+	var b := DocketDBJsonl.open_jsonl(path)
 	if b == null: a.close(); return "second connection did not open: %s" % DocketDBJsonl.last_open_error
 	var before := TypeRegistry.for_db(a, a.get_project_name()).create_item({"type": "widget", "title": "before-rebuild", "storage": "ephemeral"}, "tester")
+	var text := FileAccess.get_file_as_string(path)
+	var out := FileAccess.open(path, FileAccess.WRITE); out.store_string(text.replace("Before definition", "Edited on disk")); out.close()
 	var reloaded := a.reload()
+	var seen_by_b: Array = b._exec_select("SELECT title FROM items WHERE id='ORD-0001';").map(func(row: Dictionary) -> String: return str(row.title))
 	var after := TypeRegistry.for_db(b, b.get_project_name()).create_item({"type": "widget", "title": "after-rebuild", "storage": "ephemeral"}, "tester")
-	var r = A.is_true(not before.has("error") and reloaded and not after.has("error"), "create, rebuild, create succeed (%s / %s)" % [before.get("error", ""), after.get("error", "")])
+	var r = A.is_true(text.contains("Before definition") and not before.has("error") and reloaded and not after.has("error"), "edit, create, rebuild, create succeed (%s / %s)" % [before.get("error", ""), after.get("error", "")])
+	if not (r is String):
+		r = A.eq(seen_by_b, ["Edited on disk"], "the other connection reads the rebuilt rows")
 	if not (r is String):
 		r = A.is_true(ItemStorage.is_ephemeral(a, str(before.id)) and ItemStorage.is_ephemeral(a, str(after.id)), "the rebuilt file holds both ephemeral items")
-	# A rebuild's capture retires the file between B's BEGIN and B's first
-	# write, as another process could while B's delete retry is pending.
 	if not (r is String):
-		r = A.eq(b._begin_canonical_mutation(), "", "B's mutation starts")
-	if not (r is String):
-		var capture := ItemStorage.capture(b._path)
-		var late := TypeRegistry.for_db(b, b.get_project_name()).create_item({"type": "widget", "title": "after-retire", "storage": "ephemeral"}, "tester")
-		var commit_error := b._complete_canonical_mutation()
-		ItemStorage.end_capture(capture)
-		r = A.is_true(commit_error.contains("replaced"), "a commit to a retired file is refused (%s)" % commit_error)
-		if not (r is String):
-			r = A.is_true(not ItemStorage.is_ephemeral(b, str(late.get("id", ""))) and ItemStorage.is_ephemeral(b, str(before.id)) and ItemStorage.is_ephemeral(b, str(after.id)), "B's reload holds the carried items and not the refused one")
+		r = A.is_true(ItemStorage.is_ephemeral(b, str(before.id)) and ItemStorage.is_ephemeral(b, str(after.id)), "the other connection sees both too")
 	b.close()
 	a.close()
 	return r
+
+
+## A rebuild whose transaction fails after it has deleted the durable rows and
+## inserted the changed canonical's (JSONLCache.rebuild_failure_hook), while
+## another connection holds the cache open.
+## Oracle: read through a fresh connection to the cache file, the item rows
+## (id, title, storage) and the stored jsonl_hash equal those read the same way
+## before the rebuild: the edited title is absent and the ephemeral item is
+## still there.
+func test_failed_rebuild_leaves_the_previous_rows_and_fingerprint() -> Variant:
+	var path := DIR + "/failed_rebuild.dct"
+	var a := _open_fixture("failed_rebuild.dct")
+	if a == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
+	var ephemeral := TypeRegistry.for_db(a, a.get_project_name()).create_item({"type": "widget", "title": "survives-failed-rebuild", "storage": "ephemeral"}, "tester")
+	if ephemeral.has("error"): a.close(); return "ephemeral create failed: %s" % ephemeral.error
+	var cache_path := JSONLCache.cache_path_for(path)
+	var read_cache := func() -> Dictionary:
+		var probe := DocketDB.new()
+		if not probe.open(cache_path, false): return {}
+		var state := {"rows": probe._exec_select("SELECT id, title, storage FROM items ORDER BY id;"), "hash": probe.get_meta_value("jsonl_hash", "")}
+		probe.close()
+		return state
+	var before: Dictionary = read_cache.call()
+	var text := FileAccess.get_file_as_string(path)
+	var out := FileAccess.open(path, FileAccess.WRITE); out.store_string(text.replace("Before definition", "Edited outside")); out.close()
+	JSONLCache.rebuild_failure_hook = func() -> String: return "injected failure after the inserts"
+	var rebuilt := JSONLCache.rebuild_cache(path, cache_path)
+	JSONLCache.rebuild_failure_hook = Callable()
+	var after: Dictionary = read_cache.call()
+	a.close()
+	var r = A.is_true(rebuilt == null and JSONLCache.last_error.contains("injected"), "the rebuild fails (%s)" % JSONLCache.last_error)
+	if r is String:
+		if rebuilt != null: rebuilt.close()
+		return r
+	var titles: Array = before.get("rows", []).map(func(row: Dictionary) -> String: return str(row.title))
+	r = A.is_true(text.contains("Before definition") and titles.has("Before definition") and titles.has("survives-failed-rebuild") and not str(before.get("hash", "")).is_empty(), "the pre-rebuild cache holds the old title, the ephemeral item and a fingerprint: %s" % str(before))
+	if r is String: return r
+	return A.eq(after, before, "rows and fingerprint are unchanged by the failed rebuild")
+
+
+## A peer connection commits a durable item after each of the rebuild's source
+## reads and before it takes the write lock (JSONLCache.before_write_lock_hook),
+## so both attempts find the files changed.
+## Oracle: rebuild_cache returns null and last_error names the second change;
+## read through a fresh connection to the cache file, both peer items are
+## there, and the stored fingerprint matches the files (is_cache_valid).
+func test_rebuild_that_finds_the_source_moved_twice_keeps_the_peers_rows() -> Variant:
+	var path := DIR + "/moved_twice.dct"
+	var peer := _open_fixture("moved_twice.dct")
+	if peer == null: return "fixture did not open: %s" % DocketDBJsonl.last_open_error
+	var cache_path := JSONLCache.cache_path_for(path)
+	var writes: Array[String] = []
+	JSONLCache.before_write_lock_hook = func() -> void:
+		var title := "peer-write-%d" % writes.size()
+		var created := TypeRegistry.for_db(peer, peer.get_project_name()).create_item({"type": "widget", "title": title}, "tester")
+		writes.append(title if not created.has("error") else "error: %s" % created.error)
+	var rebuilt := JSONLCache.rebuild_cache(path, cache_path)
+	JSONLCache.before_write_lock_hook = Callable()
+	var reason := JSONLCache.last_error
+	if rebuilt != null: rebuilt.close()
+	# Read before the peer closes: its close may settle the sidecar.
+	var probe := DocketDB.new()
+	var titles: Array = []
+	if probe.open(cache_path, false):
+		titles = probe._exec_select("SELECT title FROM items WHERE storage<>'ephemeral';").map(func(row: Dictionary) -> String: return str(row.title))
+		probe.close()
+	var fresh := JSONLCache.is_cache_valid(path, cache_path)
+	peer.close()
+	var r = A.eq(writes, ["peer-write-0", "peer-write-1"], "the peer commits once before each attempt's lock")
+	if r is String: return r
+	r = A.is_true(rebuilt == null and reason.contains("twice"), "the rebuild fails on the second change (%s)" % reason)
+	if r is String: return r
+	r = A.is_true(titles.has("peer-write-0") and titles.has("peer-write-1"), "both peer items are in the cache: %s" % str(titles))
+	if r is String: return r
+	return A.is_true(fresh, "the cache's fingerprint is the one the peer committed")

@@ -11,12 +11,11 @@ class_name ItemStorage
 ##     link that touches it;
 ##   - its events get no project event id (ProjectEvents): the counter is part
 ##     of the canonical's meta line;
-##   - the cache is its only copy, so JSONLCache.rebuild_cache carries it from
-##     the old cache file into the new one (capture / restore below), and
-##     retires the old file as it reads it so no commit lands there after the
-##     read. The cache fingerprint
-##     covers canonical and sidecar bytes only, so these rows never make a
-##     cache stale.
+##   - the cache is its only copy, so JSONLCache.rebuild_cache refreshes the
+##     cache file in place and deletes only durable rows (clear_durable_rows
+##     below); the ephemeral rows stay in the file through the rebuild. The
+##     cache fingerprint covers canonical and sidecar bytes only, so these
+##     rows never make a cache stale.
 ## The cache is shared by every process that opens the project on this
 ## machine, so an ephemeral item is visible to all of them and outlives a crash
 ## until the cache file is deleted.
@@ -331,129 +330,78 @@ static func move_refusal(db: DocketDB, id: String) -> String:
 	return "item %s is ephemeral and cannot be moved or copied to another project; keep it first (docket_promote with to_project omitted)" % id
 
 
-# -- Carry across a cache rebuild -----------------------------------------------
+# -- Kept through a cache rebuild ----------------------------------------------
 
-static func capture(cache_path: String) -> Dictionary:
-	## Reads the ephemeral rows of the cache file at cache_path before a rebuild
-	## replaces it, and retires that file: {"rows": rows or {}, "db": the open
-	## connection, "retired": the marker}, or {"error": ...} when the file's
-	## write lock cannot be taken. BEGIN IMMEDIATE waits (busy_timeout) for any
-	## connection's write transaction to commit and then holds the write lock
-	## while the rows are read and cache_id is set to a retired marker
-	## (JSONLCache.retired_marker) in the same transaction. So every commit to
-	## this file either precedes the read, or starts after the retire and is
-	## refused (DocketDBJsonl._cache_replaced). A file that cannot be opened or
-	## read (corrupt, pre-storage schema) has nothing to carry: {"rows": {}}.
-	## A file that cannot take the marker is replaced unretired; a connection's
-	## commit to it would need the same write.
-	if not FileAccess.file_exists(cache_path): return {"rows": {}}
-	var old := DocketDB.new()
-	if not old.open(cache_path): return {"rows": {}}
-	old._last_sql_error = ""
-	var lock_error := old._exec_checked("BEGIN IMMEDIATE TRANSACTION;")
-	if not lock_error.is_empty():
-		old.close()
-		# Busy means a writer still holds the file; replacing it now could lose
-		# that writer's rows. Any other failure is a file with nothing to carry.
-		if lock_error.containsn("locked") or lock_error.containsn("busy"): return {"error": "cache %s is busy; not rebuilt: %s" % [cache_path, lock_error]}
-		return {"rows": {}}
+static func clear_durable_rows(db: DocketDB, canonical: Dictionary) -> Dictionary:
+	## Runs inside JSONLCache.rebuild_cache's write-locked transaction, before
+	## the parsed canonical (canonical: JSONLParser's buckets) is inserted.
+	## Deletes every durable item and its tags, events, comments, attachments
+	## and outgoing links, plus the durable tables (type registry, vault, saved
+	## queries); ephemeral items and their rows stay. Returns {"links": the
+	## links from a durable item to an ephemeral one}, which relink puts back
+	## once the canonical has re-inserted their source, or {"error": ...}.
+	## Two conflicts with the canonical are settled here:
+	##   - an ephemeral item whose id the canonical holds is deleted with its
+	##     rows: that id is durable now and the canonical's record wins;
+	##   - an ephemeral comment or attachment whose id the canonical uses gets
+	##     a new id above both sets, since canonical rows keep their ids; a
+	##     reply follows its parent.
+	var in_canonical := {}
+	for item: Dictionary in canonical.items: in_canonical[str(item.get("id", ""))] = true
+	var error := ""
+	for row: Dictionary in db._exec_select("SELECT id FROM items WHERE storage='ephemeral';"):
+		if not in_canonical.has(str(row.id)): continue
+		push_warning("ItemStorage: ephemeral item %s is replaced by the canonical's item with the same id" % row.id)
+		for sql: String in ["DELETE FROM item_tags WHERE item_id=?;", "DELETE FROM item_events WHERE item_id=?;", "DELETE FROM comments WHERE item_id=?;", "DELETE FROM attachments WHERE item_id=?;", "DELETE FROM item_links WHERE from_id=?;", "DELETE FROM items WHERE id=?;"]:
+			if error.is_empty(): error = db._exec_checked(sql, [row.id])
+	if not error.is_empty(): return {"error": error}
 	var ids := "(SELECT id FROM items WHERE storage='ephemeral')"
-	var captured := {
-		"items": old._exec_select("SELECT * FROM items WHERE storage='ephemeral';"),
-		"tags": old._exec_select("SELECT item_id, tag FROM item_tags WHERE item_id IN %s;" % ids),
-		"events": old._exec_select("SELECT item_id, event_type, actor, timestamp, note FROM item_events WHERE item_id IN %s ORDER BY id;" % ids),
-		"comments": old._exec_select("SELECT * FROM comments WHERE item_id IN %s ORDER BY id;" % ids),
-		"attachments": old._exec_select("SELECT item_id, filename, mime_type, size_bytes, data, created_at, description FROM attachments WHERE item_id IN %s ORDER BY id;" % ids),
-		"links": old._exec_select("SELECT from_id, to_id, relation FROM item_links WHERE from_id IN %s OR to_id IN %s ORDER BY id;" % [ids, EPHEMERAL_REFS_SQL]),
-	}
-	var read_error := old._last_sql_error
-	var rows: Dictionary = captured if read_error.is_empty() and not captured.items.is_empty() else {}
-	if not read_error.is_empty(): push_warning("ItemStorage: ephemeral items in %s not carried over: %s" % [cache_path, read_error])
-	old._last_sql_error = ""
-	var id_rows := old._exec_select("SELECT value FROM docket_meta WHERE key='cache_id';")
-	var marker := JSONLCache.retired_marker(str(id_rows[0].value) if not id_rows.is_empty() else "")
-	var retire_error := old._last_sql_error
-	if retire_error.is_empty(): retire_error = old._exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('cache_id',?);", [marker])
-	if retire_error.is_empty(): retire_error = old._exec_checked("COMMIT;")
-	if retire_error.is_empty(): return {"rows": rows, "db": old, "retired": marker}
-	old._rollback()
-	push_warning("ItemStorage: cache %s not retired: %s" % [cache_path, retire_error])
-	return {"rows": rows, "db": old}
+	var links := db._exec_select("SELECT from_id, to_id, relation FROM item_links WHERE from_id NOT IN %s AND to_id IN %s ORDER BY id;" % [ids, EPHEMERAL_REFS_SQL])
+	for sql: String in [
+		"DELETE FROM item_links WHERE from_id NOT IN %s;" % ids,
+		"DELETE FROM item_tags WHERE item_id NOT IN %s;" % ids,
+		"DELETE FROM item_events WHERE item_id NOT IN %s;" % ids,
+		"DELETE FROM comments WHERE item_id NOT IN %s;" % ids,
+		"DELETE FROM attachments WHERE item_id NOT IN %s;" % ids,
+		"DELETE FROM items WHERE storage<>'ephemeral';",
+		"DELETE FROM type_def_versions;",
+		"DELETE FROM type_defs;",
+		"DELETE FROM docket_secret_versions;",
+		"DELETE FROM docket_secrets;",
+		"DELETE FROM saved_queries;",
+	]:
+		if error.is_empty(): error = db._exec_checked(sql)
+	if error.is_empty(): error = _renumber(db, "comments", canonical.comments)
+	if error.is_empty(): error = _renumber(db, "attachments", canonical.attachments)
+	if error.is_empty(): error = db._last_sql_error
+	return {"error": error} if not error.is_empty() else {"links": links}
 
 
-static func end_capture(capture: Dictionary) -> void:
-	## Closes capture's connection. The rebuild calls it after unlinking the
-	## file, or before retrying on a platform that cannot unlink an open file.
-	var old: DocketDB = capture.get("db")
-	if old == null or not old.is_open(): return
-	old.close()
+static func relink(db: DocketDB, links: Array) -> void:
+	## Puts back clear_durable_rows' links whose durable source the canonical
+	## re-inserted; a link whose source is gone goes with it. Errors land in
+	## db._last_sql_error and fail the rebuild.
+	for row: Dictionary in links:
+		if not db.has_item(str(row.from_id)): continue
+		db._exec("INSERT INTO item_links (from_id, to_id, relation) VALUES (?, ?, ?);", [row.from_id, row.to_id, row.relation])
 
 
-static func restore(db: DocketDB, captured: Dictionary) -> void:
-	## Re-insert capture()'s rows into a cache being rebuilt, inside its open
-	## transaction and after the canonical's rows. An id the canonical now holds
-	## is durable and wins. A failure is rolled back to the savepoint and only
-	## warned about: losing ephemeral rows must not fail the rebuild.
-	if captured.is_empty() or not db._last_sql_error.is_empty(): return
-	if not db._exec_checked("SAVEPOINT ephemeral_carry;").is_empty():
-		db._last_sql_error = ""
-		return
-	var error := _restore_rows(db, captured)
-	if error.is_empty():
-		db._exec_checked("RELEASE ephemeral_carry;")
-	else:
-		push_warning("ItemStorage: ephemeral items not carried into the rebuilt cache: %s" % error)
-		db._exec("ROLLBACK TO ephemeral_carry;")
-		db._exec("RELEASE ephemeral_carry;")
-	db._last_sql_error = ""
-
-
-static func _restore_rows(db: DocketDB, captured: Dictionary) -> String:
-	var kept := {}
-	for row: Dictionary in captured.items:
-		var id := str(row.id)
-		if db.has_item(id): continue
-		var error := _insert_row(db, "items", row)
+static func _renumber(db: DocketDB, table: String, canonical_rows: Array) -> String:
+	## Moves the rows left in table (all ephemeral) off every id canonical_rows
+	## uses, to ids above both sets.
+	var taken := {}
+	var top := 0
+	for row: Dictionary in canonical_rows:
+		var id := int(row.get("id", 0))
+		taken[id] = true
+		top = maxi(top, id)
+	var rows := db._exec_select("SELECT id FROM %s ORDER BY id;" % table)
+	for row: Dictionary in rows: top = maxi(top, int(row.id))
+	for row: Dictionary in rows:
+		var old_id := int(row.id)
+		if not taken.has(old_id): continue
+		top += 1
+		var error := db._exec_checked("UPDATE %s SET id=? WHERE id=?;" % table, [top, old_id])
+		if error.is_empty() and table == "comments": error = db._exec_checked("UPDATE comments SET parent_id=? WHERE parent_id=?;", [top, old_id])
 		if not error.is_empty(): return error
-		kept[id] = true
-	for row: Dictionary in captured.tags:
-		if not kept.has(str(row.item_id)): continue
-		var error := db._exec_checked("INSERT OR IGNORE INTO item_tags (item_id, tag) VALUES (?, ?);", [row.item_id, row.tag])
-		if not error.is_empty(): return error
-	for row: Dictionary in captured.events:
-		if not kept.has(str(row.item_id)): continue
-		var error := _insert_row(db, "item_events", row)
-		if not error.is_empty(): return error
-	# Comment ids are renumbered, since the canonical may now hold the old ones;
-	# replies follow their parent.
-	var comment_ids := {}
-	for row: Dictionary in captured.comments:
-		if not kept.has(str(row.item_id)): continue
-		var copy := row.duplicate()
-		copy.erase("id")
-		if comment_ids.has(int(copy.get("parent_id", 0))): copy["parent_id"] = comment_ids[int(copy.parent_id)]
-		var error := _insert_row(db, "comments", copy)
-		if not error.is_empty(): return error
-		var rows := db._exec_select("SELECT last_insert_rowid() AS id;")
-		if not rows.is_empty(): comment_ids[int(row.id)] = int(rows[0].id)
-	for row: Dictionary in captured.attachments:
-		if not kept.has(str(row.item_id)): continue
-		var error := _insert_row(db, "attachments", row)
-		if not error.is_empty(): return error
-	for row: Dictionary in captured.links:
-		var from_id := str(row.from_id)
-		if not db.has_item(from_id) or not (kept.has(from_id) or kept.has(local_id(db, str(row.to_id)))): continue
-		var error := _insert_row(db, "item_links", row)
-		if not error.is_empty(): return error
-	return db._last_sql_error
-
-
-static func _insert_row(db: DocketDB, table: String, row: Dictionary) -> String:
-	var cols := PackedStringArray()
-	var marks := PackedStringArray()
-	var bindings: Array = []
-	for key in row:
-		cols.append(str(key))
-		marks.append("?")
-		bindings.append(row[key])
-	return db._exec_checked("INSERT INTO %s (%s) VALUES (%s);" % [table, ",".join(cols), ",".join(marks)], bindings)
+	return ""

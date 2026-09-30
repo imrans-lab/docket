@@ -19,7 +19,10 @@ func item_columns() -> Array:
 
 # -- Lifecycle ----------------------------------------------------------------
 
-func open(path: String) -> bool:
+func open(path: String, name_defaults: bool = true) -> bool:
+	## name_defaults false skips deriving the project name and id prefix from
+	## the file name, for a caller that writes docket_meta itself
+	## (JSONLCache's rebuild).
 	_path = path
 	_db = SQLite.new()
 	_db.path = path
@@ -34,7 +37,7 @@ func open(path: String) -> bool:
 	DocketDBSchema.migrate_schema(self)
 
 	# Auto-derive project name and ID prefix from filename if still defaults
-	var basename := path.get_file().get_basename()
+	var basename := path.get_file().get_basename() if name_defaults else ""
 	if get_project_name().is_empty() and not basename.is_empty():
 		set_project_name(basename)
 	if get_id_prefix() == "DKT" and not basename.is_empty() and basename != "docket":

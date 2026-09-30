@@ -360,7 +360,7 @@ func test_cache_rebuild_sql_failure_rolls_back_and_never_marks_partial_cache_fre
 	if r is String:
 		if db != null: db.close()
 		return r
-	return A.is_false(FileAccess.file_exists(cache_path), "partial cache is removed rather than marked fresh")
+	return A.is_false(JSONLCache.is_cache_valid(path, cache_path), "a rolled-back cache is never marked fresh")
 
 func test_new_file_seed_failure_does_not_publish_partial_canonical_state() -> Variant:
 	var path := DIR + "/seed-sql-failure.dct"
@@ -665,7 +665,9 @@ func test_checked_setters_return_sql_and_canonical_write_failures() -> Variant:
 	_copy_fixture("dynamic_types_record_order_v2.jsonl", path)
 	var original := _read_file(path)
 	var db := DocketDBJsonl.open_jsonl(path)
-	db._exec("CREATE TRIGGER reject_counter BEFORE UPDATE ON docket_meta WHEN NEW.key='counter' BEGIN SELECT RAISE(ABORT, 'counter rejected'); END;")
+	# TEMP: the fault lives on this connection only. The rebuild in the failure's
+	# reload refreshes the file in place, so a persistent trigger would reject it too.
+	db._exec("CREATE TEMP TRIGGER reject_counter BEFORE UPDATE ON main.docket_meta WHEN NEW.key='counter' BEGIN SELECT RAISE(ABORT, 'counter rejected'); END;")
 	var error := db.set_counter_checked(99)
 	var r = A.is_true(not error.is_empty(), "checked metadata setter returns SQL failure")
 	if r is String: db.close(); return r
@@ -684,7 +686,9 @@ func test_next_id_checked_distinguishes_counter_and_canonical_failures() -> Vari
 	var original := _read_file(path)
 	var db := DocketDBJsonl.open_jsonl(path)
 	var counter_before := db.get_counter()
-	db._exec("CREATE TRIGGER reject_next_counter BEFORE UPDATE ON docket_meta WHEN NEW.key='counter' BEGIN SELECT RAISE(ABORT, 'next counter rejected'); END;")
+	# TEMP: the fault lives on this connection only. The rebuild in the failure's
+	# reload refreshes the file in place, so a persistent trigger would reject it too.
+	db._exec("CREATE TEMP TRIGGER reject_next_counter BEFORE UPDATE ON main.docket_meta WHEN NEW.key='counter' BEGIN SELECT RAISE(ABORT, 'next counter rejected'); END;")
 	var result := db.next_id_checked()
 	var r = A.is_true(str(result.id).is_empty() and not str(result.error).is_empty(), "checked ID allocation distinguishes SQL failure from an ID")
 	if r is String: db.close(); return r
