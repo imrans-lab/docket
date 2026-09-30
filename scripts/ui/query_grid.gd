@@ -850,11 +850,13 @@ func _row_keys() -> PackedStringArray:
 
 func _build_conditions_filter() -> Dictionary:
 	var conditions: Array = []
+	var raw_kept: Array = []  # the snapshots behind `conditions`, values as typed
 	for snapshot in _condition_snapshots():
 		var cond: Dictionary = snapshot
 		# An enumerated row left at (any) matches everything, so it adds nothing.
 		if _ENUM_FIELDS.has(cond.field) and str(cond.value).is_empty() and cond.op not in ["is_empty", "is_not_empty"]:
 			continue
+		raw_kept.append(cond)
 		conditions.append(_typed_condition(cond))
 
 	if conditions.size() == 0:
@@ -863,9 +865,10 @@ func _build_conditions_filter() -> Dictionary:
 		# No user interaction yet — show all items
 		return {}
 	if conditions.size() == 1:
-		# Single condition with no conjunction and default eq with empty value → return all
-		var only: Dictionary = conditions[0]
-		if only["op"] == "eq" and only.get("value", "") == "":
+		# A single eq row with nothing typed returns every item. The raw value is
+		# read, since typing turns an empty numeric value into 0.
+		var only: Dictionary = raw_kept[0]
+		if only.op == "eq" and str(only.get("value", "")).is_empty():
 			return {}
 	return QueryTypeScope.compile_catalog_conditions(conditions, _type_catalog, _state.get_project_dbs().size() > 1)
 

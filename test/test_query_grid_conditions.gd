@@ -331,3 +331,70 @@ func _numeric_restored(grid: QueryGrid, field_name: String, rows: Array, label: 
 	var r = A.eq([row.field.get_item_text(row.field.selected), shown], [field_name, "2"], "%s: the numeric row shows what was typed" % label)
 	if r is String: return r
 	return A.eq(_titles(grid._current_results), rows, "%s: rows" % label)
+
+
+## A results query whose only condition is typed to a bool or an integer, over
+## one project: chores c1 (priority 1, severity 2, attached), c2 (2, 3) and c3
+## (3, 3, attached); hints h1 (retrieved once, research cost 5) and h2. Each
+## condition is chosen or typed in the builder, then restored through
+## set_filter. Oracles: the rows equal the literal rows listed here and a core
+## query with the same literal condition; an eq row with nothing typed and a
+## row left at (any) return every fixture row. A script error in the grid's
+## filter building returns every row, which the row oracle catches.
+func test_single_typed_condition_returns_the_matching_rows() -> Variant:
+	var state := AppState.new()
+	state.load_schema()
+	var db: DocketDBJsonl = DocketDBJsonl.create_new_jsonl("%s/single.dct" % _db_dir)
+	_dbs.append(db)
+	var registry := TypeRegistry.for_db(db, "single")
+	for spec: Array in [["c1", 1, 2, true], ["c2", 2, 3, false], ["c3", 3, 3, true]]:
+		var chore := registry.create_item({"type": "chore", "title": spec[0], "priority": spec[1], "severity": spec[2]}, "tester")
+		if chore.has("error"): return "fixture chore: %s" % chore.error
+		if spec[3] and db.attach_file(str(chore.id), "note.txt", "attached".to_utf8_buffer()).has("error"): return "fixture attachment failed"
+	var h1 := registry.create_item({"type": "hint", "title": "h1", "value": "v", "component": "single", "key": "k1", "research_cost": 5}, "tester")
+	var h2 := registry.create_item({"type": "hint", "title": "h2", "value": "v", "component": "single", "key": "k2"}, "tester")
+	if h1.has("error") or h2.has("error"): return "fixture hints failed"
+	db.bump_retrieval(str(h1.id))
+	state._project_dbs = {"single": db}
+	state._type_registries = {"single": registry}
+	state.db = db
+	var every: Array = ["c1", "c2", "c3", "h1", "h2"]
+	var cases: Array = [
+		["has_attachment", "equals", "true", true, ["c1", "c3"]],
+		["has_attachment", "equals", "false", false, ["c2", "h1", "h2"]],
+		["priority", "equals", "2", 2, ["c2"]],
+		["severity", "equals", "3", 3, ["c2", "c3"]],
+		["retrieval_count", "equals", "1", 1, ["h1"]],
+		["research_cost", "equals", "5", 5, ["h1"]],
+		["priority", "not equals", "2", 2, ["c1", "c3", "h1", "h2"]],
+		["priority", ">", "1", 1, ["c2", "c3"]],
+	]
+	var grid := _grid(state)
+	for case: Array in cases:
+		var core: Array = _core_titles(state, [{"field": case[0], "op": grid._op_label_to_key(case[1]), "value": case[3]}])
+		var r = A.eq(core, case[4], "fixture: core %s %s %s" % [case[0], case[1], case[2]])
+		if r is String: grid.queue_free(); return r
+		grid.set_filter("")
+		_set_field(grid, 0, case[0])
+		_set_op(grid, 0, case[1])
+		if grid._condition_rows[0].value_picker.visible: _pick(grid, 0, case[2])
+		else: grid._condition_rows[0].value.text = case[2]
+		grid._run_query()
+		r = A.eq(_titles(grid._current_results), case[4], "typed %s %s %s" % [case[0], case[1], case[2]])
+		if r is String: grid.queue_free(); return r
+		grid.set_filter(JSON.stringify({"conditions": [{"field": case[0], "op": grid._op_label_to_key(case[1]), "value": case[3]}]}))
+		r = A.eq(_titles(grid._current_results), case[4], "restored %s %s %s" % [case[0], case[1], case[2]])
+		if r is String: grid.queue_free(); return r
+	grid.set_filter("")
+	_set_field(grid, 0, "retrieval_count")
+	_set_op(grid, 0, "equals")
+	grid._condition_rows[0].value.text = ""
+	grid._run_query()
+	var r = A.eq(_titles(grid._current_results), every, "an eq row with nothing typed returns every row")
+	if r is String: grid.queue_free(); return r
+	_set_field(grid, 0, "priority")
+	grid._condition_rows[0].value_picker.set_value("")
+	grid._run_query()
+	r = A.eq(_titles(grid._current_results), every, "a row left at (any) returns every row")
+	grid.queue_free()
+	return r
