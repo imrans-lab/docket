@@ -99,7 +99,7 @@ func test_upgrade_preview_is_read_only_and_acknowledgement_required() -> Variant
 
 func test_app_shell_navigation_reaches_project_types() -> Variant:
 	var state := _state("navigation"); var shell := AppShell.new(); shell.init(state); add_child(shell); shell._on_menu_action("project_types")
-	return A.is_true(shell._current_work_idx >= 0 and shell._work_entries[shell._current_work_idx].type == "types" and shell._project_types.get_parent() != null, "File > Project Types opens a reusable management work entry")
+	return A.is_true(shell._current_work_idx >= 0 and shell._work_entries[shell._current_work_idx].type == "types" and shell._project_types.is_visible_in_tree() and not shell._query_grid.is_visible_in_tree(), "File > Project Types opens a reusable management work entry and shows its panel in place of the results")
 
 func test_sqlite_promotion_requires_ack_and_reopens_jsonl_with_backup() -> Variant:
 	var state := _sqlite_state("promotion")

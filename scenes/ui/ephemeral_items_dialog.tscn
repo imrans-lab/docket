@@ -14,9 +14,14 @@ offset_top = 8.0
 offset_right = 552.0
 offset_bottom = 331.0
 
-[node name="Message" type="Label" parent="Box"]
+[node name="MessageScroll" type="ScrollContainer" parent="Box"]
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.8
+horizontal_scroll_mode = 0
+
+[node name="Message" type="Label" parent="Box/MessageScroll"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(240, 0)
+size_flags_horizontal = 3
 autowrap_mode = 3
 text = "These items are ephemeral: they were never written to their project files and will be lost.
 Keep saves them to their project files. Drop deletes them. Cancel goes back."

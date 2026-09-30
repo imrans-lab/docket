@@ -22,7 +22,7 @@ var _current_results: Array = []
 # showing runs the query once (_show_current_results).
 var _results_stale := false
 var _catalog_stale := false
-# Project name → DocketDB.cache_generation() when the rows were last queried,
+# Project name → DocketDB.results_generation() when the rows were last queried,
 # so a write no signal reported (an MCP tool call) still marks them stale.
 var _results_generation: Dictionary = {}
 # Item keys _current_results were queried with (_row_keys).
@@ -1171,7 +1171,13 @@ func get_filter() -> String:
 
 
 func set_filter(text: String) -> void:
-	## Accepts JSON conditions format or old "key:value" format.
+	## Accepts JSON conditions format or old "key:value" format. While the grid
+	## is hidden the query waits for the grid to be shown (refresh).
+	# A catalogue gone stale while hidden is rebuilt first, so the conditions
+	# apply to the loaded projects' types.
+	if _catalog_stale:
+		_catalog_stale = false
+		_rebuild_type_catalog()
 	if not text.strip_edges().is_empty():
 		_user_has_modified = true
 	# Clear existing rows
@@ -1181,7 +1187,7 @@ func set_filter(text: String) -> void:
 
 	if text.strip_edges().is_empty():
 		_add_condition_row(true)
-		_run_query()
+		refresh()
 		return
 
 	# Try JSON parse
@@ -1204,7 +1210,7 @@ func set_filter(text: String) -> void:
 			_add_condition_row(true)
 	_update_group_visuals()
 	_refresh_scoped_controls()
-	_run_query()
+	refresh()
 
 
 func _plain_condition(saved: Dictionary) -> Dictionary:
@@ -1326,14 +1332,28 @@ func _show_current_results() -> void:
 	## while it was hidden, in which case the query runs once.
 	if _catalog_stale:
 		_on_file_changed()
-	elif _results_stale or _results_generation != _project_generations():
+	elif _results_stale or not _generations_unchanged():
 		_run_query()
 
 
+func _generations_unchanged() -> bool:
+	## A project whose generation cannot be read counts as changed.
+	var current := _project_generations()
+	if current != _results_generation: return false
+	return not current.values().any(func(generation: Array) -> bool: return generation.is_empty())
+
+
 func _project_generations() -> Dictionary:
+	## Retrieval counter bumps count only while the rows show, sort or filter
+	## on retrieval_count.
+	var with_retrievals := _reads_retrievals()
 	var generations := {}
 	var project_dbs := _state.get_project_dbs()
 	for project_name in project_dbs:
 		var project_db: DocketDB = project_dbs[project_name]
-		generations[project_name] = project_db.cache_generation() if project_db != null and project_db.is_open() else []
+		generations[project_name] = project_db.results_generation(with_retrievals) if project_db != null and project_db.is_open() else []
 	return generations
+
+
+func _reads_retrievals() -> bool:
+	return _row_keys().has("retrieval_count") or _condition_snapshots().any(func(cond: Dictionary) -> bool: return cond.field == "retrieval_count")

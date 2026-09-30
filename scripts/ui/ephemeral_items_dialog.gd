@@ -34,10 +34,12 @@ func ask(pending: Dictionary, after: Callable, failure: String = "") -> void:
 	var failure_label: Label = %Failure
 	failure_label.text = "Not done:\n%s" % failure
 	(%FailureScroll as ScrollContainer).visible = not failure.is_empty()
-	# A dialog opens at the larger of min_size and its content minimum. The item
-	# and failure lists scroll, so the content minimum stays small; min_size is
-	# the preferred size cut down to the usable area, which keeps the dialog and
-	# its buttons inside the window at any content scale, font size or item count.
+	# A dialog opens at the larger of min_size and its content minimum. The
+	# message, item list and failure report each scroll, so the content minimum
+	# is the button row plus fixed margins whatever the text length or item
+	# count. min_size is the preferred size cut down to the usable area, so the
+	# dialog and its buttons stay inside it whenever that area is at least the
+	# content minimum.
 	min_size = PREFERRED_SIZE.min(Vector2i(Vector2(_usable_size()) * USABLE_RATIO))
 	popup_centered(min_size)
 

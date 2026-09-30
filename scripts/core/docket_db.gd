@@ -74,6 +74,72 @@ func cache_generation() -> Array:
 	return [own[0].get("n"), other[0].get("data_version")]
 
 
+## docket_meta keys no results query reads or shows: the settle's source
+## identity and the GUI's display preferences.
+const RESULTS_UNSEEN_META := ["jsonl_hash", "ui_scale", "ui_font_size"]
+
+# This connection's writes that results_generation() leaves out, made inside
+# _begin_uncounted() / _end_uncounted(), and the connection they were counted on.
+var _uncounted_connection: int = 0
+var _unseen_changes: int = 0
+var _retrieval_changes: int = 0
+# The outermost open uncounted write: depth, and connection and total_changes()
+# when it began.
+var _uncounted_depth: int = 0
+var _uncounted_start: Array = []
+
+
+func results_generation(with_retrievals: bool) -> Array:
+	## cache_generation() as a results grid needs it: it leaves out this
+	## connection's writes no results row reads (RESULTS_UNSEEN_META keys, the
+	## sidecar's dirty set) and, unless with_retrievals, retrieval_count bumps.
+	## Any other write on this connection moves it, and so does any commit by
+	## another connection, whatever it wrote. It leads with the connection's
+	## identity, so a value read on a replaced connection never equals it.
+	## [] when it cannot be read.
+	var generation := cache_generation()
+	if generation.is_empty(): return []
+	var connection := _db.get_instance_id()
+	var own := int(generation[0])
+	if connection == _uncounted_connection:
+		own -= _unseen_changes + (0 if with_retrievals else _retrieval_changes)
+	return [connection, own, generation[1]]
+
+
+func _begin_uncounted() -> void:
+	## Opens a write results_generation() leaves out; _end_uncounted closes it.
+	## A nested pair counts as part of the outermost one.
+	if _uncounted_depth == 0:
+		_uncounted_start = [_db.get_instance_id() if _db != null else 0, _own_changes()]
+	_uncounted_depth += 1
+
+
+func _end_uncounted(retrieval: bool = false) -> void:
+	## Closes the outermost uncounted write, adding its row changes to the
+	## unseen (or with retrieval, the retrieval) count. When the connection was
+	## replaced in between or a count could not be read, nothing is added, so
+	## the writes stay counted.
+	_uncounted_depth -= 1
+	if _uncounted_depth > 0 or _db == null: return
+	var connection := _db.get_instance_id()
+	var now := _own_changes()
+	if connection != int(_uncounted_start[0]) or now < 0 or int(_uncounted_start[1]) < 0: return
+	if connection != _uncounted_connection:
+		_uncounted_connection = connection
+		_unseen_changes = 0
+		_retrieval_changes = 0
+	if retrieval: _retrieval_changes += now - int(_uncounted_start[1])
+	else: _unseen_changes += now - int(_uncounted_start[1])
+
+
+func _own_changes() -> int:
+	## total_changes() of this connection, or -1 when it cannot be read. Reads
+	## the binding directly so no SQL error is recorded for the write around it.
+	if _db == null or not _db.query("SELECT total_changes() AS n;"): return -1
+	var rows: Array = _db.query_result
+	return int(rows[0].get("n", -1)) if rows else -1
+
+
 static func create_new(path: String) -> DocketDB:
 	var db := DocketDB.new()
 	db._path = path
@@ -249,7 +315,10 @@ func get_meta_value(meta_key: String, default: String = "") -> String:
 
 
 func set_meta_value(meta_key: String, val: String) -> void:
+	var unseen: bool = RESULTS_UNSEEN_META.has(meta_key)
+	if unseen: _begin_uncounted()
 	_exec("INSERT OR REPLACE INTO docket_meta (key, value) VALUES (?, ?);", [meta_key, val])
+	if unseen: _end_uncounted()
 
 
 func get_all_meta() -> Dictionary:
@@ -1132,7 +1201,9 @@ func bump_retrieval(id: String) -> void:
 	## says when a hint's CONTENT was last revised. (Observed 2026-08-16: one
 	## unfiltered hint query rewrote updated_at on all 276 hints in a store,
 	## flattening months of history to a single date.)
+	_begin_uncounted()
 	_exec("UPDATE items SET retrieval_count=retrieval_count+1 WHERE id=?;", [id])
+	_end_uncounted(true)
 
 
 func bump_retrieval_many(ids: Array) -> void:

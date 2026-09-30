@@ -3,26 +3,39 @@ extends Node
 ## stays parented and keeps its rows; a change that arrives while the record is
 ## open makes the next showing query once.
 ##
-## Fixture: the real AppShell over two JSONL projects built in DIR, the grid
-## filtered to titles containing MATCH and sorted by title. For each entry of
-## _changes(), a row is opened from the grid, the change runs while the record
-## is open, and Back is pressed. The shell's 3 s poll is stopped so no settle
-## lands mid-step; the external change drives the poll itself.
+## Fixture: the real AppShell over two JSONL projects built in DIR (alpha also
+## holds a hint whose title contains MATCH), the grid filtered to titles
+## containing MATCH and sorted by title. For each entry of _changes(), its
+## `before` step runs while the results are shown, a row is opened from the
+## grid, the change runs while the record is open, and Back is pressed. The
+## shell's 3 s poll timer is stopped so steps land only where a change puts
+## them; the external change and the settle drive the poll themselves.
 ##
 ## Oracles:
 ##   queries  calls to AppState.execute_cross_project_query (the grid's results
-##            query with two projects loaded), counted by a pass-through
-##            subclass from before the record opens until after Back: 0 when
-##            nothing changed, exactly 1 after a change.
+##            query while more than one project is loaded), counted by a
+##            pass-through subclass from before the record opens until after
+##            Back: 0 when nothing any results row reads changed, exactly 1
+##            after a change.
 ##   node     the grid never emits tree_exiting and keeps its parent; when
 ##            nothing changed its Tree keeps the same root TreeItem (no rebuild),
 ##            the same scroll offset and the same selected row.
-##   rows     the rows shown after Back (project, id, title, storage word, in
-##            order) equal each project's DocketDB.execute_query with the same
-##            condition, merged and sorted by title here.
+##   rows     the rows shown after Back (project, id, title, storage word and,
+##            while that column is shown, retrieval count, in order) are not
+##            empty and equal each loaded project's DocketDB.execute_query with
+##            the same condition, merged and sorted by title here.
 ##   files    each project's .dct sha256 and mtime are unchanged by opening the
 ##            record and by Back.
+##   landed   a settle, preference or retrieval step reports whether its write
+##            happened: the canonical file changed and no append is left
+##            pending, the preference is stored, or the hint's stored
+##            retrieval_count went up by one.
 ## To cover another kind of change, add an entry to _changes().
+##
+## test_other_paths_back_to_the_results covers the other ways back to the
+## results on the same fixture: the split view, the Project Types screen,
+## switching Work entries, loading a project and closing one. Its oracles are
+## queries, rows and node as above, plus which of the views is visible.
 ##
 ## A refresh reads only the item keys the grid's columns and sort need
 ## (ItemRows). Fixture: _open_views_fixture() builds alpha and beta with chores
@@ -54,6 +67,7 @@ const A = preload("res://test/assert_helpers.gd")
 const DIR := "user://fixtures/results_return"
 const PROJECTS := ["alpha", "beta"]
 const MATCH := "row"
+const OTHER := "other"  # titles the second Work entry filters on
 const ROWS_PER_PROJECT := 40  # enough rows for the grid to scroll
 const OPEN_ROW := 60  # grid row the record is opened from
 const ROWS_SMALL := 10  # rows per project in the reads oracle's smaller set
@@ -81,16 +95,27 @@ var _tools: ToolRegistry
 var _open_origin: Dictionary = {}
 var _ephemeral: Dictionary = {}  # label -> id of an ephemeral item made by a change
 var _fixture_ids: Dictionary = {}  # label -> id of a views-fixture item
+var _hint_id := ""
+# The shell saves the session and recent files to the real prefs file when
+# projects load or close; its text before the tests, or null when absent.
+var _prefs_before: Variant = null
+const PREFS_PATH := "user://docket_prefs.json"
 
 
 func setup() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
+	if FileAccess.file_exists(PREFS_PATH): _prefs_before = FileAccess.get_file_as_string(PREFS_PATH)
 
 func before_each() -> void:
 	_reset_fixtures()
 
 func teardown() -> void:
 	_reset_fixtures()
+	if _prefs_before is String:
+		var f := FileAccess.open(PREFS_PATH, FileAccess.WRITE)
+		if f: f.store_string(str(_prefs_before))
+	elif FileAccess.file_exists(PREFS_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PREFS_PATH))
 
 func _reset_fixtures() -> void:
 	for child in get_children():
@@ -102,6 +127,7 @@ func _reset_fixtures() -> void:
 	_dbs.clear()
 	_ephemeral.clear()
 	_fixture_ids.clear()
+	_hint_id = ""
 	_open_origin = {}
 	for filename in DirAccess.get_files_at(DIR):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path("%s/%s" % [DIR, filename]))
@@ -112,10 +138,10 @@ func test_back_shows_retained_results_and_requeries_once_after_a_change() -> Var
 	if not fixture_error.is_empty():
 		return fixture_error
 	var grid := _shell._query_grid
-	grid.set_filter(JSON.stringify({"conditions": [{"field": "title", "op": "contains", "value": MATCH}]}))
+	grid.set_filter(_title_filter(MATCH))
 	grid._toggle_sort(grid._col_fields.find("title"))
 	await get_tree().process_frame
-	var r = A.eq(_shown_rows(), _expected_rows(), "fixture: the grid shows the filtered, sorted rows")
+	var r = _rows_match(MATCH, "fixture: the grid shows the filtered, sorted rows")
 	if r is String:
 		return r
 	for change: Dictionary in _changes():
@@ -123,6 +149,172 @@ func test_back_shows_retained_results_and_requeries_once_after_a_change() -> Var
 		if r is String:
 			return "%s: %s" % [change.kind, r]
 	return true
+
+
+func test_other_paths_back_to_the_results() -> Variant:
+	var fixture_error := _open_fixture()
+	if not fixture_error.is_empty():
+		return fixture_error
+	var gamma_path := "%s/gamma.dct" % DIR
+	var gamma_error := _write_project_file(gamma_path)
+	if not gamma_error.is_empty(): return gamma_error
+	var grid := _shell._query_grid
+	var form := _shell._record_form
+	grid.set_filter(_title_filter(MATCH))
+	grid._toggle_sort(grid._col_fields.find("title"))
+	await get_tree().process_frame
+	var results_entry := _shell._grid_entry_idx
+	var other_entry := _shell._add_work_entry("query", "Other", _title_filter(OTHER), "")
+	var r = _rows_match(MATCH, "fixture: the grid shows the filtered, sorted rows")
+	if r is String: return r
+
+	# Split view with nothing changed: the grid stays shown beside the record.
+	var held: Dictionary = await _select_row("")
+	_state.results_queries = 0
+	_shell._on_menu_action("view_split")
+	grid._on_item_selected()
+	await get_tree().process_frame
+	var beside := grid.is_visible_in_tree() and form.is_visible_in_tree() and form._current_id == str(held.get("origin", {}).get("id", ""))
+	_shell._on_menu_action("view_query")
+	await get_tree().process_frame
+	r = A.is_true(beside, "split view shows the results beside the selected record")
+	if r is String: return r
+	r = _after_path("split view, unchanged", 0, MATCH, held)
+	if r is String: return r
+
+	# Split view with the record saved: the shown grid re-queries once.
+	await _select_row("")
+	_state.results_queries = 0
+	_shell._on_menu_action("view_split")
+	grid._on_item_selected()
+	form._title_edit.text = "row zz split edit"
+	var saved: Variant = await form._save_changes()
+	_shell._on_menu_action("view_query")
+	await get_tree().process_frame
+	if saved is String and not str(saved).is_empty(): return "split view save failed: %s" % saved
+	r = _after_path("split view, record saved", 1, MATCH, {})
+	if r is String: return r
+
+	# Project Types and back through the Work menu, with nothing changed.
+	held = await _select_row("")
+	_state.results_queries = 0
+	_shell._on_menu_action("project_types")
+	var types_shown := _shell._project_types.is_visible_in_tree() and not grid.is_visible_in_tree()
+	_shell._activate_work_entry(results_entry)
+	await get_tree().process_frame
+	r = A.is_true(types_shown, "Project Types replaces the results")
+	if r is String: return r
+	r = _after_path("Project Types, unchanged", 0, MATCH, held)
+	if r is String: return r
+
+	# Project Types with a type defined while it is shown.
+	_state.results_queries = 0
+	_shell._on_menu_action("project_types")
+	var defined: Dictionary = _state.get_type_registry("alpha").define_type("review", _review_definition(), "tester", "fixture")
+	if defined.has("error"): return "type definition failed: %s" % defined.error
+	_shell._activate_work_entry(results_entry)
+	await get_tree().process_frame
+	r = _after_path("Project Types, type defined", 1, MATCH, {})
+	if r is String: return r
+
+	# Switching Work entries applies each entry's filter once; choosing the
+	# entry already shown keeps its rows.
+	_state.results_queries = 0
+	_shell._activate_work_entry(other_entry)
+	await get_tree().process_frame
+	r = _after_path("switch to another entry", 1, OTHER, {})
+	if r is String: return r
+	_state.results_queries = 0
+	_shell._activate_work_entry(results_entry)
+	await get_tree().process_frame
+	r = _after_path("switch back", 1, MATCH, {})
+	if r is String: return r
+	held = await _select_row("")
+	_state.results_queries = 0
+	_shell._activate_work_entry(results_entry)
+	await get_tree().process_frame
+	r = _after_path("the entry already shown", 0, MATCH, held)
+	if r is String: return r
+
+	# A project loaded while a record is open, then Back.
+	await _select_row("alpha")
+	_state.results_queries = 0
+	grid._on_item_activated()
+	_shell._on_add_project_selected(gamma_path)
+	var gamma: DocketDB = _state.get_db_for_project("gamma")
+	if gamma == null: return "gamma did not load"
+	_dbs.append(gamma)
+	form._back_btn.pressed.emit()
+	await get_tree().process_frame
+	r = _after_path("project loaded", 1, MATCH, {})
+	if r is String: return r
+	r = A.is_true(_shown_rows().any(func(row: Array) -> bool: return row[0] == "gamma"), "the loaded project's rows are shown")
+	if r is String: return r
+
+	# A project closed while a record is open, then another Work entry: one
+	# query, over the projects still loaded.
+	await _select_row("alpha")
+	_state.results_queries = 0
+	grid._on_item_activated()
+	_shell._on_menu_action("close_project:beta")
+	if _state.get_project_dbs().has("beta"): return "beta did not close"
+	_shell._activate_work_entry(other_entry)
+	await get_tree().process_frame
+	return _after_path("project closed, another entry", 1, OTHER, {})
+
+
+func _select_row(project: String) -> Dictionary:
+	## Selects and scrolls to row OPEN_ROW, or with project to that project's
+	## last row. Returns what an unchanged grid keeps: its root TreeItem, scroll
+	## and selected origin; {} when there is no such row.
+	var grid := _shell._query_grid
+	var root := grid._tree.get_root()
+	if root == null or root.get_child_count() == 0: return {}
+	var target: TreeItem = root.get_child(mini(OPEN_ROW, root.get_child_count() - 1)) if project.is_empty() else null
+	if not project.is_empty():
+		for row in root.get_children():
+			if str((row.get_metadata(0) as Dictionary).project) == project: target = row
+	if target == null: return {}
+	target.select(0)
+	grid._tree.scroll_to_item(target)
+	await get_tree().process_frame
+	return {"root": root, "scroll": grid._tree.get_scroll(), "origin": grid.get_selected_origin()}
+
+
+func _after_path(label: String, queries: int, title_part: String, held: Dictionary) -> Variant:
+	## The results are shown alone after `label`, `queries` results queries ran,
+	## and the rows equal a fresh query; with held (_select_row), the grid kept
+	## its root, scroll and selection.
+	var grid := _shell._query_grid
+	var r = A.is_true(grid.is_visible_in_tree() and not _shell._record_form.is_visible_in_tree() and not _shell._project_types.is_visible_in_tree(), "%s: the results are shown alone" % label)
+	if r is String: return r
+	r = A.eq(_state.results_queries, queries, "%s: results queries" % label)
+	if r is String: return r
+	r = _rows_match(title_part, "%s: rows shown equal a fresh query" % label)
+	if r is String: return r
+	if held.is_empty(): return true
+	r = A.is_true((held.scroll as Vector2).y > 0.0, "%s: fixture: the grid scrolled, so scroll retention can be observed" % label)
+	if r is String: return r
+	r = A.is_true(grid._tree.get_root() == held.root, "%s: unchanged results are not rebuilt" % label)
+	if r is String: return r
+	r = A.eq(grid._tree.get_scroll(), held.scroll, "%s: scroll position is retained" % label)
+	if r is String: return r
+	return A.eq(grid.get_selected_origin(), held.origin, "%s: selection is retained" % label)
+
+
+func _write_project_file(path: String) -> String:
+	## A closed JSONL project file with a few MATCH and OTHER rows.
+	var db := DocketDBJsonl.create_new_jsonl(path)
+	if db == null: return "fixture %s did not open: %s" % [path, DocketDBJsonl.last_open_error]
+	var registry := TypeRegistry.for_db(db, db.get_project_name())
+	for title: String in ["%s g00" % MATCH, "%s g01" % MATCH, "%s g02" % OTHER]:
+		var made := registry.create_item({"type": "chore", "title": title}, "tester")
+		if made.has("error"):
+			db.close()
+			return "fixture item %s: %s" % [title, made.error]
+	var flushed := db.flush_checked()
+	db.close()
+	return "" if flushed.is_empty() else "fixture settle: %s" % flushed
 
 
 func test_refresh_rows_match_complete_records() -> Variant:
@@ -134,7 +326,9 @@ func test_refresh_rows_match_complete_records() -> Variant:
 		_show_view(view)
 		await get_tree().process_frame
 		var shown := _view_rows_shown()
-		var r = A.eq(shown, _view_rows_expected(view), "%s: rows shown equal the complete records" % view.name)
+		var r = A.is_true(not shown.is_empty(), "%s: the grid shows rows" % view.name)
+		if r is String: return r
+		r = A.eq(shown, _view_rows_expected(view), "%s: rows shown equal the complete records" % view.name)
 		if r is String: return r
 		r = _short_ids_distinct(shown, 2 + grid._col_fields.find("id"))
 		if r is String: return "%s: %s" % [view.name, r]
@@ -178,23 +372,35 @@ func test_refresh_reads_do_not_grow_with_rows() -> Variant:
 	return A.eq(large, small, "SELECT statements of one refresh with %d rows versus %d rows" % [large_rows, small_rows])
 
 
-## Each change runs while a record is open. `queries` is the number of results
-## queries expected from opening the record through Back.
+## Each change runs while a record is open; its optional `before` runs first,
+## while the results are shown. `queries` is the number of results queries
+## expected from opening the record through Back. Entries run in order and
+## build on each other: the settle lands the local edit's append.
 func _changes() -> Array[Dictionary]:
+	var nothing := func() -> String: return ""
 	return [
-		{"kind": "unchanged", "queries": 0, "apply": func() -> String: return ""},
+		{"kind": "unchanged", "queries": 0, "apply": nothing},
 		{"kind": "local edit", "queries": 1, "apply": _local_edit},
+		{"kind": "settle after a save", "queries": 0, "before": _land_settle, "apply": nothing},
+		{"kind": "zoom preference", "queries": 0, "apply": _zoom_preference},
+		{"kind": "hint retrieval", "queries": 0, "apply": _hint_retrieval},
 		{"kind": "MCP edit", "queries": 1, "apply": _mcp_edit},
 		{"kind": "external edit", "queries": 1, "apply": _external_edit},
 		{"kind": "ephemeral create", "queries": 1, "apply": _ephemeral_create},
 		{"kind": "ephemeral update", "queries": 1, "apply": _ephemeral_update},
 		{"kind": "ephemeral keep", "queries": 1, "apply": _ephemeral_keep},
 		{"kind": "ephemeral drop", "queries": 1, "apply": _ephemeral_drop},
+		{"kind": "hint retrieval shown", "queries": 1, "before": _show_retrieval_column, "apply": _hint_retrieval},
 	]
 
 
 func _open_change_and_return(change: Dictionary) -> Variant:
 	var grid := _shell._query_grid
+	if change.has("before"):
+		var before_error: Variant = await (change.before as Callable).call()
+		if before_error is String and not str(before_error).is_empty():
+			return "the step before the record opened failed: %s" % before_error
+		await get_tree().process_frame
 	var root := grid._tree.get_root()
 	if root == null or root.get_child_count() == 0:
 		return "the grid has no rows to open"
@@ -235,7 +441,7 @@ func _open_change_and_return(change: Dictionary) -> Variant:
 	if r is String: return r
 	r = A.is_true(exits[0] == 0 and grid.get_parent() == parent_before, "the grid is never reparented")
 	if r is String: return r
-	r = A.eq(_shown_rows(), _expected_rows(), "rows shown after Back equal a fresh query")
+	r = _rows_match(MATCH, "rows shown after Back equal a fresh query")
 	if r is String: return r
 	r = A.eq(files_opened, files_before, "opening a record writes no project file")
 	if r is String: return r
@@ -303,13 +509,60 @@ func _ephemeral_update() -> String:
 
 
 func _ephemeral_keep() -> String:
-	var result := _tools.call_tool("docket_promote", {"items": [_ephemeral.get("one", "")], "source_project": "alpha"})
+	var result := _tools.call_tool("docket_promote", {"items": [_ephemeral.get("one", "")], "source_project": "alpha", "promoted_by": "tester"})
 	return str(result.get("error", ""))
 
 
 func _ephemeral_drop() -> String:
 	## What the quit / close dialog's Drop does for one item.
 	return ItemStorage.drop(_state.get_db_for_project("alpha"), str(_ephemeral.get("two", "")))
+
+
+func _land_settle() -> String:
+	## The idle settle of the saved record's sidecar append lands while the
+	## results are shown: the debounce tick runs as if its idle window had
+	## passed, the shell's frame loop commits it, and the shell's poll runs.
+	var before := _file_stamps()
+	var idle_now := Time.get_ticks_msec() + DocketDBJsonl.SETTLE_IDLE_MS
+	var started := 0
+	for db in _dbs:
+		var jsonl := db as DocketDBJsonl
+		if jsonl == null or not jsonl.is_open() or not jsonl.has_pending_sidecar(): continue
+		var error := jsonl.settle_if_idle(idle_now)
+		if not error.is_empty(): return error
+		started += 1
+	_shell._on_poll_external_changes()
+	for _frame in 600:
+		if not _dbs.any(func(db: DocketDB) -> bool: return db is DocketDBJsonl and (db as DocketDBJsonl).is_settling()): break
+		await get_tree().process_frame
+	_shell._on_poll_external_changes()
+	var pending := _dbs.any(func(db: DocketDB) -> bool: return db is DocketDBJsonl and db.is_open() and ((db as DocketDBJsonl).has_pending_sidecar() or (db as DocketDBJsonl).is_settling()))
+	if started == 0 or pending or _file_stamps() == before:
+		return "no settle landed (started %d, still pending %s)" % [started, pending]
+	return ""
+
+
+func _zoom_preference() -> String:
+	## View > Reset Zoom stores the scale preference in the primary project.
+	var stored_before := _state.db.get_meta_value("ui_scale", "")
+	_shell._on_menu_action("zoom_reset")
+	var stored := _state.db.get_meta_value("ui_scale", "")
+	return "" if stored != stored_before else "the zoom preference was not stored (%s)" % stored
+
+
+func _hint_retrieval() -> String:
+	## An MCP hint read, which bumps the hint's retrieval_count.
+	var db := _state.get_db_for_project("alpha")
+	var count_before := int(db.get_item(_hint_id).get("retrieval_count", 0))
+	var result := _tools.call_tool("docket_hint_get", {"component": "results", "key": "retrieval", "project": "alpha"})
+	if result.has("error"): return str(result.error)
+	var count_after := int(db.get_item(_hint_id).get("retrieval_count", 0))
+	return "" if count_after == count_before + 1 else "retrieval_count went from %d to %d" % [count_before, count_after]
+
+
+func _show_retrieval_column() -> String:
+	_shell._query_grid.set_result_columns(["id", "project", "title", StorageBadge.FIELD, "retrieval_count"])
+	return ""
 
 
 # -- Fixture and observations -------------------------------------------------
@@ -327,6 +580,10 @@ func _open_fixture() -> String:
 		for title in titles:
 			var made := registry.create_item({"type": "chore", "title": title}, "tester")
 			if made.has("error"): return "fixture item %s: %s" % [title, made.error]
+		if project == "alpha":
+			var hint := registry.create_item({"type": "hint", "title": "%s hint" % MATCH, "value": "v", "component": "results", "key": "retrieval"}, "tester")
+			if hint.has("error"): return "fixture hint: %s" % hint.error
+			_hint_id = str(hint.id)
 		var flushed := db.flush_checked()
 		if not flushed.is_empty(): return "fixture settle: %s" % flushed
 	_start_shell()
@@ -360,30 +617,49 @@ func _start_shell() -> void:
 
 
 func _shown_rows() -> Array:
-	## [project, id, title, storage word] of each grid row, top to bottom.
+	## [project, id, title, storage word] of each grid row, top to bottom, plus
+	## the retrieval count cell while that column is shown.
 	var grid := _shell._query_grid
 	var title_col := grid._col_fields.find("title")
 	var storage_col := grid._col_fields.find(StorageBadge.FIELD)
+	var retrieval_col := grid._col_fields.find("retrieval_count")
 	var rows: Array = []
 	var root := grid._tree.get_root()
 	if root == null: return rows
 	for row in root.get_children():
 		var origin: Dictionary = row.get_metadata(0)
-		rows.append([str(origin.project), str(origin.id), row.get_text(title_col), row.get_text(storage_col)])
+		var cells: Array = [str(origin.project), str(origin.id), row.get_text(title_col), row.get_text(storage_col)]
+		if retrieval_col >= 0: cells.append(row.get_text(retrieval_col))
+		rows.append(cells)
 	return rows
 
 
-func _expected_rows() -> Array:
-	## The same rows straight from each project's cache, merged and sorted by
-	## title (the fixture's titles are unique).
+func _expected_rows(title_part: String = MATCH) -> Array:
+	## The same rows straight from each loaded project's cache, merged and
+	## sorted by title (the fixture's titles are unique).
 	var modes := StorageBadge.project_modes(_state.get_project_dbs())
+	var retrieval_shown := _shell._query_grid._col_fields.has("retrieval_count")
 	var rows: Array = []
-	for project: String in PROJECTS:
+	for project: String in _state.get_project_dbs():
 		var db: DocketDB = _state.get_db_for_project(project)
-		for item: Dictionary in db.execute_query({"filter": {"conditions": [{"field": "title", "op": "contains", "value": MATCH}]}}):
-			rows.append([project, str(item.id), str(item.title), StorageBadge.word(str(modes[project]), str(item.get("storage", "")))])
+		for item: Dictionary in db.execute_query({"filter": {"conditions": [{"field": "title", "op": "contains", "value": title_part}]}}):
+			var cells: Array = [project, str(item.id), str(item.title), StorageBadge.word(str(modes[project]), str(item.get("storage", "")))]
+			if retrieval_shown: cells.append(str(int(item.get("retrieval_count", 0))))
+			rows.append(cells)
 	rows.sort_custom(func(a: Array, b: Array) -> bool: return str(a[2]) < str(b[2]))
 	return rows
+
+
+func _rows_match(title_part: String, message: String) -> Variant:
+	## The grid shows rows, and they equal _expected_rows(title_part).
+	var shown := _shown_rows()
+	var r = A.is_true(not shown.is_empty(), "%s: the grid shows rows" % message)
+	if r is String: return r
+	return A.eq(shown, _expected_rows(title_part), message)
+
+
+func _title_filter(title_part: String) -> String:
+	return JSON.stringify({"conditions": [{"field": "title", "op": "contains", "value": title_part}]})
 
 
 func _other_shown_row(project: String) -> Array:
@@ -395,9 +671,9 @@ func _other_shown_row(project: String) -> Array:
 
 
 func _file_stamps() -> Dictionary:
-	## Project -> [sha256, mtime] of its canonical .dct.
+	## Loaded project -> [sha256, mtime] of its canonical .dct.
 	var stamps := {}
-	for project: String in PROJECTS:
+	for project: String in _state.get_project_dbs():
 		var path := _state.get_db_for_project(project).get_path()
 		stamps[project] = [FileAccess.get_sha256(path), FileAccess.get_modified_time(path)]
 	return stamps
