@@ -244,7 +244,10 @@ func test_project_value_lists_loaded_projects_and_add_selects_new_one() -> Varia
 ## those handlers. Oracles: after every restore the numeric row shows the text
 ## typed ("2", "0" or nothing) and the rows equal the rows before the restore
 ## and a core query with literal numbers (every fixture row for the empty row);
-## the reopened P has its saved columns and descending order.
+## the reopened P has its saved columns and descending order. Last, a file
+## holding only {"filter": {}} is opened while P is shown sorted: it must show
+## one empty row and every fixture row in creation order, and P keeps its own
+## condition.
 func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	var state := AppState.new()
 	state.load_schema()
@@ -322,6 +325,8 @@ func test_numeric_conditions_survive_save_and_restore() -> Variant:
 	shell._on_save_query_selected(menu_path)
 	shell._activate_work_entry(r_entry)
 	grid.set_result_columns(["id", "title", "status"])
+	# The shared sort is title, descending; one more header click clears it, so
+	# the descending order below can only come from the file.
 	grid._toggle_sort(grid._col_fields.find("title"))
 	shell._on_open_query_selected(menu_path)
 	r = _numeric_restored(grid, "priority", p_rows, "entry P from File > Open Query")
@@ -355,8 +360,27 @@ func test_numeric_conditions_survive_save_and_restore() -> Variant:
 			shell._on_open_query_selected(empty_path)
 			r = _single_restored(grid, typed, expected, "entry E with nothing typed, from File > Open Query")
 			if r is String: shell.queue_free(); return r
+
+	# An "all items" file (no condition rows, no sort) opened from File > Open
+	# Query while entry P is shown sorted by title, descending.
+	shell._activate_work_entry(p_entry)
+	for _click in 3:
+		if grid._sort_field == "title" and grid._sort_dir == "desc": break
+		grid._toggle_sort(grid._col_fields.find("title"))
+	r = A.eq(_ordered(grid), descending, "fixture: entry P sorted by title, descending before the open")
+	if r is String: shell.queue_free(); return r
+	var all_path := _db_dir + "/all_items.dcq"
+	var all_file := FileAccess.open(all_path, FileAccess.WRITE)
+	all_file.store_string('{"filter": {}}')
+	all_file.close()
+	shell._on_open_query_selected(all_path)
+	var creation_order: Array = ["c1", "h0", "c2", "h1", "c3", "h2", "c4", "h3"]
+	r = A.eq([grid._condition_snapshots(), _ordered(grid)], [[{"field": "type", "op": "eq", "value": ""}], creation_order], "an all-items file opens with one empty row, every row, unsorted")
+	if r is String: shell.queue_free(); return r
+	shell._activate_work_entry(p_entry)
+	r = _numeric_restored(grid, "priority", p_rows, "entry P after the all-items file was opened")
 	shell.queue_free()
-	return true
+	return r
 
 
 func _ordered(grid: QueryGrid) -> Array:

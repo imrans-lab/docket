@@ -875,8 +875,8 @@ func _build_conditions_filter() -> Dictionary:
 
 func _serialize_all_conditions() -> Dictionary:
 	## Like _build_conditions_filter() but keeps (any) rows for UI state. A row
-	## with nothing typed keeps its empty value, whatever its field, since typing
-	## would turn it into a value (0, false) the user never entered.
+	## whose value is empty keeps it, whatever its field: _typed_condition would
+	## convert it to a value (0, false) the user never entered.
 	var conditions: Array = []
 	for snapshot in _condition_snapshots():
 		var cond: Dictionary = snapshot
@@ -1313,18 +1313,23 @@ func load_dcq(path: String) -> void:
 	if not parsed is Dictionary:
 		return
 	# Columns and sort are set before the filter, so its one query loads every
-	# key the saved columns read.
+	# key the saved columns read. A file without a sort opens unsorted, and one
+	# without condition rows opens with one empty row.
 	_dcq_columns = parsed.get("columns", []).duplicate(true) if parsed.get("columns", []) is Array else []
 	if parsed.get("sort") is Array and not parsed.sort.is_empty() and parsed.sort[0] is Dictionary:
 		_sort_field = str(parsed.sort[0].get("field_key", parsed.sort[0].get("field", "")))
 		_sort_dir = str(parsed.sort[0].get("dir", "asc"))
 		_sort_binding = parsed.sort[0].duplicate(true)
+	else:
+		_sort_field = ""
+		_sort_dir = "asc"
+		_sort_binding = {}
 	if parsed.has("ui_filter"):
 		set_filter(JSON.stringify(parsed.ui_filter))
 	elif parsed.has("filter") and parsed.filter is Dictionary and parsed.filter.has("conditions"):
 		set_filter(JSON.stringify(parsed.filter))
 	else:
-		refresh()
+		set_filter("")
 
 
 func save_dcq(path: String) -> void:
