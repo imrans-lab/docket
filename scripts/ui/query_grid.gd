@@ -776,9 +776,12 @@ func _op_label_to_key(label: String) -> String:
 
 func _run_query() -> void:
 	_results_stale = false
-	_query_rows()
+	_rebuild_columns()
 	_results_read_retrievals = _reads_retrievals()
+	# Read before the rows: a write committed while they are read leaves the
+	# stored generation behind it, so the next showing refreshes.
 	_results_generation = _project_generations()
+	_query_rows()
 
 
 func _query_rows() -> void:
@@ -1284,18 +1287,19 @@ func load_dcq(path: String) -> void:
 	var parsed = JSON.parse_string(f.get_as_text())
 	if not parsed is Dictionary:
 		return
-	if parsed.has("ui_filter"):
-		set_filter(JSON.stringify(parsed.ui_filter))
-	elif parsed.has("filter") and parsed.filter is Dictionary and parsed.filter.has("conditions"):
-		set_filter(JSON.stringify(parsed.filter))
+	# Columns and sort are set before the filter, so its one query loads every
+	# key the saved columns read.
 	_dcq_columns = parsed.get("columns", []).duplicate(true) if parsed.get("columns", []) is Array else []
 	if parsed.get("sort") is Array and not parsed.sort.is_empty() and parsed.sort[0] is Dictionary:
 		_sort_field = str(parsed.sort[0].get("field_key", parsed.sort[0].get("field", "")))
 		_sort_dir = str(parsed.sort[0].get("dir", "asc"))
 		_sort_binding = parsed.sort[0].duplicate(true)
-		_run_query()
+	if parsed.has("ui_filter"):
+		set_filter(JSON.stringify(parsed.ui_filter))
+	elif parsed.has("filter") and parsed.filter is Dictionary and parsed.filter.has("conditions"):
+		set_filter(JSON.stringify(parsed.filter))
 	else:
-		_rebuild_columns()
+		refresh()
 
 
 func save_dcq(path: String) -> void:
@@ -1333,8 +1337,11 @@ func _is_hidden() -> bool:
 
 func _show_current_results() -> void:
 	## The grid became visible: the rows it holds stand unless a change arrived
-	## while it was hidden, in which case the query runs once.
-	if _catalog_stale:
+	## while it was hidden, in which case the query runs once. A project whose
+	## canonical file changed on disk is reloaded first (AppState.reload_stale,
+	## as the shell's poll does), and its rows and type catalogue are rebuilt.
+	var reloaded := _state.reload_stale()
+	if _catalog_stale or not reloaded.is_empty():
 		_on_file_changed()
 	elif _results_stale or not _generations_unchanged():
 		_run_query()
@@ -1359,5 +1366,5 @@ func _project_generations() -> Dictionary:
 
 
 func _reads_retrievals() -> bool:
-	## The query just run read retrieval_count: a loaded key or a condition.
-	return _loaded_keys.has("retrieval_count") or _condition_snapshots().any(func(cond: Dictionary) -> bool: return cond.field == "retrieval_count")
+	## The query about to run reads retrieval_count: a row key or a condition.
+	return _row_keys().has("retrieval_count") or _condition_snapshots().any(func(cond: Dictionary) -> bool: return cond.field == "retrieval_count")

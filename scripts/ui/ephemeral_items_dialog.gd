@@ -37,15 +37,31 @@ func ask(pending: Dictionary, after: Callable, failure: String = "") -> void:
 	var failure_label: Label = %Failure
 	failure_label.text = "Not done:\n%s" % failure
 	(%FailureScroll as ScrollContainer).visible = not failure.is_empty()
-	# A dialog opens at the larger of min_size and its content minimum. The
-	# message, item list and failure report each scroll, so the content minimum
-	# is the button row, fixed margins and the message area (_fit_message),
-	# whatever the text length or item count. min_size is the preferred size cut
-	# down to the usable area, so the dialog and its buttons stay inside it
-	# whenever that area is at least the content minimum.
+	var host := get_parent().get_viewport()
+	if is_embedded() and not host.size_changed.is_connected(_on_host_resized):
+		host.size_changed.connect(_on_host_resized)
+	_fit_to_area()
+	popup_centered(min_size)
+
+
+## A dialog opens at the larger of min_size and its content minimum. The
+## message, item list and failure report each scroll, so the content minimum is
+## the button row, fixed margins and the message area (_fit_message), whatever
+## the text length or item count. min_size is the preferred size cut down to the
+## usable area, so the dialog and its buttons stay inside it whenever that area
+## is at least the content minimum.
+func _fit_to_area() -> void:
 	min_size = PREFERRED_SIZE.min(Vector2i(Vector2(_usable_size()) * USABLE_RATIO))
 	_fit_message()
-	popup_centered(min_size)
+
+
+## The embedding viewport changed size while the dialog may be open: the bound
+## is recomputed and an open dialog is resized to it and centred again.
+func _on_host_resized() -> void:
+	if not visible: return
+	_fit_to_area()
+	size = min_size
+	move_to_center()
 
 
 ## Sizes the message area to the wrapped message at the label's current width,

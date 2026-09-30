@@ -77,10 +77,17 @@ const ROWS_SMALL := 10  # rows per project in the reads oracle's smaller set
 ## Counts results queries; everything else is AppState's own behavior.
 class CountingState extends AppState:
 	var results_queries := 0
+	## Runs once, after the next results query has read its rows.
+	var after_next_query: Callable
 
 	func execute_cross_project_query(query: Dictionary, detail: String = "full", keys: PackedStringArray = PackedStringArray()) -> Array:
 		results_queries += 1
-		return super.execute_cross_project_query(query, detail, keys)
+		var rows := super.execute_cross_project_query(query, detail, keys)
+		if after_next_query.is_valid():
+			var hook := after_next_query
+			after_next_query = Callable()
+			hook.call()
+		return rows
 
 ## Counts SELECT statements; everything else is DocketDB's own behavior.
 class CountingDB extends DocketDB:
@@ -389,6 +396,8 @@ func test_refresh_rows_match_complete_records() -> Variant:
 		if r is String: return r
 		r = _short_ids_distinct(shown, 2 + grid._col_fields.find("id"))
 		if r is String: return "%s: %s" % [view.name, r]
+	var pinned: Variant = await _pinned_cells()
+	if pinned is String: return pinned
 	_show_view(_views()[0])
 	var shared: String = _fixture_ids["shared"]
 	var shown_shared: Dictionary = {}
@@ -397,6 +406,47 @@ func test_refresh_rows_match_complete_records() -> Variant:
 	var r = A.is_true(shown_shared.size() == 2 and shown_shared.alpha != shown_shared.beta, "the id in both projects shows each project's own prefix: %s" % shown_shared)
 	if r is String: return r
 	return _open_complete_record()
+
+
+## Saved queries (.dcq) loaded without and with a sort: a title filter and a
+## column the default layout lacks (description). Oracles: queries (exactly 1
+## per load) and cells (the shown rows, keyed by project and id, with their
+## description cells equal each project's records for the filter from a fresh
+## core query, with the records' own descriptions).
+func test_saved_query_loads_its_columns_in_one_query() -> Variant:
+	var fixture_error := _open_views_fixture()
+	if not fixture_error.is_empty():
+		return fixture_error
+	var grid := _shell._query_grid
+	for sort: Array in [[], [{"field": "title", "dir": "asc"}]]:
+		var saved := {"ui_filter": {"conditions": _title_is(MATCH)}, "columns": ["id", "project", "title", "description"]}
+		if not sort.is_empty(): saved["sort"] = sort
+		var path := "%s/saved_%d.dcq" % [DIR, sort.size()]
+		var out := FileAccess.open(path, FileAccess.WRITE)
+		out.store_string(JSON.stringify(saved))
+		out.close()
+		_state.results_queries = 0
+		grid.load_dcq(path)
+		await get_tree().process_frame
+		var label := "sorted" if not sort.is_empty() else "unsorted"
+		var r = A.eq(_state.results_queries, 1, "%s: results queries from loading the saved query" % label)
+		if r is String: return r
+		var description_col := grid._col_fields.find("description")
+		var shown := {}
+		var root := grid._tree.get_root()
+		if root != null and description_col >= 0:
+			for row in root.get_children():
+				var origin: Dictionary = row.get_metadata(0)
+				shown["%s:%s" % [origin.project, origin.id]] = row.get_text(description_col)
+		var expected := {}
+		for project: String in _state.get_project_dbs():
+			for item: Dictionary in _state.get_db_for_project(project).execute_query({"filter": {"conditions": _title_is(MATCH)}}):
+				expected["%s:%s" % [project, item.id]] = str(item.get("description", ""))
+		r = A.is_true(not shown.is_empty() and expected.values().any(func(text: String) -> bool: return not text.is_empty()), "%s: fixture: rows are shown and some have a description" % label)
+		if r is String: return r
+		r = A.eq(shown, expected, "%s: description cells equal the records" % label)
+		if r is String: return r
+	return true
 
 
 func test_refresh_reads_do_not_grow_with_rows() -> Variant:
@@ -444,6 +494,8 @@ func _changes() -> Array[Dictionary]:
 		{"kind": "hint retrieval", "queries": 0, "apply": _hint_retrieval},
 		{"kind": "MCP edit", "queries": 1, "apply": _mcp_edit},
 		{"kind": "external edit", "queries": 1, "apply": _external_edit},
+		{"kind": "external edit, no poll", "queries": 1, "apply": _external_edit_unpolled},
+		{"kind": "commit during the query", "queries": 1, "before": _commit_during_query, "apply": nothing},
 		{"kind": "ephemeral create", "queries": 1, "apply": _ephemeral_create},
 		{"kind": "ephemeral update", "queries": 1, "apply": _ephemeral_update},
 		{"kind": "ephemeral keep", "queries": 1, "apply": _ephemeral_keep},
@@ -536,7 +588,15 @@ func _mcp_edit() -> String:
 
 func _external_edit() -> String:
 	## Another writer edits beta's canonical file on disk; the shell's poll
-	## notices. Every project is settled first so the file holds every row.
+	## notices.
+	var error := _external_edit_unpolled()
+	if error.is_empty(): _shell._on_poll_external_changes()
+	return error
+
+
+func _external_edit_unpolled() -> String:
+	## Another writer edits beta's canonical file on disk and no poll runs
+	## before Back. Every project is settled first so the file holds every row.
 	for db in _dbs:
 		var flushed := (db as DocketDBJsonl).flush_checked()
 		if not flushed.is_empty(): return flushed
@@ -549,8 +609,26 @@ func _external_edit() -> String:
 	var out := FileAccess.open(path, FileAccess.WRITE)
 	out.store_string(text.replace(quoted, JSON.stringify("%s edited on disk" % other[2])))
 	out.close()
-	_shell._on_poll_external_changes()
 	return ""
+
+
+func _commit_during_query() -> String:
+	## The shown grid refreshes, and right after its query has read the rows
+	## another connection to beta's cache commits a new title for a beta row, as
+	## another process sharing the cache would.
+	var other_row := _other_shown_row("beta")
+	if other_row.is_empty(): return "no beta row to retitle"
+	var errors: Array[String] = []
+	_state.after_next_query = func() -> void:
+		var other := DocketDB.new()
+		if not other.open(JSONLCache.cache_path_for(_state.get_db_for_project("beta").get_path()), false):
+			errors.append("the second connection did not open")
+			return
+		errors.append(other.update_item_fields_checked(str(other_row[1]), {"title": "%s zz another process" % MATCH}))
+		other.close()
+	_shell._query_grid.refresh()
+	if errors.is_empty(): return "the grid ran no results query"
+	return errors[0]
 
 
 func _ephemeral_create() -> String:
@@ -700,6 +778,8 @@ func _expected_rows(conditions: Array) -> Array:
 	var rows: Array = []
 	for project: String in _state.get_project_dbs():
 		var db: DocketDB = _state.get_db_for_project(project)
+		# The cache first catches up with a canonical file changed on disk.
+		if db is DocketDBJsonl: (db as DocketDBJsonl).ensure_fresh()
 		for item: Dictionary in db.execute_query({"filter": {"conditions": conditions}}):
 			var cells: Array = [project, str(item.id), str(item.title), StorageBadge.word(str(modes[project]), str(item.get("storage", "")))]
 			if retrieval_shown: cells.append(str(int(item.get("retrieval_count", 0))))
@@ -856,6 +936,41 @@ func _show_view(view: Dictionary) -> void:
 	grid.set_result_columns(view.columns)
 	grid.set_filter(JSON.stringify({"conditions": view.conditions}) if not (view.conditions as Array).is_empty() else "")
 	grid._toggle_sort(grid._col_fields.find(view.sort))
+
+
+func _pinned_cells() -> Variant:
+	## The tag filter view's cells for three reviews, against values the
+	## fixture sets: revision "r%02d" % (5 - i), approved for review 0 and
+	## requested for review 2, and the grid's status colours for a terminal
+	## and a queued state.
+	var grid := _shell._query_grid
+	_show_view(_views()[1])
+	await get_tree().process_frame
+	var terminal := Color(0.55, 0.55, 0.6)
+	var queued := Color(0.65, 0.7, 0.85)
+	var pins := {
+		_fixture_ids["alpha review 0"]: ["alpha", "approved", "r05", "", terminal],
+		_fixture_ids["alpha review 2"]: ["alpha", "requested", "r03", "", queued],
+		_fixture_ids["beta review 0"]: ["beta", "approved", "", "r05", terminal],
+	}
+	var status_col := grid._col_fields.find("status")
+	var revision_col := _bound_column("Revision")
+	var beta_revision_col := _bound_column("Beta revision")
+	var found := 0
+	for cells: Array in _view_rows_shown():
+		if not pins.has(cells[1]) or cells[0] != (pins[cells[1]] as Array)[0]: continue
+		found += 1
+		var actual := [cells[0], cells[2 + status_col], cells[2 + revision_col], cells[2 + beta_revision_col], cells[cells.size() - 1]]
+		var r = A.eq(actual, pins[cells[1]], "pinned cells of %s" % cells[1])
+		if r is String: return r
+	return A.eq(found, pins.size(), "pinned reviews shown in the tag filter view")
+
+
+func _bound_column(label: String) -> int:
+	var columns: Array = _shell._query_grid._col_fields
+	for i in columns.size():
+		if columns[i] is Dictionary and str((columns[i] as Dictionary).get("label", "")) == label: return i
+	return -1
 
 
 func _view_rows_shown() -> Array:

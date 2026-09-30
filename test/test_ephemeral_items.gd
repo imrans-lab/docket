@@ -603,8 +603,9 @@ const TINY_AREA := Vector2(240, 170)
 ## The Keep / Drop / Cancel dialog opened for hundreds of long-titled ephemeral
 ## items, with a failure report, at three content scales: 1 (the preferred
 ## size, when the unscaled visible area holds it), 3, and the smallest scale
-## whose visible area is at most TINY_AREA on both axes.
-## Oracle: Godot's own layout after the popup settles. At every scale the
+## whose visible area is at most TINY_AREA on both axes; and opened at scale 1,
+## then left open while the scale changes to that smallest one.
+## Oracle: Godot's own layout after the popup settles. In every case the
 ## dialog's rectangle, title bar included, lies inside the root's visible rect,
 ## and each of Keep, Drop and Cancel is shown, has an area and lies inside the
 ## dialog. At the preferred size the message area is exactly as tall as the
@@ -630,19 +631,9 @@ func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 	var r: Variant = true
 	for scale: float in [1.0, 3.0, tiny_scale]:
 		root.content_scale_factor = scale
-		var dialog := (load("res://scenes/ui/ephemeral_items_dialog.tscn") as PackedScene).instantiate() as EphemeralItemsDialog
-		dialog.init(state)
-		add_child(dialog)
-		dialog.ask(ItemStorage.outstanding(state.get_project_dbs()), Callable(), "\n".join(range(60).map(func(i: int) -> String: return "error %d" % i)))
+		var dialog := _open_dialog(state)
 		for i in 3: await get_tree().process_frame
-
-		var title_height := dialog.get_theme_constant(&"title_height")
-		var outer := Rect2(Vector2(dialog.position) - Vector2(0, title_height), Vector2(dialog.size) + Vector2(0, title_height))
-		var area := root.get_visible_rect()
-		var inside := Rect2(Vector2.ZERO, Vector2(dialog.size))
-		var buttons: Dictionary = {}
-		for button in dialog.get_ok_button().get_parent().get_children():
-			if button is Button and button.is_visible_in_tree(): buttons[button.text] = button.get_global_rect()
+		var layout := _dialog_layout(dialog)
 		var items: ItemList = dialog.get_node("%Items")
 		var scroll := items.get_v_scroll_bar()
 		var scrolls := scroll.is_visible_in_tree() and scroll.max_value > scroll.page
@@ -653,9 +644,10 @@ func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 		dialog.free()
 		var label := "scale %.2f" % scale
 		if scale == tiny_scale:
+			var area: Rect2 = layout.area
 			r = A.is_true(area.size.x <= TINY_AREA.x and area.size.y <= TINY_AREA.y, "fixture: the visible area %s is at most %s" % [area.size, TINY_AREA])
 			if r is String: break
-		r = _dialog_fits(outer, area, inside, buttons, label)
+		r = _dialog_fits(layout, label)
 		if r is String: break
 		if scale == 1.0:
 			r = A.is_true(preferred, "fixture: the unscaled visible area %s holds the preferred size" % unscaled)
@@ -665,14 +657,46 @@ func test_ephemeral_items_dialog_fits_a_small_window() -> Variant:
 		if scale == 3.0:
 			r = A.is_true(list_height > 0.0 and scrolls, "the item list has height %s and scrolls" % list_height)
 			if r is String: break
+	if not r is String:
+		root.content_scale_factor = 1.0
+		var open_dialog := _open_dialog(state)
+		for i in 3: await get_tree().process_frame
+		root.content_scale_factor = tiny_scale
+		for i in 3: await get_tree().process_frame
+		var shrunk := _dialog_layout(open_dialog)
+		open_dialog.free()
+		r = _dialog_fits(shrunk, "open while the area shrinks to scale %.2f" % tiny_scale)
 	root.content_scale_factor = old_scale
 	db.close()
 	return r
 
 
-func _dialog_fits(outer: Rect2, area: Rect2, inside: Rect2, buttons: Dictionary, label: String) -> Variant:
+func _open_dialog(state: AppState) -> EphemeralItemsDialog:
+	var dialog := (load("res://scenes/ui/ephemeral_items_dialog.tscn") as PackedScene).instantiate() as EphemeralItemsDialog
+	dialog.init(state)
+	add_child(dialog)
+	dialog.ask(ItemStorage.outstanding(state.get_project_dbs()), Callable(), "\n".join(range(60).map(func(i: int) -> String: return "error %d" % i)))
+	return dialog
+
+
+func _dialog_layout(dialog: EphemeralItemsDialog) -> Dictionary:
+	## outer: the dialog's rectangle with its title bar; area: the root's visible
+	## rect; inside: the dialog's own rectangle; buttons: text -> rectangle of
+	## each shown button.
+	var title_height := dialog.get_theme_constant(&"title_height")
+	var buttons: Dictionary = {}
+	for button in dialog.get_ok_button().get_parent().get_children():
+		if button is Button and button.is_visible_in_tree(): buttons[button.text] = button.get_global_rect()
+	return {"outer": Rect2(Vector2(dialog.position) - Vector2(0, title_height), Vector2(dialog.size) + Vector2(0, title_height)), "area": get_tree().root.get_visible_rect(), "inside": Rect2(Vector2.ZERO, Vector2(dialog.size)), "buttons": buttons}
+
+
+func _dialog_fits(layout: Dictionary, label: String) -> Variant:
 	## The dialog lies inside the visible area and Keep, Drop and Cancel are
 	## shown, each with an area inside the dialog.
+	var outer: Rect2 = layout.outer
+	var area: Rect2 = layout.area
+	var inside: Rect2 = layout.inside
+	var buttons: Dictionary = layout.buttons
 	var r = A.is_true(area.encloses(outer), "%s: the dialog %s lies inside the visible area %s" % [label, outer, area])
 	if r is String: return r
 	r = A.eq(buttons.keys().filter(func(text: String) -> bool: return text in ["Keep", "Drop", "Cancel"]).size(), 3, "%s: Keep, Drop and Cancel are shown: %s" % [label, str(buttons.keys())])
