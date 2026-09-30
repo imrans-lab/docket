@@ -567,7 +567,8 @@ func _hidden_column_path() -> Variant:
 
 func _edited_condition_path() -> Variant:
 	var grid := _shell._query_grid
-	var queried: Array = _title_is(MATCH) + [{"field": "retrieval_count", "op": "lt", "value": 1, "conj": "and"}]
+	# The value is the text a condition row holds; set_filter reads it as typed.
+	var queried: Array = _title_is(MATCH) + [{"field": "retrieval_count", "op": "lt", "value": "1", "conj": "and"}]
 	var edited := {"field": "title", "op": "contains", "value": "hint", "conj": "and"}
 	var query_then_edit := func() -> String:
 		grid.set_filter(JSON.stringify({"conditions": queried}))
