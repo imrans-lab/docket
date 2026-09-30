@@ -11,12 +11,12 @@ text = "Storage"
 [node name="Mode" type="OptionButton" parent="."]
 unique_name_in_owner = true
 size_flags_horizontal = 3
-tooltip_text = "Ephemeral items take part in queries, links and comments but are never written to the project file until kept."
+tooltip_text = "Ephemeral items take part in queries, links and comments but are never written to the project file until saved."
 item_count = 3
 selected = 0
 popup/item_0/text = "Default for the type"
 popup/item_0/id = 0
 popup/item_1/text = "Durable — saved to the project file"
 popup/item_1/id = 1
-popup/item_2/text = "Ephemeral — not saved until kept"
+popup/item_2/text = "Ephemeral — not written to the file until saved"
 popup/item_2/id = 2

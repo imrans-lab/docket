@@ -127,7 +127,7 @@ func _notification(what: int) -> void:
 
 func _request_quit() -> void:
 	## Memory projects with outstanding items are resolved (spill, promote or
-	## discard), then ephemeral items (keep, drop), before the process exits;
+	## discard), then ephemeral items (save or delete), before the process exits;
 	## the quit waits for both answers.
 	var pending := MemoryProject.outstanding_projects(_state.get_project_dbs())
 	if not pending.is_empty():

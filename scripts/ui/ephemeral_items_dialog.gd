@@ -1,10 +1,11 @@
 extends ConfirmationDialog
 class_name EphemeralItemsDialog
 ## Quit and project close with ephemeral items outstanding
-## (scenes/ui/ephemeral_items_dialog.tscn): Keep writes them to their project
-## files (ItemStorage.keep, then the normal settle), Drop deletes them, Cancel
-## returns and the quit or close does not happen. After Keep or Drop the caller's
-## continuation runs; when any item fails, the dialog asks again for what is left.
+## (scenes/ui/ephemeral_items_dialog.tscn): Save writes them to their project
+## files (ItemStorage.keep, then the normal settle), Delete deletes them
+## (ItemStorage.drop), Cancel returns and the quit or close does not happen.
+## After Save or Delete the caller's continuation runs; when any item fails, the
+## dialog asks again for what is left.
 
 const PREFERRED_SIZE := Vector2i(560, 380)
 const USABLE_RATIO := 0.9
@@ -18,7 +19,7 @@ var _after: Callable
 
 func init(state: AppState) -> void:
 	_state = state
-	add_button("Drop", false, "drop")
+	add_button("Delete", false, "drop")
 	(%Message as Label).resized.connect(_fit_message, CONNECT_DEFERRED)
 	confirmed.connect(_on_keep)
 	custom_action.connect(_on_custom_action)

@@ -595,19 +595,40 @@ func test_rebuild_that_finds_the_source_moved_twice_keeps_the_peers_rows() -> Va
 	return A.is_true(fresh, "the cache's fingerprint is the one the peer committed")
 
 
+## The dialog's buttons, in the order the words appear in its message.
+const DIALOG_BUTTONS := ["Save", "Delete", "Cancel"]
+
+
+## The dialog's words, as the scene and init() set them.
+## Oracle: the OK, custom and cancel buttons' text, and the message label's text.
+## The buttons read Save, Delete and Cancel; the message names Save and Delete
+## and uses neither Keep nor Drop.
+func test_ephemeral_items_dialog_words() -> Variant:
+	var dialog := (load("res://scenes/ui/ephemeral_items_dialog.tscn") as PackedScene).instantiate() as EphemeralItemsDialog
+	dialog.init(AppState.new())
+	var custom: Array = dialog.get_ok_button().get_parent().get_children().filter(func(node: Node) -> bool:
+		return node is Button and node != dialog.get_ok_button() and node != dialog.get_cancel_button())
+	var texts := [dialog.get_ok_button().text, custom.map(func(button: Button) -> String: return button.text), dialog.get_cancel_button().text]
+	var message := (dialog.get_node("%Message") as Label).text
+	dialog.free()
+	var r = A.eq(texts, [DIALOG_BUTTONS[0], [DIALOG_BUTTONS[1]], DIALOG_BUTTONS[2]], "the OK, custom and cancel buttons read Save, Delete and Cancel")
+	if r is String: return r
+	return A.is_true(message.contains("Save") and message.contains("Delete") and not message.contains("Keep") and not message.contains("Drop"), "the message names Save and Delete, not Keep or Drop: %s" % message)
+
+
 ## The small area the dialog is opened in: smaller on both axes than the
 ## wrapped message, button row and margins need together (256x192 with the
 ## default theme), so the dialog fits only while its message area scrolls.
 const TINY_AREA := Vector2(240, 170)
 
-## The Keep / Drop / Cancel dialog opened for hundreds of long-titled ephemeral
+## The Save / Delete / Cancel dialog opened for hundreds of long-titled ephemeral
 ## items, with a failure report, at three content scales: 1 (the preferred
 ## size, when the unscaled visible area holds it), 3, and the smallest scale
 ## whose visible area is at most TINY_AREA on both axes; and opened at scale 1,
 ## then left open while the scale changes to that smallest one.
 ## Oracle: Godot's own layout after the popup settles. In every case the
 ## dialog's rectangle, title bar included, lies inside the root's visible rect,
-## and each of Keep, Drop and Cancel is shown, has an area and lies inside the
+## and each of Save, Delete and Cancel is shown, has an area and lies inside the
 ## dialog. At the preferred size the message area is no taller than the label's
 ## own wrapped content (Label.get_minimum_size) and no taller than its share of
 ## the dialog, and the item list is taller than the failure report it shares
@@ -696,7 +717,7 @@ func _dialog_layout(dialog: EphemeralItemsDialog) -> Dictionary:
 
 
 func _dialog_fits(layout: Dictionary, label: String) -> Variant:
-	## The dialog lies inside the visible area and Keep, Drop and Cancel are
+	## The dialog lies inside the visible area and Save, Delete and Cancel are
 	## shown, each with an area inside the dialog.
 	var outer: Rect2 = layout.outer
 	var area: Rect2 = layout.area
@@ -704,9 +725,9 @@ func _dialog_fits(layout: Dictionary, label: String) -> Variant:
 	var buttons: Dictionary = layout.buttons
 	var r = A.is_true(area.encloses(outer), "%s: the dialog %s lies inside the visible area %s" % [label, outer, area])
 	if r is String: return r
-	r = A.eq(buttons.keys().filter(func(text: String) -> bool: return text in ["Keep", "Drop", "Cancel"]).size(), 3, "%s: Keep, Drop and Cancel are shown: %s" % [label, str(buttons.keys())])
+	r = A.eq(buttons.keys().filter(func(text: String) -> bool: return text in DIALOG_BUTTONS).size(), 3, "%s: Save, Delete and Cancel are shown: %s" % [label, str(buttons.keys())])
 	if r is String: return r
-	for text in ["Keep", "Drop", "Cancel"]:
+	for text in DIALOG_BUTTONS:
 		var rect: Rect2 = buttons[text]
 		r = A.is_true(rect.has_area() and inside.encloses(rect), "%s: %s %s lies inside the dialog %s" % [label, text, rect, inside])
 		if r is String: return r
