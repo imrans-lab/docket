@@ -248,7 +248,7 @@ func _build_ui() -> void:
 	_query_grid.item_selected.connect(_on_item_selected)
 	_query_grid.item_activated.connect(_on_item_activated)
 	_query_grid.add_project_requested.connect(_on_menu_action.bind("add_project"))
-	_query_grid.disk_change_found.connect(_on_poll_external_changes)
+	_query_grid.disk_change_found.connect(_on_poll_external_changes.bind(true))
 
 	_record_form = RecordForm.new()
 	_record_form.custom_minimum_size.x = 400
@@ -543,19 +543,24 @@ func _on_load_failed(path: String, reason: String) -> void:
 	_info_dialog.popup_centered()
 
 
-func _on_poll_external_changes() -> void:
+func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 	## Pick up external edits to the .dct (git pull, MCP server, another
 	## instance). Re-querying alone is not enough: the grid reads the SQLite
 	## cache, so without an actual reload it would redisplay stale rows.
 	## Also the GUI's own idle-debounced settle of sidecar appends. The query
 	## grid calls it too (disk_change_found) when it is shown while a project's
 	## file changed on disk, so a change found there gets the same handling.
+	## The projects token below gates the timer's ticks only: it hashes the
+	## canonical files and stamps this process's cache WAL, which another
+	## writer's sidecar append leaves unchanged, so with changed_on_disk (the
+	## grid's own file and sidecar check found a change) the reload runs
+	## whatever the token says.
 	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
 	# A debounce settle this tick started reads its slices on every frame.
 	for pdb in _state.get_project_dbs().values():
 		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): set_process(true)
 	var current_token := _get_projects_token()
-	if current_token == _last_projects_token:
+	if current_token == _last_projects_token and not changed_on_disk:
 		return
 	_last_projects_token = current_token
 

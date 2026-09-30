@@ -46,7 +46,10 @@ extends Node
 ## oracles are the shell's reload conflict dialog, the form keeping its unsaved
 ## title, and rows as above. test_external_type_change_with_a_stale_catalogue_
 ## queries_once: a project loaded and a type added to beta's file on disk while
-## a record is open; oracles are queries and rows as above.
+## a record is open; oracles are queries, rows as above and the grid's type
+## catalogue. test_sidecar_append_elsewhere_refreshes_on_back: a sidecar-only
+## append by a Docket with its own cache while a record is open; oracles are
+## queries and rows as above.
 ##
 ## A refresh reads only the item keys the grid's columns and sort need
 ## (ItemRows). Fixture: _open_views_fixture() builds alpha and beta with chores
@@ -347,7 +350,8 @@ func _write_project_file(path: String) -> String:
 ## A record is open while a project is loaded (so the type catalogue goes
 ## stale) and a writer that does not share beta's cache adds a type to beta's
 ## canonical file; Back is pressed with no poll driven. Oracles: queries
-## (exactly 1 from opening the record through Back) and rows, as above.
+## (exactly 1 from opening the record through Back), rows as above, and the
+## grid's type catalogue holding a beta "review" type after Back.
 func test_external_type_change_with_a_stale_catalogue_queries_once() -> Variant:
 	var fixture_error := _open_fixture()
 	if not fixture_error.is_empty():
@@ -367,7 +371,50 @@ func test_external_type_change_with_a_stale_catalogue_queries_once() -> Variant:
 		var error := _define_type_elsewhere("beta")
 		if not error.is_empty(): return error
 		return "" if (_state.get_db_for_project("beta") as DocketDBJsonl).is_stale() else "fixture: beta's cache does not read as changed on disk"
-	return await _open_change_and_return({"kind": "external type change, project loaded", "queries": 1, "apply": load_and_edit})
+	var r = await _open_change_and_return({"kind": "external type change, project loaded", "queries": 1, "apply": load_and_edit})
+	if r is String: return r
+	var beta_review := grid._type_catalog.filter(func(record: Dictionary) -> bool: return str(record.get("slug", "")) == "review" and str(record.get("project", "")) == "beta")
+	return A.eq(beta_review.size(), 1, "the grid's type catalogue holds beta's review type")
+
+
+## A Docket with its own cache retitles a beta row, and only its sidecar record
+## reaches beta's sidecar file (the canonical file and this process's cache are
+## untouched) while a record is open; Back is pressed with no poll driven.
+## Oracles: queries (exactly 1 from opening the record through Back) and rows
+## as above, which the test compares after bringing beta's cache up to its
+## files.
+func test_sidecar_append_elsewhere_refreshes_on_back() -> Variant:
+	var fixture_error := _open_fixture()
+	if not fixture_error.is_empty():
+		return fixture_error
+	var grid := _shell._query_grid
+	grid.set_filter(_title_filter(MATCH))
+	grid._toggle_sort(grid._col_fields.find("title"))
+	await get_tree().process_frame
+	return await _open_change_and_return({"kind": "sidecar append elsewhere", "queries": 1, "apply": _append_sidecar_elsewhere})
+
+
+func _append_sidecar_elsewhere() -> String:
+	## beta is settled, its canonical file copied, a row retitled in the copy,
+	## and the copy's sidecar bytes written as beta's sidecar.
+	var beta := _state.get_db_for_project("beta") as DocketDBJsonl
+	var flushed := beta.flush_checked()
+	if not flushed.is_empty(): return "settle before the append: %s" % flushed
+	var other := _other_shown_row("beta")
+	if other.is_empty(): return "no beta row to retitle"
+	var copy_path := "%s/beta_elsewhere.dct" % DIR
+	if DirAccess.copy_absolute(ProjectSettings.globalize_path(beta.get_path()), ProjectSettings.globalize_path(copy_path)) != OK: return "copy of beta failed"
+	var copy := DocketDBJsonl.open_jsonl(copy_path)
+	if copy == null: return "copy did not open: %s" % DocketDBJsonl.last_open_error
+	var error := copy.update_item_fields_checked(str(other[1]), {"title": "%s zz appended elsewhere" % MATCH})
+	var appended := FileAccess.get_file_as_bytes(JSONLSidecar.path_for(copy_path))
+	copy.close()
+	if not error.is_empty(): return "retitle in the copy failed: %s" % error
+	if appended.is_empty(): return "the copy's sidecar is empty"
+	var out := FileAccess.open(JSONLSidecar.path_for(beta.get_path()), FileAccess.WRITE)
+	out.store_buffer(appended)
+	out.close()
+	return "" if beta.is_stale() else "fixture: beta's cache does not read as changed on disk"
 
 
 func _define_type_elsewhere(project: String) -> String:
