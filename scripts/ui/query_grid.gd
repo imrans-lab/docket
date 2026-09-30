@@ -25,6 +25,9 @@ var _catalog_stale := false
 # Project name → DocketDB.results_generation() when the rows were last queried,
 # so a write no signal reported (an MCP tool call) still marks them stale.
 var _results_generation: Dictionary = {}
+# The rows were queried reading retrieval_count (a column, the sort or a
+# condition), so its bumps count against _results_generation.
+var _results_read_retrievals := false
 # Item keys _current_results were queried with (_row_keys).
 var _loaded_keys := PackedStringArray()
 # Per-_populate_tree registries and type resolutions (_resolve_row); empty
@@ -774,6 +777,7 @@ func _op_label_to_key(label: String) -> String:
 func _run_query() -> void:
 	_results_stale = false
 	_query_rows()
+	_results_read_retrievals = _reads_retrievals()
 	_results_generation = _project_generations()
 
 
@@ -1344,16 +1348,16 @@ func _generations_unchanged() -> bool:
 
 
 func _project_generations() -> Dictionary:
-	## Retrieval counter bumps count only while the rows show, sort or filter
-	## on retrieval_count.
-	var with_retrievals := _reads_retrievals()
+	## Retrieval counter bumps count only when the rows were queried reading
+	## retrieval_count, whatever the columns and conditions show now.
 	var generations := {}
 	var project_dbs := _state.get_project_dbs()
 	for project_name in project_dbs:
 		var project_db: DocketDB = project_dbs[project_name]
-		generations[project_name] = project_db.results_generation(with_retrievals) if project_db != null and project_db.is_open() else []
+		generations[project_name] = project_db.results_generation(_results_read_retrievals) if project_db != null and project_db.is_open() else []
 	return generations
 
 
 func _reads_retrievals() -> bool:
-	return _row_keys().has("retrieval_count") or _condition_snapshots().any(func(cond: Dictionary) -> bool: return cond.field == "retrieval_count")
+	## The query just run read retrieval_count: a loaded key or a condition.
+	return _loaded_keys.has("retrieval_count") or _condition_snapshots().any(func(cond: Dictionary) -> bool: return cond.field == "retrieval_count")

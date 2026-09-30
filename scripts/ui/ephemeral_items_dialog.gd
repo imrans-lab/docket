@@ -8,6 +8,8 @@ class_name EphemeralItemsDialog
 
 const PREFERRED_SIZE := Vector2i(560, 380)
 const USABLE_RATIO := 0.9
+## Largest share of min_size's height the message area takes before it scrolls.
+const MESSAGE_SHARE := 1.0 / 3.0
 
 var _state: AppState
 var _pending: Dictionary = {}
@@ -17,6 +19,7 @@ var _after: Callable
 func init(state: AppState) -> void:
 	_state = state
 	add_button("Drop", false, "drop")
+	(%Message as Label).resized.connect(_fit_message)
 	confirmed.connect(_on_keep)
 	custom_action.connect(_on_custom_action)
 	canceled.connect(func() -> void: _after = Callable())
@@ -36,12 +39,21 @@ func ask(pending: Dictionary, after: Callable, failure: String = "") -> void:
 	(%FailureScroll as ScrollContainer).visible = not failure.is_empty()
 	# A dialog opens at the larger of min_size and its content minimum. The
 	# message, item list and failure report each scroll, so the content minimum
-	# is the button row plus fixed margins whatever the text length or item
-	# count. min_size is the preferred size cut down to the usable area, so the
-	# dialog and its buttons stay inside it whenever that area is at least the
-	# content minimum.
+	# is the button row, fixed margins and the message area (_fit_message),
+	# whatever the text length or item count. min_size is the preferred size cut
+	# down to the usable area, so the dialog and its buttons stay inside it
+	# whenever that area is at least the content minimum.
 	min_size = PREFERRED_SIZE.min(Vector2i(Vector2(_usable_size()) * USABLE_RATIO))
+	_fit_message()
 	popup_centered(min_size)
+
+
+## Sizes the message area to the wrapped message at its current width, up to
+## MESSAGE_SHARE of min_size's height; a longer message scrolls. The item list
+## takes the rest. Runs again whenever the label's width changes its wrapping.
+func _fit_message() -> void:
+	var needed := (%Message as Label).get_minimum_size().y
+	(%MessageScroll as ScrollContainer).custom_minimum_size.y = minf(needed, min_size.y * MESSAGE_SHARE)
 
 
 ## The area the dialog's content may use: the embedding viewport, or the

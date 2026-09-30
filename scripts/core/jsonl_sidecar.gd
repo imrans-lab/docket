@@ -172,9 +172,9 @@ static func _durable_link(row: String) -> String:
 
 static func clear_dirty(db: DocketDB) -> String:
 	# Bookkeeping no results row reads (DocketDB.results_generation).
-	db._begin_uncounted()
+	var mark := db._begin_uncounted()
 	var error := db._exec_checked("DELETE FROM temp.sidecar_dirty;")
-	db._end_uncounted()
+	db._end_uncounted(mark)
 	return error
 
 

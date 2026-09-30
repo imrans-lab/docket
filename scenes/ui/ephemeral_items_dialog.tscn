@@ -15,8 +15,7 @@ offset_right = 552.0
 offset_bottom = 331.0
 
 [node name="MessageScroll" type="ScrollContainer" parent="Box"]
-size_flags_vertical = 3
-size_flags_stretch_ratio = 0.8
+unique_name_in_owner = true
 horizontal_scroll_mode = 0
 
 [node name="Message" type="Label" parent="Box/MessageScroll"]

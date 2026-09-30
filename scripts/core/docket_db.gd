@@ -78,15 +78,11 @@ func cache_generation() -> Array:
 ## identity and the GUI's display preferences.
 const RESULTS_UNSEEN_META := ["jsonl_hash", "ui_scale", "ui_font_size"]
 
-# This connection's writes that results_generation() leaves out, made inside
-# _begin_uncounted() / _end_uncounted(), and the connection they were counted on.
+# This connection's writes that results_generation() leaves out, made between
+# _begin_uncounted() and _end_uncounted(), and the connection they count on.
 var _uncounted_connection: int = 0
 var _unseen_changes: int = 0
 var _retrieval_changes: int = 0
-# The outermost open uncounted write: depth, and connection and total_changes()
-# when it began.
-var _uncounted_depth: int = 0
-var _uncounted_start: Array = []
 
 
 func results_generation(with_retrievals: bool) -> Array:
@@ -106,30 +102,29 @@ func results_generation(with_retrievals: bool) -> Array:
 	return [connection, own, generation[1]]
 
 
-func _begin_uncounted() -> void:
-	## Opens a write results_generation() leaves out; _end_uncounted closes it.
-	## A nested pair counts as part of the outermost one.
-	if _uncounted_depth == 0:
-		_uncounted_start = [_db.get_instance_id() if _db != null else 0, _own_changes()]
-	_uncounted_depth += 1
-
-
-func _end_uncounted(retrieval: bool = false) -> void:
-	## Closes the outermost uncounted write, adding its row changes to the
-	## unseen (or with retrieval, the retrieval) count. When the connection was
-	## replaced in between or a count could not be read, nothing is added, so
-	## the writes stay counted.
-	_uncounted_depth -= 1
-	if _uncounted_depth > 0 or _db == null: return
-	var connection := _db.get_instance_id()
-	var now := _own_changes()
-	if connection != int(_uncounted_start[0]) or now < 0 or int(_uncounted_start[1]) < 0: return
+func _begin_uncounted() -> Array:
+	## Opens a write results_generation() leaves out and returns the mark that
+	## _end_uncounted takes: the connection, its total_changes() and the changes
+	## already left out. Counts left from an earlier connection are dropped.
+	var connection := _db.get_instance_id() if _db != null else 0
 	if connection != _uncounted_connection:
 		_uncounted_connection = connection
 		_unseen_changes = 0
 		_retrieval_changes = 0
-	if retrieval: _retrieval_changes += now - int(_uncounted_start[1])
-	else: _unseen_changes += now - int(_uncounted_start[1])
+	return [connection, _own_changes(), _unseen_changes + _retrieval_changes]
+
+
+func _end_uncounted(mark: Array, retrieval: bool = false) -> void:
+	## Leaves out the row changes made since mark as unseen (or with retrieval,
+	## as retrieval) changes, less those a pair opened inside it already left
+	## out, so nested pairs each classify their own writes. When the connection
+	## was replaced in between or a count could not be read, nothing is left
+	## out, so the writes stay counted.
+	var now := _own_changes()
+	if _db == null or _db.get_instance_id() != int(mark[0]) or now < 0 or int(mark[1]) < 0: return
+	var changes := now - int(mark[1]) - (_unseen_changes + _retrieval_changes - int(mark[2]))
+	if retrieval: _retrieval_changes += changes
+	else: _unseen_changes += changes
 
 
 func _own_changes() -> int:
@@ -316,9 +311,9 @@ func get_meta_value(meta_key: String, default: String = "") -> String:
 
 func set_meta_value(meta_key: String, val: String) -> void:
 	var unseen: bool = RESULTS_UNSEEN_META.has(meta_key)
-	if unseen: _begin_uncounted()
+	var mark: Array = _begin_uncounted() if unseen else []
 	_exec("INSERT OR REPLACE INTO docket_meta (key, value) VALUES (?, ?);", [meta_key, val])
-	if unseen: _end_uncounted()
+	if unseen: _end_uncounted(mark)
 
 
 func get_all_meta() -> Dictionary:
@@ -1201,9 +1196,9 @@ func bump_retrieval(id: String) -> void:
 	## says when a hint's CONTENT was last revised. (Observed 2026-08-16: one
 	## unfiltered hint query rewrote updated_at on all 276 hints in a store,
 	## flattening months of history to a single date.)
-	_begin_uncounted()
+	var mark := _begin_uncounted()
 	_exec("UPDATE items SET retrieval_count=retrieval_count+1 WHERE id=?;", [id])
-	_end_uncounted(true)
+	_end_uncounted(mark, true)
 
 
 func bump_retrieval_many(ids: Array) -> void:

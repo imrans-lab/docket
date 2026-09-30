@@ -68,6 +68,8 @@ const DIR := "user://fixtures/results_return"
 const PROJECTS := ["alpha", "beta"]
 const MATCH := "row"
 const OTHER := "other"  # titles the second Work entry filters on
+## Result columns that show the retrieval count, which is last.
+const RETRIEVAL_COLUMNS := ["id", "project", "title", StorageBadge.FIELD, "retrieval_count"]
 const ROWS_PER_PROJECT := 40  # enough rows for the grid to scroll
 const OPEN_ROW := 60  # grid row the record is opened from
 const ROWS_SMALL := 10  # rows per project in the reads oracle's smaller set
@@ -317,6 +319,30 @@ func _write_project_file(path: String) -> String:
 	return "" if flushed.is_empty() else "fixture settle: %s" % flushed
 
 
+## The retrieval count column is shown (its values are queried) and hidden
+## again without a query; a record is opened, an MCP hint read bumps the
+## hint's count, Back is pressed and the column is shown again. Oracles:
+## queries (exactly 1 from opening the record through Back) and rows (with the
+## retrieval column shown again, every row's count equals a fresh core query's).
+func test_hidden_retrieval_column_shows_a_fresh_count() -> Variant:
+	var fixture_error := _open_fixture()
+	if not fixture_error.is_empty():
+		return fixture_error
+	var grid := _shell._query_grid
+	grid.set_filter(_title_filter(MATCH))
+	grid._toggle_sort(grid._col_fields.find("title"))
+	await get_tree().process_frame
+	var show_then_hide := func() -> String:
+		grid.set_result_columns(RETRIEVAL_COLUMNS)
+		grid.set_result_columns(RETRIEVAL_COLUMNS.slice(0, -1))
+		return ""
+	var r = await _open_change_and_return({"kind": "hidden retrieval column", "queries": 1, "before": show_then_hide, "apply": _hint_retrieval})
+	if r is String: return r
+	grid.set_result_columns(RETRIEVAL_COLUMNS)
+	await get_tree().process_frame
+	return _rows_match(MATCH, "the retrieval column shown again equals a fresh query")
+
+
 func test_refresh_rows_match_complete_records() -> Variant:
 	var fixture_error := _open_views_fixture()
 	if not fixture_error.is_empty():
@@ -561,7 +587,7 @@ func _hint_retrieval() -> String:
 
 
 func _show_retrieval_column() -> String:
-	_shell._query_grid.set_result_columns(["id", "project", "title", StorageBadge.FIELD, "retrieval_count"])
+	_shell._query_grid.set_result_columns(RETRIEVAL_COLUMNS)
 	return ""
 
 
