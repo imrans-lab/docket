@@ -321,6 +321,7 @@ func test_promote_copies_exactly_the_chosen_records_from_session_file_and_memory
 
 
 func test_promote_dialog_lists_each_record_by_its_short_id() -> Variant:
+	_tools.call_tool("docket_project_heartbeat", {"client":"test-owner", "client_class":"owner", "lease_seconds":60})
 	var memory: Dictionary = _tools.call_tool("docket_project_add", {"mode":"memory", "name":"Mem"})
 	if memory.has("error"): return "fixture memory project failed: %s" % memory.error
 	# Swap the registered project for a counting one holding the same connection.
