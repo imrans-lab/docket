@@ -140,12 +140,17 @@ var _drag_start_width: int = 0
 const _DRAG_ZONE: int = 5  # pixels from column edge to trigger resize
 
 
-func init(state: AppState) -> void:
+func init(state: AppState, query_now: bool = true) -> void:
+	## Builds the grid and runs its first query, unfiltered. With query_now
+	## false the results start stale instead, for a caller whose set_filter or
+	## apply_dcq follows and runs the first query.
 	_state = state
 	_state.file_changed.connect(_on_file_changed)
 	_state.data_changed.connect(_on_file_changed)
 	_rebuild_type_catalog()
 	_build_ui()
+	if query_now: _run_query()
+	else: _results_stale = true
 
 
 func _on_file_changed() -> void:
@@ -273,9 +278,7 @@ func _build_ui() -> void:
 	_count_label.add_theme_font_size_override("font_size", 12)
 	add_child(_count_label)
 
-	# Initial load
 	_sync_tree_columns()
-	_run_query()
 
 
 # -- Dynamic column rebuilding ---------------------------------------------

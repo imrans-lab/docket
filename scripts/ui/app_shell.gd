@@ -244,7 +244,8 @@ func _build_ui() -> void:
 	# Build child panels (not yet parented to content_area)
 	_query_grid = QueryGrid.new()
 	_query_grid.custom_minimum_size.x = 400
-	_query_grid.init(_state)
+	# _ready's first Work entry sets the grid's filter, which runs its first query.
+	_query_grid.init(_state, false)
 	_query_grid.item_selected.connect(_on_item_selected)
 	_query_grid.item_activated.connect(_on_item_activated)
 	_query_grid.add_project_requested.connect(_on_menu_action.bind("add_project"))

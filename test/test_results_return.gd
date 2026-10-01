@@ -86,6 +86,12 @@ extends Node
 ## without a sort on the same fixture. Oracles: queries (exactly 1 per load)
 ## and cells (each shown row's description equals its record's, from a fresh
 ## core query).
+##
+## test_startup_runs_one_results_query starts the shell on the fixture with no
+## saved last query and with a saved title filter. Oracles: queries (exactly 1
+## from creating the state until a frame after the shell is in the tree) and
+## grid rows (project, id and every cell, in order) equal to those of a grid
+## built the former way: init with its own first query, then set_filter.
 
 const A = preload("res://test/assert_helpers.gd")
 const DIR := "user://fixtures/results_return"
@@ -645,6 +651,42 @@ func test_saved_query_loads_its_columns_in_one_query() -> Variant:
 		r = A.eq(shown, expected, "%s: description cells equal the records" % label)
 		if r is String: return r
 	return true
+
+
+func test_startup_runs_one_results_query() -> Variant:
+	for filter: String in ["", _title_filter(MATCH)]:
+		_reset_fixtures()
+		# An empty filter and label read back as no saved query (All Items).
+		UserPrefs.save_last_query(filter, "" if filter.is_empty() else "Startup")
+		var label := "filtered" if not filter.is_empty() else "all items"
+		var fixture_error := _open_fixture()
+		if not fixture_error.is_empty(): return fixture_error
+		await get_tree().process_frame
+		var r = A.eq(_state.results_queries, 1, "%s: results queries at startup" % label)
+		if r is String: return r
+		var reference := QueryGrid.new()
+		add_child(reference)
+		reference.init(_state)
+		reference.set_filter(filter)
+		var shown := _grid_cells(_shell._query_grid)
+		r = A.is_true(not shown.is_empty(), "%s: the grid shows rows" % label)
+		if r is String: return r
+		r = A.eq(shown, _grid_cells(reference), "%s: startup rows equal init then set_filter" % label)
+		if r is String: return r
+	return true
+
+
+func _grid_cells(grid: QueryGrid) -> Array:
+	## [project, id, every column's text] of each row, top to bottom.
+	var rows: Array = []
+	var root := grid._tree.get_root()
+	if root == null: return rows
+	for row in root.get_children():
+		var origin: Dictionary = row.get_metadata(0)
+		var cells: Array = [str(origin.project), str(origin.id)]
+		for col in grid._tree.columns: cells.append(row.get_text(col))
+		rows.append(cells)
+	return rows
 
 
 func test_refresh_reads_do_not_grow_with_rows() -> Variant:
