@@ -427,7 +427,8 @@ func _dispatch_case() -> Variant:
 	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
 	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Dispatch":db})
 	var early: Dictionary = tools.call_tool("docket_subscribe", {"name":"codex-early", "filters":{"identity":"codex"}})
-	if early.has("error"): db.close(); return "subscribe failed: %s" % early.error
+	var everyone: Dictionary = tools.call_tool("docket_subscribe", {"name":"everyone"})
+	if early.has("error") or everyone.has("error"): db.close(); return "subscribe failed: %s %s" % [early, everyone]
 	var kinds_by_storage: Dictionary = {}
 	var ids: Dictionary = {}
 	for storage: String in [ItemStorage.EPHEMERAL, ItemStorage.DURABLE]:
@@ -441,13 +442,14 @@ func _dispatch_case() -> Variant:
 		var calls: Array = _dispatch_calls(id)
 		var error: String = _run_calls(tools, "Dispatch", calls)
 		if not error.is_empty(): db.close(); return "%s item: %s" % [storage, error]
-		var fed: Dictionary = _drain(tools, late.subscriber, late.cursor, 10)
+		# Limit 2: the four events span pages, joined through next_cursor.
+		var fed: Dictionary = _drain(tools, late.subscriber, late.cursor, 2)
 		if fed.has("error"): db.close(); return "%s item: %s" % [storage, fed.error]
 		var events: Array = fed.events
 		var kinds: Array = events.map(func(e: Dictionary) -> String: return str(e.kind))
 		var expected: Array = calls.map(func(c: Dictionary) -> String: return str(c.kind))
 		var on_item: bool = events.all(func(e: Dictionary) -> bool: return str(e.item_id) == id)
-		var r = A.is_true(kinds == expected and on_item and _ordered(events).is_empty(), "%s item: a subscriber scoped to its assignee pages %s with increasing eids: %s" % [storage, expected, events])
+		var r = A.is_true(kinds == expected and on_item and _ordered(events).is_empty() and int(fed.pages) >= 2, "%s item: a subscriber scoped to its assignee pages %s with increasing eids across pages: %s pages=%s" % [storage, expected, events, fed.get("pages")])
 		if r is String: db.close(); return r
 		var ack: Dictionary = tools.call_tool("docket_ack", {"subscriber":late.subscriber, "event_ids":events.map(func(e: Dictionary) -> Dictionary: return {"project":"Dispatch", "eid":int(e.eid)})})
 		var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":late.subscriber, "include_acked":true})
@@ -455,15 +457,26 @@ func _dispatch_case() -> Variant:
 		r = A.is_true(not ack.has("error") and (ack.get("acked", []) as Array).size() == expected.size() and int(status.get("pending_count", -1)) == 0 and acked == fed.eids, "%s item: every delivered event is acked and none stays pending: ack=%s status=%s" % [storage, ack, status])
 		if r is String: db.close(); return r
 		kinds_by_storage[storage] = kinds
-	var still_ephemeral: bool = ItemStorage.is_ephemeral(db, str(ids[ItemStorage.EPHEMERAL]))
+	# An ephemeral item assigned to someone else: outside codex's scope.
+	var other: Dictionary = tools.call_tool("docket_create", {"project":"Dispatch", "type":"work_item", "title":"Dispatch other", "assigned_to":"claude", "storage":ItemStorage.EPHEMERAL})
+	if other.has("error"): db.close(); return "create other failed: %s" % other.error
+	var other_error: String = _run_calls(tools, "Dispatch", [_dispatch_calls(str(other.id))[0]])
+	if not other_error.is_empty(): db.close(); return "other item: %s" % other_error
+	var still_ephemeral: bool = ItemStorage.is_ephemeral(db, str(ids[ItemStorage.EPHEMERAL])) and ItemStorage.is_ephemeral(db, str(other.id))
 
-	# Subscribed before both creations: each item's events open with its
-	# arrival, which lists the assignment.
-	var fed_early: Dictionary = _drain(tools, early.subscriber, early.cursor, 10)
+	# Subscribed before every creation: each codex item's events open with its
+	# arrival, which lists the assignment; the other item's never appear, while
+	# the unscoped subscriber sees them.
+	var fed_early: Dictionary = _drain(tools, early.subscriber, early.cursor, 3)
+	var fed_everyone: Dictionary = _drain(tools, everyone.subscriber, everyone.cursor, 3)
 	db.close()
-	if fed_early.has("error"): return str(fed_early.error)
+	if fed_early.has("error") or fed_everyone.has("error"): return "early drains failed: %s %s" % [fed_early.get("error", ""), fed_everyone.get("error", "")]
 	var all_early: Array = fed_early.events
-	var r = A.is_true(still_ephemeral and _ordered(all_early).is_empty(), "the ephemeral item stayed ephemeral and the early feed is ordered: %s" % [all_early])
+	var r = A.is_true(still_ephemeral and _ordered(all_early).is_empty(), "the ephemeral items stayed ephemeral and the early feed is ordered: %s" % [all_early])
+	if r is String: return r
+	var on_other := func(e: Dictionary) -> bool: return str(e.item_id) == str(other.id)
+	var other_kinds: Array = (fed_everyone.events as Array).filter(on_other).map(func(e: Dictionary) -> String: return str(e.kind))
+	r = A.is_true(not all_early.any(on_other) and other_kinds == ["created", "comment_added"], "claude's ephemeral item stays out of codex's feed and reaches the unscoped one: codex=%s unscoped=%s" % [all_early, other_kinds])
 	if r is String: return r
 	for storage: String in ids:
 		var events: Array = all_early.filter(func(e: Dictionary) -> bool: return str(e.item_id) == str(ids[storage]))
@@ -501,10 +514,14 @@ func _reissue_case() -> Variant:
 	if anchor.has("error"): db.close(); return "anchor create failed: %s" % anchor.error
 	# Each restart follows a burst of ephemeral eids whose rows are gone; the
 	# next eid, read from the file, must still be above all of them.
-	for restart: String in ["reopen", "rebuild", "fresh cache"]:
+	for restart: String in ["crash", "reopen", "rebuild", "fresh cache"]:
 		var burst: Dictionary = _ephemeral_burst(tools, db, "Reissue")
 		if burst.has("error"): db.close(); return "%s: %s" % [restart, burst.error]
 		var issued: int = int((burst.eids as Array).max())
+		if restart == "crash":
+			var crashed: Variant = _crash_copy_case(path, schema, str(anchor.id), issued)
+			if crashed is String: db.close(); return crashed
+			continue
 		var restarted: bool = true
 		match restart:
 			"reopen":
@@ -526,6 +543,28 @@ func _reissue_case() -> Variant:
 		if r is String: db.close(); return r
 	db.close()
 	return true
+
+## A process that dies right after issuing eids up to `issued`, with no close
+## or settle, leaves only its canonical and sidecar. A copy of the two opened
+## with a fresh cache must issue a higher eid. The copied canonical alone must
+## not hold the counter, so the sidecar is what carries it.
+func _crash_copy_case(path: String, schema: Dictionary, anchor_id: String, issued: int) -> Variant:
+	var copy: String = DIR + "/ReissueCrash.dct"
+	JSONLCache.delete_cache_family(copy)
+	for pair: Array in [[path, copy], [JSONLSidecar.path_for(path), JSONLSidecar.path_for(copy)]]:
+		var target: String = ProjectSettings.globalize_path(str(pair[1]))
+		if FileAccess.file_exists(target): DirAccess.remove_absolute(target)
+		if FileAccess.file_exists(str(pair[0])) and DirAccess.copy_absolute(ProjectSettings.globalize_path(str(pair[0])), target) != OK: return "crash: could not copy %s" % pair[0]
+	var on_disk: int = int(_file_meta(copy).get(ProjectEvents.COUNTER_KEY, 0))
+	var r = A.is_true(on_disk < issued and FileAccess.file_exists(JSONLSidecar.path_for(copy)), "crash: the copied canonical alone does not hold the counter (%d < %d) and a sidecar was left" % [on_disk, issued])
+	if r is String: return r
+	var crashed: DocketDBJsonl = DocketDBJsonl.open_jsonl(copy)
+	if crashed == null: return "crash: the copy did not open: %s" % DocketDBJsonl.last_open_error
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, crashed, {"Reissue":crashed})
+	var comment: Dictionary = tools.call_tool("docket_comment", {"project":"Reissue", "action":"add", "item_id":anchor_id, "text":"after a crash", "author":"claude"})
+	var next_eid: int = _file_head(copy)
+	crashed.close()
+	return A.is_true(not comment.has("error") and next_eid > issued, "after a crash the copy's next eid (%d) is above every ephemeral eid issued before it (%d): %s" % [next_eid, issued, comment])
 
 func test_a_settled_project_file_holds_the_counter_and_no_ephemeral_content() -> Variant:
 	return _with_store("quiet.json", _quiet_case)
