@@ -13,8 +13,10 @@ extends Node
 ## any expectation.
 ##
 ## The promote dialog's record list, over a memory project whose ids share their
-## first 7 to 12 characters: each row's id equals DocketDB.short_id of its record
-## (a LIKE count per prefix length), as does DocketDB.short_ids for every id.
+## first 7 to 12 characters plus legacy (non-UUID) ids: each row's id equals
+## DocketDB.short_id of its record (a LIKE count per prefix length; legacy ids
+## unchanged), and while the list fills the project answers one short_ids call
+## and no per-row short_id call (counted by CountingMemoryDB).
 
 var A := AssertHelpers
 const DIR := "user://test_session_project"
@@ -25,6 +27,19 @@ const SPILL_PATH := DIR + "/sessions/Mem.dct"
 var _state: AppState
 var _tools: ToolRegistry
 var _foreign_pid: int = 0
+
+## A memory project that counts short-id lookups; each call still runs DocketDB's own code.
+class CountingMemoryDB extends DocketDBMemory:
+	var per_id_calls := 0
+	var bulk_calls := 0
+
+	func short_id(full_id: String) -> String:
+		per_id_calls += 1
+		return super.short_id(full_id)
+
+	func short_ids(full_ids: Array) -> Dictionary:
+		bulk_calls += 1
+		return super.short_ids(full_ids)
 
 
 func before_each() -> void:
@@ -308,7 +323,13 @@ func test_promote_copies_exactly_the_chosen_records_from_session_file_and_memory
 func test_promote_dialog_lists_each_record_by_its_short_id() -> Variant:
 	var memory: Dictionary = _tools.call_tool("docket_project_add", {"mode":"memory", "name":"Mem"})
 	if memory.has("error"): return "fixture memory project failed: %s" % memory.error
-	var db: DocketDB = _state.get_db_for_project("Mem")
+	# Swap the registered project for a counting one holding the same connection.
+	var original := _state.get_db_for_project("Mem") as DocketDBMemory
+	var db := CountingMemoryDB.new()
+	db._jsonl_path = original.get_path()
+	db.max_items = original.max_items
+	db._adopt(original)
+	_state.get_project_dbs()["Mem"] = db
 	var base := DocketDB.generate_uuid7()
 	var now: String = Time.get_datetime_string_from_system(true)
 	var ids: Array[String] = [base]
@@ -317,28 +338,33 @@ func test_promote_dialog_lists_each_record_by_its_short_id() -> Variant:
 		var flip := "0" if base[shared] != "0" else "1"
 		ids.append(base.left(shared) + flip + base.substr(shared + 1))
 	ids.append(DocketDB.generate_uuid7())
+	# Legacy ids: one non-hex, one a hex prefix of the base that every UUID prefix count sees.
+	ids.append("TASK-42")
+	ids.append(base.left(14))
 	for i in ids.size():
 		var error := db.insert_item(ids[i], {"type":"work_item", "status":"new", "title":"Mem record %d" % i, "created_at":now, "updated_at":now})
 		if not error.is_empty(): return "fixture record failed: %s" % error
-	var all_ids: Array = db.execute_query({}).map(func(item: Dictionary) -> String: return str(item.id))
-	var bulk := db.short_ids(all_ids)
-	var expected := {}
-	for id: String in all_ids: expected[id] = db.short_id(id)
-	var r = A.eq(bulk, expected, "short_ids equals short_id for every id")
-	if r is String: return r
-	r = A.is_true(str(expected[ids[3]]).length() > 12, "fixture: a shared 12-character prefix lengthens the short id: %s" % expected[ids[3]])
-	if r is String: return r
 
 	var dialog: PromoteDialog = load("res://scenes/ui/promote_dialog.tscn").instantiate()
 	add_child(dialog)
 	dialog.init(_state)
 	dialog.open("Mem")
+	var per_id_calls := db.per_id_calls
+	var bulk_calls := db.bulk_calls
 	var list: ItemList = dialog._items
 	var shown := {}
 	for i in list.item_count:
 		var id := str(list.get_item_metadata(i))
 		shown[id] = list.get_item_text(i).get_slice("  ", 0)
 	dialog.free()
+	var r = A.is_true(per_id_calls == 0 and bulk_calls == 1, "the list fills from one short_ids call and no per-row short_id call: %d short_ids, %d short_id" % [bulk_calls, per_id_calls])
+	if r is String: return r
+	var expected := {}
+	for id: String in ids: expected[id] = db.short_id(id)
+	r = A.is_true(str(expected[ids[3]]).length() > 12, "fixture: a shared 12-character prefix lengthens the short id: %s" % expected[ids[3]])
+	if r is String: return r
+	r = A.is_true(expected["TASK-42"] == "TASK-42" and expected[base.left(14)] == base.left(14), "fixture: legacy ids are their own short id: %s" % expected)
+	if r is String: return r
 	return A.eq(shown, expected, "each dialog row shows its record's short_id")
 
 
