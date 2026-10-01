@@ -71,6 +71,8 @@ func test_ephemeral_items_are_never_written_until_kept() -> Variant:
 	# The event counter is the only thing journaled, and a full rewrite from the
 	# cache reproduces the baseline apart from the meta line.
 	var sidecar := FileAccess.get_file_as_string(path + ".log") if FileAccess.file_exists(path + ".log") else ""
+	r = A.meta_only_journal(path)
+	if r is String: db.close(); return r
 	r = A.is_true(FileAccess.get_sha256(path) == baseline_sha and not sidecar.contains(eph_id) and not sidecar.contains(attempt_id) and not sidecar.contains("ephemeral-comment-probe"), "ephemeral work journals none of its content and leaves the canonical untouched")
 	if r is String: db.close(); return r
 	r = A.eq(db.flush_checked(), "", "forced settle")

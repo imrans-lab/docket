@@ -79,6 +79,22 @@ static func gte(actual: Variant, threshold: Variant, label: String = "") -> Vari
 	return true
 
 
+static func meta_only_journal(canonical_path: String, skip: int = 0) -> Variant:
+	## true when the canonical's sidecar has at least one line after its first
+	## `skip`, and every such line is a "wal" record whose replace set is the
+	## meta line alone ([["", "meta"]]); else a failure message.
+	var sidecar := canonical_path + ".log"
+	var lines: PackedStringArray = FileAccess.get_file_as_string(sidecar).split("\n", false) if FileAccess.file_exists(sidecar) else PackedStringArray()
+	if lines.size() <= skip: return "no sidecar record after line %d of %s" % [skip, sidecar]
+	for raw: String in lines.slice(skip):
+		var record: Variant = JSON.parse_string(raw)
+		var row: Dictionary = record if record is Dictionary else {}
+		var replace: Variant = row.get("replace")
+		if row.get("_type") != "wal" or not replace is Array or replace != [["", "meta"]]:
+			return "sidecar journals more than the meta line: %s" % raw
+	return true
+
+
 static func durable_text(canonical_path: String) -> String:
 	## A canonical's content as a reader that honours its write-ahead sidecar
 	## (<canonical>.log) sees it: canonical lines with each journaled record's

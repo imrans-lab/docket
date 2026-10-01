@@ -171,11 +171,7 @@ func _drain(tools: ToolRegistry, subscriber: String, cursor: String, limit: int)
 	return {"error":"feed did not finish within 99 pages"}
 
 func test_a_reconnecting_subscriber_replays_exactly_the_missed_visible_events_and_an_expired_cursor_says_so() -> Variant:
-	var saved_store: String = DocketSubscriptions.store_path
-	DocketSubscriptions.store_path = DIR + "/subscriptions.json"
-	var result: Variant = _feed_case()
-	DocketSubscriptions.store_path = saved_store
-	return result
+	return _with_store("subscriptions.json", _feed_case)
 
 func _feed_case() -> Variant:
 	var db: DocketDBJsonl = _db("Feed")
@@ -299,11 +295,7 @@ func _pending_eids(status: Dictionary) -> Array:
 	return (status.get("pending", []) as Array).map(func(e: Dictionary) -> int: return int(e.eid))
 
 func test_only_an_ack_consumes_an_event_idempotently_and_apart_from_comment_status_across_a_restart() -> Variant:
-	var saved_store: String = DocketSubscriptions.store_path
-	DocketSubscriptions.store_path = DIR + "/receipts.json"
-	var result: Variant = _receipt_case()
-	DocketSubscriptions.store_path = saved_store
-	return result
+	return _with_store("receipts.json", _receipt_case)
 
 func _receipt_case() -> Variant:
 	var db: DocketDBJsonl = _db("Acks")
@@ -545,6 +537,8 @@ func _quiet_case() -> Variant:
 	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Quiet":db})
 	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"quiet"})
 	var durable: Dictionary = tools.call_tool("docket_create", {"project":"Quiet", "type":"work_item", "title":"quiet-durable-title"})
+	# Sidecar lines journaled so far; every later one belongs to the ephemeral work.
+	var journaled: int = FileAccess.get_file_as_string(path + ".log").split("\n", false).size() if FileAccess.file_exists(path + ".log") else 0
 	var created: Dictionary = tools.call_tool("docket_create", {"project":"Quiet", "type":"work_item", "title":"quiet-ephemeral-title", "assigned_to":"codex", "storage":ItemStorage.EPHEMERAL})
 	if sub.has("error") or durable.has("error") or created.has("error"): db.close(); return "fixture failed: %s %s %s" % [sub, durable, created]
 	var id: String = created.id
@@ -555,6 +549,8 @@ func _quiet_case() -> Variant:
 	var leaks := func(text: String) -> bool: return text.contains(id) or text.contains("quiet-ephemeral-title") or text.contains("please take this")
 	var sidecar: String = FileAccess.get_file_as_string(path + ".log") if FileAccess.file_exists(path + ".log") else ""
 	var r = A.is_true(ItemStorage.is_ephemeral(db, id) and (fed.eids as Array).size() == 6 and not leaks.call(sidecar), "the journal holds nothing of the ephemeral item: %s" % sidecar)
+	if r is String: db.close(); return r
+	r = A.meta_only_journal(path, journaled)
 	if r is String: db.close(); return r
 
 	# Settled, then rebuilt and settled again: the canonical holds the counter as

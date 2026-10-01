@@ -147,8 +147,9 @@ static func _next_eid(db: DocketDB) -> int:
 	return counter + 1
 
 
-## Meta value `key` as an integer, 0 when absent or not a number. Accepts
-## "N.0", the text a JSON number becomes when stored without conversion.
+## Meta value `key` as an integer, 0 when absent or not a number. Also accepts
+## "N.0": caches built before JSONLCache._insert_meta stored integral numbers as
+## integer text hold the counter in that form.
 static func _meta_int(db: DocketDB, key: String) -> int:
 	var raw: String = db.get_meta_value(key, "")
 	return int(raw.to_float()) if raw.is_valid_float() else 0
