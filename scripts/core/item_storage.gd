@@ -9,8 +9,8 @@ class_name ItemStorage
 ##   - the sidecar's dirty triggers and JSONLSidecar.build_record skip its
 ##     sections, and every JSONLSerializer query leaves out its rows and any
 ##     link that touches it;
-##   - its events get no project event id (ProjectEvents): the counter is part
-##     of the canonical's meta line;
+##   - its events get project event ids like a durable item's (ProjectEvents);
+##     only the counter, which is meta, is journaled and settled;
 ##   - the cache is its only copy, so JSONLCache.rebuild_cache refreshes the
 ##     cache file in place and deletes only durable rows (clear_durable_rows
 ##     below); the ephemeral rows stay in the file through the rebuild. The

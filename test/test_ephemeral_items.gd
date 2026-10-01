@@ -6,8 +6,9 @@ extends Node
 ## and leaves no link behind.
 ##
 ## Oracle: files only, plus one public read of the cache. The canonical's
-## sha256 after a forced full settle (flush_checked rewrites the canonical from
-## the cache) against its sha256 before any ephemeral work; the sidecar file's
+## lines after a forced full settle (flush_checked rewrites the canonical from
+## the cache) against its lines before any ephemeral work, apart from the meta
+## line that carries the event counter (ProjectEvents); the sidecar file's
 ## existence and line count; JSONLParser.parse_file over the settled canonical
 ## for the kept item, its events, comment and incoming link; and the durable
 ## item's links (get_links) after the drop, before and after a cache rebuild.
@@ -31,6 +32,11 @@ func _sidecar_lines(path: String) -> int:
 	return FileAccess.get_file_as_string(sidecar).split("\n", false).size()
 
 
+## The canonical's lines other than its meta line.
+func _without_meta(text: String) -> Array:
+	return Array(text.split("\n", false)).filter(func(line: String) -> bool: return not line.begins_with("{\"_type\":\"meta\""))
+
+
 func _records_of(parsed: Dictionary, bucket: String, key: String, id: String) -> Array:
 	return parsed[bucket].filter(func(record: Dictionary) -> bool: return str(record.get(key, "")) == id)
 
@@ -44,6 +50,7 @@ func test_ephemeral_items_are_never_written_until_kept() -> Variant:
 	var r = A.eq(db.flush_checked(), "", "baseline settle")
 	if r is String: db.close(); return r
 	var baseline_sha := FileAccess.get_sha256(path)
+	var baseline_text := FileAccess.get_file_as_string(path)
 
 	# An explicit ephemeral item and a wr:attempt item (ephemeral by default);
 	# a durable item links to the first, which then gets a comment.
@@ -61,13 +68,16 @@ func test_ephemeral_items_are_never_written_until_kept() -> Variant:
 	r = A.is_true(not linked.has("error") and not linked_attempt.has("error") and commented.is_empty(), "links and comment succeed (%s / %s / %s)" % [linked.get("error", ""), linked_attempt.get("error", ""), commented])
 	if r is String: db.close(); return r
 
-	# Nothing journaled, and a full rewrite from the cache reproduces the baseline.
-	r = A.is_true(not FileAccess.file_exists(path + ".log") and FileAccess.get_sha256(path) == baseline_sha, "ephemeral work leaves no sidecar and the canonical untouched")
+	# The event counter is the only thing journaled, and a full rewrite from the
+	# cache reproduces the baseline apart from the meta line.
+	var sidecar := FileAccess.get_file_as_string(path + ".log") if FileAccess.file_exists(path + ".log") else ""
+	r = A.is_true(FileAccess.get_sha256(path) == baseline_sha and not sidecar.contains(eph_id) and not sidecar.contains(attempt_id) and not sidecar.contains("ephemeral-comment-probe"), "ephemeral work journals none of its content and leaves the canonical untouched")
 	if r is String: db.close(); return r
 	r = A.eq(db.flush_checked(), "", "forced settle")
 	if r is String: db.close(); return r
-	r = A.is_true(FileAccess.get_sha256(path) == baseline_sha and not FileAccess.file_exists(path + ".log"), "a full settle writes the same bytes: no item, link, comment, event or counter change")
+	r = A.is_true(_without_meta(FileAccess.get_file_as_string(path)) == _without_meta(baseline_text) and not FileAccess.file_exists(path + ".log"), "a full settle writes the same lines besides meta: no item, link, comment or event")
 	if r is String: db.close(); return r
+	var settled_sha := FileAccess.get_sha256(path)
 
 	# The cache is rebuilt from the files; the ephemeral rows are carried over,
 	# which the keep below can only succeed on if they were.
@@ -79,7 +89,7 @@ func test_ephemeral_items_are_never_written_until_kept() -> Variant:
 	var kept := DocketPromote.new().execute({"items": [eph_id], "source_project": project, "promoted_by": "tester"}, schema, db, {project: db})
 	r = A.eq(kept, {"project": project, "kept": [eph_id]}, "docket_promote with no to_project keeps the item")
 	if r is String: db.close(); return r
-	r = A.is_true(_sidecar_lines(path) == 1 and FileAccess.get_sha256(path) == baseline_sha, "keep journals one record and leaves the canonical until the settle")
+	r = A.is_true(_sidecar_lines(path) == 1 and FileAccess.get_sha256(path) == settled_sha, "keep journals one record and leaves the canonical until the settle")
 	if r is String: db.close(); return r
 	r = A.eq(db.flush_checked(), "", "settle after keep")
 	if r is String: db.close(); return r

@@ -372,12 +372,16 @@ static func _insert_meta(db: DocketDB, meta: Dictionary) -> void:
 	if not vault_verify.is_empty():
 		db.set_meta_value("vault_verify", vault_verify)
 
-	# Preserve any extra fields that the parser may have forwarded
+	# Preserve any extra fields that the parser may have forwarded. JSON numbers
+	# parse as floats; an integral one is stored as the integer text the
+	# serializer wrote it from ("4", not "4.0").
 	const KNOWN_META_KEYS := ["_type", "version", "counter", "id_prefix", "project",
 		"vault_salt", "vault_verify"]
 	for key in meta:
 		if key not in KNOWN_META_KEYS:
-			db.set_meta_value(key, str(meta[key]))
+			var value: Variant = meta[key]
+			var integral: bool = value is float and is_finite(value) and value == floorf(value)
+			db.set_meta_value(key, str(int(value)) if integral else str(value))
 
 
 # -- Items --------------------------------------------------------------------

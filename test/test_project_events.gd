@@ -154,18 +154,20 @@ func _file_head(path: String) -> int:
 	var events: Array = _events(path)
 	return 0 if events.is_empty() else int(events.back().eid)
 
-## Reads pages until more=false: {eids, duplicates, pages, cursor} or {error}.
+## Reads pages until more=false: {eids, events, duplicates, pages, cursor} or {error}.
 func _drain(tools: ToolRegistry, subscriber: String, cursor: String, limit: int) -> Dictionary:
 	var eids: Array = []
+	var events: Array = []
 	var duplicates: int = 0
 	for pages in range(1, 100):
 		var page: Dictionary = tools.call_tool("docket_changes_since", {"subscriber":subscriber, "cursor":cursor, "limit":limit})
 		if page.has("error") or bool(page.get("expired", false)) or (page.events as Array).size() > limit: return {"error":"bad page: %s" % page}
 		for event in page.events:
 			eids.append(int(event.eid))
+			events.append(event)
 			if bool(event.possible_duplicate): duplicates += 1
 		cursor = page.next_cursor
-		if not bool(page.more): return {"eids":eids, "duplicates":duplicates, "pages":pages, "cursor":cursor}
+		if not bool(page.more): return {"eids":eids, "events":events, "duplicates":duplicates, "pages":pages, "cursor":cursor}
 	return {"error":"feed did not finish within 99 pages"}
 
 func test_a_reconnecting_subscriber_replays_exactly_the_missed_visible_events_and_an_expired_cursor_says_so() -> Variant:
@@ -386,3 +388,187 @@ func _memory_receipt_case(schema: Dictionary) -> Variant:
 	db.close()
 	var stored_acks: Array = ((record.get("acked", {}) as Dictionary).get("MemAcks", []) as Array).map(func(v: Variant) -> int: return int(v))
 	return A.is_true(not feed.has("error") and not acked.has("error") and stored_acks == feed.eids and _pending_eids(status) == [] and int(status.get("acked_count", 0)) == 1, "memory project acks: feed=%s ack=%s record=%s status=%s" % [feed, acked, record, status])
+
+
+# --- Ephemeral items (ItemStorage) in the feed --------------------------------
+# Oracle: the calls the test makes (one expected event kind each) and the
+# project files read as text. An ephemeral item has no line in either file, so
+# its eids are read from the feed and compared with what the files hold.
+
+## One dispatch round trip on item `id`: each call with the kind it should add.
+func _dispatch_calls(id: String) -> Array:
+	return [
+		{"kind":"comment_added", "tool":"docket_comment", "args":{"action":"add", "item_id":id, "text":"please take this", "author":"claude"}},
+		{"kind":"claimed", "tool":"docket_claim", "args":{"id":id, "holder":"codex"}},
+		{"kind":"transition", "tool":"docket_transition", "args":{"id":id, "to":"open", "holder":"codex"}},
+		{"kind":"claim_released", "tool":"docket_release", "args":{"id":id, "holder":"codex"}},
+	]
+
+## Runs `calls` in `project`; "" or the first error.
+func _run_calls(tools: ToolRegistry, project: String, calls: Array) -> String:
+	for call: Dictionary in calls:
+		var args: Dictionary = (call.args as Dictionary).duplicate(); args["project"] = project
+		var done: Dictionary = tools.call_tool(str(call.tool), args)
+		if done.has("error"): return "%s failed: %s" % [call.tool, done.error]
+	return ""
+
+## The canonical's meta line as written on disk (no sidecar).
+func _file_meta(path: String) -> Dictionary:
+	for line in FileAccess.get_file_as_string(path).split("\n", false):
+		var record: Variant = JSON.parse_string(line)
+		if record is Dictionary and (record as Dictionary).get("_type") == "meta": return record
+	return {}
+
+## Runs `body` (-> Variant) with the subscriber store at a scratch file.
+func _with_store(file: String, body: Callable) -> Variant:
+	var saved_store: String = DocketSubscriptions.store_path
+	DocketSubscriptions.store_path = DIR + "/" + file
+	var result: Variant = body.call()
+	DocketSubscriptions.store_path = saved_store
+	return result
+
+func test_an_ephemeral_items_work_reaches_a_scoped_feed_like_a_durable_items() -> Variant:
+	return _with_store("dispatch.json", _dispatch_case)
+
+func _dispatch_case() -> Variant:
+	var db: DocketDBJsonl = _db("Dispatch")
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Dispatch":db})
+	var early: Dictionary = tools.call_tool("docket_subscribe", {"name":"codex-early", "filters":{"identity":"codex"}})
+	if early.has("error"): db.close(); return "subscribe failed: %s" % early.error
+	var kinds_by_storage: Dictionary = {}
+	var ids: Dictionary = {}
+	for storage: String in [ItemStorage.EPHEMERAL, ItemStorage.DURABLE]:
+		var created: Dictionary = tools.call_tool("docket_create", {"project":"Dispatch", "type":"work_item", "title":"Dispatch %s" % storage, "assigned_to":"codex", "storage":storage})
+		if created.has("error"): db.close(); return "create %s failed: %s" % [storage, created.error]
+		var id: String = created.id
+		ids[storage] = id
+		# Subscribed after the creation: sees the work that follows it.
+		var late: Dictionary = tools.call_tool("docket_subscribe", {"name":"codex-late-" + storage, "filters":{"identity":"codex"}})
+		if late.has("error"): db.close(); return "subscribe failed: %s" % late.error
+		var calls: Array = _dispatch_calls(id)
+		var error: String = _run_calls(tools, "Dispatch", calls)
+		if not error.is_empty(): db.close(); return "%s item: %s" % [storage, error]
+		var fed: Dictionary = _drain(tools, late.subscriber, late.cursor, 10)
+		if fed.has("error"): db.close(); return "%s item: %s" % [storage, fed.error]
+		var events: Array = fed.events
+		var kinds: Array = events.map(func(e: Dictionary) -> String: return str(e.kind))
+		var expected: Array = calls.map(func(c: Dictionary) -> String: return str(c.kind))
+		var on_item: bool = events.all(func(e: Dictionary) -> bool: return str(e.item_id) == id)
+		var r = A.is_true(kinds == expected and on_item and _ordered(events).is_empty(), "%s item: a subscriber scoped to its assignee pages %s with increasing eids: %s" % [storage, expected, events])
+		if r is String: db.close(); return r
+		var ack: Dictionary = tools.call_tool("docket_ack", {"subscriber":late.subscriber, "event_ids":events.map(func(e: Dictionary) -> Dictionary: return {"project":"Dispatch", "eid":int(e.eid)})})
+		var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":late.subscriber, "include_acked":true})
+		var acked: Array = (status.get("acked_events", []) as Array).map(func(e: Dictionary) -> int: return int(e.eid))
+		r = A.is_true(not ack.has("error") and (ack.get("acked", []) as Array).size() == expected.size() and int(status.get("pending_count", -1)) == 0 and acked == fed.eids, "%s item: every delivered event is acked and none stays pending: ack=%s status=%s" % [storage, ack, status])
+		if r is String: db.close(); return r
+		kinds_by_storage[storage] = kinds
+	var still_ephemeral: bool = ItemStorage.is_ephemeral(db, str(ids[ItemStorage.EPHEMERAL]))
+
+	# Subscribed before both creations: each item's events open with its
+	# arrival, which lists the assignment.
+	var fed_early: Dictionary = _drain(tools, early.subscriber, early.cursor, 10)
+	db.close()
+	if fed_early.has("error"): return str(fed_early.error)
+	var all_early: Array = fed_early.events
+	var r = A.is_true(still_ephemeral and _ordered(all_early).is_empty(), "the ephemeral item stayed ephemeral and the early feed is ordered: %s" % [all_early])
+	if r is String: return r
+	for storage: String in ids:
+		var events: Array = all_early.filter(func(e: Dictionary) -> bool: return str(e.item_id) == str(ids[storage]))
+		var kinds: Array = events.map(func(e: Dictionary) -> String: return str(e.kind))
+		var expected: Array = ["created"]
+		expected.append_array(kinds_by_storage[storage])
+		var arrival_fields: Array = events[0].fields if not events.is_empty() else []
+		r = A.is_true(kinds == expected and arrival_fields.has("assigned_to"), "%s item: the early subscriber sees created (listing assigned_to), then the work: %s" % [storage, events])
+		if r is String: return r
+	return true
+
+## Runs a dispatch round trip on a new ephemeral item, then drops it, so no
+## stored row is left carrying its eids: {eids} or {error}.
+func _ephemeral_burst(tools: ToolRegistry, db: DocketDBJsonl, project: String) -> Dictionary:
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"burst", "filters":{"projects":[project]}})
+	var created: Dictionary = tools.call_tool("docket_create", {"project":project, "type":"work_item", "title":"Burst", "assigned_to":"codex", "storage":ItemStorage.EPHEMERAL})
+	if sub.has("error") or created.has("error"): return {"error":"burst setup failed: %s %s" % [sub, created]}
+	var error: String = _run_calls(tools, project, _dispatch_calls(str(created.id)))
+	var fed: Dictionary = _drain(tools, str(sub.subscriber), str(sub.cursor), 50) if error.is_empty() else {"error":error}
+	tools.call_tool("docket_unsubscribe", {"subscriber":sub.subscriber})
+	if fed.has("error"): return fed
+	var dropped: String = ItemStorage.drop(db, str(created.id))
+	if not dropped.is_empty() or (fed.eids as Array).size() != 5: return {"error":"burst: drop=%s eids=%s" % [dropped, fed.eids]}
+	return {"eids":fed.eids}
+
+func test_ephemeral_event_ids_are_never_issued_again_after_a_reopen_or_a_rebuild() -> Variant:
+	return _with_store("reissue.json", _reissue_case)
+
+func _reissue_case() -> Variant:
+	var db: DocketDBJsonl = _db("Reissue")
+	var path: String = db.get_jsonl_path()
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Reissue":db})
+	var anchor: Dictionary = tools.call_tool("docket_create", {"project":"Reissue", "type":"work_item", "title":"Durable anchor"})
+	if anchor.has("error"): db.close(); return "anchor create failed: %s" % anchor.error
+	# Each restart follows a burst of ephemeral eids whose rows are gone; the
+	# next eid, read from the file, must still be above all of them.
+	for restart: String in ["reopen", "rebuild", "fresh cache"]:
+		var burst: Dictionary = _ephemeral_burst(tools, db, "Reissue")
+		if burst.has("error"): db.close(); return "%s: %s" % [restart, burst.error]
+		var issued: int = int((burst.eids as Array).max())
+		var restarted: bool = true
+		match restart:
+			"reopen":
+				db.close()
+				db = DocketDBJsonl.open_jsonl(path)
+			"rebuild":
+				restarted = db.reload()
+			"fresh cache":
+				db.close()
+				JSONLCache.delete_cache_family(path)
+				db = DocketDBJsonl.open_jsonl(path)
+		if db == null or not restarted:
+			if db != null: db.close()
+			return "%s failed: %s" % [restart, DocketDBJsonl.last_open_error]
+		tools = ToolRegistry.new(); tools.init(schema, db, {"Reissue":db})
+		var comment: Dictionary = tools.call_tool("docket_comment", {"project":"Reissue", "action":"add", "item_id":anchor.id, "text":"after " + restart, "author":"claude"})
+		var next_eid: int = _file_head(path)
+		var r = A.is_true(not comment.has("error") and next_eid > issued, "after a %s the next eid (%d) is above every ephemeral eid issued before it (%d): %s" % [restart, next_eid, issued, comment])
+		if r is String: db.close(); return r
+	db.close()
+	return true
+
+func test_a_settled_project_file_holds_the_counter_and_no_ephemeral_content() -> Variant:
+	return _with_store("quiet.json", _quiet_case)
+
+func _quiet_case() -> Variant:
+	var db: DocketDBJsonl = _db("Quiet")
+	var path: String = db.get_jsonl_path()
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Quiet":db})
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"quiet"})
+	var durable: Dictionary = tools.call_tool("docket_create", {"project":"Quiet", "type":"work_item", "title":"quiet-durable-title"})
+	var created: Dictionary = tools.call_tool("docket_create", {"project":"Quiet", "type":"work_item", "title":"quiet-ephemeral-title", "assigned_to":"codex", "storage":ItemStorage.EPHEMERAL})
+	if sub.has("error") or durable.has("error") or created.has("error"): db.close(); return "fixture failed: %s %s %s" % [sub, durable, created]
+	var id: String = created.id
+	var error: String = _run_calls(tools, "Quiet", _dispatch_calls(id))
+	var fed: Dictionary = _drain(tools, sub.subscriber, sub.cursor, 50) if error.is_empty() else {"error":error}
+	if fed.has("error"): db.close(); return str(fed.error)
+	var top: int = int((fed.eids as Array).max())
+	var leaks := func(text: String) -> bool: return text.contains(id) or text.contains("quiet-ephemeral-title") or text.contains("please take this")
+	var sidecar: String = FileAccess.get_file_as_string(path + ".log") if FileAccess.file_exists(path + ".log") else ""
+	var r = A.is_true(ItemStorage.is_ephemeral(db, id) and (fed.eids as Array).size() == 6 and not leaks.call(sidecar), "the journal holds nothing of the ephemeral item: %s" % sidecar)
+	if r is String: db.close(); return r
+
+	# Settled, then rebuilt and settled again: the canonical holds the counter as
+	# a number at the newest eid, and no item line, comment or event of the
+	# ephemeral item.
+	for settle: String in ["settle", "rebuild and settle"]:
+		if settle != "settle" and not db.reload(): db.close(); return "rebuild failed: %s" % DocketDBJsonl.last_open_error
+		r = A.eq(db.flush_checked(), "", settle)
+		if r is String: db.close(); return r
+		var text: String = FileAccess.get_file_as_string(path)
+		var counter: Variant = _file_meta(path).get(ProjectEvents.COUNTER_KEY)
+		r = A.is_true(text.contains("quiet-durable-title") and not leaks.call(text), "after %s the file holds the durable item and nothing of the ephemeral one" % settle)
+		if r is String: db.close(); return r
+		r = A.is_true(counter is float and int(counter) == top, "after %s the file's %s is the number %d: %s" % [settle, ProjectEvents.COUNTER_KEY, top, counter])
+		if r is String: db.close(); return r
+	db.close()
+	return true

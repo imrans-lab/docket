@@ -12,9 +12,15 @@ class_name ProjectEvents
 ## project, even after the item they belong to is deleted. The row's item_id,
 ## event_type (the event kind), actor and timestamp complete the event.
 ##
+## Rows of an ephemeral item (ItemStorage) are stamped like any other. The row
+## and its fields stay in the cache, but the counter is meta: the mutation
+## journals the meta line to the sidecar before it commits, and the next settle
+## writes it to the canonical. So the counter covers ephemeral eids through a
+## restart, a rebuild and a deleted cache, while no ephemeral content reaches
+## either file. Keeping the item journals its rows with the eids they have.
+##
 ## Which rows are stamped:
 ##   created, moved, promoted          always; fields = tracked fields the item arrives with
-##   any row of an ephemeral item      never (ItemStorage)
 ##   comment_added, comment_reply      always; fields = []
 ##   claimed, claim_released,
 ##   claim_reassigned                  always; fields = ["claim"]
@@ -73,10 +79,6 @@ static func tracked_changes(db: DocketDB, id: String, changes: Dictionary) -> Ar
 ## stamped and leave them in place. Returns "" or an SQL error; the caller's
 ## transaction rolls the stamp back with the row.
 static func stamp(db: DocketDB, row_id: int, item_id: String, event_type: String) -> String:
-	# The counter lives in the canonical's meta line, and an ephemeral item
-	# (ItemStorage) must not change the canonical. Its events stay unstamped;
-	# keeping it stamps its "promoted" arrival row.
-	if ItemStorage.is_ephemeral(db, item_id): return ""
 	var fields: Array[String] = []
 	if not COMMENTS.has(event_type):
 		if not ItemRevision.counts(event_type): return ""
@@ -102,8 +104,8 @@ static func stamp_last(db: DocketDB, item_id: String, event_type: String) -> Str
 
 ## How many of the newest stamped events keep their id.
 static func retention(db: DocketDB) -> int:
-	var raw: String = db.get_meta_value(RETENTION_KEY, "")
-	return int(raw) if raw.is_valid_int() and int(raw) > 0 else DEFAULT_RETENTION
+	var count: int = _meta_int(db, RETENTION_KEY)
+	return count if count > 0 else DEFAULT_RETENTION
 
 
 ## Sets the retention count as one canonical mutation. Returns "" or an error.
@@ -139,11 +141,17 @@ static func retention_floor(db: DocketDB) -> int:
 ## One past the larger of the stored counter and the largest stored eid, so a
 ## hand-edited or merged file cannot make an id repeat.
 static func _next_eid(db: DocketDB) -> int:
-	var raw: String = db.get_meta_value(COUNTER_KEY, "0")
-	var counter: int = int(raw) if raw.is_valid_int() else 0
+	var counter: int = _meta_int(db, COUNTER_KEY)
 	var rows: Array = db._exec_select("SELECT MAX(eid) AS top FROM item_events;")
 	if not rows.is_empty() and rows[0].get("top") != null: counter = maxi(counter, int(rows[0].top))
 	return counter + 1
+
+
+## Meta value `key` as an integer, 0 when absent or not a number. Accepts
+## "N.0", the text a JSON number becomes when stored without conversion.
+static func _meta_int(db: DocketDB, key: String) -> int:
+	var raw: String = db.get_meta_value(key, "")
+	return int(raw.to_float()) if raw.is_valid_float() else 0
 
 
 ## Tracked fields a newly arrived item carries with a value.
