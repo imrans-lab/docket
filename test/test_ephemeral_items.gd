@@ -558,9 +558,13 @@ func test_failed_rebuild_leaves_the_previous_rows_and_fingerprint() -> Variant:
 	JSONLCache.rebuild_failure_hook = func() -> String: return "injected failure after the inserts"
 	var rebuilt := JSONLCache.rebuild_cache(path, cache_path)
 	JSONLCache.rebuild_failure_hook = Callable()
+	# Read before a closes: with journaled records pending and the canonical
+	# edited, its close settles, finds the source changed and rebuilds again,
+	# which replaces last_error and the rows.
+	var reason := JSONLCache.last_error
 	var after: Dictionary = read_cache.call()
 	a.close()
-	var r = A.is_true(rebuilt == null and JSONLCache.last_error.contains("injected"), "the rebuild fails (%s)" % JSONLCache.last_error)
+	var r = A.is_true(rebuilt == null and reason.contains("injected"), "the rebuild fails (%s)" % reason)
 	if r is String:
 		if rebuilt != null: rebuilt.close()
 		return r
