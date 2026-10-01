@@ -1030,11 +1030,12 @@ func _show_columns_menu(anchor: Button) -> void:
 	## scope declares; a shown column outside that scope stays offered.
 	_columns_menu.clear()
 	_column_candidates.clear()
+	var item_entries := ColumnBinding.item_entries()
 	var type_entries := ColumnBinding.type_entries(_column_scope_records(), _state)
 	for field_key: String in _col_fields:
-		if ColumnBinding.is_typed(field_key) and not type_entries.any(func(entry: Dictionary) -> bool: return entry.key == field_key):
+		if not (item_entries + type_entries).any(func(entry: Dictionary) -> bool: return entry.key == field_key):
 			type_entries.append({"key": field_key, "label": ColumnBinding.title(field_key)})
-	for section: Array in [["Every item", ColumnBinding.item_entries()], ["Type fields", type_entries]]:
+	for section: Array in [["Every item", item_entries], ["Type fields", type_entries]]:
 		_columns_menu.add_separator(section[0])
 		for entry: Dictionary in section[1]:
 			var id := _column_candidates.size()

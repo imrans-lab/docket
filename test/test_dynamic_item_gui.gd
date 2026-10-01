@@ -461,7 +461,16 @@ func test_column_chooser_offers_each_field_once() -> Variant:
 	grid.set_filter(JSON.stringify({"conditions":[{"field":"type", "op":"eq", "value":"bug"}]}))
 	_open_chooser(grid)
 	var bug_fields := _declared_fields(state, "alpha", "bug")
-	return A.is_true(not bug_fields.is_empty() and _sorted(_type_section(grid)) == bug_fields, "with type = bug the type fields are bug's: %s" % [_type_section(grid)])
+	r = A.is_true(not bug_fields.is_empty() and _sorted(_type_section(grid)) == bug_fields, "with type = bug the type fields are bug's: %s" % [_type_section(grid)])
+	if r is String:
+		return r
+	# A shown derived column is no type's field; it stays in the first section only.
+	grid._toggle_result_column(grid._column_candidates.find("state_category"))
+	_open_chooser(grid)
+	r = _unique_candidates(grid)
+	if r is String:
+		return r
+	return A.is_true(grid._column_candidates.count("state_category") == 1 and not _type_section(grid).has("state_category"), "a shown state_category is offered once, among the columns every row has")
 
 ## alpha: a hint, a kb and a test carrying component, a bug and a review
 ## (revision "r2", "r1"); beta: a test carrying component and a bug. Every
@@ -531,7 +540,8 @@ func test_ticked_field_columns_fill_and_sort_in_one_project_and_two() -> Variant
 
 ## Two projects each hold a review of the first "review" revision; beta then
 ## evolves review with "notes" and adds a review of the new revision, and alpha
-## holds an audit that shares "findings".
+## holds an audit that shares "findings". Last, beta gains a row pinned to the
+## first revision whose fields envelope holds a stray "notes".
 func test_saved_type_bindings_open_as_their_field_key() -> Variant:
 	var dbs: Dictionary = {}
 	for name: String in ["alpha", "beta"]:
@@ -542,12 +552,13 @@ func test_saved_type_bindings_open_as_their_field_key() -> Variant:
 	for name: String in dbs:
 		_active_registry(state, name).create_item({"type":"review", "title":"old", "revision":"abc", "source":"origin", "findings":"%s old" % name}, "tester")
 	var beta := state.get_type_registry("beta")
+	var first_revision := str(beta.get_type("review").current_revision)
 	var evolved := _definition()
 	(evolved.fields as Array).append({"key":"notes", "label":"Notes", "type":"string", "required":false, "nullable":true, "mutable":true})
 	var evolve_error := beta.apply_evolution(beta.preview_evolution("review", evolved, str(beta.get_type("review").current_revision)), "tester", "add notes")
 	if not evolve_error.is_empty():
 		return evolve_error
-	beta.create_item({"type":"review", "title":"new", "revision":"def", "source":"origin", "findings":"beta new"}, "tester")
+	beta.create_item({"type":"review", "title":"new", "revision":"def", "source":"origin", "findings":"beta new", "notes":"beta notes"}, "tester")
 	var alpha := state.get_type_registry("alpha")
 	var audit := _definition()
 	audit.slug = "audit"
@@ -579,7 +590,17 @@ func test_saved_type_bindings_open_as_their_field_key() -> Variant:
 			return r
 	var path := "%s/resaved.dcq" % DIR
 	grid.save_dcq(path)
-	return A.eq(QueryGrid.read_dcq(path).get("columns"), ["id", "project", "title", "findings"], "a reopened binding saves as its field key")
+	r = A.eq(QueryGrid.read_dcq(path).get("columns"), ["id", "project", "title", "findings"], "a reopened binding saves as its field key")
+	if r is String:
+		return r
+	var review := beta.get_type("review")
+	var now := Time.get_datetime_string_from_system(true)
+	var stray_error: String = dbs.beta.insert_item(dbs.beta.next_uuid7_id(), {"type":"review", "type_id":str(review.id), "type_revision":first_revision, "status":"requested", "title":"stray", "created_at":now, "updated_at":now, "fields":{"revision":"x", "source":"origin", "notes":"stray notes"}})
+	if not stray_error.is_empty():
+		return stray_error
+	grid.set_result_columns(["title", "notes"])
+	grid._run_query()
+	return A.eq(_column_cells(grid, 0, 1), {"beta/new":"beta notes"}, "notes shows only on the row pinned to the revision that declares it, not on rows of the first revision, even one holding a value")
 
 func _open_chooser(grid: QueryGrid) -> void:
 	var anchor := Button.new()
