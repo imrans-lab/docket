@@ -402,6 +402,48 @@ func test_colliding_field_keys_share_one_column() -> Variant:
 	grid._toggle_sort(findings_column)
 	return A.is_true(_row_order(grid, title_column) == ["fields/audit", "fields/review", "fields/bug"] and grid._sort_spec() == {"field_key":"findings", "dir":"asc", "nulls":"last"}, "sorting the shared column orders both types' rows by the field, the bug last")
 
+## review stores "score" as a number, audit as a string; the shared column
+## sorts numbers first, numerically, then text, whatever order the rows come in.
+func test_shared_field_holding_numbers_and_text_sorts_consistently() -> Variant:
+	var state := _state("fields")
+	var registry := _active_registry(state, "fields")
+	var audit := _definition()
+	audit.slug = "audit"
+	audit.label = "Audit"
+	for descriptor: Dictionary in audit.fields:
+		if descriptor.key == "score":
+			descriptor.type = "string"
+	registry.activate_type("audit", registry.define_type("audit", audit, "tester", "text score").type.current_revision, "tester", "ready")
+	for made: Dictionary in [
+		registry.create_item({"type":"review", "title":"30", "revision":"a", "source":"o", "score":30}, "tester"),
+		registry.create_item({"type":"audit", "title":"text b", "revision":"a", "source":"o", "score":"b"}, "tester"),
+		registry.create_item({"type":"review", "title":"2", "revision":"a", "source":"o", "score":2}, "tester"),
+		registry.create_item({"type":"audit", "title":"text 10", "revision":"a", "source":"o", "score":"10"}, "tester"),
+	]:
+		if made.has("error"):
+			return "fixture: %s" % made.error
+	var grid := QueryGrid.new()
+	add_child(grid)
+	grid.init(state)
+	grid.set_result_columns(["title", "score"])
+	var ascending := ["fields/2", "fields/30", "fields/text 10", "fields/text b"]
+	grid._toggle_sort(1)
+	var r = A.eq(_row_order(grid, 0), ascending, "ascending: numbers by value, then text")
+	if r is String:
+		return r
+	var forward: Array = grid._current_results.duplicate()
+	var backward: Array = forward.duplicate()
+	backward.reverse()
+	var titles := func(rows: Array) -> Array: return rows.map(func(item: Dictionary) -> String: return "fields/%s" % item.title)
+	var registries := {"fields": registry}
+	r = A.eq([titles.call(state._sorted_query_rows(forward, [grid._sort_spec()], registries)), titles.call(state._sorted_query_rows(backward, [grid._sort_spec()], registries))], [ascending, ascending], "the same rows in either input order sort the same")
+	if r is String:
+		return r
+	grid._toggle_sort(1)
+	var descending := ascending.duplicate()
+	descending.reverse()
+	return A.eq(_row_order(grid, 0), descending, "descending reverses that order exactly")
+
 func test_column_menu_uses_query_branch_scope() -> Variant:
 	var state := _state("alpha")
 	var beta_db := DocketDBJsonl.create_new_jsonl("%s/beta.dct" % DIR)
@@ -520,7 +562,11 @@ func test_ticked_field_columns_fill_and_sort_in_one_project_and_two() -> Variant
 	var one := QueryGrid.new()
 	add_child(one)
 	one.init(_state_over({"alpha": dbs.alpha}))
-	one.set_result_columns(["id", "title", "component", "revision"])
+	one.set_result_columns(["id", "title", "component", "revision", "project"])
+	var all_alpha := {"alpha/hint":"alpha", "alpha/kb":"alpha", "alpha/bug":"alpha", "alpha/review 2":"alpha", "alpha/review 1":"alpha"}
+	r = A.eq(_column_cells(one, 1, 4), all_alpha, "one project, unsorted: the Project column names the project on every row")
+	if r is String:
+		return r
 	# A type field sorts on the cross-project path, which tags each row with its
 	# project; an items-table column sorts in SQL, whose rows carry no project.
 	for field: String in ["component", "revision", "title"]:
@@ -534,6 +580,9 @@ func test_ticked_field_columns_fill_and_sort_in_one_project_and_two() -> Variant
 			return r
 		var expected: Array = {"component": ["alpha/kb", "alpha/hint"], "revision": ["alpha/review 1", "alpha/review 2"], "title": ["alpha/bug", "alpha/hint"]}[field]
 		r = A.eq(_row_order(one, 1).slice(0, 2), expected, "one project: sorting on %s orders the rows by it, those carrying it first" % field)
+		if r is String:
+			return r
+		r = A.eq(_column_cells(one, 1, 4), all_alpha, "one project, sorted on %s: the Project column names the project on every row" % field)
 		if r is String:
 			return r
 	return true

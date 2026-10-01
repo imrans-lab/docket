@@ -928,6 +928,8 @@ func _populate_tree() -> void:
 					row.set_custom_color(col_idx, state_color)
 			elif field == StorageBadge.FIELD:
 				row.set_text(col_idx, _storage_word(item, storage_modes))
+			elif field == "project":
+				row.set_text(col_idx, _item_project(item))
 			elif ColumnBinding.is_typed(field):
 				row.set_text(col_idx, _render_typed_column(item, field))
 			else:

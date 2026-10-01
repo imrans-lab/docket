@@ -615,8 +615,15 @@ func _compare_query_rows(a: Dictionary, b: Dictionary, specs: Array) -> bool:
 		var b_null: bool = bv == null
 		if a_null != b_null: return b_null if str(spec.get("nulls", "last")) == "last" else a_null
 		if a_null: continue
-		if av == bv: continue
-		var less: bool = str(av) < str(bv) if typeof(av) != typeof(0) and typeof(av) != typeof(0.0) else float(av) < float(bv)
+		# Numbers compare as numbers and sort before every other kind, which
+		# compares as text: one field key may hold different kinds across types,
+		# and == between a number and a String is a script error.
+		var a_text: bool = not (av is int or av is float)
+		var b_text: bool = not (bv is int or bv is float)
+		var a_key: Variant = str(av) if a_text else float(av)
+		var b_key: Variant = str(bv) if b_text else float(bv)
+		if a_text == b_text and a_key == b_key: continue
+		var less: bool = b_text if a_text != b_text else a_key < b_key
 		return not less if str(spec.get("dir", "asc")) == "desc" else less
 	var project_compare: int = str(a.item.get("project", "")).casecmp_to(str(b.item.get("project", "")))
 	if project_compare != 0: return project_compare < 0
