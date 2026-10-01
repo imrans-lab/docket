@@ -135,6 +135,12 @@ jobs:
           "$GODOT_BIN" --headless --path . -- test 2>&1 | tee test-output.txt
           grep -q "ALL TESTS PASSED" test-output.txt
 
+      - name: Test shared watcher against isolated Docket server
+        if: runner.os == 'Linux'
+        env:
+          DOCKET_BENCH_GODOT: ${{ env.GODOT_BIN }}
+        run: python3 test/test_docket_watch.py -v
+
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v7
