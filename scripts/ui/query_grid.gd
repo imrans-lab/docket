@@ -1263,7 +1263,7 @@ func apply_dcq(parsed: Dictionary) -> void:
 	# Columns and sort are set before the filter, so its one query loads every
 	# key the saved columns read. A file without a sort opens unsorted, and one
 	# without condition rows opens with one empty row.
-	_dcq_columns = _column_keys(parsed.columns) if parsed.get("columns") is Array else []
+	_dcq_columns = _column_keys(parsed.columns if parsed.get("columns") is Array else [])
 	var sort: Dictionary = parsed.sort[0] if parsed.get("sort") is Array and not parsed.sort.is_empty() and parsed.sort[0] is Dictionary else {}
 	_sort_field = str(sort.get("field_key", sort.get("field", "")))
 	_sort_dir = "desc" if str(sort.get("dir", "")).to_lower() == "desc" else "asc"

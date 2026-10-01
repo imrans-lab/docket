@@ -194,10 +194,11 @@ func test_dcq_roundtrip_keeps_sort_field_direction_and_nulls() -> Variant:
 	var r = A.is_true(parsed is Dictionary and parsed.sort == [{"field_key":"score","dir":"desc","nulls":"first"}] and parsed.columns == ["id", "score", "state_category"] and loaded._dcq_columns == parsed.columns and loaded._sort_spec() == parsed.sort[0], "dcq load/save keeps the columns, the sort field, its direction and null ordering")
 	if r is String: grid.queue_free(); loaded.queue_free(); db.close(); return r
 	# A sort bound to a type identity by an older build opens as the plain field.
+	# The file has no columns, so a completed load leaves the default layout.
 	var bound_path: String = DIR + "/bound.dcq"
-	var file := FileAccess.open(bound_path, FileAccess.WRITE); file.store_string(JSON.stringify({"sort":[{"field_key":"score","type_id":type_id,"dir":"desc","nulls":"first"}]})); file.close()
+	var file := FileAccess.open(bound_path, FileAccess.WRITE); file.store_string(JSON.stringify({"sort":[{"field_key":"score","type_id":type_id,"dir":"asc"}]})); file.close()
 	loaded.load_dcq(bound_path)
-	r = A.eq(loaded._sort_spec(), {"field_key":"score","dir":"desc","nulls":"first"}, "a type-bound saved sort opens as a sort on its field")
+	r = A.is_true(loaded._dcq_columns.is_empty() and loaded._sort_spec() == {"field_key":"score","dir":"asc","nulls":"last"}, "a type-bound saved sort opens as a sort on its field, with the default columns: %s %s" % [loaded._dcq_columns, loaded._sort_spec()])
 	grid.queue_free(); loaded.queue_free(); db.close(); return r
 
 func test_custom_field_colliding_with_builtin_column_keeps_custom_kind_and_authority() -> Variant:

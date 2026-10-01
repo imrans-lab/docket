@@ -299,8 +299,10 @@ func test_numeric_conditions_survive_save_and_restore() -> Variant:
 		out.store_string('{"ui_filter":{"conditions":[{"field":"title","op":"contains","value":"c"},{"conj":"and","field":"priority","op":"gte","value":%s}]}}' % form)
 		out.close()
 		var loaded := _grid(state)
+		loaded.set_result_columns(["id", "title"])
 		loaded.load_dcq(path)
 		r = _numeric_restored(loaded, "priority", p_rows, "entry P from a .dcq holding %s" % form)
+		if not r is String: r = A.is_true(loaded._dcq_columns.is_empty(), "a .dcq without columns opens the default layout, not the columns shown before")
 		loaded.queue_free()
 		if r is String: shell.queue_free(); return r
 
