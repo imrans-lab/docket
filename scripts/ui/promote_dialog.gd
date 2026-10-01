@@ -67,9 +67,12 @@ func _fill_items(preselect: String) -> void:
 	_items.clear()
 	var source_db := _state.get_db_for_project(_source_name())
 	if source_db != null:
-		for item: Dictionary in source_db.execute_query({}):
+		var items: Array = source_db.execute_query({})
+		# One read of the project's ids serves every row's short id.
+		var short := source_db.short_ids(items.map(func(item: Dictionary) -> String: return str(item.get("id", ""))))
+		for item: Dictionary in items:
 			var id := str(item.get("id", ""))
-			_items.add_item("%s  %s  [%s]" % [source_db.short_id(id), item.get("title", ""), item.get("status", "")])
+			_items.add_item("%s  %s  [%s]" % [short.get(id, id), item.get("title", ""), item.get("status", "")])
 			_items.set_item_metadata(_items.item_count - 1, id)
 			if id == preselect:
 				_items.select(_items.item_count - 1, false)
