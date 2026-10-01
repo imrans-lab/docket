@@ -477,8 +477,8 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_RESIZED and _header:
 		_sync_tree_columns()
 		_header.queue_redraw()
-	# Entering the tree visible also notifies, before _ready; that first entry
-	# is skipped, as init already queried or the caller's first filter will.
+	# Visibility notifications before _ready (entering the tree visible is one)
+	# are skipped: initial results come from init or the caller's first filter.
 	elif what == NOTIFICATION_VISIBILITY_CHANGED and _tree and is_node_ready() and is_visible_in_tree():
 		refresh_if_changed()
 
