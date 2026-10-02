@@ -752,8 +752,9 @@ func test_related_columns_load_in_bulk() -> Variant:
 		var query := {"filter": {"conditions": _title_is(MATCH)}, "sort": sort}
 		if variant == "limited query": query["limit"] = 3
 		return db.execute_registry_query(query, registry, "rows", keys) if variant == "registry query" else db.execute_query(query, "rows", keys)
-	# Warm-up: a first query reads per-connection caches once (the items
-	# columns, DocketDB._item_columns; the registry's types), never again.
+	# Warm-up: a first query fills per-connection caches once (the items
+	# columns, DocketDB._item_columns), never again; every variant runs so
+	# the measured counts below are steady-state whichever order they take.
 	for variant: String in variants: run.call(variant)
 	var counts := {}  # variant -> [5-row SELECTs, 50-row SELECTs]
 	var present := 0
