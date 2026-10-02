@@ -293,6 +293,7 @@ static func is_cache_valid(jsonl_path: String, cache_path: String) -> bool:
 		return false
 
 	var db := DocketDB.new()
+	# Opening migrates first; a lossy old cache schema clears its fingerprint.
 	if not db.open(cache_path):
 		return false
 

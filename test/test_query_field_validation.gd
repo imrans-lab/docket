@@ -154,6 +154,10 @@ func test_flat_parent_parity_and_malformed_filter_errors() -> Variant:
 	var qualified_conditions: Array = _db.execute_query({"filter":{"conditions":[{"field":"parent", "op":"eq", "value":"Other:" + parent}]}})
 	result = A.is_true(qualified.size() == 1 and qualified[0].id == "beta" and qualified == qualified_conditions, "qualified parent remains exact in both forms")
 	if result is String: return result
+	var prefix_flat: Array = _db.execute_query({"filter":{"parent":"01a0febd"}})
+	var prefix_conditions: Array = _db.execute_query({"filter":{"conditions":[{"field":"parent", "op":"eq", "value":"01a0febd"}]}})
+	result = A.is_true(prefix_flat.is_empty() and prefix_conditions.is_empty(), "short parent prefix matches nothing in either form")
+	if result is String: return result
 	var refused: Array = _db.execute_query({"filter":{"title":{"$contains":"x"}}})
 	result = A.is_true(refused.is_empty() and _db.last_query_error.contains("title") and _db.last_query_error.contains("conditions"), "flat object value explains the key and supported grammar")
 	if result is String: return result
@@ -171,4 +175,14 @@ func test_flat_parent_parity_and_malformed_filter_errors() -> Variant:
 			refused = _db.execute_registry_query({"filter":filter}, registry) if typed else _db.execute_query({"filter":filter})
 			result = A.is_true(refused.is_empty() and _db.last_query_error == "branches take condition objects {field, op, value}", "malformed branches refuse before empty-predicate shortcuts (typed=%s): %s" % [typed, _db.last_query_error])
 			if result is String: return result
-	return true
+	var catalog: Array = TypeCatalog.from_registry(registry)
+	var selected: Array[String] = []
+	for entry: Dictionary in catalog:
+		if entry.slug in ["bug", "work_item"]: selected.append(str(entry.key))
+	if selected.size() != 2: return "binding-error fixture requires bug and work_item definitions"
+	var scoped_tree: Dictionary = QueryTypeScope.compile_catalog_conditions([
+		{"field":"type", "op":"catalog_in", "value":selected},
+		{"field":"future_field", "op":"eq", "value":"x"},
+	], catalog, false)
+	refused = _db.execute_registry_query({"filter":scoped_tree}, registry)
+	return A.is_true(refused.is_empty() and _db.last_query_error == "Field 'future_field' is not compatible across the selected type identities.", "GUI-generated binding error preserves its precise diagnostic: %s" % _db.last_query_error)

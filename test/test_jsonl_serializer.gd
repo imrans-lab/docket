@@ -680,15 +680,43 @@ func test_event_unknown_keys_survive_cache_round_trip() -> Variant:
 	file.close()
 	var cache: DocketDB = JSONLCache.rebuild_cache(source_path, source_path + ".cache")
 	if cache == null: return "event cache rebuild failed: " + JSONLCache.last_error
-	var serialized: String = JSONLSerializer.serialize_events(cache)
+	# Reproduce rc.12's warm cache: matching fingerprint, no event extras column.
+	var error: String = cache._exec_checked("ALTER TABLE item_events DROP COLUMN extras_json;")
+	if not error.is_empty(): cache.close(); return "cannot build old-shape cache: " + error
+	var old_columns: Array = cache._exec_select("PRAGMA table_info(item_events);")
+	var result: Variant = A.is_true(not DocketDB._has_column(old_columns, "extras_json") and cache.get_meta_value("jsonl_hash", "") == JSONLSidecar.source_fingerprint(source_path), "old-shape cache has a matching source hash")
 	cache.close()
+	if result is String: return result
+	var upgraded: DocketDBJsonl = DocketDBJsonl.open_jsonl(source_path)
+	if upgraded == null: return "old-shape cache upgrade failed: " + DocketDBJsonl.last_open_error
+	cache = upgraded
+	var serialized: String = JSONLSerializer.serialize_events(cache)
 	var output: Variant = JSON.parse_string(serialized)
-	if not output is Dictionary: return "serialized event is not an object"
+	if not output is Dictionary: cache.close(); return "serialized event is not an object"
 	# JSON parses every number as float, including nested integral values.
 	var expected: Dictionary = JSON.parse_string(JSON.stringify(event))
-	var result: Variant = A.eq(output.get("x_future"), expected.x_future, "future event key survives cache")
-	if result is String: return result
+	result = A.eq(output.get("x_future"), expected.x_future, "future event key survives old-cache upgrade")
+	if result is String: cache.close(); return result
 	result = A.eq(output.get("x_payload"), expected.x_payload, "nested empty and false values survive")
-	if result is String: return result
-	return A.eq(JSONLParser.parse_line(serialized).get("extras", {}),
+	if result is String: cache.close(); return result
+	result = A.eq(JSONLParser.parse_line(serialized).get("extras", {}),
 		{"x_future": expected.x_future, "x_payload": expected.x_payload}, "serialized event reparses with extras")
+	if result is String: cache.close(); return result
+	error = upgraded.flush_checked()
+	cache.close()
+	if not error.is_empty(): return "upgraded cache flush failed: " + error
+	var parsed: Dictionary = JSONLParser.parse_file(source_path)
+	if not str(parsed.get("error", "")).is_empty() or parsed.events.size() != 1: return "upgraded canonical did not reparse with one event"
+	result = A.eq(parsed.events[0].extras, {"x_future": expected.x_future, "x_payload": expected.x_payload}, "next canonical flush preserves future event values")
+	if result is String: return result
+	if not JSONLCache.is_cache_valid(source_path, source_path + ".cache"): return "upgraded cache should remain valid"
+	cache = JSONLCache.open_or_rebuild(source_path)
+	if cache == null: return "cannot reopen upgraded cache"
+	# A cache-only sentinel detects an unnecessary rebuild of the new shape.
+	cache.set_meta_value("warm_cache_sentinel", "retained")
+	cache.close()
+	cache = JSONLCache.open_or_rebuild(source_path)
+	if cache == null: return "cannot reuse upgraded cache"
+	result = A.eq(cache.get_meta_value("warm_cache_sentinel", ""), "retained", "new-shape warm cache is reused")
+	cache.close()
+	return result

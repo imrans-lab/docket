@@ -165,7 +165,7 @@ static func validate_tree(node: Dictionary) -> String:
 			var error: String = validate_tree(child)
 			if not error.is_empty(): return error
 		return ""
-	if not node.has("field") and not node.has("field_key"):
+	if not node.has("field") and not node.has("field_key") and not node.has("binding_error"):
 		return "branches take condition objects {field, op, value}"
 	return ""
 

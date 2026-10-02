@@ -191,7 +191,7 @@ static func write_event(db: DocketDB, item_id: String, kind: String, actor: Stri
 	return {"id":row_id} if error.is_empty() else {"error":error}
 
 
-## The outer comment transaction owns the event and reference together.
+## JSONL comments own an outer transaction; plain DocketDB retains the comment if linking fails.
 static func write_comment_event(db: DocketDB, item_id: String, kind: String, actor: String, note: String, comment_id: int, timestamp: String) -> String:
 	var result: Dictionary = db.add_event(item_id, kind, actor, note, timestamp)
 	return str(result.error) if result.has("error") else link_comment(db, int(result.id), comment_id)

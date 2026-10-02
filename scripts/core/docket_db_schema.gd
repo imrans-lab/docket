@@ -205,7 +205,10 @@ static func migrate_schema(db: DocketDB) -> void:
 	if not event_cols.is_empty():
 		if not DocketDB._has_column(event_cols, "eid"): db._exec("ALTER TABLE item_events ADD COLUMN eid INTEGER;")
 		if not DocketDB._has_column(event_cols, "fields"): db._exec("ALTER TABLE item_events ADD COLUMN fields TEXT DEFAULT '';")
-		if not DocketDB._has_column(event_cols, "extras_json"): db._exec("ALTER TABLE item_events ADD COLUMN extras_json TEXT NOT NULL DEFAULT '{}';")
+		if not DocketDB._has_column(event_cols, "extras_json"):
+			db._exec("ALTER TABLE item_events ADD COLUMN extras_json TEXT NOT NULL DEFAULT '{}';")
+			# Older caches dropped event extras; rebuild before trusting their rows.
+			db.set_meta_value("jsonl_hash", "")
 		db._exec("CREATE INDEX IF NOT EXISTS idx_events_eid ON item_events(eid);")
 	db._exec("""CREATE TABLE IF NOT EXISTS type_defs (
 		id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, lifecycle TEXT NOT NULL,

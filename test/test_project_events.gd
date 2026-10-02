@@ -800,8 +800,6 @@ func _subscription_store_errors() -> Variant:
 	DocketSubscriptions.store_path = writable
 	result = A.is_true(not error.is_empty(), "directory destination reports open failure")
 	if result is String: return result
-	# /dev/full cannot be opened by FileAccess on the executor host.
-	# Store/flush failure handling remains unverified by this real-file test.
 	return true
 
 
@@ -855,11 +853,34 @@ func _excluded_actors_case() -> Variant:
 	status = tools.call_tool("docket_subscription_status", {"subscriber":filtered.subscriber})
 	result = A.is_true(visible.events.size() == 1 and visible.events[0].actor == "codex" and status.pending_count == 1, "other actor reaches receive and pending status")
 	if result is String: db.close(); return result
+	var event_id: Dictionary = {"project":"ActorFeed", "eid":int(visible.events[0].eid)}
+	# The legacy subscriber acknowledges while the event is still visible.
+	var legacy_visible: Dictionary = tools.call_tool("docket_receive", {"subscriber":legacy.subscriber})
+	if legacy_visible.has("error"): db.close(); return "legacy receive failed: %s" % legacy_visible
+	var ack: Dictionary = tools.call_tool("docket_ack", {"subscriber":legacy.subscriber, "event_ids":[event_id]})
+	if ack.has("error") or ack.acked.size() != 1: db.close(); return "visible acknowledgement failed: %s" % ack
 	# Changing a stored exclusion also removes an already-delivered event from pending.
 	records = DocketSubscriptions.load_records()
 	records[filtered.subscriber].filters.exclude_actors = ["claude", "codex"]
+	records[legacy.subscriber].filters["exclude_actors"] = ["codex"]
 	error = DocketSubscriptions.save_records(records)
 	if not error.is_empty(): db.close(); return error
 	status = tools.call_tool("docket_subscription_status", {"subscriber":filtered.subscriber})
+	result = A.eq(status.pending_count, 0, "pending scan applies the same reloaded actor exclusion")
+	if result is String: db.close(); return result
+	var store_before: String = FileAccess.get_file_as_string(DocketSubscriptions.store_path)
+	var canonical_before: String = A.durable_text(db.get_jsonl_path())
+	var comments_before: String = JSONLSerializer.serialize_comments(db)
+	ack = tools.call_tool("docket_ack", {"subscriber":filtered.subscriber, "event_ids":[event_id]})
+	result = A.is_true(ack.has("error") and ack.get("rejected", []).size() == 1 and ack.rejected[0].reason == "not an event this subscriber can see", "delivered unacked event is refused specifically by actor visibility: %s" % ack)
+	if result is String: db.close(); return result
+	var response: Dictionary = tools.call_tool("docket_respond", {"subscriber":filtered.subscriber, "event_ids":[event_id], "text":"must not reply", "author":"agent"})
+	result = A.is_true(response.has("error") and response.get("rejected", []).size() == 1 and response.rejected[0].reason == "not an event this subscriber can see", "response rejects the excluded unacked anchor before replying: %s" % response)
+	if result is String: db.close(); return result
+	# Re-acks bypass ACK visibility checks, so this exercises respond's own filter.
+	response = tools.call_tool("docket_respond", {"subscriber":legacy.subscriber, "event_ids":[event_id], "text":"must not reply to excluded re-ack", "author":"agent"})
+	result = A.eq(response.get("error", ""), "Reply event is no longer visible or retained", "already-acked excluded anchor is refused by the reply visibility check")
+	if result is String: db.close(); return result
+	result = A.is_true(FileAccess.get_file_as_string(DocketSubscriptions.store_path) == store_before and A.durable_text(db.get_jsonl_path()) == canonical_before and JSONLSerializer.serialize_comments(db) == comments_before, "excluded ACK and response refusals write no receipts, comments or project events")
 	db.close()
-	return A.eq(status.pending_count, 0, "pending scan applies the same reloaded actor exclusion")
+	return result

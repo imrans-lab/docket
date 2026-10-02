@@ -94,7 +94,8 @@ static func changes_since(id: String, cursor: String, limit: int, project_dbs: D
 		if decoded.is_empty() or str(decoded.s) != id: return {"error":"cursor is malformed or belongs to another subscriber; pass \"\" to read from the subscription start"}
 		positions = decoded.p
 	var delivered: Dictionary = record.get("delivered", {}).duplicate()
-	var projects: Dictionary = _projects(filters, project_dbs)
+	var view: Dictionary = visibility(filters, project_dbs)
+	var projects: Dictionary = view.projects
 	var unavailable: Array[String] = []
 	for listed in filters.get("projects", []):
 		if not projects.has(str(listed)): unavailable.append(str(listed))
@@ -126,12 +127,9 @@ static func changes_since(id: String, cursor: String, limit: int, project_dbs: D
 		if not save_error.is_empty(): return {"error":save_error}
 		return {"events":[], "next_cursor":encode_cursor(id, positions), "more":true, "expired":true, "expired_projects":expired, "unavailable_projects":unavailable}
 
-	var scoped: bool = not str(filters.get("identity", "")).is_empty() or not str(filters.get("role", "")).is_empty()
-	var chain: Dictionary = _chain(_principals(filters), projects) if scoped else {}
-	var kinds: Array = filters.get("kinds", [])
 	var streams: Dictionary = {}
 	for project in projects:
-		streams[project] = collect(project, projects[project], int(positions[project]), limit, kinds, chain if scoped else null, -1, DocketReceipts.acked_sets(record).get(project, []) if unacked_only else [], filters.get("exclude_actors", []))
+		streams[project] = collect(project, projects[project], int(positions[project]), limit, view.kinds, view.chain, -1, DocketReceipts.acked_sets(record).get(project, []) if unacked_only else [], view.exclude_actors)
 
 	var page: Array[Dictionary] = []
 	var budget: int = ContentLedger.PAGE_BYTES
@@ -257,7 +255,7 @@ static func _chain(principals: Array, projects: Dictionary) -> Dictionary:
 
 
 ## What a subscriber with `filters` may see now: {projects {name: DocketDB},
-## kinds, chain} where chain is null for an unscoped subscriber (collect's
+## kinds, exclude_actors, chain} where chain is null for an unscoped subscriber (collect's
 ## arguments).
 static func visibility(filters: Dictionary, project_dbs: Dictionary) -> Dictionary:
 	var projects: Dictionary = _projects(filters, project_dbs)
