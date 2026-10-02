@@ -29,8 +29,9 @@ const MAX_LIMIT := 200
 ## {project, eid}, "project:eid", or a bare eid when the subscription covers
 ## one project. All or nothing: any refused entry returns {error, rejected} and
 ## records nothing. Acking an acknowledged event again changes nothing.
+## validate_only applies the same refusal rules without saving any receipts.
 ## Returns {subscriber, acked, already_acked, pending_count} or {error}.
-static func ack(id: String, raw_events: Variant, project_dbs: Dictionary) -> Dictionary:
+static func ack(id: String, raw_events: Variant, project_dbs: Dictionary, validate_only: bool = false) -> Dictionary:
 	if not raw_events is Array or (raw_events as Array).is_empty(): return {"error":"event_ids must be a non-empty array"}
 	var records: Dictionary = DocketSubscriptions.load_records()
 	if not records.has(id): return {"error":"Unknown subscriber: %s" % id}
@@ -42,7 +43,7 @@ static func ack(id: String, raw_events: Variant, project_dbs: Dictionary) -> Dic
 	var already: Array[Dictionary] = []
 	var rejected: Array[Dictionary] = []
 	for raw in raw_events:
-		var event: Dictionary = _parse(raw, projects)
+		var event: Dictionary = parse_event(raw, projects)
 		if event.has("error"):
 			rejected.append({"event":raw, "reason":event.error})
 			continue
@@ -60,7 +61,7 @@ static func ack(id: String, raw_events: Variant, project_dbs: Dictionary) -> Dic
 		acked[project] = eids
 		added.append(event)
 	if not rejected.is_empty(): return {"error":"no events were acknowledged: %d event id(s) were refused" % rejected.size(), "rejected":rejected}
-	if not added.is_empty():
+	if not added.is_empty() and not validate_only:
 		for project in acked:
 			var floor_eid: int = ProjectEvents.retention_floor(projects[project]) if projects.has(project) else 0
 			var kept: Array = (acked[project] as Array).filter(func(eid: int) -> bool: return eid > floor_eid)
@@ -187,7 +188,7 @@ static func _scan(record: Dictionary, view: Dictionary, limit: int, include_acke
 
 
 ## {project, eid} for one event_ids entry, or {error}.
-static func _parse(raw: Variant, projects: Dictionary) -> Dictionary:
+static func parse_event(raw: Variant, projects: Dictionary) -> Dictionary:
 	var project_name: String = ""
 	var eid_value: Variant = null
 	if raw is Dictionary:

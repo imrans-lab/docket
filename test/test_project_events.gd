@@ -692,3 +692,38 @@ func _receive_case() -> Variant:
 	var recovered: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
 	db.close()
 	return A.is_true(expired.expired and expired.events.is_empty() and feed.expired and expired.expired_projects[0].reason == feed.expired_projects[0].reason and expired.expired_projects[0].recovery_eid == feed.expired_projects[0].recovery_eid and not recovered.expired and recovered.events.size() == 1, "receive/feed expiry and recovery: %s %s %s" % [expired, feed, recovered])
+
+func test_respond_validates_all_ids_before_reply_and_threads_then_acks() -> Variant:
+	return _with_store("respond.json", _respond_case)
+
+func _respond_case() -> Variant:
+	var db: DocketDBJsonl = _db("Respond")
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Respond":db})
+	var item: Dictionary = tools.call_tool("docket_create", {"type":"work_item", "title":"Reply fixture", "directed_to":"responder"})
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"responder", "filters":{"identity":"responder", "kinds":["comment_added", "comment_reply"]}})
+	var comment: Dictionary = tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":"please reply", "author":"sender"})
+	var received: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	var eid: int = int(received.events[0].eid)
+	var refused: Dictionary = tools.call_tool("docket_respond", {"subscriber":sub.subscriber, "event_ids":[eid, eid + 100], "text":"must not appear"})
+	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber})
+	var result: Variant = A.is_true(refused.has("error") and db.list_comments(str(item.id)).size() == 1 and int(status.acked_count) == 0, "invalid response writes nothing: %s %s" % [refused, status])
+	if result is String: db.close(); return result
+	var replied: Dictionary = tools.call_tool("docket_respond", {"subscriber":sub.subscriber, "event_ids":[eid], "text":"done"})
+	var reply: Dictionary = db.get_comment(int(replied.get("comment_id", 0)))
+	status = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
+	var own: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	result = A.is_true(not replied.has("error") and reply.parent_id == comment.id and reply.author == "agent" and reply.text == "done" and str(status.acked_events[0].acked_at).ends_with("Z") and own.events.size() == 1 and own.events[0].comment.id == reply.id and own.events[0].kind == "comment_reply", "threading, timestamps and own response visibility: %s %s %s" % [replied, status, own])
+	if result is String: db.close(); return result
+	var before: int = db.list_comments(str(item.id)).size()
+	var ack_only: Dictionary = tools.call_tool("docket_respond", {"subscriber":sub.subscriber, "event_ids":own.events})
+	result = A.is_true(not ack_only.has("error") and not ack_only.has("comment_id") and db.list_comments(str(item.id)).size() == before, "without text only acks: %s" % ack_only)
+	if result is String: db.close(); return result
+	# A legacy preview has no reliable parent id and receives a top-level reply.
+	tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":"legacy"})
+	var legacy: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	db._exec("UPDATE item_events SET fields='[]' WHERE eid=?;", [int(legacy.events[0].eid)])
+	var top: Dictionary = tools.call_tool("docket_respond", {"subscriber":sub.subscriber, "event_ids":legacy.events, "text":"legacy answer"})
+	var top_comment: Dictionary = db.get_comment(int(top.get("comment_id", 0)))
+	db.close()
+	return A.is_true(not top.has("error") and top_comment.parent_id == 0 and top_comment.item_id == item.id, "unresolved legacy response is top-level: %s" % top)

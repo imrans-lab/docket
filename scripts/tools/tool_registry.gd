@@ -24,6 +24,7 @@ func _build_tools() -> Dictionary:
 		"docket_subscribe": DocketSubscribe.new(),
 		"docket_changes_since": DocketChangesSince.new(),
 		"docket_receive": DocketReceive.new(),
+		"docket_respond": DocketRespond.new(),
 		"docket_unsubscribe": DocketUnsubscribe.new(),
 		"docket_ack": DocketAck.new(),
 		"docket_subscription_status": DocketSubscriptionStatus.new(),
@@ -159,7 +160,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		return ierr
 	# These tools need access to all project DBs for cross-project operations
 	var result: Dictionary
-	if name in ["docket_move", "docket_mirror", "docket_link", "docket_promote", "docket_subscribe", "docket_changes_since", "docket_unsubscribe", "docket_ack", "docket_subscription_status", "docket_receive"]:
+	if name in ["docket_move", "docket_mirror", "docket_link", "docket_promote", "docket_subscribe", "docket_changes_since", "docket_unsubscribe", "docket_ack", "docket_subscription_status", "docket_receive", "docket_respond"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs)
 	elif name.begins_with("docket_type_") or name == "docket_saved_query":
 		var typed_db: DocketDB = _resolve_db(arguments)
