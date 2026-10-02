@@ -139,3 +139,25 @@ func test_last_query_error_clears_on_success() -> Variant:
 		return r
 	_db.execute_query({"filter": {"conditions": [{"field": "title", "op": "eq", "value": "alpha"}]}})
 	return A.eq(_db.last_query_error, "", "error cleared after a good query")
+
+
+func test_flat_parent_parity_and_malformed_filter_errors() -> Variant:
+	var parent: String = "01a0febd44bc7fc88516167dcdc577c5"
+	for pair: Array in [["alpha", parent], ["beta", "Other:" + parent], ["gamma", "Other:different"]]:
+		var error: String = _db._exec_checked("UPDATE items SET parent=? WHERE id=?;", [pair[1], pair[0]])
+		if not error.is_empty(): return error
+	var flat: Array = _db.execute_query({"filter":{"parent":parent}, "sort":[{"field":"id"}]})
+	var conditions: Array = _db.execute_query({"filter":{"conditions":[{"field":"parent", "op":"eq", "value":parent}]}, "sort":[{"field":"id"}]})
+	var result: Variant = A.is_true(flat.size() == 2 and flat == conditions, "bare full parent id matches both bare and qualified parents identically")
+	if result is String: return result
+	var qualified: Array = _db.execute_query({"filter":{"parent":"Other:" + parent}})
+	result = A.is_true(qualified.size() == 1 and qualified[0].id == "beta", "qualified parent remains exact")
+	if result is String: return result
+	var refused: Array = _db.execute_query({"filter":{"title":{"$contains":"x"}}})
+	result = A.is_true(refused.is_empty() and _db.last_query_error.contains("title") and _db.last_query_error.contains("conditions"), "flat object value explains the key and supported grammar")
+	if result is String: return result
+	for filter: Dictionary in [{"$or":[{"parent":parent}]}, {"$and":[42]}, {"$and":[{"field":"title", "op":"in", "value":[]}, {"parent":parent}]}]:
+		refused = _db.execute_query({"filter":filter})
+		result = A.is_true(refused.is_empty() and _db.last_query_error == "branches take condition objects {field, op, value}", "malformed branches refuse before empty-predicate shortcuts")
+		if result is String: return result
+	return true

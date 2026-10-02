@@ -55,6 +55,9 @@ static func _tree(node: Dictionary, registry: TypeRegistry) -> Dictionary:
 			if node.size() != 1: return {"error":"boolean query nodes cannot mix operators with condition keys"}
 			if not node[operator] is Array: return {"error":"%s must contain an array" % operator}
 			var children: Array = node[operator].duplicate(true)
+			for child: Variant in children:
+				if not child is Dictionary or (not child.has("$and") and not child.has("$or") and not child.has("field") and not child.has("field_key")):
+					return {"error":"branches take condition objects {field, op, value}"}
 			if children.is_empty(): return {"where":"1" if operator == "$and" else "0","bindings":[]}
 			if operator == "$and":
 				for child in children:

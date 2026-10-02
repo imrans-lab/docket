@@ -48,6 +48,8 @@ static func translate_filter(filter: Dictionary) -> Dictionary:
 
 	for key in filter:
 		var value = filter[key]
+		if value is Dictionary:
+			return {"error": "flat filter '%s' cannot be an object; use conditions {field, op, value}" % key, "where": "", "bindings": []}
 
 		if key == "tags_contains":
 			conditions.append("EXISTS (SELECT 1 FROM item_tags WHERE item_tags.item_id=items.id AND item_tags.tag=?)")
@@ -76,8 +78,14 @@ static func translate_filter(filter: Dictionary) -> Dictionary:
 			var why_eq := reject_reason(str(key))
 			if not why_eq.is_empty():
 				return {"where": "", "bindings": [], "error": why_eq}
-			conditions.append("%s=?" % key)
-			bindings.append(value)
+			if key == "parent":
+				var parent: Dictionary = _condition_to_sql({"field":"parent", "op":"eq", "value":value})
+				if parent.has("error"): return parent
+				conditions.append(parent.sql)
+				bindings.append_array(parent.bindings)
+			else:
+				conditions.append("%s=?" % key)
+				bindings.append(value)
 
 	return {
 		"where": " AND ".join(conditions) if conditions.size() > 0 else "",

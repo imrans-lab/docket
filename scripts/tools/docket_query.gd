@@ -5,7 +5,7 @@ class_name DocketQuery
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_query",
-		"description": "Query work items with filtering, sorting, and limiting. Legacy column filters retain literal meaning. Registry-bound conditions use type_id plus field_key; derived state_category/state_outcome/is_terminal conditions may span types. Nested $and/$or trees preserve branch scope. Operators are validated against each pinned field kind.",
+		"description": "Query work items with filtering, sorting, and limiting. Legacy column filters retain literal meaning. Registry-bound conditions use type_id plus field_key; derived state_category/state_outcome/is_terminal conditions may span types. Nested $and/$or trees preserve branch scope. Operators are validated against each pinned field kind. Conditions form: {\"conditions\":[{\"field\":\"title\",\"op\":\"contains\",\"value\":\"x\"}]}. Flat values cannot be objects; boolean branches take condition objects.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
