@@ -954,7 +954,8 @@ func add_link(from_id: String, to_id: String, relation: String) -> void:
 
 
 func get_links(item_id: String) -> Array:
-	var rows := _exec_select("SELECT to_id, relation FROM item_links WHERE from_id=?;", [item_id])
+	# Insertion (id) order, as ItemRows' bulk link read orders an item's links.
+	var rows := _exec_select("SELECT to_id, relation FROM item_links WHERE from_id=? ORDER BY id;", [item_id])
 	var result: Array = []
 	for row in rows:
 		result.append({

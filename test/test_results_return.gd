@@ -91,9 +91,10 @@ extends Node
 ## test_related_columns_load_in_bulk queries one SQLite project for "rows"
 ## items with tags, events and links (columns only a saved query can ask for).
 ## Oracles: reads (SELECT statements of one query, counted by CountingDB, are
-## the same with 5 and 50 matching rows), rows (only the filtered rows, in
-## sort order, and a limit holds) and values (each item's tags, events and
-## links, empty sets included, equal its complete record from get_item).
+## no more with 50 than with 5 matching rows, for each query variant), rows
+## (only the filtered rows, in sort order, and a limit holds) and values
+## (each item's tags, events and links, empty sets included, equal its
+## complete record from get_item).
 ##
 ## test_saved_query_loads_its_columns_in_one_query loads .dcq files with and
 ## without a sort on the same fixture. Oracles: queries (exactly 1 per load)
@@ -746,22 +747,27 @@ func test_related_columns_load_in_bulk() -> Variant:
 	if not outside.is_empty(): return "fixture row: %s" % outside
 	var keys := PackedStringArray(["title", "tags", "events", "links"])
 	var sort := [{"field": "title", "dir": "asc"}]
-	# Warm-up: the first query on a connection also reads the items columns
-	# once (DocketDB._item_columns), which no later query repeats.
-	db.execute_query({"filter": {"conditions": _title_is(MATCH)}}, "rows", keys)
-	var counts: Array[int] = []
+	var variants := ["query", "registry query", "limited query"]
+	var run := func(variant: String) -> Array:
+		var query := {"filter": {"conditions": _title_is(MATCH)}, "sort": sort}
+		if variant == "limited query": query["limit"] = 3
+		return db.execute_registry_query(query, registry, "rows", keys) if variant == "registry query" else db.execute_query(query, "rows", keys)
+	# Warm-up: a first query reads per-connection caches once (the items
+	# columns, DocketDB._item_columns; the registry's types), never again.
+	for variant: String in variants: run.call(variant)
+	var counts := {}  # variant -> [5-row SELECTs, 50-row SELECTs]
 	var present := 0
 	for size: int in [5, 50]:
 		var inserted := _insert_related_rows(db, present, size)
 		if not inserted.is_empty(): return inserted
 		present = size
-		for variant: String in ["query", "registry query", "limited query"]:
+		for variant: String in variants:
 			var label := "%s, %d rows" % [variant, size]
-			var query := {"filter": {"conditions": _title_is(MATCH)}, "sort": sort}
-			if variant == "limited query": query["limit"] = 3
 			db.selects = 0
-			var rows: Array = db.execute_registry_query(query, registry, "rows", keys) if variant == "registry query" else db.execute_query(query, "rows", keys)
-			if variant == "query": counts.append(db.selects)
+			var rows: Array = run.call(variant)
+			# Counted before get_item below adds its own reads.
+			if not counts.has(variant): counts[variant] = []
+			(counts[variant] as Array).append(db.selects)
 			var titles: Array = rows.map(func(item: Dictionary) -> String: return str(item.title))
 			var expected_titles: Array = []
 			for i in (3 if variant == "limited query" else size): expected_titles.append("%s r%03d" % [MATCH, i])
@@ -772,7 +778,11 @@ func test_related_columns_load_in_bulk() -> Variant:
 				r = A.eq([item.tags, item.events, item.links], [complete.tags, complete.events, complete.links], "%s: related values of %s" % [label, item.title])
 				if r is String: return r
 	# Allowance 0: after the warm-up every statement is per query or per related table, none per row.
-	return A.is_true(counts[1] <= counts[0], "SELECT statements of one query with 50 rows (%d) at most those with 5 rows (%d)" % [counts[1], counts[0]])
+	for variant: String in variants:
+		var pair: Array = counts[variant]
+		var r = A.is_true(int(pair[1]) <= int(pair[0]), "%s: SELECT statements with 50 rows (%d) at most those with 5 rows (%d)" % [variant, pair[1], pair[0]])
+		if r is String: return r
+	return true
 
 
 func _insert_related_rows(db: DocketDB, from: int, to: int) -> String:
