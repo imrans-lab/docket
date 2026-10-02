@@ -6,13 +6,19 @@ class_name ItemRows
 ##
 ## A "rows" item carries only the keys asked for plus ROW_KEYS, which row
 ## identity, type resolution and storage need. Its values are converted
-## exactly as in a complete item. Tags are loaded for every row in one
-## statement; a request for events or links is served with complete items.
+## exactly as in a complete item. Tags, events and links are each loaded for
+## every row in one statement, so the statement count does not grow with rows.
 
 ## Keys every "rows" item carries.
 const ROW_KEYS := ["id", "type", "status", "type_id", "type_revision", "storage"]
-## Related keys a "rows" item cannot carry; asking for one yields complete items.
-const COMPLETE_ONLY := ["events", "links"]
+## Related keys loaded from their own tables: key -> [SELECT with a WHERE
+## placeholder, owner column]. Each orders an item's entries as a complete item
+## does (DocketDB get_events, get_links), grouped by owner.
+const _RELATED := {
+	"tags": ["SELECT item_id AS owner, tag FROM item_tags%s ORDER BY item_id, tag;", "item_id"],
+	"events": ["SELECT item_id AS owner, event_type, actor, timestamp, note FROM item_events%s ORDER BY item_id, timestamp, id;", "item_id"],
+	"links": ["SELECT from_id AS owner, to_id, relation FROM item_links%s ORDER BY from_id, id;", "from_id"],
+}
 
 enum Kind { TEXT, STORAGE, ENVELOPE, INT, NULLABLE, FLAG, JSON_ARRAY, JSON_DICT }
 
@@ -43,13 +49,6 @@ const _KINDS := {
 	"tool_deps": Kind.JSON_ARRAY, "optimization": Kind.JSON_DICT,
 	"pristine_content": Kind.JSON_DICT, "unsatisfied_deps": Kind.JSON_ARRAY,
 }
-
-
-## True when `keys` can be served without complete items.
-static func projectable(keys: PackedStringArray) -> bool:
-	for key in COMPLETE_ONLY:
-		if keys.has(key): return false
-	return true
 
 
 ## The scalar keys of an item built from `row`: every key when `keys` is
@@ -105,22 +104,39 @@ static func select_list(wanted: Dictionary, existing: Array) -> String:
 	return ",".join(columns)
 
 
-## "rows" items for query `rows` selected with select_list(), plus tags when
-## asked for, loaded for every item matching `where` in one statement.
+## "rows" items for query `rows` selected with select_list(), plus each
+## related key asked for, loaded for every item matching `where` in one
+## statement per related table.
 static func items(db: DocketDB, rows: Array, wanted: Dictionary, where: String, bindings: Array) -> Array:
 	var result: Array = []
 	for row in rows: result.append(scalars(row, wanted))
-	if not wanted.has("tags"): return result
-	var sql := "SELECT item_id, tag FROM item_tags"
-	if not where.is_empty(): sql += " WHERE item_id IN (SELECT id FROM items WHERE %s)" % where
-	var tags_by_id := {}
-	for tag_row in db._exec_select(sql + " ORDER BY item_id, tag;", bindings):
-		var owner := str(tag_row.item_id)
-		if not tags_by_id.has(owner): tags_by_id[owner] = []
-		(tags_by_id[owner] as Array).append(str(tag_row.tag))
-	for item: Dictionary in result:
-		item["tags"] = tags_by_id.get(item.id, [])
+	for key: String in _RELATED:
+		if not wanted.has(key): continue
+		var owner_column: String = _RELATED[key][1]
+		var filter := "" if where.is_empty() else " WHERE %s IN (SELECT id FROM items WHERE %s)" % [owner_column, where]
+		var by_owner := {}
+		for related_row: Dictionary in db._exec_select(str(_RELATED[key][0]) % filter, bindings):
+			var owner := str(related_row.owner)
+			if not by_owner.has(owner): by_owner[owner] = []
+			(by_owner[owner] as Array).append(_related_entry(key, related_row))
+		for item: Dictionary in result:
+			item[key] = by_owner.get(item.id, [])
 	return result
+
+
+## One entry of related key `key`, converted as a complete item converts it.
+static func _related_entry(key: String, row: Dictionary) -> Variant:
+	match key:
+		"tags":
+			return str(row.tag)
+		"events":
+			return {
+				"event_type": str(row.get("event_type", "")),
+				"actor": str(row.get("actor", "")),
+				"timestamp": str(row.get("timestamp", "")),
+				"note": str(row.get("note", "")),
+			}
+	return {"to": str(row.get("to_id", "")), "relation": str(row.get("relation", ""))}
 
 
 ## Shortest unique display prefix (at least 7 characters) of each UUID7 id in

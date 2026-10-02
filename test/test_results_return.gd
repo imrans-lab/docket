@@ -82,6 +82,13 @@ extends Node
 ##            value; the project's copy keeps its link.
 ## To cover another grid configuration, add an entry to _views().
 ##
+## test_related_columns_load_in_bulk queries one SQLite project for "rows"
+## items with tags, events and links (columns only a saved query can ask for).
+## Oracles: reads (SELECT statements of one query, counted by CountingDB, are
+## the same with 5 and 50 matching rows), rows (only the filtered rows, in
+## sort order, and a limit holds) and values (each item's tags, events and
+## links, empty sets included, equal its complete record from get_item).
+##
 ## test_saved_query_loads_its_columns_in_one_query loads .dcq files with and
 ## without a sort on the same fixture. Oracles: queries (exactly 1 per load)
 ## and cells (each shown row's description equals its record's, from a fresh
@@ -717,6 +724,65 @@ func test_refresh_reads_do_not_grow_with_rows() -> Variant:
 	var r = A.eq([small_rows, large_rows], [2 * ROWS_SMALL, 8 * ROWS_SMALL], "fixture: rows shown before and after adding rows")
 	if r is String: return r
 	return A.eq(large, small, "SELECT statements of one refresh with %d rows versus %d rows" % [large_rows, small_rows])
+
+
+func test_related_columns_load_in_bulk() -> Variant:
+	_new_state()
+	var path := "%s/related_reads.dct" % DIR
+	var created := DocketDB.create_new(path)
+	if created == null: return "fixture %s was not created" % path
+	created.close()
+	var db := CountingDB.new()
+	if not db.open(path): return "fixture %s did not open" % path
+	var registry := _add_project("alpha", db)
+	# A row outside the filter, with events and a link, must not be returned.
+	var outside := db.insert_item(DocketDB.generate_uuid7(), {"type": "chore", "status": "open", "title": "outside", "events": [{"event_type": "note", "actor": "x", "timestamp": "2026-01-01T00:00:00Z", "note": "outside"}], "links": [{"to": "other:outside", "relation": "relates"}]})
+	if not outside.is_empty(): return "fixture row: %s" % outside
+	var keys := PackedStringArray(["title", "tags", "events", "links"])
+	var sort := [{"field": "title", "dir": "asc"}]
+	var counts: Array[int] = []
+	var present := 0
+	for size: int in [5, 50]:
+		var inserted := _insert_related_rows(db, present, size)
+		if not inserted.is_empty(): return inserted
+		present = size
+		for variant: String in ["query", "registry query", "limited query"]:
+			var label := "%s, %d rows" % [variant, size]
+			var query := {"filter": {"conditions": _title_is(MATCH)}, "sort": sort}
+			if variant == "limited query": query["limit"] = 3
+			db.selects = 0
+			var rows: Array = db.execute_registry_query(query, registry, "rows", keys) if variant == "registry query" else db.execute_query(query, "rows", keys)
+			if variant == "query": counts.append(db.selects)
+			var titles: Array = rows.map(func(item: Dictionary) -> String: return str(item.title))
+			var expected_titles: Array = []
+			for i in (3 if variant == "limited query" else size): expected_titles.append("%s r%03d" % [MATCH, i])
+			var r = A.eq(titles, expected_titles, "%s: rows returned" % label)
+			if r is String: return r
+			for item: Dictionary in rows:
+				var complete := db.get_item(str(item.id))
+				r = A.eq([item.tags, item.events, item.links], [complete.tags, complete.events, complete.links], "%s: related values of %s" % [label, item.title])
+				if r is String: return r
+	return A.eq(counts[1], counts[0], "SELECT statements of one query with 50 rows versus 5 rows")
+
+
+func _insert_related_rows(db: DocketDB, from: int, to: int) -> String:
+	## Chores titled MATCH rNNN. Every third has no events, the rest two
+	## same-second events after an earlier one (their order is the rowid
+	## tiebreak); every other has tags; all but the first have two links, the
+	## first to the row before.
+	var previous := ""
+	for i in range(from, to):
+		var id := DocketDB.generate_uuid7()
+		var events: Array = [] if i % 3 == 0 else [
+			{"event_type": "note", "actor": "b", "timestamp": "2026-01-02T00:00:00Z", "note": "second %d" % i},
+			{"event_type": "note", "actor": "a", "timestamp": "2026-01-01T00:00:00Z", "note": "first %d" % i},
+			{"event_type": "note", "actor": "c", "timestamp": "2026-01-02T00:00:00Z", "note": "third %d" % i},
+		]
+		var links: Array = [] if previous.is_empty() else [{"to": previous, "relation": "relates"}, {"to": "other:%d" % i, "relation": "blocks"}]
+		var error := db.insert_item(id, {"type": "chore", "status": "open", "title": "%s r%03d" % [MATCH, i], "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "tags": ["red", "blue"] if i % 2 == 0 else [], "events": events, "links": links})
+		if not error.is_empty(): return "fixture row: %s" % error
+		previous = id
+	return ""
 
 
 ## Each change runs while a record is open; its optional `before` runs first,

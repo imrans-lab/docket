@@ -1025,7 +1025,6 @@ func execute_query(query: Dictionary, detail: String = "full", keys: PackedStrin
 		last_query_error = str(translated["error"])
 		return []
 	last_query_error = ""
-	if detail == "rows" and not ItemRows.projectable(keys): detail = "full"
 
 	var where_clause: String = translated.where
 	var bindings: Array = translated.bindings
@@ -1093,7 +1092,6 @@ func execute_registry_query(query: Dictionary, registry: TypeRegistry, detail: S
 		last_query_error = str(compiled.error)
 		return []
 	last_query_error = ""
-	if detail == "rows" and not ItemRows.projectable(keys): detail = "full"
 	var sql := "SELECT %s FROM items" % _item_select(detail, keys)
 	if not str(compiled.where).is_empty(): sql += " WHERE " + str(compiled.where)
 	var bindings: Array = compiled.bindings.duplicate()
