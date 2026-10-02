@@ -82,6 +82,12 @@ extends Node
 ##            value; the project's copy keeps its link.
 ## To cover another grid configuration, add an entry to _views().
 ##
+## test_failed_mcp_call_does_not_refresh_the_results: with events and links
+## columns shown, a failing tool call while a record is open (oracles: queries
+## 0, node and rows as above, an error-log row written, every project's
+## results_generation(false) unchanged), then a successful MCP edit (queries 1,
+## a results generation moved).
+##
 ## test_related_columns_load_in_bulk queries one SQLite project for "rows"
 ## items with tags, events and links (columns only a saved query can ask for).
 ## Oracles: reads (SELECT statements of one query, counted by CountingDB, are
@@ -783,6 +789,60 @@ func _insert_related_rows(db: DocketDB, from: int, to: int) -> String:
 		if not error.is_empty(): return "fixture row: %s" % error
 		previous = id
 	return ""
+
+
+## A failed MCP call writes the error log but leaves every project's results
+## generation alone, so Back shows the retained rows with no query; a
+## successful MCP write after it moves a generation and re-queries once. The
+## grid shows events and links columns, loaded with the rows.
+func test_failed_mcp_call_does_not_refresh_the_results() -> Variant:
+	var fixture_error := _open_fixture()
+	if not fixture_error.is_empty(): return fixture_error
+	var grid := _shell._query_grid
+	grid.set_result_columns(["id", "project", "title", "events", "links"])
+	grid.set_filter(_title_filter(MATCH))
+	grid._toggle_sort(grid._col_fields.find("title"))
+	await get_tree().process_frame
+	var r = A.is_true(grid._col_fields.has("events") and grid._col_fields.has("links"), "fixture: the grid shows events and links columns")
+	if r is String: return r
+	r = _rows_match(MATCH, "fixture: the grid shows the filtered, sorted rows")
+	if r is String: return r
+	var successful_write := func() -> String:
+		var before := _results_generations()
+		var error := _mcp_edit()
+		if error.is_empty() and _results_generations() == before: return "a successful MCP write left every results generation unchanged"
+		return error
+	for change: Dictionary in [
+		{"kind": "failed MCP call", "queries": 0, "apply": _failed_mcp_call},
+		{"kind": "MCP edit", "queries": 1, "apply": successful_write},
+	]:
+		r = await _open_change_and_return(change)
+		if r is String: return "%s: %s" % [change.kind, r]
+	return true
+
+
+func _failed_mcp_call() -> String:
+	## An update of an id no project holds fails; the primary's error log gains
+	## its row and no project's results generation moves.
+	var before := _results_generations()
+	var logged := _logged_errors("docket_update")
+	var result := _tools.call_tool("docket_update", {"id": DocketDB.generate_uuid7(), "project": PROJECTS[0], "title": "never"})
+	if not result.has("error"): return "the call did not fail: %s" % result
+	if _logged_errors("docket_update") != logged + 1: return "the error log did not gain the failed call"
+	if _results_generations() != before: return "a failed call moved a results generation: %s -> %s" % [before, _results_generations()]
+	return ""
+
+
+func _results_generations() -> Array:
+	return _dbs.map(func(db: DocketDB) -> Array: return db.results_generation(false))
+
+
+func _logged_errors(tool_name: String) -> int:
+	## The primary's error-log rows for tool_name, over every message.
+	var total := 0
+	for row: Dictionary in _state.db.get_error_report():
+		if row.tool_name == tool_name: total += int(row.count)
+	return total
 
 
 ## Each change runs while a record is open; its optional `before` runs first,

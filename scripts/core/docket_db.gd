@@ -88,7 +88,8 @@ var _retrieval_changes: int = 0
 func results_generation(with_retrievals: bool) -> Array:
 	## cache_generation() as a results grid needs it: it leaves out this
 	## connection's writes no results row reads (RESULTS_UNSEEN_META keys, the
-	## sidecar's dirty set) and, unless with_retrievals, retrieval_count bumps.
+	## sidecar's dirty set, the MCP error log) and, unless with_retrievals,
+	## retrieval_count bumps.
 	## Any other write on this connection moves it, and so does any commit by
 	## another connection, whatever it wrote. It leads with the connection's
 	## identity, so a value read on a replaced connection never equals it.
@@ -919,9 +920,12 @@ func get_transition_report() -> Array:
 # -- MCP error log ------------------------------------------------------------
 
 func log_mcp_error(tool_name: String, error_message: String, arg_keys: String = "") -> void:
+	## No results row reads the log, so results_generation() leaves it out.
 	var ts := Time.get_datetime_string_from_system(true)
+	var mark := _begin_uncounted()
 	_exec("INSERT INTO mcp_error_log (timestamp, tool_name, error_message, arg_keys) VALUES (?, ?, ?, ?);",
 		[ts, tool_name, error_message, arg_keys])
+	_end_uncounted(mark)
 
 
 func get_error_report() -> Array:
