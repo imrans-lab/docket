@@ -746,6 +746,9 @@ func test_related_columns_load_in_bulk() -> Variant:
 	if not outside.is_empty(): return "fixture row: %s" % outside
 	var keys := PackedStringArray(["title", "tags", "events", "links"])
 	var sort := [{"field": "title", "dir": "asc"}]
+	# Warm-up: the first query on a connection also reads the items columns
+	# once (DocketDB._item_columns), which no later query repeats.
+	db.execute_query({"filter": {"conditions": _title_is(MATCH)}}, "rows", keys)
 	var counts: Array[int] = []
 	var present := 0
 	for size: int in [5, 50]:
@@ -768,7 +771,8 @@ func test_related_columns_load_in_bulk() -> Variant:
 				var complete := db.get_item(str(item.id))
 				r = A.eq([item.tags, item.events, item.links], [complete.tags, complete.events, complete.links], "%s: related values of %s" % [label, item.title])
 				if r is String: return r
-	return A.eq(counts[1], counts[0], "SELECT statements of one query with 50 rows versus 5 rows")
+	# Allowance 0: after the warm-up every statement is per query or per related table, none per row.
+	return A.is_true(counts[1] <= counts[0], "SELECT statements of one query with 50 rows (%d) at most those with 5 rows (%d)" % [counts[1], counts[0]])
 
 
 func _insert_related_rows(db: DocketDB, from: int, to: int) -> String:
