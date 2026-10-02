@@ -154,7 +154,7 @@ static func _refusal(record: Dictionary, view: Dictionary, project: String, eid:
 	var start: Dictionary = record.get("start", {})
 	if not start.has(project) or eid <= int(start[project]) or eid > int((record.get("delivered", {}) as Dictionary).get(project, 0)): return "not delivered to this subscriber"
 	if eid <= ProjectEvents.retention_floor(db): return "expired: the event has left the retained log"
-	var found: Dictionary = DocketSubscriptions.collect(project, db, eid - 1, 1, view.kinds, view.chain, eid)
+	var found: Dictionary = DocketSubscriptions.collect(project, db, eid - 1, 1, view.kinds, view.chain, eid, [], view.exclude_actors)
 	if (found.events as Array).is_empty(): return "not an event this subscriber can see"
 	return ""
 
@@ -175,7 +175,7 @@ static func _scan(record: Dictionary, view: Dictionary, limit: int, include_acke
 		var high: int = int(delivered.get(project, 0))
 		if high <= low: continue
 		var eids: Array = acked.get(project, [])
-		var stream: Dictionary = DocketSubscriptions.collect(project, db, low, high - low, view.kinds, view.chain, high)
+		var stream: Dictionary = DocketSubscriptions.collect(project, db, low, high - low, view.kinds, view.chain, high, [], view.exclude_actors)
 		for event in stream.events:
 			var row: Dictionary = {"project":project, "eid":int(event.eid), "item_id":event.item_id, "kind":event.kind, "actor":event.actor, "timestamp":event.timestamp}
 			row.merge(times(record, project, int(event.eid)))

@@ -5,7 +5,7 @@ class_name DocketRespond
 func get_definition() -> Dictionary:
 	return {
 		"name":"docket_respond",
-		"description":"Reply through docket_comment, then acknowledge delivered events. All ids are validated by docket_ack before writing: a refused id writes no reply and acknowledges nothing. With text, the first event anchors the reply in its project; comment_added/comment_reply events with an explicit reference produce a threaded reply. Legacy unresolved comments produce a top-level comment. item_id overrides the target within that project; a threaded reply requires the originating item. Author defaults to agent. Returns {comment_id?, acked, already_acked, pending_count}. Without text only acknowledges. Project comments and subscriber receipts save independently: a save failure after a reply returns error, comment_id, acks_recorded=false; recover with docket_ack, not another text response. No crash-atomic or exactly-once guarantee. Each successful call with text adds a reply, including re-acks. The reply event follows normal visibility and is returned by receive if visible until explicitly acknowledged; authors are not filtered out.",
+		"description":"Reply through docket_comment, then acknowledge delivered events. All ids are validated by docket_ack before writing: a refused id writes no reply and acknowledges nothing. With text, the first event anchors the reply in its project; comment_added/comment_reply events with an explicit reference produce a threaded reply. Legacy unresolved comments produce a top-level comment. item_id overrides the target within that project; a threaded reply requires the originating item. Author defaults to agent. Returns {comment_id?, acked, already_acked, pending_count}. Without text only acknowledges. Project comments and subscriber receipts save independently: a save failure after a reply returns error, comment_id, acks_recorded=false; recover with docket_ack, not another text response. No crash-atomic or exactly-once guarantee. Each successful call with text adds a reply, including re-acks. The reply event follows normal visibility and is returned by receive if visible until explicitly acknowledged; authors are filtered only by the subscription's exclude_actors.",
 		"inputSchema":{"type":"object", "properties":{
 			"subscriber":{"type":"string", "description":"Subscriber id returned by docket_subscribe"},
 			"event_ids":{"type":"array", "minItems":1, "description":"Delivered events: {project, eid} objects, \"project:eid\" strings, or bare eids when the subscription covers exactly one project. The first event anchors an optional reply.", "items":{}},
@@ -29,7 +29,7 @@ func execute(args: Dictionary, schema: Dictionary, db: DocketDB, project_dbs: Di
 	var anchor: Dictionary = DocketReceipts.parse_event((raw_events as Array)[0], view.projects)
 	if anchor.has("error"): return anchor
 	var target: DocketDB = projects[anchor.project]
-	var found: Dictionary = DocketSubscriptions.collect(str(anchor.project), target, int(anchor.eid) - 1, 1, view.kinds, view.chain, int(anchor.eid))
+	var found: Dictionary = DocketSubscriptions.collect(str(anchor.project), target, int(anchor.eid) - 1, 1, view.kinds, view.chain, int(anchor.eid), [], view.exclude_actors)
 	if found.events.is_empty(): return {"error":"Reply event is no longer visible or retained"}
 	var event: Dictionary = found.events[0]
 	var item_id: String = str(args.get("item_id", event.item_id))

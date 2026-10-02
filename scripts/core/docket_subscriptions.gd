@@ -6,7 +6,7 @@ class_name DocketSubscriptions
 ## outside every .dct, so it survives restart and is never committed with a
 ## project):
 ##   {id, name, filters, start, delivered, receive_cursor?, created_at}
-##   filters    {projects, kinds, identity, role}; empty = no restriction
+##   filters    {projects, kinds, exclude_actors, identity, role}; empty = no restriction
 ##   start      {project: eid} the head of each project when the record was made
 ##   delivered  {project: eid} the largest eid ever returned to this subscriber
 ##   receive_cursor opaque cursor kept before oldest unacknowledged receive events
@@ -45,7 +45,7 @@ const MAX_LIMIT := 200
 const SCAN_BATCH := 500
 const ANCESTOR_DEPTH := 8
 const OBJECTIVE_TAG := "wr:objective"
-const FILTER_KEYS := ["projects", "kinds", "identity", "role"]
+const FILTER_KEYS := ["projects", "kinds", "exclude_actors", "identity", "role"]
 const EXPIRED_RETENTION := "retention"
 const EXPIRED_AHEAD := "ahead_of_log"
 
@@ -131,7 +131,7 @@ static func changes_since(id: String, cursor: String, limit: int, project_dbs: D
 	var kinds: Array = filters.get("kinds", [])
 	var streams: Dictionary = {}
 	for project in projects:
-		streams[project] = collect(project, projects[project], int(positions[project]), limit, kinds, chain if scoped else null, -1, DocketReceipts.acked_sets(record).get(project, []) if unacked_only else [])
+		streams[project] = collect(project, projects[project], int(positions[project]), limit, kinds, chain if scoped else null, -1, DocketReceipts.acked_sets(record).get(project, []) if unacked_only else [], filters.get("exclude_actors", []))
 
 	var page: Array[Dictionary] = []
 	var budget: int = ContentLedger.PAGE_BYTES
@@ -196,7 +196,7 @@ static func decode_cursor(cursor: String) -> Dictionary:
 ## when it is not negative), in eid order, stopping once `limit` are found:
 ## {events, taken, last, scanned_to, exhausted}. `chain` is null for an
 ## unscoped subscriber.
-static func collect(project: String, db: DocketDB, position: int, limit: int, kinds: Array, chain: Variant, until: int = -1, excluded: Array = []) -> Dictionary:
+static func collect(project: String, db: DocketDB, position: int, limit: int, kinds: Array, chain: Variant, until: int = -1, excluded: Array = [], exclude_actors: Array = []) -> Dictionary:
 	var stream: Dictionary = {"events":[], "taken":0, "last":position, "scanned_to":position, "exhausted":false}
 	var events: Array = stream.events
 	var ceiling: int = until if until >= 0 else 9223372036854775807
@@ -208,6 +208,7 @@ static func collect(project: String, db: DocketDB, position: int, limit: int, ki
 			var kind: String = str(row.event_type)
 			var item_id: String = str(row.item_id)
 			if not kinds.is_empty() and not kinds.has(kind): continue
+			if exclude_actors.has(_text(row.get("actor"))): continue
 			if chain != null and not (chain as Dictionary).has(_key(project, item_id)): continue
 			var fields: Variant = JSON.parse_string(_text(row.get("fields")))
 			events.append({"project":project, "eid":int(row.eid), "item_id":item_id, "kind":kind, "actor":_text(row.get("actor")), "timestamp":_text(row.get("timestamp")), "fields":fields if fields is Array else []})
@@ -261,7 +262,7 @@ static func _chain(principals: Array, projects: Dictionary) -> Dictionary:
 static func visibility(filters: Dictionary, project_dbs: Dictionary) -> Dictionary:
 	var projects: Dictionary = _projects(filters, project_dbs)
 	var scoped: bool = not str(filters.get("identity", "")).is_empty() or not str(filters.get("role", "")).is_empty()
-	return {"projects":projects, "kinds":filters.get("kinds", []), "chain":_chain(_principals(filters), projects) if scoped else null}
+	return {"projects":projects, "kinds":filters.get("kinds", []), "exclude_actors":filters.get("exclude_actors", []), "chain":_chain(_principals(filters), projects) if scoped else null}
 
 
 static func _principals(filters: Dictionary) -> Array:
@@ -294,8 +295,8 @@ static func _normalize_filters(raw: Variant, project_dbs: Dictionary) -> Diction
 	var given: Dictionary = raw
 	for key in given:
 		if not FILTER_KEYS.has(str(key)): return {"error":"Unknown filter '%s'; filters are %s" % [key, FILTER_KEYS]}
-	var filters: Dictionary = {"projects":[], "kinds":[], "identity":"", "role":""}
-	for key in ["projects", "kinds"]:
+	var filters: Dictionary = {"projects":[], "kinds":[], "exclude_actors":[], "identity":"", "role":""}
+	for key in ["projects", "kinds", "exclude_actors"]:
 		var values: Variant = given.get(key, [])
 		if not values is Array: return {"error":"filters.%s must be an array of strings" % key}
 		for value in values:

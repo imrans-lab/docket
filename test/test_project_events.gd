@@ -829,3 +829,41 @@ func test_add_event_returns_its_row_and_refuses_failed_or_ignored_inserts() -> V
 	plain.close()
 	jsonl.close()
 	return true
+
+
+func test_excluded_actors_are_hidden_from_receive_status_and_reloaded_feeds() -> Variant:
+	return _with_store("excluded_actors.json", _excluded_actors_case)
+
+func _excluded_actors_case() -> Variant:
+	var db: DocketDBJsonl = _db("ActorFeed")
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools := ToolRegistry.new()
+	tools.init(schema, db, {"ActorFeed":db})
+	var item: Dictionary = tools.call_tool("docket_create", {"type":"work_item", "title":"Actor filter"})
+	var filtered: Dictionary = tools.call_tool("docket_subscribe", {"name":"filtered", "filters":{"exclude_actors":["claude"], "kinds":["comment_added"]}})
+	var legacy: Dictionary = tools.call_tool("docket_subscribe", {"name":"legacy", "filters":{"kinds":["comment_added"]}})
+	if item.has("error") or filtered.has("error") or legacy.has("error"): db.close(); return "actor filter fixture failed"
+	# A persisted old record has no exclude_actors key.
+	var records: Dictionary = DocketSubscriptions.load_records()
+	(records[legacy.subscriber].filters as Dictionary).erase("exclude_actors")
+	var error: String = DocketSubscriptions.save_records(records)
+	if not error.is_empty(): db.close(); return error
+	tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":"own event", "author":"claude"})
+	var hidden: Dictionary = tools.call_tool("docket_receive", {"subscriber":filtered.subscriber})
+	var visible: Dictionary = tools.call_tool("docket_receive", {"subscriber":legacy.subscriber})
+	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":filtered.subscriber})
+	var result: Variant = A.is_true(not hidden.has("error") and hidden.events.is_empty() and visible.events.size() == 1 and status.pending_count == 0 and status.filters.exclude_actors == ["claude"], "excluded actor hidden while legacy subscriber sees event: %s %s %s" % [hidden, visible, status])
+	if result is String: db.close(); return result
+	tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":"other event", "author":"codex"})
+	visible = tools.call_tool("docket_receive", {"subscriber":filtered.subscriber})
+	status = tools.call_tool("docket_subscription_status", {"subscriber":filtered.subscriber})
+	result = A.is_true(visible.events.size() == 1 and visible.events[0].actor == "codex" and status.pending_count == 1, "other actor reaches receive and pending status")
+	if result is String: db.close(); return result
+	# Changing a stored exclusion also removes an already-delivered event from pending.
+	records = DocketSubscriptions.load_records()
+	records[filtered.subscriber].filters.exclude_actors = ["claude", "codex"]
+	error = DocketSubscriptions.save_records(records)
+	if not error.is_empty(): db.close(); return error
+	status = tools.call_tool("docket_subscription_status", {"subscriber":filtered.subscriber})
+	db.close()
+	return A.eq(status.pending_count, 0, "pending scan applies the same reloaded actor exclusion")
