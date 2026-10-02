@@ -1192,7 +1192,8 @@ func _show_about() -> void:
 
 	_info_dialog.dialog_text = (
 		"Docket — RAID-Inspired Work-Item Tracker\n" +
-		"by Imran Peerbhai\n\n" +
+		"by Imran Peerbhai\n" +
+		"Build: %s\n\n" % BuildInfo.identity() +
 		"%d item types, each with its own state machine:\n" % type_names.size() +
 		"%s\n\n" % ", ".join(PackedStringArray(type_names)) +
 		"Secrets and encrypted notes require a vault password (Preferences).\n" +

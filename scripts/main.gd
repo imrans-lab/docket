@@ -23,6 +23,13 @@ func _ready() -> void:
 	match opts.mode:
 		"help":
 			_print_help()
+		"build_info":
+			var info: Dictionary = BuildInfo.read()
+			info["identity"] = BuildInfo.identity()
+			var initialized: Dictionary = McpHandler.new().handle({"method":"initialize", "id":1})
+			info["server_version"] = initialized.result.serverInfo.version
+			print(JSON.stringify(info))
+			get_tree().quit()
 		"test":
 			await _run_tests()
 		"serve":
@@ -55,6 +62,8 @@ func _parse_arg_values(args: Array) -> Dictionary:
 				opts.mode = "help"
 			"--serve", "serve":
 				opts.mode = "serve"
+			"--build-info":
+				opts.mode = "build_info"
 			"--test", "test":
 				opts.mode = "test"
 			"--migrate", "migrate":
@@ -140,6 +149,7 @@ func _print_help() -> void:
 	print("  --query <path.dcq>  Load a .dcq query file on startup")
 	print("  --serve             Run as headless MCP server (no GUI)")
 	print("  --port <number>     MCP server port (default: 3010)")
+	print("  --build-info        Print embedded build identity and exit")
 	print("  --test              Run tests and exit")
 	print("  --migrate           Migrate a legacy JSON .dct to SQLite and exit")
 	print("  --migrate-jsonl     Migrate a legacy SQLite .dct to JSONL and exit")

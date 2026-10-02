@@ -66,6 +66,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Install SCons
         run: pipx install scons
@@ -122,6 +123,9 @@ jobs:
           fi
           chmod +x "$GODOT_BIN"
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+
+      - name: Generate build identity and platform versions
+        run: python3 scripts/build/prepare_build_info.py
 
       # First headless run imports assets and registers class_name globals.
       # Without this, scripts using class_name fail to resolve and the run hangs.

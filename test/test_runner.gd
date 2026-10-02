@@ -19,6 +19,7 @@ func _ready() -> void:
 		preload("res://test/test_http_server.gd"),
 		preload("res://test/test_http_origin_guard.gd"),
 		preload("res://test/test_mcp_handler.gd"),
+		preload("res://test/test_build_info.gd"),
 		preload("res://test/test_mcp_tools.gd"),
 		preload("res://test/test_integration.gd"),
 		preload("res://test/test_vault_crypto.gd"),

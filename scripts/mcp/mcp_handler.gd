@@ -27,7 +27,7 @@ func handle(request: Dictionary) -> Variant:
 				},
 				"serverInfo": {
 					"name": "docket",
-					"version": "1.0.0",
+					"version": BuildInfo.identity(),
 				},
 			})
 		"notifications/initialized":

@@ -119,3 +119,29 @@ look like unrelated SQLite bugs.
 `SHA256SUMS.asc`, the GPG signature over the checksum manifest is the integrity
 guarantee. A checksum file without its signature does not prove who produced the
 artifacts.
+
+## Embedded build identity
+
+CI generates ignored `build_info.json` from the checkout's release tag or
+`git describe --tags --always`, plus its full commit SHA. Release dispatch
+checks out the requested tag and refuses a tag/commit mismatch. The resource
+is exported on all platforms; MCP initialize, About and `--build-info` use
+the same reader. Without the resource, local development reports `dev`.
+
+`prepare_build_info.py` derives native export metadata from that JSON. macOS
+short version is `major.minor.patch`; bundle build version is
+`(major + 1).minor.patch`, because Apple's CFBundleVersion requires a positive
+first component even for a 0.x release. Windows file/product numeric versions
+are `major.minor.patch.0`. These projections cannot encode prereleases or
+commit hashes and do not uniquely identify release candidates; the common
+resource retains that full identity. Invalid/unrepresentable versions fail
+generation rather than guessing.
+
+The platform constraints are documented by
+[Apple](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html)
+and [Microsoft](https://learn.microsoft.com/en-us/windows/win32/menurc/versioninfo-resource).
+After export, `verify_build_info.py` reads actual Info.plist or Windows PE
+version metadata and runs the exported binary's `--build-info` mode to assert
+its embedded resource and MCP initialize identity. This mode exits without
+opening a project, GUI, or listener. Cross-platform assertions run in release
+CI; local static gates do not establish that exports passed.
