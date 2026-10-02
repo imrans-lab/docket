@@ -9,6 +9,7 @@ class_name DocketSubscriptions
 ##   filters    {projects, kinds, identity, role}; empty = no restriction
 ##   start      {project: eid} the head of each project when the record was made
 ##   delivered  {project: eid} the largest eid ever returned to this subscriber
+##   receipt_times {project: {eid: {received_at?, acked_at?}}} first UTC receipts
 ##   acked      {project: [eid]} events the subscriber acknowledged (DocketReceipts)
 ##
 ## A cursor is an opaque base64 of compact JSON {"s": subscriber id,

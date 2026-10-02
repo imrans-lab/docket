@@ -607,3 +607,32 @@ func _quiet_case() -> Variant:
 		if r is String: db.close(); return r
 	db.close()
 	return true
+
+
+func test_first_ack_time_survives_reack_and_legacy_receipts_have_null_times() -> Variant:
+	return _with_store("times.json", _times_case)
+
+func _times_case() -> Variant:
+	var db: DocketDBJsonl = _db("Times")
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Times":db})
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"times"})
+	tools.call_tool("docket_create", {"type":"work_item", "title":"Time fixture"})
+	var fed: Dictionary = _drain(tools, str(sub.subscriber), str(sub.cursor), 10)
+	var ids: Array = fed.eids
+	var first: Dictionary = tools.call_tool("docket_ack", {"subscriber":sub.subscriber, "event_ids":ids})
+	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
+	var row: Dictionary = status.acked_events[0]
+	var again: Dictionary = tools.call_tool("docket_ack", {"subscriber":sub.subscriber, "event_ids":ids})
+	var after: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
+	var result: Variant = A.is_true(not first.has("error") and not again.has("error") and row.received_at == null and str(row.acked_at).ends_with("Z") and after.acked_events[0].acked_at == row.acked_at, "first ack time preserved: %s %s" % [status, after])
+	if result is String: db.close(); return result
+	# Persist the historical record shape, which had only the ack id set.
+	var records: Dictionary = DocketSubscriptions.load_records()
+	(records[sub.subscriber] as Dictionary).erase("receipt_times")
+	DocketSubscriptions.save_records(records)
+	var legacy: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
+	tools.call_tool("docket_ack", {"subscriber":sub.subscriber, "event_ids":ids})
+	var legacy_again: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
+	db.close()
+	return A.is_true(legacy.acked_events[0].received_at == null and legacy.acked_events[0].acked_at == null and legacy_again.acked_events[0].acked_at == null, "legacy times remain unavailable: %s" % legacy_again)

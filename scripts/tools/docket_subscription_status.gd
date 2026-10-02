@@ -7,7 +7,7 @@ class_name DocketSubscriptionStatus
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_subscription_status",
-		"description": "Inspect acknowledgement state. With `subscriber`: {subscriber, name, filters, pending, pending_count, acked_count, positions, cursor, acked_events (when include_acked)}. pending lists delivered-but-unacknowledged events the subscriber can still see ({project, eid, item_id, kind, actor, timestamp}, at most `limit`, eid order per project); positions has one row per project {project, start, delivered, head, retention_floor, acked}, where delivered is the largest eid ever sent to it; cursor is a docket_changes_since cursor just after everything delivered. With `event` instead: {project, eid, acked_by, pending_for}, each a list of {subscriber, name}.",
+		"description": "Inspect acknowledgement state. With `subscriber`: {subscriber, name, filters, pending, pending_count, acked_count, positions, cursor, acked_events (when include_acked)}. pending lists delivered-but-unacknowledged events the subscriber can still see ({project, eid, item_id, kind, actor, timestamp, received_at, acked_at}, at most `limit`, eid order per project); positions has one row per project {project, start, delivered, head, retention_floor, acked}, where delivered is the largest eid ever sent to it; cursor is a docket_changes_since cursor just after everything delivered. With `event` instead: {project, eid, acked_by, pending_for}, each a list of {subscriber, name, received_at, acked_at}. Receipt timestamps are first server UTC times, null when unavailable in legacy records; only docket_receive stamps received_at.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {

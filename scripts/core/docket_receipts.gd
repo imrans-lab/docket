@@ -5,6 +5,8 @@ class_name DocketReceipts
 ## A subscriber consumes an event only by acknowledging it with ack(). The
 ## acknowledgement is stored in the subscriber's record as
 ##   acked  {project: [eid, ...]}  ascending
+## receipt_times {project: {eid: {received_at?, acked_at?}}} stores first UTC times.
+## Missing times in legacy records remain null.
 ## Nothing else writes `acked`: reading a page (changes_since raises
 ## `delivered`) is not consumption, and comment accept/reject and item
 ## transitions neither read nor change it. An ack changes no project file.
@@ -65,6 +67,7 @@ static func ack(id: String, raw_events: Variant, project_dbs: Dictionary) -> Dic
 			kept.sort()
 			acked[project] = kept
 		record["acked"] = acked
+		stamp(record, added, "acked_at")
 		var error: String = DocketSubscriptions.save_records(records)
 		if not error.is_empty(): return {"error":error}
 	return {"subscriber":id, "acked":added, "already_acked":already, "pending_count":int(_scan(record, view, 0, false).pending_count)}
@@ -113,6 +116,7 @@ static func event_status(project_name: String, eid: int, project_dbs: Dictionary
 		var view: Dictionary = DocketSubscriptions.visibility(record.get("filters", {}), project_dbs)
 		if not (view.projects as Dictionary).has(project): continue
 		var entry: Dictionary = {"subscriber":str(id), "name":str(record.get("name", ""))}
+		entry.merge(times(record, project, eid))
 		if (acked_sets(record).get(project, []) as Array).has(eid): acked_by.append(entry)
 		elif _refusal(record, view, project, eid).is_empty(): pending_for.append(entry)
 	return {"project":project, "eid":eid, "acked_by":acked_by, "pending_for":pending_for}
@@ -120,6 +124,10 @@ static func event_status(project_name: String, eid: int, project_dbs: Dictionary
 
 ## Drops the acks of `project` above `head` from `record` (a rewound log).
 static func forget_after(record: Dictionary, project: String, head: int) -> void:
+	var stored_times: Dictionary = record.get("receipt_times", {})
+	var project_times: Dictionary = stored_times.get(project, {})
+	for key in project_times.keys():
+		if int(key) > head: project_times.erase(key)
 	var acked: Dictionary = acked_sets(record)
 	if not acked.has(project): return
 	acked[project] = (acked[project] as Array).filter(func(eid: int) -> bool: return eid <= head)
@@ -169,6 +177,7 @@ static func _scan(record: Dictionary, view: Dictionary, limit: int, include_acke
 		var stream: Dictionary = DocketSubscriptions.collect(project, db, low, high - low, view.kinds, view.chain, high)
 		for event in stream.events:
 			var row: Dictionary = {"project":project, "eid":int(event.eid), "item_id":event.item_id, "kind":event.kind, "actor":event.actor, "timestamp":event.timestamp}
+			row.merge(times(record, project, int(event.eid)))
 			if eids.has(int(event.eid)):
 				if include_acked and acked_events.size() < limit: acked_events.append(row)
 				continue
@@ -201,3 +210,24 @@ static func _parse(raw: Variant, projects: Dictionary) -> Dictionary:
 	for loaded in projects:
 		if str(loaded).to_lower() == project_name.to_lower(): return {"project":str(loaded), "eid":int(eid_value)}
 	return {"error":"project '%s' is not in this subscription or not loaded" % project_name}
+
+
+## First server UTC receipt time; independent of the project's event timestamp.
+static func stamp(record: Dictionary, events: Array, field: String) -> void:
+	var stored: Dictionary = record.get("receipt_times", {})
+	var now: String = Time.get_datetime_string_from_system(true) + "Z"
+	for event: Dictionary in events:
+		var project: String = str(event.project)
+		var entries: Dictionary = stored.get(project, {})
+		var key: String = str(int(event.eid))
+		var entry: Dictionary = entries.get(key, {})
+		if not entry.has(field): entry[field] = now
+		entries[key] = entry
+		stored[project] = entries
+	record["receipt_times"] = stored
+
+
+static func times(record: Dictionary, project: String, eid: int) -> Dictionary:
+	var stored: Dictionary = record.get("receipt_times", {})
+	var entry: Dictionary = (stored.get(project, {}) as Dictionary).get(str(eid), {})
+	return {"received_at":entry.get("received_at"), "acked_at":entry.get("acked_at")}
