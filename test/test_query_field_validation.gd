@@ -151,13 +151,24 @@ func test_flat_parent_parity_and_malformed_filter_errors() -> Variant:
 	var result: Variant = A.is_true(flat.size() == 2 and flat == conditions, "bare full parent id matches both bare and qualified parents identically")
 	if result is String: return result
 	var qualified: Array = _db.execute_query({"filter":{"parent":"Other:" + parent}})
-	result = A.is_true(qualified.size() == 1 and qualified[0].id == "beta", "qualified parent remains exact")
+	var qualified_conditions: Array = _db.execute_query({"filter":{"conditions":[{"field":"parent", "op":"eq", "value":"Other:" + parent}]}})
+	result = A.is_true(qualified.size() == 1 and qualified[0].id == "beta" and qualified == qualified_conditions, "qualified parent remains exact in both forms")
 	if result is String: return result
 	var refused: Array = _db.execute_query({"filter":{"title":{"$contains":"x"}}})
 	result = A.is_true(refused.is_empty() and _db.last_query_error.contains("title") and _db.last_query_error.contains("conditions"), "flat object value explains the key and supported grammar")
 	if result is String: return result
-	for filter: Dictionary in [{"$or":[{"parent":parent}]}, {"$and":[42]}, {"$and":[{"field":"title", "op":"in", "value":[]}, {"parent":parent}]}]:
-		refused = _db.execute_query({"filter":filter})
-		result = A.is_true(refused.is_empty() and _db.last_query_error == "branches take condition objects {field, op, value}", "malformed branches refuse before empty-predicate shortcuts")
+	var registry: TypeRegistry = TypeRegistry.for_db(_db, _db.get_project_name())
+	for typed: bool in [false, true]:
+		var valid_tree: Dictionary = {"filter":{"$and":[{"field":"title", "op":"eq", "value":"alpha"}]}}
+		var valid_rows: Array = _db.execute_registry_query(valid_tree, registry) if typed else _db.execute_query(valid_tree)
+		result = A.is_true(valid_rows.size() == 1 and valid_rows[0].id == "alpha" and _db.last_query_error.is_empty(), "valid boolean grammar still queries normally")
 		if result is String: return result
+		for filter: Dictionary in [
+			{"$or":[{"parent":parent}]}, {"$and":[42]},
+			{"$and":[{"field":"title", "op":"in", "value":[]}, {"parent":parent}]},
+			{"$and":[{"field":"id", "op":"in", "value":[]}, {"$or":[{"parent":parent}]}]},
+		]:
+			refused = _db.execute_registry_query({"filter":filter}, registry) if typed else _db.execute_query({"filter":filter})
+			result = A.is_true(refused.is_empty() and _db.last_query_error == "branches take condition objects {field, op, value}", "malformed branches refuse before empty-predicate shortcuts (typed=%s): %s" % [typed, _db.last_query_error])
+			if result is String: return result
 	return true

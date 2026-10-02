@@ -13,6 +13,8 @@ static func compile(query: Dictionary, registry: TypeRegistry, allowed_fields: A
 		if not filter_value.conditions is Array: return {"error":"conditions must be an array"}
 		translated = _conditions(filter_value.conditions, registry)
 	elif filter_value is Dictionary and (filter_value.has("$or") or filter_value.has("$and") or filter_value.has("field_key") or filter_value.has("op") or filter_value.has("type_id")):
+		var tree_error: String = DocketDBFilter.validate_tree(filter_value)
+		if not tree_error.is_empty(): return {"error":tree_error}
 		translated = _tree(filter_value, registry)
 	elif filter_value is Dictionary:
 		translated = DocketDBFilter.translate_filter(filter_value)
@@ -55,9 +57,6 @@ static func _tree(node: Dictionary, registry: TypeRegistry) -> Dictionary:
 			if node.size() != 1: return {"error":"boolean query nodes cannot mix operators with condition keys"}
 			if not node[operator] is Array: return {"error":"%s must contain an array" % operator}
 			var children: Array = node[operator].duplicate(true)
-			for child: Variant in children:
-				if not child is Dictionary or (not child.has("$and") and not child.has("$or") and not child.has("field") and not child.has("field_key")):
-					return {"error":"branches take condition objects {field, op, value}"}
 			if children.is_empty(): return {"where":"1" if operator == "$and" else "0","bindings":[]}
 			if operator == "$and":
 				for child in children:

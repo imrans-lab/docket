@@ -148,13 +148,36 @@ static func translate_conditions(conditions: Array) -> Dictionary:
 
 ## Translate a nested $and/$or boolean tree to SQL.
 static func translate_tree(tree: Dictionary) -> Dictionary:
+	var error: String = validate_tree(tree)
+	if not error.is_empty(): return {"where":"", "bindings":[], "error":error}
+	return _translate_tree(tree)
+
+
+## Validate every branch before SQL compilation can shortcut an empty predicate.
+static func validate_tree(node: Dictionary) -> String:
+	if node.has("$and") and node.has("$or"): return "a boolean query node cannot contain both $and and $or"
+	for operator: String in ["$and", "$or"]:
+		if not node.has(operator): continue
+		if node.size() != 1: return "boolean query nodes cannot mix operators with condition keys"
+		if not node[operator] is Array: return "%s must contain an array" % operator
+		for child: Variant in node[operator]:
+			if not child is Dictionary: return "branches take condition objects {field, op, value}"
+			var error: String = validate_tree(child)
+			if not error.is_empty(): return error
+		return ""
+	if not node.has("field") and not node.has("field_key"):
+		return "branches take condition objects {field, op, value}"
+	return ""
+
+
+static func _translate_tree(tree: Dictionary) -> Dictionary:
 	if tree.has("$or"):
 		var parts := PackedStringArray()
 		var bindings: Array = []
 		for child in tree["$or"]:
 			var t: Dictionary
 			if child is Dictionary and (child.has("$or") or child.has("$and")):
-				t = translate_tree(child)
+				t = _translate_tree(child)
 			else:
 				t = _condition_to_sql(child)
 			if t.has("error"):
@@ -175,7 +198,7 @@ static func translate_tree(tree: Dictionary) -> Dictionary:
 		for child in tree["$and"]:
 			var t: Dictionary
 			if child is Dictionary and (child.has("$or") or child.has("$and")):
-				t = translate_tree(child)
+				t = _translate_tree(child)
 			else:
 				t = _condition_to_sql(child)
 			if t.has("error"):

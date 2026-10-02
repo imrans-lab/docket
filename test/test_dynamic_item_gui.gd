@@ -1005,15 +1005,20 @@ func test_comment_composer_keeps_failed_top_level_and_reply_text_and_clears_succ
 	add_child(form)
 	form.init(state)
 	form.load_item(str(created.id), "CommentErrors")
-	var error: String = state.db._exec_checked("CREATE TEMP TRIGGER refuse_composer_comment BEFORE INSERT ON comments BEGIN SELECT RAISE(ABORT, 'composer write refused'); END;")
-	if not error.is_empty(): return error
 	for reply: bool in [false, true]:
+		# Failed canonical mutations reload the cache connection, losing TEMP triggers.
+		var error: String = state.db._exec_checked("CREATE TEMP TRIGGER refuse_composer_comment BEFORE INSERT ON comments BEGIN SELECT RAISE(ABORT, 'composer write refused'); END;")
+		if not error.is_empty(): return error
 		form._comment_input.text = "draft survives"
 		if reply: form._on_reply_comment(int(first.id))
 		else: form._on_add_comment()
-		var result: Variant = A.is_true(form._comment_input.text == "draft survives" and form._id_label.text.contains("composer write refused") and state.db.list_comments(str(created.id)).size() == 1, "failed composer preserves text and shows database error")
+		var result: Variant = A.eq(form._comment_input.text, "draft survives", "failed composer preserves draft (reply=%s)" % reply)
 		if result is String: return result
-	state.db._exec("DROP TRIGGER refuse_composer_comment;")
+		result = A.is_true(form._id_label.text.contains("composer write refused"), "failed composer shows database error (reply=%s): %s" % [reply, form._id_label.text])
+		if result is String: return result
+		result = A.eq(state.db.list_comments(str(created.id)).size(), 1, "failed composer inserts no comment")
+		if result is String: return result
+	state.db._exec("DROP TRIGGER IF EXISTS refuse_composer_comment;")
 	for reply: bool in [false, true]:
 		form._comment_input.text = "accepted draft"
 		if reply: form._on_reply_comment(int(first.id))

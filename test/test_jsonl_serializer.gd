@@ -684,9 +684,11 @@ func test_event_unknown_keys_survive_cache_round_trip() -> Variant:
 	cache.close()
 	var output: Variant = JSON.parse_string(serialized)
 	if not output is Dictionary: return "serialized event is not an object"
-	var result: Variant = A.eq(output.get("x_future"), 1, "future event key survives cache")
+	# JSON parses every number as float, including nested integral values.
+	var expected: Dictionary = JSON.parse_string(JSON.stringify(event))
+	var result: Variant = A.eq(output.get("x_future"), expected.x_future, "future event key survives cache")
 	if result is String: return result
-	result = A.eq(output.get("x_payload"), event.x_payload, "nested empty and false values survive")
+	result = A.eq(output.get("x_payload"), expected.x_payload, "nested empty and false values survive")
 	if result is String: return result
 	return A.eq(JSONLParser.parse_line(serialized).get("extras", {}),
-		{"x_future": 1, "x_payload": event.x_payload}, "serialized event reparses with extras")
+		{"x_future": expected.x_future, "x_payload": expected.x_payload}, "serialized event reparses with extras")
