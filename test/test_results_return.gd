@@ -742,7 +742,7 @@ func test_related_columns_load_in_bulk() -> Variant:
 	if not db.open(path): return "fixture %s did not open" % path
 	var registry := _add_project("alpha", db)
 	# A row outside the filter, with events and a link, must not be returned.
-	var outside := db.insert_item(DocketDB.generate_uuid7(), {"type": "chore", "status": "open", "title": "outside", "events": [{"event_type": "note", "actor": "x", "timestamp": "2026-01-01T00:00:00Z", "note": "outside"}], "links": [{"to": "other:outside", "relation": "relates"}]})
+	var outside := db.insert_item(DocketDB.generate_uuid7(), {"type": "chore", "status": "open", "title": "outside", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "events": [{"event_type": "note", "actor": "x", "timestamp": "2026-01-01T00:00:00Z", "note": "outside"}], "links": [{"to": "other:outside", "relation": "relates"}]})
 	if not outside.is_empty(): return "fixture row: %s" % outside
 	var keys := PackedStringArray(["title", "tags", "events", "links"])
 	var sort := [{"field": "title", "dir": "asc"}]
@@ -799,7 +799,8 @@ func test_failed_mcp_call_does_not_refresh_the_results() -> Variant:
 	var fixture_error := _open_fixture()
 	if not fixture_error.is_empty(): return fixture_error
 	var grid := _shell._query_grid
-	grid.set_result_columns(["id", "project", "title", "events", "links"])
+	# The rows oracle reads the storage column.
+	grid.set_result_columns(["id", "project", "title", StorageBadge.FIELD, "events", "links"])
 	grid.set_filter(_title_filter(MATCH))
 	grid._toggle_sort(grid._col_fields.find("title"))
 	await get_tree().process_frame
