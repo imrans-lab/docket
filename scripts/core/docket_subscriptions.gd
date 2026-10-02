@@ -5,10 +5,11 @@ class_name DocketSubscriptions
 ## A subscriber is a stored record in STORE (a JSON file in the app's user data,
 ## outside every .dct, so it survives restart and is never committed with a
 ## project):
-##   {id, name, filters, start, delivered, created_at}
+##   {id, name, filters, start, delivered, receive_cursor?, created_at}
 ##   filters    {projects, kinds, identity, role}; empty = no restriction
 ##   start      {project: eid} the head of each project when the record was made
 ##   delivered  {project: eid} the largest eid ever returned to this subscriber
+##   receive_cursor opaque cursor kept before oldest unacknowledged receive events
 ##   receipt_times {project: {eid: {received_at?, acked_at?}}} first UTC receipts
 ##   acked      {project: [eid]} events the subscriber acknowledged (DocketReceipts)
 ##

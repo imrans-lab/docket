@@ -68,6 +68,10 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Install SCons
         run: pipx install scons
 
@@ -125,7 +129,7 @@ jobs:
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
 
       - name: Generate build identity and platform versions
-        run: python3 scripts/build/prepare_build_info.py
+        run: python scripts/build/prepare_build_info.py
 
       # First headless run imports assets and registers class_name globals.
       # Without this, scripts using class_name fail to resolve and the run hangs.
@@ -143,7 +147,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           DOCKET_BENCH_GODOT: ${{ env.GODOT_BIN }}
-        run: python3 test/test_docket_watch.py -v
+        run: python test/test_docket_watch.py -v
 
       - name: Upload test output on failure
         if: failure()

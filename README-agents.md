@@ -323,6 +323,8 @@ dead links. See [docs/RELEASING.md](docs/RELEASING.md).
 | `docket_subscribe` | Register a change-feed subscriber (filters: projects, kinds, identity, role); returns its id and initial cursor; stored outside project files, survives restart |
 | `docket_changes_since` | Page a subscriber's visible events after a cursor (eid order per project, `limit` and ~32 KB); re-sent events carry `possible_duplicate`; a cursor past retention returns `expired` with a recovery cursor |
 | `docket_unsubscribe` | Remove a change-feed subscriber |
+| `docket_receive` | Receive bounded resolved unacknowledged messages, oldest first; repeated delivery preserves received_at; acknowledge older messages to expose newer ones |
+| `docket_respond` | Validate delivered event ids, optionally add a threaded reply, then acknowledge; reports a saved reply if the independent ACK save fails |
 | `docket_ack` | Acknowledge events a subscriber consumed; the only way an event becomes consumed; idempotent, all or nothing; never touches comment or item status |
 | `docket_subscription_status` | A subscriber's pending (delivered, unacknowledged) events, ack count and positions; or, for one event, who acked it and who has it pending |
 | `docket_claim` | Claim an item's protected fields for a declared holder; lasts until released or reassigned (survives restart and disconnect) |

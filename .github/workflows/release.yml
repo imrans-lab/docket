@@ -46,6 +46,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Install SCons
         run: pipx install scons
 
@@ -112,7 +116,7 @@ jobs:
         shell: bash
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: python3 scripts/build/prepare_build_info.py --tag "$RELEASE_TAG"
+        run: python scripts/build/prepare_build_info.py --tag "$RELEASE_TAG"
 
       - name: Import project
         shell: bash
@@ -136,7 +140,7 @@ jobs:
 
       - name: Assert exported build identity and native versions
         shell: bash
-        run: python3 scripts/build/verify_build_info.py ${{ matrix.platform }}
+        run: python scripts/build/verify_build_info.py ${{ matrix.platform }}
 
       # macOS: Godot invokes Apple's native codesign tool with an empty identity,
       # which selects ad-hoc signing (codesign/codesign=3). Godot's built-in

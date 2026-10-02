@@ -1086,9 +1086,8 @@ func detach_file_checked(att_id: int) -> String:
 func add_comment(item_id: String, author: String, text: String, parent_id: int = 0) -> Dictionary:
 	var precheck := _begin_canonical_mutation()
 	if not precheck.is_empty(): return {"error": precheck}
-	# add_comment internally calls add_event (which triggers our override + flush).
-	# One transaction and depth guard make the comment, event and item timestamp
-	# one persistence unit.
+	# One transaction makes the comment, checked event reference and item
+	# timestamp one persistence unit.
 	var result := super.add_comment(item_id, author, text, parent_id)
 	var flush_error := _complete_canonical_mutation(str(result.get("error", "")))
 	if not flush_error.is_empty(): return {"error": flush_error}

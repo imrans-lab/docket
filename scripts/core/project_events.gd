@@ -177,6 +177,25 @@ static func _text(value: Variant) -> String:
 	return "" if value == null else str(value)
 
 
-## Links the comment to its just-written event within the comment mutation.
-static func link_comment(db: DocketDB, item_id: String, comment_id: int) -> void:
-	db._exec("UPDATE item_events SET fields=? WHERE id=(SELECT MAX(id) FROM item_events WHERE item_id=? AND event_type IN ('comment_added','comment_reply'));", [JSON.stringify(["comment:%d" % comment_id]), item_id])
+## Captures the successful insert's row id before stamping can issue other writes.
+## The caller's comment transaction rolls back any insert, stamp or link failure.
+static func write_comment_event(db: DocketDB, item_id: String, kind: String, actor: String, note: String, comment_id: int, timestamp: String) -> String:
+	var error: String = db._exec_checked("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);", [item_id, kind, actor, timestamp, note])
+	if not error.is_empty(): return error
+	var rows: Array = db._exec_select("SELECT last_insert_rowid() AS id, changes() AS inserted;")
+	if rows.is_empty() or not db._last_sql_error.is_empty(): return db._last_sql_error if not db._last_sql_error.is_empty() else "could not read new comment event id"
+	if int(rows[0].inserted) != 1: return "comment event insert did not create one row"
+	var row_id: int = int(rows[0].id)
+	error = stamp(db, row_id, item_id, kind)
+	if error.is_empty(): error = link_comment(db, row_id, comment_id)
+	if error.is_empty(): error = db._exec_checked("UPDATE items SET updated_at=? WHERE id=?;", [timestamp, item_id])
+	return error
+
+
+## Links only the captured row inserted by this mutation, never an older event.
+static func link_comment(db: DocketDB, row_id: int, comment_id: int) -> String:
+	var error: String = db._exec_checked("UPDATE item_events SET fields=? WHERE id=?;", [JSON.stringify(["comment:%d" % comment_id]), row_id])
+	if not error.is_empty(): return error
+	var rows: Array = db._exec_select("SELECT changes() AS linked;")
+	if rows.is_empty() or not db._last_sql_error.is_empty(): return db._last_sql_error if not db._last_sql_error.is_empty() else "could not check comment event link"
+	return "" if int(rows[0].linked) == 1 else "comment event link did not update one row"

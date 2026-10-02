@@ -625,9 +625,14 @@ func _times_case() -> Variant:
 	var first: Dictionary = tools.call_tool("docket_ack", {"subscriber":sub.subscriber, "event_ids":ids})
 	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
 	var row: Dictionary = status.acked_events[0]
+	var older: String = "2000-01-01T00:00:00Z"
+	var seeded: Dictionary = DocketSubscriptions.load_records()
+	seeded[sub.subscriber].receipt_times["Times"][str(int(ids[0]))].acked_at = older
+	var seed_error: String = DocketSubscriptions.save_records(seeded)
+	if not seed_error.is_empty(): db.close(); return seed_error
 	var again: Dictionary = tools.call_tool("docket_ack", {"subscriber":sub.subscriber, "event_ids":ids})
 	var after: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
-	var result: Variant = A.is_true(not first.has("error") and not again.has("error") and row.received_at == null and str(row.acked_at).ends_with("Z") and after.acked_events[0].acked_at == row.acked_at, "first ack time preserved: %s %s" % [status, after])
+	var result: Variant = A.is_true(not first.has("error") and not again.has("error") and row.received_at == null and str(row.acked_at).ends_with("Z") and after.acked_events[0].acked_at == older, "first ack time preserved: %s %s" % [status, after])
 	if result is String: db.close(); return result
 	# Persist the historical record shape, which had only the ack id set.
 	var records: Dictionary = DocketSubscriptions.load_records()
@@ -651,9 +656,15 @@ func _receive_case() -> Variant:
 	var item: Dictionary = tools.call_tool("docket_create", {"type":"work_item", "title":"Visible", "description":"one\ntwo\nthree\nfour\nfive", "directed_to":"receiver"})
 	tools.call_tool("docket_create", {"type":"work_item", "title":"Outside scope", "directed_to":"other"})
 	var first: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	if first.has("error") or first.get("events", []).is_empty(): db.close(); return "initial receive failed: %s" % first
+	var older: String = "2000-01-01T00:00:00Z"
+	var seeded: Dictionary = DocketSubscriptions.load_records()
+	seeded[sub.subscriber].receipt_times["Receive"][str(int(first.events[0].eid))].received_at = older
+	var seed_error: String = DocketSubscriptions.save_records(seeded)
+	if not seed_error.is_empty(): db.close(); return seed_error
 	var second: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
 	var events: Array = first.get("events", [])
-	var result: Variant = A.is_true(events.size() == 1 and events[0].item_id == item.id and events[0].created.description == "one\ntwo\nthree\nfour" and events[0].truncated and events[0].received_at == second.events[0].received_at and str(events[0].received_at).ends_with("Z"), "scoped repeated receive: %s %s" % [first, second])
+	var result: Variant = A.is_true(events.size() == 1 and events[0].item_id == item.id and events[0].created.description == "one\ntwo\nthree\nfour" and events[0].truncated and second.events[0].received_at == older and str(events[0].received_at).ends_with("Z"), "scoped repeated receive: %s %s" % [first, second])
 	if result is String: db.close(); return result
 	var ack: Dictionary = tools.call_tool("docket_ack", {"subscriber":sub.subscriber, "event_ids":events})
 	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
@@ -675,6 +686,15 @@ func _receive_case() -> Variant:
 	db._exec("UPDATE item_events SET fields='[]' WHERE eid=?;", [int(reloaded.events[0].eid)])
 	var legacy_comment: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
 	result = A.is_true(legacy_comment.events[0].comment.id == null and legacy_comment.events[0].comment.text == long_text.left(80) and legacy_comment.events[0].truncated, "legacy comment reference is explicitly unavailable: %s" % legacy_comment)
+	if result is String: db.close(); return result
+	tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":"short legacy", "author":"sender"})
+	var short_feed: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	var short_events: Array = (short_feed.events as Array).filter(func(e: Dictionary) -> bool: return e.kind == "comment_added" and e.comment.text == "short legacy")
+	if short_events.size() != 1: db.close(); return "short comment fixture missing: %s" % short_feed
+	db._exec("UPDATE item_events SET fields='[]' WHERE eid=?;", [int(short_events[0].eid)])
+	var short_legacy_feed: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	var short_legacy: Array = (short_legacy_feed.events as Array).filter(func(e: Dictionary) -> bool: return e.kind == "comment_added" and e.comment.text == "short legacy")
+	result = A.is_true(short_legacy.size() == 1 and short_legacy[0].comment.id == null and not short_legacy[0].truncated, "short legacy preview is complete despite unavailable id: %s" % short_legacy_feed)
 	if result is String: db.close(); return result
 	var transition: Dictionary = tools.call_tool("docket_transition", {"id":item.id, "to":"open", "note":"received work"})
 	var transition_feed: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
@@ -727,3 +747,40 @@ func _respond_case() -> Variant:
 	var top_comment: Dictionary = db.get_comment(int(top.get("comment_id", 0)))
 	db.close()
 	return A.is_true(not top.has("error") and top_comment.parent_id == 0 and top_comment.item_id == item.id, "unresolved legacy response is top-level: %s" % top)
+
+
+func test_comment_event_insert_and_link_failures_roll_back_without_relinking_old_events() -> Variant:
+	var db: DocketDBJsonl = _db("CommentWrites")
+	var path: String = db.get_jsonl_path()
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"CommentWrites":db})
+	var item: Dictionary = tools.call_tool("docket_create", {"type":"work_item", "title":"Checked comment events"})
+	var original: Dictionary = tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":"original"})
+	if original.has("error"): db.close(); return "comment fixture failed: %s" % original
+	var before: Array = _events(path)
+	var stored: Array[String] = _durable_record_set(path)
+	for statement: String in [
+		"CREATE TEMP TRIGGER refuse_comment_event BEFORE INSERT ON item_events WHEN NEW.event_type IN ('comment_added','comment_reply') BEGIN SELECT RAISE(ABORT, 'comment event insert refused'); END;",
+		"CREATE TEMP TRIGGER refuse_comment_event BEFORE INSERT ON item_events WHEN NEW.event_type IN ('comment_added','comment_reply') BEGIN SELECT RAISE(IGNORE); END;",
+		"CREATE TEMP TRIGGER refuse_comment_link BEFORE UPDATE OF fields ON item_events WHEN NEW.fields LIKE '%comment:%' BEGIN SELECT RAISE(ABORT, 'comment event link refused'); END;",
+	]:
+		var trigger_error: String = db._exec_checked(statement)
+		if not trigger_error.is_empty(): db.close(); return trigger_error
+		var refused: Dictionary = tools.call_tool("docket_comment", {"action":"reply", "comment_id":original.id, "text":"refused reply"})
+		var result: Variant = A.is_true(refused.has("error") and db.list_comments(str(item.id)).size() == 1 and _events(path) == before and _durable_record_set(path) == stored, "failed event/link leaves original reference and durable comment unchanged: %s" % refused)
+		if result is String: db.close(); return result
+		db._exec("DROP TRIGGER IF EXISTS refuse_comment_event;")
+		db._exec("DROP TRIGGER IF EXISTS refuse_comment_link;")
+	var accepted: Dictionary = tools.call_tool("docket_comment", {"action":"reply", "comment_id":original.id, "text":"accepted reply"})
+	var after: Array = _events(path)
+	db.close()
+	return A.is_true(not accepted.has("error") and after.size() == before.size() + 1 and after.back().fields == ["comment:%d" % int(accepted.id)], "successful retry links exactly its new comment event: %s" % after)
+
+
+## Compare durable content independently of canonical/journal line ordering.
+func _durable_record_set(path: String) -> Array[String]:
+	var records: Array[String] = []
+	for line: String in A.durable_text(path).split("\n", false):
+		records.append(JSON.stringify(JSON.parse_string(line), "", true, true))
+	records.sort()
+	return records

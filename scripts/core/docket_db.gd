@@ -1363,15 +1363,15 @@ func detach_file(att_id: int) -> void:
 func add_comment(item_id: String, author: String, text: String, parent_id: int = 0) -> Dictionary:
 	var ts := Time.get_datetime_string_from_system(true)
 	var clean_text: String = _normalize_text(text)
-	_exec("INSERT INTO comments (item_id, parent_id, author, text, status, created_at) VALUES (?, ?, ?, ?, 'open', ?);",
+	var error: String = _exec_checked("INSERT INTO comments (item_id, parent_id, author, text, status, created_at) VALUES (?, ?, ?, ?, 'open', ?);",
 		[item_id, parent_id, author, clean_text, ts])
-	var rows := _exec_select("SELECT last_insert_rowid() as lid;")
+	if not error.is_empty(): return {"error":error}
+	var rows := _exec_select("SELECT last_insert_rowid() as lid, changes() AS inserted;")
 	var cid: int = int(rows[0].lid) if rows.size() > 0 else 0
-	if parent_id > 0:
-		add_event(item_id, "comment_reply", author, text.substr(0, 80))
-	else:
-		add_event(item_id, "comment_added", author, text.substr(0, 80))
-	ProjectEvents.link_comment(self, item_id, cid)
+	if not rows.is_empty() and int(rows[0].inserted) != 1: return {"error":"comment insert did not create one row"}
+	if cid <= 0 or not _last_sql_error.is_empty(): return {"error":_last_sql_error if not _last_sql_error.is_empty() else "could not read new comment id"}
+	error = ProjectEvents.write_comment_event(self, item_id, "comment_reply" if parent_id > 0 else "comment_added", author, text.substr(0, 80), cid, ts)
+	if not error.is_empty(): return {"error":error}
 	return {"id": cid, "item_id": item_id, "parent_id": parent_id, "author": author, "text": text, "status": "open", "created_at": ts}
 
 

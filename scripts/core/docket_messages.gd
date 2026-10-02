@@ -81,8 +81,9 @@ static func resolve(event: Dictionary, db: DocketDB) -> Dictionary:
 			out.truncated = bool(out.truncated) or text.length() > TEXT_CHARS or author.length() > TITLE_CHARS
 		else:
 			var rows: Array = db._exec_select("SELECT note FROM item_events WHERE eid=?;", [int(event.eid)])
-			out["comment"] = {"id":null, "author":str(event.actor).left(TITLE_CHARS), "text":str(rows[0].get("note", "")).left(80) if not rows.is_empty() else ""}
-			out.truncated = true
+			var note: String = str(rows[0].get("note", "")) if not rows.is_empty() else ""
+			out["comment"] = {"id":null, "author":str(event.actor).left(TITLE_CHARS), "text":note.left(80)}
+			out.truncated = bool(out.truncated) or note.length() >= 80
 	return out
 
 
