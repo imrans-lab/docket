@@ -848,12 +848,8 @@ func _get_changes_count() -> int:
 
 # -- Events -------------------------------------------------------------------
 
-func add_event(item_id: String, event_type: String, actor: String, note: String = "") -> void:
-	var ts := Time.get_datetime_string_from_system(true)
-	_exec("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);",
-		[item_id, event_type, actor, ts, note])
-	if _last_sql_error.is_empty(): ProjectEvents.stamp_last(self, item_id, event_type)
-	_exec("UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
+func add_event(item_id: String, event_type: String, actor: String, note: String = "", timestamp: String = "") -> Dictionary:
+	return ProjectEvents.write_event(self, item_id, event_type, actor, note, timestamp)
 
 
 ## Records tracked fields a mutation changed on `id`, for its next event row.

@@ -807,3 +807,25 @@ func _subscription_store_errors() -> Variant:
 		DocketSubscriptions.store_path = writable
 		return A.is_true(error.begins_with("could not store subscriptions"), "post-open store failure is visible: %s" % error)
 	return true
+
+
+func test_add_event_returns_its_row_and_refuses_failed_or_ignored_inserts() -> Variant:
+	var jsonl: DocketDBJsonl = _db("EventReturn")
+	var plain: DocketDB = DocketDB.create_new(DIR + "/EventReturn.sqlite")
+	for db: DocketDB in [plain, jsonl]:
+		var inserted: String = db.insert_item("event-item", {"type":"bug", "status":"new", "title":"Event result", "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-01T00:00:00Z"})
+		if not inserted.is_empty(): plain.close(); jsonl.close(); return inserted
+		var event: Dictionary = db.add_event("event-item", "created", "codex", "ordinary event")
+		var rows: Array = db._exec_select("SELECT item_id,eid FROM item_events WHERE id=?;", [int(event.get("id", 0))])
+		if event.has("error") or rows.size() != 1 or rows[0].eid == null:
+			plain.close(); jsonl.close(); return "add_event did not return its stamped row: %s" % event
+		for action: String in ["ABORT, 'event refused'", "IGNORE"]:
+			var error: String = db._exec_checked("CREATE TEMP TRIGGER refuse_event BEFORE INSERT ON item_events BEGIN SELECT RAISE(%s); END;" % action)
+			if not error.is_empty(): plain.close(); jsonl.close(); return error
+			var refused: Dictionary = db.add_event("event-item", "created", "codex")
+			db._exec("DROP TRIGGER refuse_event;")
+			if not refused.has("error"):
+				plain.close(); jsonl.close(); return "failed/ignored event insertion was swallowed: %s" % action
+	plain.close()
+	jsonl.close()
+	return true

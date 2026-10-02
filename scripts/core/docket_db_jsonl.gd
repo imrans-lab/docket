@@ -1035,15 +1035,16 @@ func set_counter_checked(val: int) -> String:
 
 # -- Events -------------------------------------------------------------------
 
-func add_event(item_id: String, event_type: String, actor: String, note: String = "") -> void:
-	add_event_checked(item_id, event_type, actor, note)
+func add_event(item_id: String, event_type: String, actor: String, note: String = "", timestamp: String = "") -> Dictionary:
+	var precheck: String = _begin_canonical_mutation()
+	if not precheck.is_empty(): return {"error":precheck}
+	var result: Dictionary = super.add_event(item_id, event_type, actor, note, timestamp)
+	var error: String = _complete_canonical_mutation(str(result.get("error", "")))
+	return {"error":error} if not error.is_empty() else result
 
 
 func add_event_checked(item_id: String, event_type: String, actor: String, note: String = "") -> String:
-	var precheck := _begin_canonical_mutation()
-	if not precheck.is_empty(): return precheck
-	super.add_event(item_id, event_type, actor, note)
-	return _complete_canonical_mutation()
+	return str(add_event(item_id, event_type, actor, note).get("error", ""))
 
 
 # -- Links --------------------------------------------------------------------

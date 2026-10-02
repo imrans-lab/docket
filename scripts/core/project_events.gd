@@ -177,21 +177,24 @@ static func _text(value: Variant) -> String:
 	return "" if value == null else str(value)
 
 
-## Captures the successful insert's row id before stamping can issue other writes.
-## DocketDBJsonl.add_comment's transaction rolls back any insert, stamp or link
-## failure; plain DocketDB opens none, so there the error is returned and the
-## comment row stays.
-static func write_comment_event(db: DocketDB, item_id: String, kind: String, actor: String, note: String, comment_id: int, timestamp: String) -> String:
-	var error: String = db._exec_checked("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);", [item_id, kind, actor, timestamp, note])
-	if not error.is_empty(): return error
+## One checked event insertion/stamp/timestamp primitive, shared by comments.
+static func write_event(db: DocketDB, item_id: String, kind: String, actor: String, note: String, timestamp: String = "") -> Dictionary:
+	var ts: String = timestamp if not timestamp.is_empty() else Time.get_datetime_string_from_system(true)
+	var error: String = db._exec_checked("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);", [item_id, kind, actor, ts, note])
+	if not error.is_empty(): return {"error":error}
 	var rows: Array = db._exec_select("SELECT last_insert_rowid() AS id, changes() AS inserted;")
-	if rows.is_empty() or not db._last_sql_error.is_empty(): return db._last_sql_error if not db._last_sql_error.is_empty() else "could not read new comment event id"
-	if int(rows[0].inserted) != 1: return "comment event insert did not create one row"
+	if rows.is_empty() or not db._last_sql_error.is_empty(): return {"error":db._last_sql_error if not db._last_sql_error.is_empty() else "could not read new event id"}
+	if int(rows[0].inserted) != 1: return {"error":"event insert did not create one row"}
 	var row_id: int = int(rows[0].id)
 	error = stamp(db, row_id, item_id, kind)
-	if error.is_empty(): error = link_comment(db, row_id, comment_id)
-	if error.is_empty(): error = db._exec_checked("UPDATE items SET updated_at=? WHERE id=?;", [timestamp, item_id])
-	return error
+	if error.is_empty(): error = db._exec_checked("UPDATE items SET updated_at=? WHERE id=?;", [ts, item_id])
+	return {"id":row_id} if error.is_empty() else {"error":error}
+
+
+## The outer comment transaction owns the event and reference together.
+static func write_comment_event(db: DocketDB, item_id: String, kind: String, actor: String, note: String, comment_id: int, timestamp: String) -> String:
+	var result: Dictionary = db.add_event(item_id, kind, actor, note, timestamp)
+	return str(result.error) if result.has("error") else link_comment(db, int(result.id), comment_id)
 
 
 ## Links only the captured row inserted by this mutation, never an older event.
