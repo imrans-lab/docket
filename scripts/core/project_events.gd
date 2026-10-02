@@ -21,7 +21,7 @@ class_name ProjectEvents
 ##
 ## Which rows are stamped:
 ##   created, moved, promoted          always; fields = tracked fields the item arrives with
-##   comment_added, comment_reply      always; fields = []
+##   comment_added, comment_reply      always; fields = ["comment:<id>"] for newly written comments
 ##   claimed, claim_released,
 ##   claim_reassigned                  always; fields = ["claim"]
 ##   transition, status_repaired       always; fields = changed tracked fields, incl. status
@@ -175,3 +175,8 @@ static func _tags(db: DocketDB, id: String) -> Array:
 
 static func _text(value: Variant) -> String:
 	return "" if value == null else str(value)
+
+
+## Links the comment to its just-written event within the comment mutation.
+static func link_comment(db: DocketDB, item_id: String, comment_id: int) -> void:
+	db._exec("UPDATE item_events SET fields=? WHERE id=(SELECT MAX(id) FROM item_events WHERE item_id=? AND event_type IN ('comment_added','comment_reply'));", [JSON.stringify(["comment:%d" % comment_id]), item_id])

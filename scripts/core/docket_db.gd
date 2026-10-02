@@ -1371,6 +1371,7 @@ func add_comment(item_id: String, author: String, text: String, parent_id: int =
 		add_event(item_id, "comment_reply", author, text.substr(0, 80))
 	else:
 		add_event(item_id, "comment_added", author, text.substr(0, 80))
+	ProjectEvents.link_comment(self, item_id, cid)
 	return {"id": cid, "item_id": item_id, "parent_id": parent_id, "author": author, "text": text, "status": "open", "created_at": ts}
 
 

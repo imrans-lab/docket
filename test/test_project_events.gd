@@ -91,7 +91,9 @@ func test_each_work_mutation_is_one_ordered_project_event_that_survives_reload_o
 		else:
 			var newest: Dictionary = after.back()
 			var fields: Array = newest.fields; fields.sort()
-			var expected: Array = step.fields.duplicate(); expected.sort()
+			var expected: Array = step.fields.duplicate()
+			if step.what == "comment": expected.append("comment:%d" % int(result.id))
+			expected.sort()
 			r = A.is_true(not result.has("error") and added == 1 and newest.kind == step.kind and newest.item_id == id and fields == expected, "%s is one %s event listing %s: added=%d newest=%s result=%s" % [step.what, step.kind, expected, added, newest, result])
 		if r is String: db.close(); return r
 		if step.what == "comment":
@@ -636,3 +638,57 @@ func _times_case() -> Variant:
 	var legacy_again: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
 	db.close()
 	return A.is_true(legacy.acked_events[0].received_at == null and legacy.acked_events[0].acked_at == null and legacy_again.acked_events[0].acked_at == null, "legacy times remain unavailable: %s" % legacy_again)
+
+func test_receive_repeats_scoped_unacked_messages_and_recovers_expiry() -> Variant:
+	return _with_store("receive.json", _receive_case)
+
+func _receive_case() -> Variant:
+	var db: DocketDBJsonl = _db("Receive")
+	var path: String = db.get_jsonl_path()
+	var schema: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json"))
+	var tools: ToolRegistry = ToolRegistry.new(); tools.init(schema, db, {"Receive":db})
+	var sub: Dictionary = tools.call_tool("docket_subscribe", {"name":"receiver", "filters":{"identity":"receiver"}})
+	var item: Dictionary = tools.call_tool("docket_create", {"type":"work_item", "title":"Visible", "description":"one\ntwo\nthree\nfour\nfive", "directed_to":"receiver"})
+	tools.call_tool("docket_create", {"type":"work_item", "title":"Outside scope", "directed_to":"other"})
+	var first: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	var second: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	var events: Array = first.get("events", [])
+	var result: Variant = A.is_true(events.size() == 1 and events[0].item_id == item.id and events[0].created.description == "one\ntwo\nthree\nfour" and events[0].truncated and events[0].received_at == second.events[0].received_at and str(events[0].received_at).ends_with("Z"), "scoped repeated receive: %s %s" % [first, second])
+	if result is String: db.close(); return result
+	var ack: Dictionary = tools.call_tool("docket_ack", {"subscriber":sub.subscriber, "event_ids":events})
+	var status: Dictionary = tools.call_tool("docket_subscription_status", {"subscriber":sub.subscriber, "include_acked":true})
+	var empty: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	result = A.is_true(not ack.has("error") and empty.events.is_empty() and str(status.acked_events[0].received_at) <= str(status.acked_events[0].acked_at), "receive then ack timestamps: %s" % status)
+	if result is String: db.close(); return result
+	var long_text: String = "x".repeat(3000)
+	var comment: Dictionary = tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":long_text, "author":"sender"})
+	var received: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	result = A.is_true(received.events.size() == 1 and received.events[0].comment.id == comment.id and received.events[0].comment.author == "sender" and received.events[0].comment.text == long_text.left(2048) and received.events[0].truncated, "comment exact prefix and bound: %s" % received)
+	if result is String: db.close(); return result
+	# Rebuild from durable records to check the event's stable comment reference.
+	db.close(); JSONLCache.delete_cache_family(path)
+	db = DocketDBJsonl.open_jsonl(path)
+	tools = ToolRegistry.new(); tools.init(schema, db, {"Receive":db})
+	var reloaded: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	result = A.is_true(reloaded.events[0].comment.id == comment.id and reloaded.events[0].received_at == received.events[0].received_at, "reference/time survive rebuild: %s" % reloaded)
+	if result is String: db.close(); return result
+	db._exec("UPDATE item_events SET fields='[]' WHERE eid=?;", [int(reloaded.events[0].eid)])
+	var legacy_comment: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	result = A.is_true(legacy_comment.events[0].comment.id == null and legacy_comment.events[0].comment.text == long_text.left(80) and legacy_comment.events[0].truncated, "legacy comment reference is explicitly unavailable: %s" % legacy_comment)
+	if result is String: db.close(); return result
+	var transition: Dictionary = tools.call_tool("docket_transition", {"id":item.id, "to":"open", "note":"received work"})
+	var transition_feed: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	var transition_rows: Array = (transition_feed.events as Array).filter(func(e: Dictionary) -> bool: return e.kind == "transition")
+	var stored_note: String = ""
+	for line: String in A.durable_text(path).split("\n", false):
+		var raw: Variant = JSON.parse_string(line)
+		if raw is Dictionary and raw.get("_type") == "event" and raw.get("event_type") == "transition": stored_note = str(raw.note)
+	result = A.is_true(not transition.has("error") and transition_rows.size() == 1 and transition_rows[0].transition.note == stored_note, "transition preserves stored human note: %s" % transition_feed)
+	if result is String: db.close(); return result
+	ProjectEvents.set_retention(db, 1)
+	tools.call_tool("docket_comment", {"action":"add", "item_id":item.id, "text":"newer"})
+	var expired: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	var feed: Dictionary = tools.call_tool("docket_changes_since", {"subscriber":sub.subscriber, "cursor":str(received.next_cursor)})
+	var recovered: Dictionary = tools.call_tool("docket_receive", {"subscriber":sub.subscriber})
+	db.close()
+	return A.is_true(expired.expired and expired.events.is_empty() and feed.expired and expired.expired_projects[0].reason == feed.expired_projects[0].reason and expired.expired_projects[0].recovery_eid == feed.expired_projects[0].recovery_eid and not recovered.expired and recovered.events.size() == 1, "receive/feed expiry and recovery: %s %s %s" % [expired, feed, recovered])

@@ -82,7 +82,7 @@ static func unsubscribe(id: String) -> Dictionary:
 ## {events, next_cursor, more, expired, expired_projects, unavailable_projects}
 ## or {error}. A page holds at most `limit` events and ContentLedger.PAGE_BYTES
 ## of encoded events; `more` is true while events may remain.
-static func changes_since(id: String, cursor: String, limit: int, project_dbs: Dictionary) -> Dictionary:
+static func changes_since(id: String, cursor: String, limit: int, project_dbs: Dictionary, unacked_only: bool = false) -> Dictionary:
 	var records: Dictionary = load_records()
 	if not records.has(id): return {"error":"Unknown subscriber: %s" % id}
 	var record: Dictionary = records[id]
@@ -130,7 +130,7 @@ static func changes_since(id: String, cursor: String, limit: int, project_dbs: D
 	var kinds: Array = filters.get("kinds", [])
 	var streams: Dictionary = {}
 	for project in projects:
-		streams[project] = collect(project, projects[project], int(positions[project]), limit, kinds, chain if scoped else null)
+		streams[project] = collect(project, projects[project], int(positions[project]), limit, kinds, chain if scoped else null, -1, DocketReceipts.acked_sets(record).get(project, []) if unacked_only else [])
 
 	var page: Array[Dictionary] = []
 	var budget: int = ContentLedger.PAGE_BYTES
@@ -195,7 +195,7 @@ static func decode_cursor(cursor: String) -> Dictionary:
 ## when it is not negative), in eid order, stopping once `limit` are found:
 ## {events, taken, last, scanned_to, exhausted}. `chain` is null for an
 ## unscoped subscriber.
-static func collect(project: String, db: DocketDB, position: int, limit: int, kinds: Array, chain: Variant, until: int = -1) -> Dictionary:
+static func collect(project: String, db: DocketDB, position: int, limit: int, kinds: Array, chain: Variant, until: int = -1, excluded: Array = []) -> Dictionary:
 	var stream: Dictionary = {"events":[], "taken":0, "last":position, "scanned_to":position, "exhausted":false}
 	var events: Array = stream.events
 	var ceiling: int = until if until >= 0 else 9223372036854775807
@@ -203,6 +203,7 @@ static func collect(project: String, db: DocketDB, position: int, limit: int, ki
 		var rows: Array = db._exec_select("SELECT eid, item_id, event_type, actor, timestamp, fields FROM item_events WHERE eid>? AND eid<=? ORDER BY eid LIMIT ?;", [int(stream.scanned_to), ceiling, SCAN_BATCH])
 		for row in rows:
 			stream.scanned_to = int(row.eid)
+			if excluded.has(int(row.eid)): continue
 			var kind: String = str(row.event_type)
 			var item_id: String = str(row.item_id)
 			if not kinds.is_empty() and not kinds.has(kind): continue
