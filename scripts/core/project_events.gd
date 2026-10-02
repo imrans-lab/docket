@@ -178,7 +178,9 @@ static func _text(value: Variant) -> String:
 
 
 ## Captures the successful insert's row id before stamping can issue other writes.
-## The caller's comment transaction rolls back any insert, stamp or link failure.
+## DocketDBJsonl.add_comment's transaction rolls back any insert, stamp or link
+## failure; plain DocketDB opens none, so there the error is returned and the
+## comment row stays.
 static func write_comment_event(db: DocketDB, item_id: String, kind: String, actor: String, note: String, comment_id: int, timestamp: String) -> String:
 	var error: String = db._exec_checked("INSERT INTO item_events (item_id, event_type, actor, timestamp, note) VALUES (?, ?, ?, ?, ?);", [item_id, kind, actor, timestamp, note])
 	if not error.is_empty(): return error
