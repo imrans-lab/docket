@@ -784,3 +784,26 @@ func _durable_record_set(path: String) -> Array[String]:
 		records.append(JSON.stringify(JSON.parse_string(line), "", true, true))
 	records.sort()
 	return records
+
+
+func test_subscription_store_reports_open_and_store_failures_and_round_trips() -> Variant:
+	return _with_store("store_errors.json", _subscription_store_errors)
+
+func _subscription_store_errors() -> Variant:
+	var writable: String = DocketSubscriptions.store_path
+	var records := {"sub-test": {"id": "sub-test", "filters": {}, "start": {}, "delivered": {}}}
+	var error: String = DocketSubscriptions.save_records(records)
+	var result: Variant = A.is_true(error.is_empty() and DocketSubscriptions.load_records() == records, "writable store parses back: %s" % error)
+	if result is String: return result
+	DocketSubscriptions.store_path = DIR
+	error = DocketSubscriptions.save_records(records)
+	DocketSubscriptions.store_path = writable
+	result = A.is_true(not error.is_empty(), "directory destination reports open failure")
+	if result is String: return result
+	# Linux /dev/full accepts open but refuses writes; use a payload exceeding stdio buffering.
+	if OS.get_name() == "Linux":
+		DocketSubscriptions.store_path = "/dev/full"
+		error = DocketSubscriptions.save_records({"large": "x".repeat(65536)})
+		DocketSubscriptions.store_path = writable
+		return A.is_true(error.begins_with("could not store subscriptions"), "post-open store failure is visible: %s" % error)
+	return true

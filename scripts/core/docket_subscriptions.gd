@@ -328,8 +328,12 @@ static func load_records() -> Dictionary:
 static func save_records(records: Dictionary) -> String:
 	var file: FileAccess = FileAccess.open(store_path, FileAccess.WRITE)
 	if file == null: return "could not write subscriptions to %s: %s" % [store_path, error_string(FileAccess.get_open_error())]
-	file.store_string(JSON.stringify({"version":1, "subscribers":records}, "\t"))
+	var stored: bool = file.store_string(JSON.stringify({"version":1, "subscribers":records}, "\t"))
+	file.flush()
+	var error: Error = file.get_error()
+	# close() returns void; inspect the write error while the handle is open.
 	file.close()
+	if not stored or error != OK: return "could not store subscriptions to %s: %s" % [store_path, error_string(error) if error != OK else "store_string failed"]
 	return ""
 
 
