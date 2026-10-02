@@ -436,8 +436,8 @@ static func _insert_events(db: DocketDB, events: Array) -> void:
 		# eid / fields: the project event id and changed fields (ProjectEvents).
 		var fields: Variant = ev.get("fields")
 		db._exec(
-			"INSERT INTO item_events (item_id, event_type, actor, timestamp, note, eid, fields) VALUES (?, ?, ?, ?, ?, ?, ?);",
-			[item_id, event_type, actor, timestamp, note, ev.get("eid"), JSON.stringify(fields) if fields is Array else ""]
+			"INSERT INTO item_events (item_id, event_type, actor, timestamp, note, eid, fields, extras_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+			[item_id, event_type, actor, timestamp, note, ev.get("eid"), JSON.stringify(fields) if fields is Array else "", JSON.stringify(ev.get("extras", {}))]
 		)
 
 

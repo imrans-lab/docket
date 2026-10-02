@@ -22,7 +22,7 @@ const _EPHEMERAL_META_KEYS := ["jsonl_hash", "jsonl_version", "registry_diagnost
 ## and links with an ephemeral item at either end: none of them is ever written.
 const _ITEMS_SQL := "SELECT * FROM items WHERE storage<>'ephemeral' ORDER BY id ASC;"
 const _TAGS_SQL := "SELECT item_id, tag FROM item_tags WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral') ORDER BY item_id ASC, tag ASC;"
-const _EVENTS_SQL := "SELECT item_id, event_type, actor, timestamp, note, eid, fields FROM item_events WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral')%s ORDER BY item_id ASC, timestamp ASC, id ASC;"
+const _EVENTS_SQL := "SELECT item_id, event_type, actor, timestamp, note, eid, fields, extras_json FROM item_events WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral')%s ORDER BY item_id ASC, timestamp ASC, id ASC;"
 const _COMMENTS_SQL := "SELECT * FROM comments WHERE item_id NOT IN (SELECT id FROM items WHERE storage='ephemeral')%s ORDER BY item_id ASC, id ASC;"
 ## A link's to_id may qualify a same-project target with the project name.
 const _LINKS_SQL := "SELECT from_id, to_id, relation FROM item_links WHERE from_id NOT IN (SELECT id FROM items WHERE storage='ephemeral') AND to_id NOT IN " + ItemStorage.EPHEMERAL_REFS_SQL + "%s ORDER BY from_id ASC, to_id ASC, relation ASC;"
@@ -233,7 +233,9 @@ static func _format_events(rows: Array) -> String:
 			seq = 0
 		seq += 1
 
-		var d := {}
+		# Unknown event keys share the item extras cache envelope, then return flat.
+		var extras: Variant = JSON.parse_string(str(row.get("extras_json", "{}")))
+		var d: Dictionary = extras.duplicate(true) if extras is Dictionary else {}
 		d["_type"] = "event"
 		d["item_id"] = item_id
 		d["seq"] = seq

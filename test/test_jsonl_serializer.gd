@@ -664,3 +664,29 @@ func test_roundtrip_item_fields() -> Variant:
 	r = A.eq(tags.size(), 2, "tags count")
 	if r is String: return r
 	return A.eq(str(parsed.get("environment", "")), "Linux 6.8", "environment")
+
+
+func test_event_unknown_keys_survive_cache_round_trip() -> Variant:
+	var source_path: String = _test_dir + "/event_extras.dct"
+	var source := '{"_type":"meta","version":"1.0.0","counter":1,"id_prefix":"TST"}\n'
+	source += '{"_type":"item","id":"TST-0001","type":"bug","status":"open","title":"Future event","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}\n'
+	var event := {"_type": "event", "item_id": "TST-0001", "seq": 1,
+		"event_type": "created", "timestamp": "2026-01-01T00:00:00Z",
+		"x_future": 1, "x_payload": {"null": null, "false": false, "zero": 0, "empty": [], "text": ""}}
+	source += JSON.stringify(event) + "\n"
+	var file := FileAccess.open(source_path, FileAccess.WRITE)
+	if file == null: return "cannot write event round-trip fixture"
+	file.store_string(source)
+	file.close()
+	var cache: DocketDB = JSONLCache.rebuild_cache(source_path, source_path + ".cache")
+	if cache == null: return "event cache rebuild failed: " + JSONLCache.last_error
+	var serialized: String = JSONLSerializer.serialize_events(cache)
+	cache.close()
+	var output: Variant = JSON.parse_string(serialized)
+	if not output is Dictionary: return "serialized event is not an object"
+	var result: Variant = A.eq(output.get("x_future"), 1, "future event key survives cache")
+	if result is String: return result
+	result = A.eq(output.get("x_payload"), event.x_payload, "nested empty and false values survive")
+	if result is String: return result
+	return A.eq(JSONLParser.parse_line(serialized).get("extras", {}),
+		{"x_future": 1, "x_payload": event.x_payload}, "serialized event reparses with extras")

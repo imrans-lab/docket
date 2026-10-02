@@ -418,6 +418,11 @@ static func _parse_event(d: Dictionary) -> Dictionary:
 		var fields: Array[String] = []
 		for field in d.fields: fields.append(str(field))
 		out["fields"] = fields
+	var extras: Dictionary = {}
+	for key in d:
+		if key not in ["_type", "item_id", "seq", "event_type", "timestamp", "actor", "note", "eid", "fields"]:
+			extras[key] = d[key]
+	if not extras.is_empty(): out["extras"] = extras
 	return out
 
 
