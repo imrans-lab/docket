@@ -992,3 +992,32 @@ func test_draft_project_switch_retains_edits_when_type_is_unavailable() -> Varia
 	form._project_option.select(1)
 	form._on_draft_project_changed(1)
 	return A.is_true((form._dynamic_fields._rows.revision.editor as LineEdit).text == "unsaved" and form._id_label.text.contains("Draft retained"), "ordinary project selection retains draft controls and reports an unavailable type instead of discarding or reinterpreting edits")
+
+
+func test_comment_composer_keeps_failed_top_level_and_reply_text_and_clears_success() -> Variant:
+	var state: AppState = _state("CommentErrors")
+	var registry: TypeRegistry = _active_registry(state, "CommentErrors")
+	var created: Dictionary = registry.create_item({"type":"review", "title":"Comments", "revision":"abc", "source":"origin"}, "tester")
+	if created.has("error"): return str(created.error)
+	var first: Dictionary = state.db.add_comment(str(created.id), "tester", "original")
+	if first.has("error"): return str(first.error)
+	var form := RecordForm.new()
+	add_child(form)
+	form.init(state)
+	form.load_item(str(created.id), "CommentErrors")
+	var error: String = state.db._exec_checked("CREATE TEMP TRIGGER refuse_composer_comment BEFORE INSERT ON comments BEGIN SELECT RAISE(ABORT, 'composer write refused'); END;")
+	if not error.is_empty(): return error
+	for reply: bool in [false, true]:
+		form._comment_input.text = "draft survives"
+		if reply: form._on_reply_comment(int(first.id))
+		else: form._on_add_comment()
+		var result: Variant = A.is_true(form._comment_input.text == "draft survives" and form._id_label.text.contains("composer write refused") and state.db.list_comments(str(created.id)).size() == 1, "failed composer preserves text and shows database error")
+		if result is String: return result
+	state.db._exec("DROP TRIGGER refuse_composer_comment;")
+	for reply: bool in [false, true]:
+		form._comment_input.text = "accepted draft"
+		if reply: form._on_reply_comment(int(first.id))
+		else: form._on_add_comment()
+		if not form._comment_input.text.is_empty(): return "successful composer did not clear text"
+	var comments: Array = state.db.list_comments(str(created.id))
+	return A.is_true(comments.size() == 3 and comments.back().parent_id == first.id, "successful top-level and threaded comments retain existing behavior")

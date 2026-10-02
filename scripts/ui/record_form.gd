@@ -1732,7 +1732,10 @@ func _on_add_comment() -> void:
 	if comment_db == null:
 		return
 	var author := _state.prefs.get_display_name()
-	comment_db.add_comment(_current_id, author, text)
+	var result: Dictionary = comment_db.add_comment(_current_id, author, text)
+	if result.has("error"):
+		_id_label.text = "Comment failed: %s" % result.error
+		return
 	_comment_input.text = ""
 	_refresh_comments_and_events()
 
@@ -1765,7 +1768,10 @@ func _on_reply_comment(comment_id: int) -> void:
 	if comment_db == null:
 		return
 	var author := _state.prefs.get_display_name()
-	comment_db.add_comment(_current_id, author, text, comment_id)
+	var result: Dictionary = comment_db.add_comment(_current_id, author, text, comment_id)
+	if result.has("error"):
+		_id_label.text = "Comment failed: %s" % result.error
+		return
 	_comment_input.text = ""
 	_refresh_comments_and_events()
 
