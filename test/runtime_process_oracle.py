@@ -213,11 +213,12 @@ try:
     call(p, 'docket_project_add', {'path': str(session_path)})
     call(p, 'docket_project_close', {'name': added['name']})
     assert session_path.name in external_focus(p.pid)[1], 'close failed to promote fallback'
-    call(p, 'docket_project_close', {'name': session['name']})
-    assert external_focus(p.pid)[1] == 'Docket', 'last close left a primary title'
+    refused = request(p, 'tools/call', 'close-last', {
+        'name': 'docket_project_close', 'arguments': {'name': session['name']}})
+    assert refused['result'].get('isError'), refused
+    assert refused['result']['content'][0]['text'] == 'Cannot close the last project', refused
+    assert session_path.name in external_focus(p.pid)[1], 'refused close changed primary title'
     call(p, 'docket_project_add', {'path': str(opened_file)})
-    assert 'opened.dct' in external_focus(p.pid)[1], 'reopen from empty failed'
-    call(p, 'docket_project_add', {'path': str(session_path)})
     call(p, 'docket_project_add', {'mode': 'memory', 'name': 'private-spill'})
     assert call(p, 'docket_project_list')['memory_lease']['in_process_owner']
     call(p, 'docket_create', {'project': 'private-spill', 'type': 'chore', 'title': 'spill on EOF'})
