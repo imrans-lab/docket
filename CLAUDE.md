@@ -74,6 +74,9 @@ godot --headless --path . -- validate --file docket.dct
   repeatable `--file <absolute.dct>`) follow it. Godot has no assumed
   `--user-data-dir` contract. The launcher must allocate a private directory
   outside the owner's profile and isolate the child's XDG paths as well.
+  Known limit: `--state-dir` isolates only Docket domain state; engine `user://`
+  logs and shader caches remain shared without launcher XDG/profile isolation.
+  P1.3 must provide that engine isolation.
   The state directory contains prefs, recents, subscriptions and sessions /
   memory spills; authoritative `.dct` files and caches remain at their paths.
   No owner prefs, saved projects or credentials are transplanted. Startup opens

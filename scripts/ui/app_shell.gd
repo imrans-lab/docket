@@ -1323,6 +1323,14 @@ func _add_to_recent(path: String) -> void:
 	if DocketDBMemory.is_memory_path(path):
 		return
 	var abs_path := ProjectSettings.globalize_path(path) if path.begins_with("res://") else path
+	# Sessions and memory spills are workspace state, not durable recent files.
+	var session_dirs := [SessionProject.default_dir()]
+	if not DocketRuntimeState.directory.is_empty():
+		session_dirs.append(DocketRuntimeState.directory.path_join("sessions"))
+	for session_dir: String in session_dirs:
+		var root := ProjectSettings.globalize_path(session_dir).simplify_path().trim_suffix("/")
+		if abs_path.simplify_path() == root or abs_path.simplify_path().begins_with(root + "/"):
+			return
 	# Remove if already present, then prepend
 	var updated := PackedStringArray()
 	updated.append(abs_path)

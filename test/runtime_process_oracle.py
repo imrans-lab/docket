@@ -202,15 +202,18 @@ try:
     observed_pid, observed_title = external_focus(p.pid)
     assert observed_pid == p.pid and 'opened.dct' in observed_title, (observed_pid, observed_title)
     call(p, 'docket_subscribe', {'name': 'private subscriber'})
+    durable_recents = (private / 'recent_dockets.json').read_bytes()
     session = call(p, 'docket_project_add', {'mode': 'session_file', 'name': 'private-session', 'create': True})
     session_path = pathlib.Path(session['path'])
     assert session_path.parent == private / 'sessions'
+    assert (private / 'recent_dockets.json').read_bytes() == durable_recents, 'session create changed recents'
     assert json.loads(pathlib.Path(str(session_path) + '.owner').read_text())['pid'] == p.pid
     assert 'opened.dct' in external_focus(p.pid)[1], 'additional open replaced primary'
     recent_before = (private / 'recent_dockets.json').read_bytes()
     call(p, 'docket_project_close', {'name': session['name']})
     assert (private / 'recent_dockets.json').read_bytes() == recent_before, 'close reordered recents'
     call(p, 'docket_project_add', {'path': str(session_path)})
+    assert (private / 'recent_dockets.json').read_bytes() == durable_recents, 'session reopen changed recents'
     call(p, 'docket_project_close', {'name': added['name']})
     assert session_path.name in external_focus(p.pid)[1], 'close failed to promote fallback'
     refused = request(p, 'tools/call', 'close-last', {
@@ -226,6 +229,7 @@ try:
     assert str(opened_file) in prefs['session_paths'] and 'owner sentinel' not in json.dumps(prefs)
     assert str(opened_file) in json.loads((private / 'recent_dockets.json').read_text())
     assert (private / 'docket_subscriptions.json').exists()
+    spill_recents = (private / 'recent_dockets.json').read_bytes()
     old_pid = p.pid
     # Immediate EOF with a queued mutation: reply drained, canonical settled, owner released.
     send(p, {'jsonrpc': '2.0', 'method': 'tools/call', 'id': 'eof', 'params': {
@@ -242,6 +246,7 @@ try:
     assert not pathlib.Path('/proc/%d' % old_pid).exists(), 'child not reaped'
     spilled = private / 'sessions/private-spill.dct'
     assert spilled.exists() and 'spill on EOF' in spilled.read_text()
+    assert (private / 'recent_dockets.json').read_bytes() == spill_recents, 'actual memory spill changed recents'
     assert str(spilled) in json.loads((private / 'docket_prefs.json').read_text())['session_paths']
     assert owner_snapshot == {f.name: f.read_bytes() for f in owner_profile.iterdir() if f.is_file()}, 'child altered owner profile'
     assert http()['result'] == {}
@@ -259,6 +264,23 @@ try:
     assert str(spilled) in {row['path'] for row in restored}
     assert json.loads(pathlib.Path(str(session_path) + '.owner').read_text())['pid'] == p.pid
     finish(p)
+    # Six restored files exceed MAX_RECENTS and expose startup eviction/reordering.
+    startup_files = [base / ('startup-%d.dct' % i) for i in range(6)]
+    seed = spawn('startup-seed', base / 'startup-seed-profile', startup_files, headless=True)
+    assert len(call(seed, 'docket_project_list')['projects']) == 6
+    finish(seed)
+    for restore in (False, True):
+        profile = base / ('startup-profile-%s' % restore)
+        profile.mkdir()
+        (profile / 'docket_prefs.json').write_text(json.dumps({'session_paths': list(map(str, startup_files))}))
+        recent = profile / 'recent_dockets.json'
+        recent.write_text(json.dumps(list(map(str, reversed(startup_files[:5]))), indent=2) + '\n')
+        snapshot = recent.read_bytes()
+        p = spawn('startup-%s' % restore, profile, () if restore else startup_files, restore=restore)
+        assert len(call(p, 'docket_project_list')['projects']) == 6
+        assert recent.read_bytes() == snapshot, 'startup reordered/evicted saved recents'
+        finish(p)
+        assert recent.read_bytes() == snapshot, 'startup shutdown changed saved recents'
     print('PASS GUI/private-state/open-mapped/focus-request/owner-health/EOF-restart')
 
     rejected = subprocess.run([engine, '--headless', '--quiet', '--path', project, '--',

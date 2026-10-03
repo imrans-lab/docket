@@ -222,6 +222,13 @@ func _start_server(opts: Dictionary) -> void:
 	print("Docket MCP server listening on 127.0.0.1:%d — files: %s" % [opts.port, file_list])
 
 
+func _print_gui_startup(message: String, stdio: bool) -> void:
+	if stdio:
+		printerr(message)
+	else:
+		print(message)
+
+
 func _start_gui(opts: Dictionary) -> void:
 	var state := AppState.new()
 	state.load_schema()
@@ -237,11 +244,13 @@ func _start_gui(opts: Dictionary) -> void:
 	# file_changed signals reach the RecordForm (which connects in init).
 	var shell := AppShell.new()
 	shell.init(state)
+	# Startup loads restore workspace state; only later user opens affect recents.
+	state.project_opened.disconnect(shell._add_to_recent)
 	add_child(shell)
 
 	if files.size() > 0:
 		# Explicit --file args: load those
-		printerr("Docket GUI — file: %s" % opts.file)
+		_print_gui_startup("Docket GUI — file: %s" % opts.file, opts.stdio)
 		state.load_projects(files)
 	else:
 		# No --file args: try session restore
@@ -251,10 +260,12 @@ func _start_gui(opts: Dictionary) -> void:
 			if FileAccess.file_exists(p):
 				valid_paths.append(p)
 		if valid_paths.size() > 0:
-			printerr("Docket GUI — restoring %d project(s) from session" % valid_paths.size())
+			_print_gui_startup("Docket GUI — restoring %d project(s) from session" % valid_paths.size(), opts.stdio)
 			state.load_projects(Array(valid_paths))
 		else:
-			printerr("Docket GUI — empty workspace")
+			_print_gui_startup("Docket GUI — empty workspace", opts.stdio)
+
+	state.project_opened.connect(shell._add_to_recent)
 
 	# Measurement hook for File → Save; absent unless its environment variable is set.
 	if FrameProbe.enabled():
