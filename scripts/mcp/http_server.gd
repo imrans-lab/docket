@@ -27,8 +27,6 @@ const LEASE_CHECK_INTERVAL_MS := 5000
 
 
 func _ready() -> void:
-	if stdio:
-		Engine.print_to_stdout = true
 	if not stdio:
 		_server = TCPServer.new()
 		var err := _server.listen(port, "127.0.0.1")
@@ -53,8 +51,8 @@ func _ready() -> void:
 		_schema = JSON.parse_string(schema_file.get_as_text())
 
 		# Merge CLI --file args with any previously persisted session paths
-		var paths_to_load: Array = dct_paths.duplicate() if dct_paths.size() > 0 else [dct_path]
-		var saved_paths := UserPrefs.load_session()
+		var paths_to_load: Array = dct_paths.duplicate() if dct_paths.size() > 0 else ([] if stdio and dct_path.is_empty() else [dct_path])
+		var saved_paths := UserPrefs.load_session() if DocketRuntimeState.may_restore_session() else PackedStringArray()
 		for sp in saved_paths:
 			if sp not in paths_to_load:
 				paths_to_load.append(sp)
@@ -98,6 +96,7 @@ func _ready() -> void:
 
 	if stdio:
 		_stdio = DocketStdioTransport.new()
+		Engine.print_to_stdout = true
 		if _stdio.start() != OK:
 			printerr("Docket: could not start stdin reader")
 			get_tree().quit(2)
@@ -160,6 +159,10 @@ func _gui_remove_project(proj_name: String) -> Dictionary:
 
 
 func _gui_open(request: Dictionary) -> Dictionary:
+	if request.get("focus", false):
+		get_window().grab_focus()
+		if request.size() == 1:
+			return {"opened": "window", "pid": OS.get_process_id(), "focused": get_window().has_focus()}
 	if request.has("id"):
 		var project := str(request.get("project", ""))
 		external_state.open_item_requested.emit(str(request.id), project)
@@ -232,7 +235,7 @@ func _process(_delta: float) -> void:
 		_registry.enforce_memory_lease()
 
 	if stdio:
-		if _stdio.poll(_handler):
+		if _stdio.poll(_handler, _post_request):
 			get_tree().quit()
 		return
 	if _server == null or not _server.is_listening():
@@ -389,14 +392,19 @@ func _handle_post(req: Dictionary) -> String:
 	MemoryProject.renew_from_headers(req.get("headers", {}))
 	var result = _handler.handle(parsed)
 
-	# Checkpoint WAL so other processes (e.g. GUI) can see writes immediately
-	if _db:
-		_db.checkpoint()
-	for proj_db in _project_dbs.values():
-		proj_db.checkpoint()
+	_post_request()
 
 	if result == null:
 		# Notification — no response body needed
 		return HttpParser.format_response(202, {}, "")
 
 	return HttpParser.format_response(200, {"Content-Type": "application/json"}, JSON.stringify(result))
+
+
+func _post_request() -> void:
+	# Both transports checkpoint even valid notifications, before replying.
+	var dbs: Array = _project_dbs.values()
+	if _db != null and _db not in dbs:
+		dbs.append(_db)
+	for db: DocketDB in dbs:
+		db.checkpoint()

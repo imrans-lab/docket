@@ -4,6 +4,9 @@ extends Node
 
 const DRIVER := """
 import json, os, pathlib, selectors, signal, subprocess, sys, tempfile, time
+def watchdog_timeout(signum, frame):
+    raise TimeoutError('whole child oracle exceeded 180s')
+signal.signal(signal.SIGALRM, watchdog_timeout)
 signal.alarm(180)
 engine, project = sys.argv[1:]
 root = tempfile.TemporaryDirectory(prefix='docket-stdio-')
@@ -17,7 +20,7 @@ children = []
 
 def launch(name, extra=()):
     err = open(base / (name + '.stderr'), 'wb')
-    p = subprocess.Popen(args + ['--file', str(base / (name + '.dct'))] + list(extra),
+    p = subprocess.Popen(args + ['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))] + list(extra),
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, bufsize=0)
     os.set_blocking(p.stdin.fileno(), False)
     children.append((p, err))
@@ -91,6 +94,23 @@ try:
     assert request(p, 'initialize', 1)['result']['serverInfo']['name'] == 'docket'
     tools = request(p, 'tools/list', 2)['result']['tools']
     assert any(t['name'] == 'docket_create' for t in tools), 'missing current registry'
+    def tool(name, arguments):
+        value = request(p, 'tools/call', name, {'name': name, 'arguments': arguments})
+        assert not value['result'].get('isError'), value
+        return json.loads(value['result']['content'][0]['text'])
+    lease = tool('docket_project_heartbeat', {'client': 'tool', 'client_class': 'tool'})
+    assert not lease['renewed'] and not lease['lease']['owner_present'], lease
+    refused = request(p, 'tools/call', 'refused', {'name': 'docket_project_add',
+        'arguments': {'mode': 'memory', 'name': 'undeclared'}})
+    assert refused['result'].get('isError'), refused
+    assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',
+        'lease_seconds': 1})['renewed']
+    time.sleep(1.2)
+    assert not tool('docket_project_heartbeat', {'client': 'tool', 'client_class': 'tool'})['lease']['owner_present']
+    assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',
+        'lease_seconds': 30})['lease']['owner_present']
+    tool('docket_project_add', {'mode': 'memory', 'name': 'leased'})
+    tool('docket_create', {'project': 'leased', 'type': 'chore', 'title': 'leased spill'})
     title = 'stdio café 日本語 🦉'
     created = request(p, 'tools/call', 3, {'name': 'docket_create',
         'arguments': {'type': 'chore', 'title': title}})
@@ -127,6 +147,9 @@ try:
     canonical = (base / 'scratch.dct').read_text()
     assert title in canonical and eof_title in canonical, 'EOF did not settle the immediate write'
     assert not pathlib.Path(str(base / 'scratch.dct') + '.lock').exists(), 'EOF retained lock'
+    spill = base / 'scratch-state' / 'sessions' / 'leased.dct'
+    assert spill.exists() and 'leased spill' in spill.read_text(), 'headless EOF did not spill privately'
+    print('PASS explicit-owner-heartbeat/expiry/private-spill')
     print('PASS protocol/unicode/notifications/malformed/EOF-settle/no-http')
 
     p = launch('framing')

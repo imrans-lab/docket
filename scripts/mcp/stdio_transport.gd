@@ -52,7 +52,7 @@ func _read() -> void:
 	_mutex.unlock()
 
 
-func poll(handler: McpHandler) -> bool:
+func poll(handler: McpHandler, post_request: Callable = Callable()) -> bool:
 	_mutex.lock()
 	var frames := _frames
 	_frames = []
@@ -64,7 +64,7 @@ func poll(handler: McpHandler) -> bool:
 		if frame == null:
 			response = _error(-32700, "Frame exceeds limit or lacks terminating newline")
 		else:
-			response = _dispatch(frame, handler)
+			response = _dispatch(frame, handler, post_request)
 		if response != null:
 			# flush_on_print provides the existing immediate flush path.
 			printraw(JSON.stringify(response) + "\n")
@@ -73,7 +73,7 @@ func poll(handler: McpHandler) -> bool:
 	return closed
 
 
-func _dispatch(bytes: PackedByteArray, handler: McpHandler) -> Variant:
+func _dispatch(bytes: PackedByteArray, handler: McpHandler, post_request: Callable) -> Variant:
 	var text := bytes.get_string_from_utf8()
 	# Reject invalid UTF-8 rather than silently substituting replacement bytes.
 	if text.to_utf8_buffer() != bytes:
@@ -85,6 +85,8 @@ func _dispatch(bytes: PackedByteArray, handler: McpHandler) -> Variant:
 	if not request is Dictionary or not _valid_request(request):
 		return _error(-32600, "Invalid Request")
 	var response: Variant = handler.handle(request)
+	if post_request.is_valid():
+		post_request.call()
 	if response is Dictionary and request.has("id"):
 		response["id"] = request.id
 	# The shared HTTP handler replies to some no-id methods. JSON-RPC stdio

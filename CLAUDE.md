@@ -18,7 +18,7 @@ godot --headless --path . -- test
 godot --headless --path . -- serve --port 3010
 
 # Child-process MCP transport (close stdin for a clean, settled exit)
-godot --headless --quiet --path . -- --serve --stdio --file scratch.dct
+godot --headless --quiet --path . -- --serve --stdio --state-dir /absolute/private/docket --file scratch.dct
 
 # Launch GUI (default)
 godot --path .
@@ -66,17 +66,45 @@ godot --headless --path . -- validate --file docket.dct
   JSONL 2.0. `data/schema.json` remains the compatibility source for legacy
   files and the input for protected built-in starter definitions.
 - **MCP transport:** HTTP server on 127.0.0.1:3010, JSON-RPC 2.0 over POST `/mcp`;
-  `--headless --quiet --serve --stdio` uses newline JSON-RPC without an HTTP listener.
+  `--quiet --stdio --state-dir <private absolute directory>` shares the same GUI,
+  AppState, DB and tool registry over newline JSON-RPC, without an HTTP listener.
+  Add engine `--headless` and application `--serve` for a headless child.
+  Engine flags (`--quiet --path <project>`, optionally `--headless`) precede
+  `--`; application flags (`--stdio --state-dir <dir>`, optionally `--serve`,
+  repeatable `--file <absolute.dct>`) follow it. Godot has no assumed
+  `--user-data-dir` contract. The launcher must allocate a private directory
+  outside the owner's profile and isolate the child's XDG paths as well.
+  The state directory contains prefs, recents, subscriptions and sessions /
+  memory spills; authoritative `.dct` files and caches remain at their paths.
+  No owner prefs, saved projects or credentials are transplanted. Startup opens
+  only explicit files; `--restore-session` deliberately restores private saved
+  paths. Re-enable launches a new process; Docket does not auto-restart itself.
+  For stop/disable, close stdin, drain stdout, and wait for settled clean exit
+  before launching again. EOF checkpoints/settles writes, spills outstanding
+  memory work privately and releases session owner records. A launcher must
+  bound that wait and report failure before any force-kill (which cannot promise
+  settlement). Windowed mode owns its memory lease in-process. A headless parent
+  owning memory projects MUST call `docket_project_heartbeat` with
+  `client_class=owner`, a declared client name and `lease_seconds`, before
+  creating memory projects and periodically before expiry. Other stdio traffic
+  does not declare ownership or renew leases automatically.
+  `docket_project_add` opens existing projects in the shared GUI;
+  `docket_gui_open` supports items/queries and `focus=true` (also alone) through
+  the portable Godot Window API. Focus-only replies identify the process PID.
   Frames are UTF-8, limited to 8 MiB; oversized/incomplete frames return parse
-  errors. Close stdin to drain replies and settle projects. Use an isolated
-  absolute XDG profile for child tests; current session restoration is retained.
-  Launch contract: engine flags `--headless --quiet --path <project>` precede
-  `--`; application flags `--serve --stdio --file <absolute.dct>` follow it.
-  Godot consumes `--quiet`, so startup validates its disabled-stdout effect
-  before enabling protocol stdout once. Keep `--quiet` to suppress the engine
-  banner. Godot 4.7 uses `application/run/flush_stdout_on_print` for replies.
-  Engine or third-party stdout can corrupt framing; all Docket diagnostics use
-  stderr, and the child oracle rejects every non-JSON-RPC line and trailing byte.
+  errors. Keep `--quiet` to suppress the engine banner; protocol stdout is
+  enabled once immediately before the reader starts, after loads/migrations.
+  Docket diagnostics use stderr; both transports checkpoint after every valid
+  request, including notifications. The real-child oracle rejects every
+  non-JSON-RPC line and trailing byte. `test_stdio_transport` executes on Linux
+  and macOS with POSIX pipes; unsupported platforms report SKIP/not-run, not PASS.
+  Linux deep GUI acceptance (separate from author static gates and the automatic
+  cross-platform suite): `xvfb-run -a python3 test/runtime_process_oracle.py
+  <absolute Godot binary> <absolute project directory>`. It uses disposable
+  owner/plugin profiles, an isolated non-3010 HTTP port, actual GUI processes,
+  private restoration/spills and an external immutable SQLite checkpoint read.
+  It requires Xvfb and fails explicitly when unavailable; three-OS packaged
+  install/open remains a later acceptance lane.
 - **MCP tools:** the authoritative tool registry is
   `scripts/tools/tool_registry.gd`; do not maintain a second hardcoded list here
 - **Vault encryption:** handle-based vault entries use AES-256-CBC with

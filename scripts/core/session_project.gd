@@ -52,6 +52,8 @@ static func default_dir() -> String:
 	## Per-user data directory: ~/.local/share/docket/sessions on Linux,
 	## ~/Library/Application Support/docket/sessions on macOS, %APPDATA% on Windows.
 	## DOCKET_SESSION_DIR, when set, is used instead.
+	if not DocketRuntimeState.directory.is_empty():
+		return DocketRuntimeState.directory.path_join("sessions")
 	var override := OS.get_environment(SESSION_DIR_ENV)
 	if not override.is_empty():
 		return override

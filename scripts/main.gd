@@ -21,8 +21,14 @@ func _ready() -> void:
 	var opts := _parse_args()
 
 	# Godot consumes --quiet before exposing cmdline args; inspect its effect.
-	if opts.stdio and (opts.mode != "serve" or DisplayServer.get_name() != "headless" or Engine.print_to_stdout):
-		printerr("Docket: --stdio requires --headless --quiet and --serve")
+	if opts.stdio and (opts.mode not in ["serve", "gui"] or Engine.print_to_stdout or opts.state_dir.is_empty()):
+		printerr("Docket: --stdio requires --quiet and a private absolute --state-dir (add --serve for headless)")
+		get_tree().quit(2)
+		return
+
+	var state_error := DocketRuntimeState.configure(opts.state_dir, opts.restore_session)
+	if not state_error.is_empty():
+		printerr("Docket: %s" % state_error)
 		get_tree().quit(2)
 		return
 
@@ -59,7 +65,7 @@ func _parse_args() -> Dictionary:
 
 
 func _parse_arg_values(args: Array) -> Dictionary:
-	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false}
+	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false, "state_dir": "", "restore_session": false}
 
 	var i := 0
 	while i < args.size():
@@ -70,6 +76,12 @@ func _parse_arg_values(args: Array) -> Dictionary:
 				opts.mode = "serve"
 			"--stdio":
 				opts.stdio = true
+			"--state-dir":
+				if i + 1 < args.size():
+					i += 1
+					opts.state_dir = str(args[i])
+			"--restore-session":
+				opts.restore_session = true
 			"--build-info":
 				opts.mode = "build_info"
 			"--test", "test":
@@ -105,7 +117,7 @@ func _parse_arg_values(args: Array) -> Dictionary:
 		i += 1
 
 	# If no file specified, find one in cwd (only for non-GUI modes)
-	if opts.file.is_empty() and opts.mode != "gui":
+	if opts.file.is_empty() and opts.mode != "gui" and not opts.stdio:
 		opts.file = _find_dct_in_cwd()
 	if not opts.file.is_empty() and opts.files.is_empty():
 		opts.files.append(opts.file)
@@ -156,7 +168,9 @@ func _print_help() -> void:
 	print("  --file <path.dct>   Data file to open (repeatable for multi-project)")
 	print("  --query <path.dcq>  Load a .dcq query file on startup")
 	print("  --serve             Run as headless MCP server (no GUI)")
-	print("  --stdio             Use newline JSON-RPC (requires --headless --quiet --serve)")
+	print("  --stdio             Use newline JSON-RPC (requires --quiet --state-dir)")
+	print("  --state-dir <dir>   Private absolute state directory (required for stdio)")
+	print("  --restore-session  Deliberately restore the private profile session")
 	print("  --port <number>     MCP server port (default: 3010)")
 	print("  --build-info        Print embedded build identity and exit")
 	print("  --test              Run tests and exit")
@@ -226,28 +240,20 @@ func _start_gui(opts: Dictionary) -> void:
 
 	if files.size() > 0:
 		# Explicit --file args: load those
-		print("Docket GUI — file: %s" % opts.file)
+		printerr("Docket GUI — file: %s" % opts.file)
 		state.load_projects(files)
 	else:
 		# No --file args: try session restore
-		var session_paths := UserPrefs.load_session()
+		var session_paths := UserPrefs.load_session() if DocketRuntimeState.may_restore_session() else PackedStringArray()
 		var valid_paths := PackedStringArray()
 		for p in session_paths:
 			if FileAccess.file_exists(p):
 				valid_paths.append(p)
 		if valid_paths.size() > 0:
-			print("Docket GUI — restoring %d project(s) from session" % valid_paths.size())
+			printerr("Docket GUI — restoring %d project(s) from session" % valid_paths.size())
 			state.load_projects(Array(valid_paths))
 		else:
-			print("Docket GUI — empty workspace")
-
-	# Start embedded MCP server sharing the GUI's state
-	var ServerScript = load("res://scripts/mcp/http_server.gd")
-	var server = ServerScript.new()
-	server.port = opts.port
-	server.external_state = state
-	add_child(server)
-	print("Embedded MCP server on 127.0.0.1:%d" % opts.port)
+			printerr("Docket GUI — empty workspace")
 
 	# Measurement hook for File → Save; absent unless its environment variable is set.
 	if FrameProbe.enabled():
@@ -264,6 +270,16 @@ func _start_gui(opts: Dictionary) -> void:
 		DisplayServer.window_set_title("Docket")
 	else:
 		DisplayServer.window_set_title("Docket — %s" % state.dct_path.get_file())
+
+	# Start embedded MCP server sharing the GUI's state
+	var ServerScript = load("res://scripts/mcp/http_server.gd")
+	var server = ServerScript.new()
+	server.port = opts.port
+	server.stdio = opts.stdio
+	server.external_state = state
+	add_child(server)
+	if not opts.stdio:
+		print("Embedded MCP server on 127.0.0.1:%d" % opts.port)
 
 
 func _run_validate(opts: Dictionary) -> void:

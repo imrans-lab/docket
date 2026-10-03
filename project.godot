@@ -28,4 +28,3 @@ window/stretch/mode="canvas_items"
 [rendering]
 
 textures/vram_compression/import_etc2_astc=true
-

@@ -546,7 +546,12 @@ func _get_projects_token() -> String:
 
 func _on_file_changed() -> void:
 	## Project list changed — update menus and persist session.
+	_update_window_title()
 	_update_project_menu()
+	for db: DocketDB in _state.get_project_dbs().values():
+		if not db is DocketDBMemory:
+			_add_to_recent(db.get_path())
+	_menu_builder.set_recent_files(_recent_files)
 	_save_session()
 
 
@@ -1302,9 +1307,9 @@ func _on_viewport_resized() -> void:
 
 func _load_recent_files() -> void:
 	_recent_files = PackedStringArray()
-	if not FileAccess.file_exists(_RECENTS_PATH):
+	if not FileAccess.file_exists(DocketRuntimeState.path_for(_RECENTS_PATH)):
 		return
-	var f := FileAccess.open(_RECENTS_PATH, FileAccess.READ)
+	var f := FileAccess.open(DocketRuntimeState.path_for(_RECENTS_PATH), FileAccess.READ)
 	if not f:
 		return
 	var parsed = JSON.parse_string(f.get_as_text())
@@ -1317,7 +1322,7 @@ func _save_recent_files() -> void:
 	var arr: Array = []
 	for p in _recent_files:
 		arr.append(p)
-	var f := FileAccess.open(_RECENTS_PATH, FileAccess.WRITE)
+	var f := FileAccess.open(DocketRuntimeState.path_for(_RECENTS_PATH), FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(arr))
 

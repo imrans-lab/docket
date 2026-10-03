@@ -12,9 +12,9 @@ var last_name: String = ""
 
 
 static func _load_data() -> Dictionary:
-	if not FileAccess.file_exists(_PREFS_PATH):
+	if not FileAccess.file_exists(DocketRuntimeState.path_for(_PREFS_PATH)):
 		return {}
-	var f := FileAccess.open(_PREFS_PATH, FileAccess.READ)
+	var f := FileAccess.open(DocketRuntimeState.path_for(_PREFS_PATH), FileAccess.READ)
 	if not f:
 		return {}
 	var parsed = JSON.parse_string(f.get_as_text())
@@ -24,7 +24,7 @@ static func _load_data() -> Dictionary:
 
 
 static func _save_data(data: Dictionary) -> void:
-	var f := FileAccess.open(_PREFS_PATH, FileAccess.WRITE)
+	var f := FileAccess.open(DocketRuntimeState.path_for(_PREFS_PATH), FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data))
 

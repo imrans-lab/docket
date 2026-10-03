@@ -318,14 +318,14 @@ static func _key(project: String, id: String) -> String:
 
 
 static func load_records() -> Dictionary:
-	if not FileAccess.file_exists(store_path): return {}
-	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(store_path))
+	if not FileAccess.file_exists(DocketRuntimeState.path_for(store_path)): return {}
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(DocketRuntimeState.path_for(store_path)))
 	if not parsed is Dictionary or not (parsed as Dictionary).get("subscribers") is Dictionary: return {}
 	return (parsed as Dictionary).subscribers
 
 
 static func save_records(records: Dictionary) -> String:
-	var file: FileAccess = FileAccess.open(store_path, FileAccess.WRITE)
+	var file: FileAccess = FileAccess.open(DocketRuntimeState.path_for(store_path), FileAccess.WRITE)
 	if file == null: return "could not write subscriptions to %s: %s" % [store_path, error_string(FileAccess.get_open_error())]
 	var stored: bool = file.store_string(JSON.stringify({"version":1, "subscribers":records}, "\t"))
 	file.flush()
