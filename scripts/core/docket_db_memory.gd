@@ -54,9 +54,9 @@ func usage() -> Dictionary:
 	return {"items": item_count(), "max_items": max_items}
 
 
-func insert_item(id: String, item: Dictionary) -> String:
+func insert_item(id: String, item: Dictionary, canonical_input: bool = false) -> String:
 	var refusal := _limit_refusal()
-	return refusal if not refusal.is_empty() else super.insert_item(id, item)
+	return refusal if not refusal.is_empty() else super.insert_item(id, item, canonical_input)
 
 
 func import_item_full_checked(new_id: String, exported: Dictionary) -> String:
