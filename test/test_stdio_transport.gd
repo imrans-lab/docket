@@ -152,6 +152,23 @@ try:
     for log in base.glob('*.stderr'):
         assert b'SCRIPT ERROR' not in log.read_bytes(), log.read_text()
     print('STDIO REAL PROCESS: 3 scenarios passed, 0 skipped')
+except BaseException:
+    # Preserve the original traceback and report each child's actual failure.
+    # Kill still-running children first so their final stderr is available.
+    for child, err in children:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+        if not err.closed:
+            err.flush()
+        with open(err.name, 'rb') as log:
+            log.seek(0, os.SEEK_END)
+            size = log.tell()
+            log.seek(max(0, size - 8192))
+            tail = log.read().decode('utf-8', errors='replace')
+        print('CHILD %s exit=%s stderr(last 8192 bytes):\\n%s' %
+              (pathlib.Path(err.name).stem, child.returncode, tail), file=sys.stderr)
+    raise
 finally:
     for p, err in children:
         if p.poll() is None:

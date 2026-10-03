@@ -20,7 +20,8 @@ var _http_server: Node
 func _ready() -> void:
 	var opts := _parse_args()
 
-	if opts.stdio and (opts.mode != "serve" or DisplayServer.get_name() != "headless" or "--quiet" not in OS.get_cmdline_args()):
+	# Godot consumes --quiet before exposing cmdline args; inspect its effect.
+	if opts.stdio and (opts.mode != "serve" or DisplayServer.get_name() != "headless" or Engine.print_to_stdout):
 		printerr("Docket: --stdio requires --headless --quiet and --serve")
 		get_tree().quit(2)
 		return

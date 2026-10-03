@@ -70,6 +70,13 @@ godot --headless --path . -- validate --file docket.dct
   Frames are UTF-8, limited to 8 MiB; oversized/incomplete frames return parse
   errors. Close stdin to drain replies and settle projects. Use an isolated
   absolute XDG profile for child tests; current session restoration is retained.
+  Launch contract: engine flags `--headless --quiet --path <project>` precede
+  `--`; application flags `--serve --stdio --file <absolute.dct>` follow it.
+  Godot consumes `--quiet`, so startup validates its disabled-stdout effect
+  before enabling protocol stdout once. Keep `--quiet` to suppress the engine
+  banner. Godot 4.7 uses `application/run/flush_stdout_on_print` for replies.
+  Engine or third-party stdout can corrupt framing; all Docket diagnostics use
+  stderr, and the child oracle rejects every non-JSON-RPC line and trailing byte.
 - **MCP tools:** the authoritative tool registry is
   `scripts/tools/tool_registry.gd`; do not maintain a second hardcoded list here
 - **Vault encryption:** handle-based vault entries use AES-256-CBC with
