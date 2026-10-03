@@ -9,11 +9,25 @@ func _init() -> void:
 	var path := args[0]
 	var db: DocketDBJsonl
 	if args[4] == "private":
-		var cache := JSONLCache.rebuild_cache(path, path + ".writer.cache")
-		if cache != null:
-			db = DocketDBJsonl.new()
-			db._jsonl_path = path
-			db._adopt(cache)
+		# Open an identical sibling source through the supported entry point so
+		# the process has a genuinely separate cache, then append to the source
+		# watched by the shell. This fixture starts with no pending journal.
+		var copy_path := path + ".writer.dct"
+		if not JSONLSidecar.has_content(JSONLSidecar.path_for(path)):
+			var copy := FileAccess.open(copy_path, FileAccess.WRITE)
+			if copy != null:
+				copy.store_buffer(FileAccess.get_file_as_bytes(path))
+				copy.close()
+				db = DocketDBJsonl.open_jsonl(copy_path)
+				if db != null:
+					db._jsonl_path = path
+					db._freshness.forget()
+					# A mismatch would make mutation reload the shared cache and
+					# erase the independent-cache oracle; refuse that setup.
+					if db.is_stale():
+						db._jsonl_path = ""
+						db.close()
+						db = null
 	else: db = DocketDBJsonl.open_jsonl(path)
 	var result := {"error": "writer could not open project"}
 	if db != null:

@@ -78,6 +78,8 @@ func test_stable_nine_project_idle_and_unsettled_foreign_append() -> Variant:
 	if result.has("error"): return result.error
 	r = A.is_true(FileAccess.get_file_as_bytes(dbs[0].get_path()) == original and JSONLSidecar.has_content(dbs[0].get_path() + ".log"), "foreign writer left an unsettled append")
 	if r is String: return r
+	r = A.is_true(not dbs[0].has_item(str(result.id)), "private writer did not update the shell cache")
+	if r is String: return r
 	var before := state.reload_calls
 	shell._on_poll_external_changes()
 	return A.is_true(state.reload_calls == before + 1 and dbs[0].has_item(str(result.id)), "next tick reloads foreign sidecar before settle")
@@ -131,7 +133,7 @@ func test_visible_grid_mcp_crud_in_same_and_other_process_queries_once() -> Vari
 		for action in ["create", "update", "transition", "delete"]:
 			var before := state.queries
 			for i in 2: shell._on_poll_external_changes()
-			var r = A.eq(state.queries, before, "idle ticks query zero times")
+			var r = A.eq(state.queries, before, "idle ticks before %s foreign=%s query zero times" % [action, foreign])
 			if r is String: return r
 			var result: Dictionary
 			if foreign: result = _foreign(action, id)

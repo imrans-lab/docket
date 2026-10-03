@@ -1319,7 +1319,7 @@ func refresh_if_changed(check_disk: bool = true) -> void:
 	## canonical file changed on disk is first handed to disk_change_found. On
 	## a hidden grid it does nothing; its next showing calls it again.
 	## The shell passes false after checking its strong project source token.
-	if _is_hidden(): return
+	if _is_hidden() or _handing_off: return
 	if check_disk and _changed_on_disk():
 		_handing_off = true
 		if disk_change_found.has_connections(): disk_change_found.emit()

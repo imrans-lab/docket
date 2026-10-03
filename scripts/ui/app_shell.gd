@@ -585,8 +585,9 @@ func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 		_query_grid.refresh_if_changed(false)
 		return
 
-	# Hidden results are only marked stale here and re-query when shown.
-	_query_grid.refresh()
+	# Reloads may only move the source identity (a settle). The grid compares
+	# row generations and the outer visibility handoff owns its own query.
+	_query_grid.refresh_if_changed(false)
 
 	if open_id.is_empty():
 		return
