@@ -208,7 +208,10 @@ func _persist_headless_session() -> void:
 
 func _process(_delta: float) -> void:
 	# Idle-debounced settle of sidecar appends made through this server.
-	DocketDBJsonl.settle_projects(_project_dbs, true)
+	if external_state != null:
+		external_state.settle_projects()
+	else:
+		DocketDBJsonl.settle_projects(_project_dbs, true)
 	if _server == null or not _server.is_listening():
 		return
 

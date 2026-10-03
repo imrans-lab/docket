@@ -335,7 +335,20 @@ func test_later_tick_refused_settle_notifies_and_refreshes_rebuilt_rows_once() -
 	fixture.free()
 	return outcome
 
-func _later_tick_refusal(fixture: Node) -> Variant:
+func test_server_owned_later_tick_refusal_notifies_and_refreshes_once() -> Variant:
+	var fixture := preload("res://test/test_poll_freshness.gd").new()
+	add_child(fixture)
+	fixture.setup()
+	var error: String = fixture._fixture(2)
+	var outcome: Variant = error if not error.is_empty() else true
+	if outcome == true:
+		outcome = _later_tick_refusal(fixture, true)
+	fixture.teardown()
+	remove_child(fixture)
+	fixture.free()
+	return outcome
+
+func _later_tick_refusal(fixture: Node, server_owned: bool = false) -> Variant:
 	var db: DocketDBJsonl = fixture.dbs[0]
 	var registry: TypeRegistry = fixture.state.get_type_registry("poll0")
 	var item := registry.create_item({"type": "chore", "title": "row original"}, "tester")
@@ -358,7 +371,16 @@ func _later_tick_refusal(fixture: Node) -> Variant:
 	var signals: Array = []
 	fixture.state.data_changed.connect(func() -> void: signals.append("changed"))
 	var queries: int = fixture.state.queries
-	fixture.shell._process(0.0)
+	if server_owned:
+		# No _ready/tree attachment: this tests the server frame without opening
+		# a listener, accessing user preferences or racing the shell frame.
+		var server := DocketHttpServer.new()
+		server.external_state = fixture.state
+		server._project_dbs = fixture.state.get_project_dbs()
+		server._process(0.0)
+		server.free()
+	else:
+		fixture.shell._process(0.0)
 	var r = A.is_true(not db.last_write_error.is_empty() and signals.size() == 1 and fixture.state.queries == queries + 1, "later refused commit emits once and queries once (%s)" % db.last_write_error)
 	if r is String: return r
 	r = A.eq(fixture._shown_rows(), fixture._expected_rows(), "visible rows equal rebuilt core query")

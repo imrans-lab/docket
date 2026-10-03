@@ -31,10 +31,7 @@ cache-derived alias of that discriminator, not canonical metadata. A legacy
 file may contain the alias; merely loading it preserves those bytes. On an
 actual mutation, explicit settle or surviving-journal compaction, serialization
 omits the alias and keeps `version`. This is canonicalisation, not a format
-upgrade. The cache derives its alias again on rebuild. A removed
-`jsonl_version` field therefore proves that a canonical write occurred; the
-alias omission itself does not explain what triggered that write.
-
+upgrade. The cache derives its alias again on rebuild.
 
 ### 1.1 File Extension
 

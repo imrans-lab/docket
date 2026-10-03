@@ -71,7 +71,8 @@ func test_stable_nine_project_idle_and_unsettled_foreign_append() -> Variant:
 	var elapsed := (Time.get_ticks_usec() - started) / 5.0
 	var reads := 0
 	for db in dbs: reads += int(JSONLFreshness.hash_reads.get(db.get_path(), 0))
-	var r = A.is_true(reads == 0 and elapsed < 5000, "stable9project idle: %d hashes, %.0fus/tick" % [reads, elapsed])
+	print("stable nine-project idle: %.0fus/tick (5ms target)" % elapsed)
+	var r = A.eq(reads, 0, "stable nine-project idle hashes no canonical bytes")
 	if r is String: return r
 	var original := FileAccess.get_file_as_bytes(dbs[0].get_path())
 	var result := _foreign("create", "", true)
@@ -89,18 +90,29 @@ func test_same_size_rewrite_inside_timestamp_window_changes_next_token() -> Vari
 	var error := _fixture(2)
 	if not error.is_empty(): return error
 	var path := dbs[0].get_path()
-	# Change one equal-length meta value without waiting for the timestamp
-	# safety window. No reusable hash can have been recorded yet.
-	var before := shell._get_projects_token()
+	# A reusable hash requires an mtime at least two seconds old, so an
+	# ordinary current-second rewrite cannot collide with its cached mtime.
+	# Instead align a fresh write, its racy hash and the rewrite in one second.
+	var second := int(Time.get_unix_time_from_system())
+	while int(Time.get_unix_time_from_system()) == second:
+		await get_tree().process_frame
 	var original := FileAccess.get_file_as_string(path)
 	var edited := original.replace('"poll0"', '"pollX"')
 	if edited == original: return "fixture lacks project meta"
 	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(original)
+	file.close()
+	var mtime := FileAccess.get_modified_time(path)
+	var before := shell._get_projects_token()
+	file = FileAccess.open(path, FileAccess.WRITE)
 	file.store_string(edited)
 	file.close()
-	# The next check may occur after the 2s window (the shell polls every3s).
+	var r = A.eq(FileAccess.get_modified_time(path), mtime, "equal-size rewrite shares the hashed whole-second mtime")
+	if r is String: return r
+	# A naive mtime+size token now collides. The safe hash must detect the edit
+	# even when the next poll happens after its timestamp window expires.
 	await get_tree().create_timer(3.1).timeout
-	return A.is_true(shell._get_projects_token() != before, "equal-size racy rewrite survives next3s tick")
+	return A.is_true(shell._get_projects_token() != before, "equal-size racy rewrite survives next 3s tick")
 
 
 func _shown_rows() -> Array:

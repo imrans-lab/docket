@@ -538,13 +538,10 @@ func _get_projects_token() -> String:
 			parts.append("%s:%s" % [project, (pdb as DocketDBJsonl).poll_source_token()])
 		else:
 			var wal := path + "-wal"
-			parts.append("%s:%s:%s" % [project, _file_stamp(path), _file_stamp(wal)])
+			var canonical_hash := FileAccess.get_sha256(path) if FileAccess.file_exists(path) else "missing"
+			var wal_stamp := str(FileAccess.get_modified_time(wal)) if FileAccess.file_exists(wal) else ""
+			parts.append("%s:%s:%s" % [project, canonical_hash, wal_stamp])
 	return "|".join(parts)
-
-
-static func _file_stamp(path: String) -> String:
-	if not FileAccess.file_exists(path): return "missing"
-	return "%d:%d" % [FileAccess.get_modified_time(path), JSONLFreshness._size_of(path)]
 
 
 func _on_file_changed() -> void:
@@ -564,6 +561,8 @@ func _on_load_failed(path: String, reason: String) -> void:
 func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 	## Stable JSONL tokens reuse the canonical's verified hash and include the
 	## unsettled sidecar. A racy timestamp or foreign lock forces a full hash.
+	## changed_on_disk is the grid's file/sidecar handoff: it bypasses the token
+	## gate so stale cache rows are reloaded before the grid queries again.
 	_state.settle_projects()
 	# A debounce settle this tick started reads its slices on every frame.
 	for pdb in _state.get_project_dbs().values():

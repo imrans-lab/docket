@@ -167,7 +167,7 @@ func test_untouched_observed_legacy_meta_load_startup_settle_and_poll_are_byte_i
 			if r == true: r = A.eq(FileAccess.get_file_as_bytes(_path), original, "load leaves literal observed meta bytes unchanged")
 			state.save()
 			shell._on_poll_external_changes()
-			if r == true: r = A.eq(FileAccess.get_file_as_bytes(_path), original, "startup settle and poll leave untouched1.0 bytes unchanged")
+			if r == true: r = A.eq(FileAccess.get_file_as_bytes(_path), original, "startup settle and poll leave untouched 1.0 bytes unchanged")
 			remove_child(shell)
 			shell.free()
 			for db: DocketDB in loaded: db.close()
