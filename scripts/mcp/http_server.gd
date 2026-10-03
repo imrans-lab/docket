@@ -28,7 +28,7 @@ const LEASE_CHECK_INTERVAL_MS := 5000
 
 func _ready() -> void:
 	if stdio:
-		Engine.print_to_stdout = false
+		Engine.print_to_stdout = true
 	if not stdio:
 		_server = TCPServer.new()
 		var err := _server.listen(port, "127.0.0.1")
@@ -74,7 +74,7 @@ func _ready() -> void:
 					_db = loaded_db  # First DB is primary
 			else:
 				# Never start up quietly serving nothing — an unopenable file
-				# (conflict markers, corruption) must be visible on stdout.
+				# (conflict markers, corruption) must be visible on stderr.
 				var reason := DocketDBJsonl.last_open_error
 				if reason.is_empty():
 					reason = "could not open %s" % path

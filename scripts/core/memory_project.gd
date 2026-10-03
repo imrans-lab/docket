@@ -196,7 +196,7 @@ static func spill_on_exit(project_dbs: Dictionary) -> void:
 		var error := write_file(pdb, SessionProject.MODE_SESSION_FILE, path)
 		if error.is_empty():
 			spilled.append(path)
-			print("Docket: spilled memory project %s to %s" % [proj_name, path])
+			printerr("Docket: spilled memory project %s to %s" % [proj_name, path])
 		else:
 			printerr("Docket: could not spill memory project %s at exit: %s" % [proj_name, error])
 	if not spilled.is_empty():

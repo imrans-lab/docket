@@ -1,4 +1,4 @@
-extends RefCounted
+extends Node
 ## Real child-process oracle. Python owns independent stdin/stdout descriptors,
 ## deadlines and isolated XDG paths; it never touches the owner's user data.
 
@@ -18,13 +18,33 @@ def launch(name, extra=()):
     err = open(base / (name + '.stderr'), 'wb')
     p = subprocess.Popen(args + ['--file', str(base / (name + '.dct'))] + list(extra),
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, bufsize=0)
+    os.set_blocking(p.stdin.fileno(), False)
     children.append((p, err))
     return p
 
-def send(p, obj):
-    p.stdin.write((json.dumps(obj, ensure_ascii=False) + '\\n').encode())
-    p.stdin.flush()
+def write(p, data):
+    data = memoryview(data)
+    selector = selectors.DefaultSelector()
+    selector.register(p.stdin, selectors.EVENT_WRITE)
+    deadline = time.monotonic() + 30
+    try:
+        while data:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0 and selector.select(remaining), 'stdin write exceeded 30s'
+            try:
+                count = os.write(p.stdin.fileno(), data)
+            except BlockingIOError:
+                continue
+            assert count > 0, 'stdin write made no progress'
+            data = data[count:]
+    finally:
+        selector.close()
 
+def send(p, obj):
+    write(p, (json.dumps(obj, ensure_ascii=False) + '\\n').encode())
+
+# Every stdout line, including startup and EOF, must be JSON-RPC; trailing
+# bytes are refused by finish/EOF assertions rather than ignored.
 def receive(p):
     selector = selectors.DefaultSelector()
     selector.register(p.stdout, selectors.EVENT_READ)
@@ -57,7 +77,7 @@ def finish(p):
     assert p.stdout.read() == b'', 'unexpected protocol output after EOF'
 
 try:
-    p = launch('protocol')
+    p = launch('scratch')
     # A listener on this isolated port must remain available to the test.
     import socket
     listener = socket.socket()
@@ -84,8 +104,7 @@ try:
     send(p, {'jsonrpc': '2.0', 'method': 'unknown'})
     send(p, {'jsonrpc': '2.0', 'method': 'notifications/initialized'})
     assert request(p, 'ping', '日本語')['result'] == {}
-    p.stdin.write(b'{broken\\n')
-    p.stdin.flush()
+    write(p, b'{broken\\n')
     assert receive(p)['error']['code'] == -32700
     for invalid in ([], None, {'jsonrpc': '2.0', 'method': 42},
                     {'jsonrpc': '2.0', 'method': 'tools/call', 'params': []},
@@ -93,26 +112,32 @@ try:
                     {'jsonrpc': '2.0', 'method': 'ping', 'id': {}}):
         send(p, invalid)
         assert receive(p)['error']['code'] == -32600
-    p.stdin.write(b'\\xff\\n')
-    p.stdin.flush()
+    write(p, b'\\xff\\n')
     assert receive(p)['error']['code'] == -32700
-    finish(p)
-    canonical = (base / 'protocol.dct').read_text()
-    assert title in canonical, 'EOF did not settle the write'
-    assert not pathlib.Path(str(base / 'protocol.dct') + '.lock').exists(), 'EOF retained lock'
+    # Close immediately after a mutation, before receiving or any idle settle.
+    eof_title = 'immediate EOF mutation'
+    send(p, {'jsonrpc': '2.0', 'method': 'tools/call', 'id': 'eof',
+             'params': {'name': 'docket_create', 'arguments': {'type': 'chore', 'title': eof_title}}})
+    p.stdin.close()
+    reply = receive(p)
+    assert reply['id'] == 'eof' and not reply['result'].get('isError'), reply
+    assert p.wait(timeout=10) == 0, 'EOF exit failure'
+    assert p.stdout.read() == b'', 'unexpected protocol output after EOF'
+    canonical = (base / 'scratch.dct').read_text()
+    assert title in canonical and eof_title in canonical, 'EOF did not settle the immediate write'
+    assert not pathlib.Path(str(base / 'scratch.dct') + '.lock').exists(), 'EOF retained lock'
     print('PASS protocol/unicode/notifications/malformed/EOF-settle/no-http')
 
     p = launch('framing')
     # Oversize discard recovers on the next newline; many queued frames exercise
     # backpressure with a producer that does not wait for responses.
-    p.stdin.write(b'x' * (8 * 1024 * 1024 + 1) + b'\\n')
-    p.stdin.flush()
+    write(p, b'x' * (8 * 1024 * 1024 + 1) + b'\\n')
     assert receive(p)['error']['code'] == -32700
     for ident in range(20):
         send(p, {'jsonrpc': '2.0', 'method': 'ping', 'id': ident})
     for ident in range(20):
         assert receive(p)['id'] == ident
-    p.stdin.write(b'{')
+    write(p, b'{')
     p.stdin.close()
     assert receive(p)['error']['code'] == -32700
     assert p.wait(timeout=10) == 0

@@ -2,6 +2,8 @@ extends RefCounted
 class_name DocketStdioTransport
 ## Bounded newline JSON-RPC framing. Only the main thread calls the backend.
 ## The host owns this child: close stdin to drain replies and settle on exit.
+## Engine/third-party stdout could corrupt framing; the real-child oracle guards
+## every observed output line. Docket-owned diagnostics use stderr.
 
 const MAX_FRAME_BYTES := 8 * 1024 * 1024
 const QUEUE_SLOTS := 2
@@ -64,9 +66,8 @@ func poll(handler: McpHandler) -> bool:
 		else:
 			response = _dispatch(frame, handler)
 		if response != null:
-			Engine.print_to_stdout = true
-			print(JSON.stringify(response))
-			Engine.print_to_stdout = false
+			# flush_on_print provides the existing immediate flush path.
+			printraw(JSON.stringify(response) + "\n")
 	if closed:
 		_thread.wait_to_finish()
 	return closed
