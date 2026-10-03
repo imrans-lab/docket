@@ -1,10 +1,11 @@
 extends Node
 class_name TestRunner
 ## Discovers and runs test_* methods from registered test scripts.
-## Returns true/String from each test. Supports setup/teardown and async tests.
+## Returns true/String or an explicit {skip: reason} from each test. Supports setup/teardown and async tests.
 
 var _pass_count := 0
 var _fail_count := 0
+var _skip_count := 0
 var _test_classes: Array = []
 
 
@@ -132,7 +133,10 @@ func _run_test(instance: Node, method_name: String) -> void:
 	# nonexistent method, a method on a Nil instance — and execution continues.
 	# Treating null as a pass turned every thrown exception into a silent green
 	# tick, which is precisely the failure a test suite exists to prevent.
-	if result is bool and result == true:
+	if result is Dictionary and result.size() == 1 and result.get("skip") is String and not result.skip.is_empty():
+		_skip_count += 1
+		print("  SKIP (not run): %s — %s" % [method_name, result.skip])
+	elif result is bool and result == true:
 		_pass_count += 1
 		print("  PASS: %s" % method_name)
 	else:
@@ -153,7 +157,10 @@ func _print_summary() -> void:
 	var total := _pass_count + _fail_count
 	print("========================================")
 	print("Results: %d total, %d passed, %d failed" % [total, _pass_count, _fail_count])
-	if _fail_count == 0:
+	print("Skipped (not executed): %d" % _skip_count)
+	if _fail_count == 0 and _skip_count > 0:
+		print("TESTS COMPLETED WITH SKIPS")
+	elif _fail_count == 0:
 		print("ALL TESTS PASSED")
 	else:
 		print("SOME TESTS FAILED")

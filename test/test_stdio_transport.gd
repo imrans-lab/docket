@@ -182,7 +182,7 @@ finally:
 
 func test_real_child_stdio() -> Variant:
 	if OS.get_name() not in ["Linux", "macOS"]:
-		return "Real stdio oracle requires POSIX pipes (Linux/macOS); platform not executed"
+		return {"skip": "Real stdio oracle requires POSIX pipes (Linux/macOS); platform not executed"}
 	var temp_dir := "/tmp/docket-stdio-oracle-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()]
 	if DirAccess.make_dir_absolute(temp_dir) != OK:
 		return "Cannot create absolute isolated oracle directory"
