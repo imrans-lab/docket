@@ -33,6 +33,8 @@ class_name DocketDBJsonl
 ## rebuilt rows and the stored fingerprint that matches them.
 
 var _jsonl_path: String
+# Load-time collision aliases never enter stored metadata or canonical snapshots.
+var _session_id_prefix: String = ""
 var last_write_error: String = ""
 ## Successful cache replacements, including a refused settle recovery.
 var reload_generation: int = 0
@@ -389,6 +391,7 @@ func _uses_sidecar() -> bool:
 func _adopt(source: DocketDB) -> void:
 	## Take ownership of source's SQLite connection, detaching it from source
 	## so its destructor cannot close the handle we now hold.
+	_session_id_prefix = ""
 	_db = source._db
 	_path = source._path
 	_is_open = true
@@ -1013,6 +1016,14 @@ func set_meta_value_checked(meta_key: String, val: String) -> String:
 	if not error.is_empty(): return error
 	super.set_meta_value(meta_key, val)
 	return _complete_canonical_mutation()
+
+
+func get_id_prefix() -> String:
+	return _session_id_prefix if not _session_id_prefix.is_empty() else super.get_id_prefix()
+
+
+func set_session_id_prefix(prefix: String) -> void:
+	_session_id_prefix = prefix
 
 
 func set_id_prefix(prefix: String) -> void:

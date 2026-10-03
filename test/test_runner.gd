@@ -65,6 +65,7 @@ func _ready() -> void:
 		preload("res://test/test_content_append.gd"),
 		preload("res://test/test_session_project.gd"),
 		preload("res://test/test_load_projects.gd"),
+		preload("res://test/test_prefix_collision.gd"),
 		preload("res://test/test_results_return.gd"),
 		preload("res://test/test_poll_freshness.gd"),
 	]

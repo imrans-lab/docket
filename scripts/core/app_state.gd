@@ -198,7 +198,10 @@ func add_project(path: String) -> String:
 					resolved = true
 					break
 		if new_prefix != new_db.get_id_prefix():
-			new_db.set_id_prefix(new_prefix)
+			if new_db is DocketDBJsonl:
+				(new_db as DocketDBJsonl).set_session_id_prefix(new_prefix)
+			else:
+				new_db.set_id_prefix(new_prefix)
 
 	# A project loaded under a name already served replaces it, including as primary.
 	if _project_dbs.get(proj_name) == db and db != null:

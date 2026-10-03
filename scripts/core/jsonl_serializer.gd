@@ -120,7 +120,8 @@ static func serialize_meta(db: DocketDB) -> String:
 	d["_type"] = "meta"
 	d["version"] = db.get_meta_value("jsonl_version", JSONL_VERSION)
 	d["counter"] = db.get_counter()
-	d["id_prefix"] = db.get_id_prefix()
+	# Session collision aliases must never be materialized by a later settle.
+	d["id_prefix"] = db.get_meta_value("id_prefix", "DKT")
 
 	# Optional fields
 	var project := db.get_project_name()
