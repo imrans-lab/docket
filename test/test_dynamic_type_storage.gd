@@ -121,16 +121,17 @@ func test_recursive_serialization_is_deterministic() -> Variant:
 	var right := {"a":[{"x":1,"y":2}],"z":{"a":1,"b":2}}
 	return A.eq(JSONLSerializer._json_value(left), JSONLSerializer._json_value(right), "recursive object key order is canonical")
 
-func test_unsupported_version_refuses_warm_cache_without_mutation() -> Variant:
+func test_newer_version_opens_read_only_and_preserves_warm_cache_sentinel() -> Variant:
 	var path := DIR + "/future.dct"
 	var file := FileAccess.open(path, FileAccess.WRITE); file.store_string('{"_type":"meta","version":"99.0.0","counter":0,"id_prefix":"X"}\n'); file.close()
 	var cache_path := path + ".cache"
 	var cache := FileAccess.open(cache_path, FileAccess.WRITE); cache.store_string("sentinel"); cache.close()
 	var opened := DocketDBJsonl.open_jsonl(path)
 	var reread := FileAccess.open(cache_path, FileAccess.READ); var content := reread.get_as_text(); reread.close()
-	var r = A.eq(opened, null, "unsupported source is refused before warm cache")
+	var r = A.is_true(opened != null and opened.get_write_block_reason().contains("99.0.0"), "newer source opens read-only with its version in the write block reason")
+	if opened != null: opened.close()
 	if r is String: return r
-	return A.eq(content, "sentinel", "refusal does not mutate existing cache")
+	return A.eq(content, "sentinel", "read-only open preserves existing cache sentinel")
 
 func test_upgrade_requires_explicit_exclusive_confirmation_and_roundtrips() -> Variant:
 	var path := DIR + "/upgrade.dct"
