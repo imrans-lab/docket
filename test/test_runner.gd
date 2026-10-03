@@ -64,6 +64,7 @@ func _ready() -> void:
 		preload("res://test/test_session_project.gd"),
 		preload("res://test/test_load_projects.gd"),
 		preload("res://test/test_results_return.gd"),
+		preload("res://test/test_poll_freshness.gd"),
 	]
 	var requested := _requested_test_class(OS.get_cmdline_user_args())
 	if not requested.is_empty():

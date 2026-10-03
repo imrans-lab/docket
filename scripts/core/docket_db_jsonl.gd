@@ -198,6 +198,12 @@ func close() -> void:
 # that stale state, silently deleting whatever was pulled. Callers should invoke
 # ensure_fresh() at the top of each request (MCP) or poll tick (GUI).
 
+func poll_source_token() -> String:
+	## Same identity as the cache freshness gate: zero canonical bytes for a
+	## stable warmed file, full verification while its timestamp is racy.
+	return _source_fingerprint() if _is_open else "closed"
+
+
 func is_stale() -> bool:
 	## True if the JSONL file no longer matches what this cache was built from.
 	if not _is_open or _jsonl_path.is_empty():
