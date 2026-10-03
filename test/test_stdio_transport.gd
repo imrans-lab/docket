@@ -3,7 +3,8 @@ extends Node
 ## deadlines and isolated XDG paths; it never touches the owner's user data.
 
 const DRIVER := """
-import json, os, pathlib, selectors, subprocess, sys, tempfile, time
+import json, os, pathlib, selectors, signal, subprocess, sys, tempfile, time
+signal.alarm(180)
 engine, project = sys.argv[1:]
 root = tempfile.TemporaryDirectory(prefix='docket-stdio-')
 base = pathlib.Path(root.name)
@@ -180,9 +181,12 @@ finally:
 
 
 func test_real_child_stdio() -> Variant:
-	if OS.get_name() != "Linux":
-		return "Real stdio oracle currently requires Linux; do not record a skipped pass"
-	var script_path := ProjectSettings.globalize_path("user://stdio_process_oracle.py")
+	if OS.get_name() not in ["Linux", "macOS"]:
+		return "Real stdio oracle requires POSIX pipes (Linux/macOS); platform not executed"
+	var temp_dir := "/tmp/docket-stdio-oracle-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()]
+	if DirAccess.make_dir_absolute(temp_dir) != OK:
+		return "Cannot create absolute isolated oracle directory"
+	var script_path := temp_dir.path_join("driver.py")
 	var file := FileAccess.open(script_path, FileAccess.WRITE)
 	if file == null:
 		return "Cannot write isolated stdio oracle"
@@ -191,6 +195,7 @@ func test_real_child_stdio() -> Variant:
 	var output: Array = []
 	var code := OS.execute("python3", PackedStringArray([script_path, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
 	DirAccess.remove_absolute(script_path)
+	DirAccess.remove_absolute(temp_dir)
 	var report := "\n".join(PackedStringArray(output))
 	print(report)
 	if code != 0 or not report.contains("3 scenarios passed, 0 skipped"):
