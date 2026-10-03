@@ -51,6 +51,9 @@ jobs:
   test:
     name: Build extension + run tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +64,9 @@ jobs:
           - os: macos-latest
             platform: macos
             arch: arm64
+          - os: windows-latest
+            platform: windows
+            arch: x86_64
 
     steps:
       - uses: actions/checkout@v7
@@ -112,6 +118,8 @@ jobs:
           BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
           if [ "${{ runner.os }}" = "macOS" ]; then
             curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_win64.exe.zip"
           else
             curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
           fi
@@ -122,6 +130,8 @@ jobs:
           set -euo pipefail
           if [ "${{ runner.os }}" = "macOS" ]; then
             GODOT_BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*.exe' -type f | head -1)"
           else
             GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*' -type f | head -1)"
           fi
