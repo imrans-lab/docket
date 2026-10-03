@@ -5,15 +5,21 @@ const PATH := DIR + "/future.dct"
 const ITEM := '{"_type":"item","id":"FUT-0001","type":"chore","status":"open","title":"Known item","created_at":"2026-01-01","updated_at":"2026-01-01","future_field":{"opaque":true}}'
 var _state: AppState
 var _db: DocketDBJsonl
+var _shell: AppShell
 
 func before_each() -> void:
 	DirAccess.make_dir_recursive_absolute(DIR)
 
 func after_each() -> void:
+	if is_instance_valid(_shell):
+		remove_child(_shell)
+		_shell.free()
+		_shell = null
 	if _state != null:
 		for project in _state.get_project_dbs().keys(): _state.remove_project(str(project))
 		_state = null
-	if _db != null: _db.close(); _db = null
+	if _db != null and _db.is_open(): _db.close()
+	_db = null
 	for suffix: String in ["", ".log", ".lock", ".cache", ".cache-wal", ".cache-shm", ".future.cache", ".future.cache-wal", ".future.cache-shm", ".v2.cache", ".v2.cache-wal", ".v2.cache-shm"]:
 		DirAccess.remove_absolute(PATH + suffix)
 	DirAccess.remove_absolute(DIR)
@@ -39,13 +45,13 @@ func test_future_real_db_ui_mcp_poll_reload_and_close_preserve_bytes() -> Varian
 	if _db.get_item("FUT-0001").get("title") != "Known item": return "known record not readable"
 	if _db.get_item("FUT-0001").get("extras", {}).has("future_field"): return "unknown field reached display cache"
 	if _db.execute_query({"filter":{"type":"chore"}}).size() != 1: return "known item not queryable"
-	var shell := AppShell.new()
-	shell._state = _state
-	shell._file_label = Label.new()
-	shell._update_window_title()
-	var label := shell._file_label.text
-	shell._file_label.free()
-	shell.free()
+	_state.prefs = UserPrefs.new()
+	_shell = AppShell.new()
+	_shell.init(_state)
+	add_child(_shell)
+	_shell._poll_timer.stop()
+	_shell._update_window_title()
+	var label := _shell._file_label.text
 	if not label.contains("3.0.0") or not label.contains("read-only"): return "UI status lacks read-only version reason"
 	var registry := ToolRegistry.new()
 	registry.init(_state.schema, _db, _state.get_project_dbs())
@@ -55,7 +61,7 @@ func test_future_real_db_ui_mcp_poll_reload_and_close_preserve_bytes() -> Varian
 	var projects := registry.call_tool("docket_project_list", {})
 	if not str(projects.projects[0].get("read_only_reason", "")).contains("3.0.0"): return "MCP project status lacks version"
 	for tick in 3:
-		_state.refresh_stale_dbs()
+		_shell._on_poll_external_changes()
 		DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
 		DocketDBJsonl.settle_projects(_state.get_project_dbs(), false)
 	if not _db.flush_checked().contains("3.0.0"): return "explicit settle did not refuse with version"
@@ -69,6 +75,7 @@ func test_future_real_db_ui_mcp_poll_reload_and_close_preserve_bytes() -> Varian
 	if _db == null: return DocketDBJsonl.last_open_error
 	if not _db.update_item_fields_checked("FUT-0001", {"title":"Refused warm"}).contains("3.0.0"): return "warm cache lost write block"
 	_db.close()
+	_db = null
 	if FileAccess.get_file_as_bytes(PATH) != original: return "future file bytes changed"
 	if FileAccess.file_exists(PATH + ".log"): return "future session created sidecar"
 	return true
@@ -97,6 +104,7 @@ func test_legacy_real_mutation_keeps_version_and_explicit_upgrade_requires_appro
 	error = _db.flush_checked()
 	if not error.is_empty(): return error
 	_db.close()
+	_db = null
 	var parsed := JSONLParser.parse_file(PATH)
 	if parsed.meta.version != "1.0.0": return "mutation silently upgraded legacy version"
 	var before := FileAccess.get_file_as_bytes(PATH)
@@ -114,6 +122,7 @@ func test_reload_from_supported_to_future_prevents_first_write() -> Variant:
 	var error := _db.update_item_fields_checked("FUT-0001", {"title":"Refused after external upgrade"})
 	if not error.contains("3.0.0"): return "freshness reload allowed first mutation: " + error
 	_db.close()
+	_db = null
 	if FileAccess.file_exists(PATH + ".log"): return "freshness gate created future sidecar"
 	return AssertHelpers.eq(FileAccess.get_file_as_bytes(PATH), original, "external future bytes preserved")
 
@@ -129,5 +138,6 @@ func test_future_sidecar_is_neither_replayed_nor_retired() -> Variant:
 	_db.flush_checked()
 	_db.reload()
 	_db.close()
+	_db = null
 	if FileAccess.get_file_as_bytes(PATH) != original: return "future sidecar settle changed canonical"
 	return AssertHelpers.eq(FileAccess.get_file_as_bytes(PATH + ".log"), journal, "future sidecar preserved")

@@ -8,7 +8,7 @@ func setup() -> void:
 	DirAccess.make_dir_recursive_absolute(_dir)
 
 func teardown() -> void:
-	if _db != null: _db.close()
+	if _db != null and _db.is_open(): _db.close()
 	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".lock", ".log"]:
 		DirAccess.remove_absolute(_path + suffix)
 	DirAccess.remove_absolute(_dir)
@@ -20,6 +20,7 @@ func test_real_master_tags_read_query_and_mutate() -> Variant:
 	file.close()
 	var expected := {}
 	for line: String in original.get_string_from_utf8().split("\n"):
+		if line.strip_edges().is_empty(): continue
 		var record: Variant = JSON.parse_string(line)
 		if record is Dictionary and record.get("_type") == "item" and record.get("tags") is String:
 			var tags: Array = []
@@ -35,7 +36,9 @@ func test_real_master_tags_read_query_and_mutate() -> Variant:
 	if _db == null: return DocketDBJsonl.last_open_error
 	for id: String in expected:
 		var actual: Array = _db.get_item(id).get("tags", [])
-		if actual.size() != expected[id].size(): return "missing cached tags: " + id
+		var ordered: Array = expected[id].duplicate()
+		ordered.sort() # SQLite tag relation and canonical serializer order alphabetically.
+		if actual != ordered: return "cached tags differ: " + id
 		for tag: String in expected[id]:
 			if tag not in actual: return "missing tag: " + tag
 			var found := false
@@ -58,15 +61,30 @@ func test_real_master_tags_read_query_and_mutate() -> Variant:
 	_db.close()
 	var after := JSONLParser.parse_file(_path)
 	if not str(after.get("error", "")).is_empty(): return after.error
-	for item: Dictionary in after.items:
-		if not expected.has(item.id): continue
-		var tags: Array = item.get("tags", [])
-		for tag: String in expected[item.id]:
-			if tag not in tags: return "mutation lost tag: " + item.id
-		if item.id == changed_id: continue
-		for old: Dictionary in before.items:
-			if old.id == item.id and old != item: return "untouched legacy item changed semantically: " + item.id
+	if before.items.size() != after.items.size(): return "mutation changed item count"
+	for old: Dictionary in before.items:
+		var found := false
+		for item: Dictionary in after.items:
+			if old.id != item.id: continue
+			found = true
+			var wanted := _canonical_item(old)
+			var actual := _canonical_item(item)
+			if item.id == changed_id:
+				if item.title != "Legacy tags retained": return "target title was not updated"
+				wanted.erase("title")
+				actual.erase("title")
+				# A real edit stamps updated_at; every other target field must survive.
+				wanted.erase("updated_at")
+				actual.erase("updated_at")
+			if JSON.stringify(wanted, "", true) != JSON.stringify(actual, "", true):
+				return "legacy item changed semantically: " + item.id
+		if not found: return "mutation lost item: " + old.id
+	# Preserve every related record, including comments, rather than projecting fields.
+	for section: String in ["events", "comments", "links", "attachments", "secrets", "type_defs", "type_def_versions"]:
+		if _record_set(before.get(section, [])) != _record_set(after.get(section, [])):
+			return "mutation changed related records: " + section
 	for line: String in FileAccess.get_file_as_string(_path).split("\n"):
+		if line.strip_edges().is_empty(): continue
 		var record: Variant = JSON.parse_string(line)
 		if record is Dictionary and record.get("id") == changed_id and not record.get("tags") is Array:
 			return "real mutation did not canonicalize tags"
@@ -75,3 +93,20 @@ func test_real_master_tags_read_query_and_mutate() -> Variant:
 func test_comma_tags_trim_drop_empty_preserve_order() -> Variant:
 	var item := JSONLParser.parse_line('{"_type":"item","id":"TST-1","type":"chore","status":"open","title":"tags","created_at":"2026-01-01","updated_at":"2026-01-01","tags":" b, ,a,, c "}')
 	return AssertHelpers.eq(item.get("tags"), ["b", "a", "c"], "legacy string normalization")
+
+func _canonical_item(item: Dictionary) -> Dictionary:
+	var result := item.duplicate(true)
+	# The established serializer sorts tag sets and omits empty optional containers.
+	# Retain all other keys and all nested payloads; JSON comparison equalizes numbers.
+	if result.get("tags") is Array: result.tags.sort()
+	for key: String in ["tags", "tool_deps", "unsatisfied_deps", "optimization", "pristine_content", "fields", "extras"]:
+		var value: Variant = result.get(key)
+		if (value is Array or value is Dictionary) and value.is_empty(): result.erase(key)
+	return result
+
+func _record_set(records: Array) -> Array[String]:
+	# Global line order changes on canonical settle; record contents and counts cannot.
+	var result: Array[String] = []
+	for record: Dictionary in records: result.append(JSON.stringify(record, "", true))
+	result.sort()
+	return result
