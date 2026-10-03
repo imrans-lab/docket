@@ -33,7 +33,7 @@ func _init() -> void:
 	if db != null:
 		var tools := ToolRegistry.new()
 		tools.init(TypeRegistryBootstrap.load_shipped_schema(), db, {"poll0": db})
-		var input := {"id": args[2], "project": "poll0"}
+		var input := {"id": "" if args[2] == "<no-item-id>" else args[2], "project": "poll0"}
 		match args[1]:
 			"create": input = {"type": "chore", "title": "row created", "project": "poll0"}
 			"update": input.title = "row updated"

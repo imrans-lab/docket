@@ -51,7 +51,8 @@ func _fixture(count: int) -> String:
 
 func _foreign(action: String, id: String = "", private_cache: bool = false) -> Dictionary:
 	var receipt := ProjectSettings.globalize_path(DIR + "/receipt.json")
-	var args := PackedStringArray(["--headless", "--path", ProjectSettings.globalize_path("res://"), "--script", "res://test/poll_writer.gd", "--", ProjectSettings.globalize_path(dbs[0].get_path()), action, id, receipt, "private" if private_cache else "shared"])
+	# Windows OS.execute drops empty arguments; reserve an invalid ID for transport.
+	var args := PackedStringArray(["--headless", "--path", ProjectSettings.globalize_path("res://"), "--script", "res://test/poll_writer.gd", "--", ProjectSettings.globalize_path(dbs[0].get_path()), action, id if not id.is_empty() else "<no-item-id>", receipt, "private" if private_cache else "shared"])
 	var output: Array = []
 	var code := OS.execute(OS.get_executable_path(), args, output, true)
 	if code != 0: return {"error": "writer exit %d: %s" % [code, output]}
