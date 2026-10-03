@@ -680,7 +680,7 @@ func test_event_unknown_keys_survive_cache_round_trip() -> Variant:
 	file.close()
 	var cache: DocketDB = JSONLCache.rebuild_cache(source_path, source_path + ".cache")
 	if cache == null: return "event cache rebuild failed: " + JSONLCache.last_error
-	# Reproduce rc.12's warm cache: matching fingerprint, no event extras column.
+	# Reproduce a pre-extras warm cache: matching fingerprint, no event extras column.
 	var error: String = cache._exec_checked("ALTER TABLE item_events DROP COLUMN extras_json;")
 	if not error.is_empty(): cache.close(); return "cannot build old-shape cache: " + error
 	var old_columns: Array = cache._exec_select("PRAGMA table_info(item_events);")
