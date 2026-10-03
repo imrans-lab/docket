@@ -4,6 +4,7 @@ class_name AppState
 ## Holds schema, db(s), dct_path. Emits signals on file/data changes.
 ## Supports multiple loaded .dct projects simultaneously.
 
+signal project_opened(path: String)
 signal file_changed
 signal data_changed
 ## Emitted when a .dct could not be opened (e.g. unresolved conflict markers).
@@ -88,6 +89,7 @@ func load_dct(path: String) -> void:
 	_project_dbs[proj_name] = db
 	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
 
+	project_opened.emit(path)
 	if not _holding_file_changed: file_changed.emit()
 
 
@@ -211,6 +213,7 @@ func add_project(path: String) -> String:
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 	_registry_checks.erase(proj_name)
 
+	project_opened.emit(path)
 	if not _holding_file_changed: file_changed.emit()
 	return ""
 
@@ -419,6 +422,7 @@ func create_dct(path: String) -> void:
 	var proj_name := db.get_project_name()
 	_project_dbs[proj_name] = db
 	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
+	project_opened.emit(path)
 	file_changed.emit()
 
 
@@ -443,6 +447,7 @@ func create_and_add_project(path: String) -> void:
 	_project_dbs[proj_name] = new_db
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 	_registry_checks.erase(proj_name)
+	project_opened.emit(path)
 	file_changed.emit()
 
 

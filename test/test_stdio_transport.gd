@@ -107,10 +107,21 @@ try:
         'lease_seconds': 1})['renewed']
     time.sleep(1.2)
     assert not tool('docket_project_heartbeat', {'client': 'tool', 'client_class': 'tool'})['lease']['owner_present']
+    original_deadline = time.monotonic() + 2
     assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',
-        'lease_seconds': 30})['lease']['owner_present']
+        'lease_seconds': 2})['lease']['owner_present']
     tool('docket_project_add', {'mode': 'memory', 'name': 'leased'})
     tool('docket_create', {'project': 'leased', 'type': 'chore', 'title': 'leased spill'})
+    time.sleep(.5)
+    assert time.monotonic() < original_deadline, 'renewal missed original deadline'
+    assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',
+        'lease_seconds': 4})['renewed']
+    time.sleep(max(0, original_deadline - time.monotonic()) + .3)
+    renewed = tool('docket_project_list', {})
+    assert renewed['memory_lease']['owner_present'] and renewed['memory_lease']['holder'] == 'parent', renewed
+    assert any(row['name'] == 'leased' and row['storage_mode'] == 'memory' for row in renewed['projects']), renewed
+    assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',
+        'lease_seconds': 30})['renewed']
     title = 'stdio café 日本語 🦉'
     created = request(p, 'tools/call', 3, {'name': 'docket_create',
         'arguments': {'type': 'chore', 'title': title}})
@@ -149,7 +160,7 @@ try:
     assert not pathlib.Path(str(base / 'scratch.dct') + '.lock').exists(), 'EOF retained lock'
     spill = base / 'scratch-state' / 'sessions' / 'leased.dct'
     assert spill.exists() and 'leased spill' in spill.read_text(), 'headless EOF did not spill privately'
-    print('PASS explicit-owner-heartbeat/expiry/private-spill')
+    print('PASS explicit-owner-heartbeat/renewal/expiry/private-spill')
     print('PASS protocol/unicode/notifications/malformed/EOF-settle/no-http')
 
     p = launch('framing')

@@ -358,6 +358,7 @@ func _build_ui() -> void:
 	_update_project_menu()
 
 	# Listen for project changes to update menu and persist session
+	_state.project_opened.connect(_add_to_recent)
 	_state.file_changed.connect(_on_file_changed)
 	_state.open_item_requested.connect(func(id: String, project: String): _open_item_entry.call_deferred(id, project))
 	_state.open_query_requested.connect(_on_open_query_from_mcp)
@@ -548,10 +549,6 @@ func _on_file_changed() -> void:
 	## Project list changed — update menus and persist session.
 	_update_window_title()
 	_update_project_menu()
-	for db: DocketDB in _state.get_project_dbs().values():
-		if not db is DocketDBMemory:
-			_add_to_recent(db.get_path())
-	_menu_builder.set_recent_files(_recent_files)
 	_save_session()
 
 
@@ -685,7 +682,6 @@ func _on_menu_action(action: String) -> void:
 		var recent_idx := int(action.split(":")[1])
 		if recent_idx >= 0 and recent_idx < _recent_files.size():
 			_state.load_dct(_recent_files[recent_idx])
-			_add_to_recent(_recent_files[recent_idx])
 			_update_window_title()
 			_update_project_menu()
 			_save_session()
@@ -696,7 +692,6 @@ func _on_menu_action(action: String) -> void:
 			var path := _recent_files[recent_idx]
 			if FileAccess.file_exists(path):
 				_state.add_project(path)
-				_add_to_recent(path)
 				_update_window_title()
 				_update_project_menu()
 				_save_session()
@@ -789,7 +784,6 @@ func _on_menu_action(action: String) -> void:
 
 func _on_open_file_selected(path: String) -> void:
 	_state.load_dct(path)
-	_add_to_recent(path)
 	_update_window_title()
 	_update_project_menu()
 	_save_session()
@@ -808,7 +802,6 @@ func _on_new_file_selected(path: String) -> void:
 		_state.create_and_add_project(path)
 	else:
 		_state.create_dct(path)
-	_add_to_recent(path)
 	_update_window_title()
 	_update_project_menu()
 	_save_session()
@@ -1051,7 +1044,6 @@ func _on_open_query_from_mcp(filter: String, label: String) -> void:
 
 func _on_add_project_selected(path: String) -> void:
 	_state.add_project(path)
-	_add_to_recent(path)
 	_update_project_menu()
 	_save_session()
 
@@ -1328,6 +1320,8 @@ func _save_recent_files() -> void:
 
 
 func _add_to_recent(path: String) -> void:
+	if DocketDBMemory.is_memory_path(path):
+		return
 	var abs_path := ProjectSettings.globalize_path(path) if path.begins_with("res://") else path
 	# Remove if already present, then prepend
 	var updated := PackedStringArray()
