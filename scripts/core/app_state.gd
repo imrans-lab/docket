@@ -205,8 +205,8 @@ func add_project(path: String) -> String:
 			else:
 				new_db.set_id_prefix(new_prefix)
 
-	# A project loaded under a name already served replaces it, including as primary.
-	if _project_dbs.get(proj_name) == db and db != null:
+	# The first successful open establishes the primary; replacing it follows suit.
+	if db == null or _project_dbs.get(proj_name) == db:
 		db = new_db
 		dct_path = path
 	_project_dbs[proj_name] = new_db

@@ -107,17 +107,22 @@ try:
         'lease_seconds': 1})['renewed']
     time.sleep(1.2)
     assert not tool('docket_project_heartbeat', {'client': 'tool', 'client_class': 'tool'})['lease']['owner_present']
-    original_deadline = time.monotonic() + 2
+    grant_started = time.monotonic()
     assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',
         'lease_seconds': 2})['lease']['owner_present']
+    # Response time bounds the original expiry above, even for a slow grant.
+    original_deadline = time.monotonic() + 2
     tool('docket_project_add', {'mode': 'memory', 'name': 'leased'})
     tool('docket_create', {'project': 'leased', 'type': 'chore', 'title': 'leased spill'})
     time.sleep(.5)
-    assert time.monotonic() < original_deadline, 'renewal missed original deadline'
+    renewal_started = time.monotonic()
+    assert renewal_started < grant_started + 2, 'renewal may have missed original expiry'
     assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',
         'lease_seconds': 4})['renewed']
     time.sleep(max(0, original_deadline - time.monotonic()) + .3)
+    assert time.monotonic() < renewal_started + 4, 'observation missed renewed lease window'
     renewed = tool('docket_project_list', {})
+    assert original_deadline < time.monotonic() < renewal_started + 4, 'observation outside renewal window'
     assert renewed['memory_lease']['owner_present'] and renewed['memory_lease']['holder'] == 'parent', renewed
     assert any(row['name'] == 'leased' and row['storage_mode'] == 'memory' for row in renewed['projects']), renewed
     assert tool('docket_project_heartbeat', {'client': 'parent', 'client_class': 'owner',

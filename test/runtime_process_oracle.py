@@ -206,9 +206,17 @@ try:
     session_path = pathlib.Path(session['path'])
     assert session_path.parent == private / 'sessions'
     assert json.loads(pathlib.Path(str(session_path) + '.owner').read_text())['pid'] == p.pid
+    assert 'opened.dct' in external_focus(p.pid)[1], 'additional open replaced primary'
     recent_before = (private / 'recent_dockets.json').read_bytes()
     call(p, 'docket_project_close', {'name': session['name']})
     assert (private / 'recent_dockets.json').read_bytes() == recent_before, 'close reordered recents'
+    call(p, 'docket_project_add', {'path': str(session_path)})
+    call(p, 'docket_project_close', {'name': added['name']})
+    assert session_path.name in external_focus(p.pid)[1], 'close failed to promote fallback'
+    call(p, 'docket_project_close', {'name': session['name']})
+    assert external_focus(p.pid)[1] == 'Docket', 'last close left a primary title'
+    call(p, 'docket_project_add', {'path': str(opened_file)})
+    assert 'opened.dct' in external_focus(p.pid)[1], 'reopen from empty failed'
     call(p, 'docket_project_add', {'path': str(session_path)})
     call(p, 'docket_project_add', {'mode': 'memory', 'name': 'private-spill'})
     assert call(p, 'docket_project_list')['memory_lease']['in_process_owner']
