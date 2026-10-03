@@ -99,7 +99,7 @@ func _ready() -> void:
 		Engine.print_to_stdout = true
 		if _stdio.start() != OK:
 			printerr("Docket: could not start stdin reader")
-			get_tree().quit(2)
+			DocketRuntimeState.quit(get_tree(), 2)
 			set_process(false)
 
 	# Cap frame rate to avoid busy-spinning the main loop
@@ -110,6 +110,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	DocketRuntimeState.prepare_shutdown()
 	DocketDBJsonl.settle_projects(_project_dbs, false)
 	MemoryProject.spill_on_exit(_project_dbs)
 	SessionProject.release_all()
@@ -236,7 +237,7 @@ func _process(_delta: float) -> void:
 
 	if stdio:
 		if _stdio.poll(_handler, _post_request):
-			get_tree().quit()
+			DocketRuntimeState.quit(get_tree())
 		return
 	if _server == null or not _server.is_listening():
 		return

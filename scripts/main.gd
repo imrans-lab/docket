@@ -19,17 +19,18 @@ var _http_server: Node
 
 func _ready() -> void:
 	var opts := _parse_args()
+	DocketRuntimeState.stdio = opts.stdio
 
 	# Godot consumes --quiet before exposing cmdline args; inspect its effect.
 	if opts.stdio and (opts.mode not in ["serve", "gui"] or Engine.print_to_stdout or opts.state_dir.is_empty()):
 		printerr("Docket: --stdio requires --quiet and a private absolute --state-dir (add --serve for headless)")
-		get_tree().quit(2)
+		DocketRuntimeState.quit(get_tree(), 2)
 		return
 
 	var state_error := DocketRuntimeState.configure(opts.state_dir, opts.restore_session)
 	if not state_error.is_empty():
 		printerr("Docket: %s" % state_error)
-		get_tree().quit(2)
+		DocketRuntimeState.quit(get_tree(), 2)
 		return
 
 	match opts.mode:

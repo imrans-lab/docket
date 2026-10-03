@@ -145,7 +145,7 @@ func _quit() -> void:
 	_save_current_work_state()
 	_persist_last_query()
 	DocketDBJsonl.settle_projects(_state.get_project_dbs(), false)
-	get_tree().quit()
+	DocketRuntimeState.quit(get_tree())
 
 
 func _on_memory_resolved() -> void:

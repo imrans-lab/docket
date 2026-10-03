@@ -5,6 +5,18 @@ class_name DocketRuntimeState
 
 static var directory: String = ""
 static var restore_session: bool = false
+static var stdio: bool = false
+
+
+static func prepare_shutdown() -> void:
+	# Renderer teardown diagnostics must not follow the final protocol frame.
+	if stdio:
+		Engine.print_to_stdout = false
+
+
+static func quit(tree: SceneTree, exit_code: int = 0) -> void:
+	prepare_shutdown()
+	tree.quit(exit_code)
 
 
 static func configure(path: String, restore: bool) -> String:
