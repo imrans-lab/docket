@@ -15,7 +15,7 @@ func after_each() -> void:
 	DirAccess.remove_absolute(_dir)
 
 func test_real_master_tags_read_query_and_mutate() -> Variant:
-	var original := FileAccess.get_file_as_bytes("res://test/fixtures/minerva_master.dct")
+	var original := FileAccess.get_file_as_bytes("res://test/fixtures/minerva_master.jsonl")
 	var file := FileAccess.open(_path, FileAccess.WRITE)
 	file.store_buffer(original)
 	file.close()
