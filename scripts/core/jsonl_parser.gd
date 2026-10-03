@@ -296,6 +296,11 @@ static func _parse_item(d: Dictionary) -> Dictionary:
 	# Array fields
 	if d.has("tags") and d["tags"] is Array:
 		out["tags"] = d["tags"].duplicate()
+	elif d.get("tags") is String:
+		out["tags"] = []
+		for value: String in d["tags"].split(","):
+			var tag := value.strip_edges()
+			if not tag.is_empty(): out["tags"].append(tag)
 	if d.has("tool_deps") and d["tool_deps"] is Array:
 		out["tool_deps"] = d["tool_deps"].duplicate()
 	if d.has("unsatisfied_deps") and d["unsatisfied_deps"] is Array:

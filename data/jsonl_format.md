@@ -683,3 +683,7 @@ secret `active/rotated:active`, `revoked:terminal`; encrypted note
 schema: Discussion's `resolved` and skill/prompt/KB/policy `archived` states
 remain nonterminal. Terminal outcomes are `unspecified` unless a definition
 explicitly supplies stronger meaning.
+
+Legacy comma-separated item `tags` strings are read as arrays: split on commas,
+trim whitespace, drop empty entries, and retain order. Opening does not rewrite
+the source; a real mutation and settle emits canonical tag arrays.
