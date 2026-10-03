@@ -402,9 +402,9 @@ static func _insert_items(db: DocketDB, items: Array) -> void:
 		if id.is_empty():
 			db._last_sql_error = "invalid canonical record: item with empty id"
 			continue
-		# insert_item() accepts the parsed dict directly.
+		# Canonical strings are decoded already; do not reinterpret literal escapes.
 		# Tags are in item["tags"]; events/links arrays are empty (loaded separately).
-		var err := db.insert_item(id, item)
+		var err := db.insert_item(id, item, true)
 		if not err.is_empty():
 			db._last_sql_error = "canonical item insert failed for %s: %s" % [id, err]
 

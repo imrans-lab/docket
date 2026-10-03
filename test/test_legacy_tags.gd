@@ -37,8 +37,10 @@ func test_real_master_tags_read_query_and_mutate() -> Variant:
 	for id: String in expected:
 		var actual: Array = _db.get_item(id).get("tags", [])
 		var ordered: Array = expected[id].duplicate()
-		ordered.sort() # SQLite tag relation and canonical serializer order alphabetically.
-		if actual != ordered: return "cached tags differ: " + id
+		ordered.sort()
+		var members := actual.duplicate()
+		members.sort() # Cache/getter tags are sets; only parser conversion preserves order.
+		if members != ordered: return "cached tags differ: " + id + " expected=" + JSON.stringify(ordered) + " actual=" + JSON.stringify(members)
 		for tag: String in expected[id]:
 			if tag not in actual: return "missing tag: " + tag
 			var found := false
@@ -76,8 +78,8 @@ func test_real_master_tags_read_query_and_mutate() -> Variant:
 				# A real edit stamps updated_at; every other target field must survive.
 				wanted.erase("updated_at")
 				actual.erase("updated_at")
-			if JSON.stringify(wanted, "", true) != JSON.stringify(actual, "", true):
-				return "legacy item changed semantically: " + item.id
+			if JSON.stringify(wanted, "", true, true) != JSON.stringify(actual, "", true, true):
+				return "legacy item changed semantically: " + item.id + "; " + _field_diff(wanted, actual)
 		if not found: return "mutation lost item: " + old.id
 	# Preserve every related record, including comments, rather than projecting fields.
 	for section: String in ["events", "comments", "links", "attachments", "secrets", "type_defs", "type_def_versions"]:
@@ -94,10 +96,36 @@ func test_comma_tags_trim_drop_empty_preserve_order() -> Variant:
 	var item := JSONLParser.parse_line('{"_type":"item","id":"TST-1","type":"chore","status":"open","title":"tags","created_at":"2026-01-01","updated_at":"2026-01-01","tags":" b, ,a,, c "}')
 	return AssertHelpers.eq(item.get("tags"), ["b", "a", "c"], "legacy string normalization")
 
+func test_canonical_text_escapes_survive_while_user_input_normalizes() -> Variant:
+	var text := "literal \\n and \\t; actual\nnewline\ttab"
+	var item := {"_type":"item", "id":"TXT-1", "type":"skill", "status":"active", "title":"Escapes", "steps":text, "created_at":"2026-01-01", "updated_at":"2026-01-01"}
+	var file := FileAccess.open(_path, FileAccess.WRITE)
+	file.store_string(JSON.stringify({"_type":"meta", "version":"1.0.0", "counter":1, "id_prefix":"TXT"}) + "\n" + JSON.stringify(item) + "\n")
+	file.close()
+	_db = DocketDBJsonl.open_jsonl(_path)
+	if _db == null: return DocketDBJsonl.last_open_error
+	if _db.get_item("TXT-1").get("steps") != text: return "canonical cache changed literal text escapes"
+	var error := _db.update_item_fields_checked("TXT-1", {"title":"Edited"})
+	if not error.is_empty(): return error
+	# Ordinary insertion still accepts escaped user text with the established behavior.
+	item.id = "TXT-2"
+	error = _db.insert_item("TXT-2", item)
+	if not error.is_empty(): return error
+	if _db.get_item("TXT-2").get("steps") != text.replace("\\n", "\n").replace("\\t", "\t"):
+		return "ordinary user input no longer normalizes escaped text"
+	error = _db.flush_checked()
+	if not error.is_empty(): return error
+	_db.close()
+	var parsed := JSONLParser.parse_file(_path)
+	if not str(parsed.get("error", "")).is_empty(): return parsed.error
+	for record: Dictionary in parsed.items:
+		if record.id == "TXT-1": return AssertHelpers.eq(record.get("steps"), text, "unrelated settle preserves canonical escapes")
+	return "canonical text item disappeared"
+
 func _canonical_item(item: Dictionary) -> Dictionary:
 	var result := item.duplicate(true)
 	# The established serializer sorts tag sets and omits empty optional containers.
-	# Retain all other keys and all nested payloads; JSON comparison equalizes numbers.
+	# Retain all other keys and all nested payloads; JSON comparison sorts keys and retains full numeric precision.
 	if result.get("tags") is Array: result.tags.sort()
 	for key: String in ["tags", "tool_deps", "unsatisfied_deps", "optimization", "pristine_content", "fields", "extras"]:
 		var value: Variant = result.get(key)
@@ -107,6 +135,23 @@ func _canonical_item(item: Dictionary) -> Dictionary:
 func _record_set(records: Array) -> Array[String]:
 	# Global line order changes on canonical settle; record contents and counts cannot.
 	var result: Array[String] = []
-	for record: Dictionary in records: result.append(JSON.stringify(record, "", true))
+	for record: Dictionary in records: result.append(JSON.stringify(record, "", true, true))
 	result.sort()
 	return result
+
+func _field_diff(wanted: Dictionary, actual: Dictionary) -> String:
+	# Report complete differing fields, including unknown nested payloads. Never
+	# normalize text escapes or arbitrary falsy values to hide preservation failures.
+	var keys: Array = wanted.keys()
+	for key in actual:
+		if key not in keys: keys.append(key)
+	keys.sort()
+	var differences: PackedStringArray = []
+	for key in keys:
+		if not wanted.has(key):
+			differences.append(str(key) + " added=" + JSON.stringify(actual[key], "", true, true))
+		elif not actual.has(key):
+			differences.append(str(key) + " missing; expected=" + JSON.stringify(wanted[key], "", true, true))
+		elif JSON.stringify(wanted[key], "", true, true) != JSON.stringify(actual[key], "", true, true):
+			differences.append(str(key) + " expected=" + JSON.stringify(wanted[key], "", true, true) + " actual=" + JSON.stringify(actual[key], "", true, true))
+	return "; ".join(differences)

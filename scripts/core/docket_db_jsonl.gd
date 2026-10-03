@@ -902,7 +902,7 @@ static func _rename_over(tmp_path: String, path: String) -> String:
 # Each override: call super (SQLite), then commit durably via _flush_jsonl().
 
 
-func insert_item(id: String, item: Dictionary) -> String:
+func insert_item(id: String, item: Dictionary, canonical_input: bool = false) -> String:
 	var source_error := _mutation_precheck()
 	if not source_error.is_empty(): return source_error
 	var candidate := item.duplicate(true)
@@ -913,7 +913,7 @@ func insert_item(id: String, item: Dictionary) -> String:
 		candidate["type_revision"] = rows[0].current_revision
 	var precheck := _begin_canonical_mutation()
 	if not precheck.is_empty(): return precheck
-	var result := super.insert_item(id, candidate)
+	var result := super.insert_item(id, candidate, canonical_input)
 	return _complete_canonical_mutation(result)
 
 

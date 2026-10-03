@@ -422,7 +422,7 @@ const _ITEM_COLS: Array = [
 ]
 
 
-func insert_item(id: String, item: Dictionary) -> String:
+func insert_item(id: String, item: Dictionary, canonical_input: bool = false) -> String:
 	## Inserts an item into the database. Returns "" on success, error message on failure.
 	# Insert main row
 	if item.has("fields_json") or item.has("extras_json"): return "internal envelope columns are not accepted as item input"
@@ -461,7 +461,9 @@ func insert_item(id: String, item: Dictionary) -> String:
 		if stored_item.has(col):
 			cols.append(col)
 			placeholders.append("?")
-			bindings.append(stored_item[col] if col in ["fields_json", "extras_json"] else _normalize_text(stored_item[col]))
+			# Canonical strings already decoded by JSON must retain literal escapes;
+			# user input still receives MCP text normalization, and containers encode as JSON.
+			bindings.append(stored_item[col] if col in ["fields_json", "extras_json"] or (canonical_input and stored_item[col] is String) else _normalize_text(stored_item[col]))
 	var sql := "INSERT INTO items (%s) VALUES (%s);" % [",".join(cols), ",".join(placeholders)]
 	var err := _exec_checked(sql, bindings)
 	if not err.is_empty():
