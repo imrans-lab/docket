@@ -99,3 +99,54 @@ func test_same_size_rewrite_inside_timestamp_window_changes_next_token() -> Vari
 	# The next check may occur after the 2s window (the shell polls every3s).
 	await get_tree().create_timer(3.1).timeout
 	return A.is_true(shell._get_projects_token() != before, "equal-size racy rewrite survives next3s tick")
+
+
+func _shown_rows() -> Array:
+	var grid := shell._query_grid
+	var rows: Array = []
+	var root := grid._tree.get_root()
+	if root == null: return rows
+	for row in root.get_children():
+		var origin: Dictionary = row.get_metadata(0)
+		rows.append([str(origin.project), str(origin.id), row.get_text(grid._col_fields.find("title")), row.get_text(grid._col_fields.find("status"))])
+	rows.sort()
+	return rows
+
+func _expected_rows() -> Array:
+	var rows: Array = []
+	for project: String in state.get_project_dbs():
+		for item: Dictionary in state.get_db_for_project(project).execute_query({"filter": {"conditions": [{"field": "title", "op": "contains", "value": "row"}]}}):
+			rows.append([project, str(item.id), str(item.title), str(item.status)])
+	rows.sort()
+	return rows
+
+func test_visible_grid_mcp_crud_in_same_and_other_process_queries_once() -> Variant:
+	var error := _fixture(2)
+	if not error.is_empty(): return error
+	shell._query_grid.set_filter(JSON.stringify({"conditions": [{"field": "title", "op": "contains", "value": "row"}]}))
+	var tools := ToolRegistry.new()
+	tools.init(state.schema, state.db, state.get_project_dbs())
+	for foreign in [false, true]:
+		var id := ""
+		for action in ["create", "update", "transition", "delete"]:
+			var before := state.queries
+			for i in 2: shell._on_poll_external_changes()
+			var r = A.eq(state.queries, before, "idle ticks query zero times")
+			if r is String: return r
+			var result: Dictionary
+			if foreign: result = _foreign(action, id)
+			else:
+				var input := {"id": id, "project": "poll0"}
+				match action:
+					"create": input = {"type": "chore", "title": "row created", "project": "poll0"}
+					"update": input.title = "row updated"
+					"transition": input.to = "in_progress"
+				result = tools.call_tool("docket_" + action, input)
+			if result.has("error"): return "%s foreign=%s: %s" % [action, foreign, result.error]
+			if action == "create": id = str(result.id)
+			shell._on_poll_external_changes()
+			r = A.eq(state.queries, before + 1, "%s foreign=%s queries once on next poll" % [action, foreign])
+			if r is String: return r
+			r = A.eq(_shown_rows(), _expected_rows(), "grid equals fresh core query after %s" % action)
+			if r is String: return r
+	return true

@@ -570,6 +570,7 @@ func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): set_process(true)
 	var current_token := _get_projects_token()
 	if current_token == _last_projects_token and not changed_on_disk:
+		_query_grid.refresh_if_changed(false)
 		return
 	_last_projects_token = current_token
 
@@ -581,6 +582,7 @@ func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 
 	var reloaded := _state.reload_stale()
 	if reloaded.is_empty():
+		_query_grid.refresh_if_changed(false)
 		return
 
 	# Hidden results are only marked stale here and re-query when shown.

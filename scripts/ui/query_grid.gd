@@ -1312,14 +1312,15 @@ func _is_hidden() -> bool:
 	return is_inside_tree() and not is_visible_in_tree()
 
 
-func refresh_if_changed() -> void:
+func refresh_if_changed(check_disk: bool = true) -> void:
 	## Runs when the grid becomes visible, and when the shell returns to results
 	## that stayed visible: the rows it holds stand unless a change arrived since
 	## they were queried, in which case the query runs once. A project whose
 	## canonical file changed on disk is first handed to disk_change_found. On
 	## a hidden grid it does nothing; its next showing calls it again.
+	## The shell passes false after checking its strong project source token.
 	if _is_hidden(): return
-	if _changed_on_disk():
+	if check_disk and _changed_on_disk():
 		_handing_off = true
 		if disk_change_found.has_connections(): disk_change_found.emit()
 		else: _state.reload_stale()
