@@ -816,7 +816,7 @@ func _update_window_title() -> void:
 	else:
 		var fname := _state.dct_path.get_file()
 		DisplayServer.window_set_title("Docket — %s" % fname)
-		var reason: String = _state.db.get_write_block_reason()
+		var reason: String = _state.db.get_write_block_reason() if _state.db != null else ""
 		_file_label.text = fname + (" · " + reason if not reason.is_empty() else "")
 
 
