@@ -816,7 +816,7 @@ func _update_window_title() -> void:
 	else:
 		var fname := _state.dct_path.get_file()
 		DisplayServer.window_set_title("Docket — %s" % fname)
-		var reason: String = _state.db.get_write_block_reason() if _state.db is DocketDBJsonl else ""
+		var reason: String = _state.db.get_write_block_reason()
 		_file_label.text = fname + (" · " + reason if not reason.is_empty() else "")
 
 
@@ -829,7 +829,7 @@ func _update_project_menu() -> void:
 		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
 		var stage := str(pdb.get_project_meta().get("stage", ""))
 		names.append(proj_name)
-		var reason: String = pdb.get_write_block_reason() if pdb is DocketDBJsonl else ""
+		var reason: String = pdb.get_write_block_reason()
 		labels.append("%s — %s · stage: %s%s" % [proj_name, SessionProject.mode_of(pdb), stage if not stage.is_empty() else "none", " · " + reason if not reason.is_empty() else ""])
 	_menu_builder.set_project_list(names, labels)
 

@@ -4,11 +4,12 @@ var _dir := "user://test_legacy_tags"
 var _path := "user://test_legacy_tags/master.dct"
 var _db: DocketDBJsonl
 
-func setup() -> void:
+func before_each() -> void:
 	DirAccess.make_dir_recursive_absolute(_dir)
 
-func teardown() -> void:
+func after_each() -> void:
 	if _db != null and _db.is_open(): _db.close()
+	_db = null
 	for suffix: String in ["", ".cache", ".cache-wal", ".cache-shm", ".lock", ".log"]:
 		DirAccess.remove_absolute(_path + suffix)
 	DirAccess.remove_absolute(_dir)
@@ -79,7 +80,7 @@ func test_real_master_tags_read_query_and_mutate() -> Variant:
 				wanted.erase("updated_at")
 				actual.erase("updated_at")
 			if JSON.stringify(wanted, "", true, true) != JSON.stringify(actual, "", true, true):
-				return "legacy item changed semantically: " + item.id + "; " + _field_diff(wanted, actual)
+				return "legacy item changed semantically: " + item.id + "; expected=" + JSON.stringify(wanted, "", true, true) + " actual=" + JSON.stringify(actual, "", true, true)
 		if not found: return "mutation lost item: " + old.id
 	# Preserve every related record, including comments, rather than projecting fields.
 	for section: String in ["events", "comments", "links", "attachments", "secrets", "type_defs", "type_def_versions"]:
@@ -138,20 +139,3 @@ func _record_set(records: Array) -> Array[String]:
 	for record: Dictionary in records: result.append(JSON.stringify(record, "", true, true))
 	result.sort()
 	return result
-
-func _field_diff(wanted: Dictionary, actual: Dictionary) -> String:
-	# Report complete differing fields, including unknown nested payloads. Never
-	# normalize text escapes or arbitrary falsy values to hide preservation failures.
-	var keys: Array = wanted.keys()
-	for key in actual:
-		if key not in keys: keys.append(key)
-	keys.sort()
-	var differences: PackedStringArray = []
-	for key in keys:
-		if not wanted.has(key):
-			differences.append(str(key) + " added=" + JSON.stringify(actual[key], "", true, true))
-		elif not actual.has(key):
-			differences.append(str(key) + " missing; expected=" + JSON.stringify(wanted[key], "", true, true))
-		elif JSON.stringify(wanted[key], "", true, true) != JSON.stringify(actual[key], "", true, true):
-			differences.append(str(key) + " expected=" + JSON.stringify(wanted[key], "", true, true) + " actual=" + JSON.stringify(actual[key], "", true, true))
-	return "; ".join(differences)

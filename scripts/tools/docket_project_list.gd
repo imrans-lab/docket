@@ -24,8 +24,7 @@ func execute(_args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: 
 			"prefix": pdb.get_id_prefix(),
 			"primary": pdb == db,
 		}
-		if pdb is DocketDBJsonl:
-			entry["read_only_reason"] = pdb.get_write_block_reason()
+		entry["read_only_reason"] = pdb.get_write_block_reason()
 		var meta := pdb.get_project_meta()
 		for key in meta:
 			entry[key] = meta[key]

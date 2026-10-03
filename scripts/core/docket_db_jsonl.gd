@@ -39,6 +39,7 @@ var last_write_error: String = ""
 ## Successful cache replacements, including a refused settle recovery.
 var reload_generation: int = 0
 var _write_blocked: bool = false
+var _adopt_write_block_reason: String = ""
 var _allow_initial_write: bool = false
 var _lock_timeout_ms: int = 5000
 ## Test seam for a mutation's durable write, called as (target_path, text) in
@@ -398,21 +399,27 @@ func _adopt(source: DocketDB) -> void:
 	source._db = null
 	source._is_open = false
 	var version := super.get_meta_value("jsonl_version", "1.0.0")
-	last_write_error = "format %s is newer than this Docket; project is read-only" % version if JSONLParser.is_newer_version(version) else ""
-	_write_blocked = not last_write_error.is_empty()
+	if last_write_error == _adopt_write_block_reason: last_write_error = ""
+	_adopt_write_block_reason = "format %s is newer than this Docket; project is read-only" % version if JSONLParser.is_newer_version(version) else ""
+	_write_blocked = not _adopt_write_block_reason.is_empty()
+	if _write_blocked: last_write_error = _adopt_write_block_reason
 	if _write_blocked: return
 	var diagnostics := super.get_meta_value("registry_diagnostics", "")
 	_write_blocked = not diagnostics.is_empty()
-	if _write_blocked: last_write_error = "unresolved type definition data; project is read-only: %s" % diagnostics
+	if _write_blocked:
+		_adopt_write_block_reason = "unresolved type definition data; project is read-only: %s" % diagnostics
+		last_write_error = _adopt_write_block_reason
 	if _uses_sidecar():
 		var tracking_error := JSONLSidecar.install_dirty_tracking(self)
 		if not tracking_error.is_empty():
 			_write_blocked = true
+			_adopt_write_block_reason = tracking_error
 			last_write_error = tracking_error
 
 
 func get_write_block_reason() -> String:
-	return last_write_error if _write_blocked else ""
+	if not _write_blocked: return ""
+	return _adopt_write_block_reason if not _adopt_write_block_reason.is_empty() else last_write_error
 
 
 func get_storage_diagnostics() -> Array:
@@ -422,7 +429,7 @@ func get_storage_diagnostics() -> Array:
 
 
 func _mutation_precheck() -> String:
-	if _write_blocked: return last_write_error
+	if _write_blocked: return get_write_block_reason()
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
 		_write_blocked = true
 		last_write_error = "canonical source is missing; project is read-only"
@@ -431,7 +438,7 @@ func _mutation_precheck() -> String:
 		_write_blocked = true
 		if last_write_error.is_empty(): last_write_error = "canonical source could not be reloaded"
 		return last_write_error
-	return last_write_error if _write_blocked else ""
+	return get_write_block_reason()
 
 
 func _begin_canonical_mutation(write_lock: bool = false) -> String:
@@ -848,7 +855,7 @@ func _fail_flush(message: String) -> String:
 		# SQLite is disposable. Rebuilding it restores the last canonical state so
 		# a failed compound write cannot leak into a later successful flush.
 		reload()
-		last_write_error = message
+		if not _write_blocked: last_write_error = message
 	else:
 		_write_blocked = true
 	return message

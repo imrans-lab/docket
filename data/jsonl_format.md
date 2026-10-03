@@ -685,13 +685,17 @@ remain nonterminal. Terminal outcomes are `unspecified` unless a definition
 explicitly supplies stronger meaning.
 
 Legacy comma-separated item `tags` strings are read as arrays: split on commas,
-trim whitespace, drop empty entries, and retain order. Opening does not rewrite
+trim whitespace, drop empty entries, and retain parsed-record order. Cache queries
+and canonical serialization treat tags as sets. Opening does not rewrite
 the source; a real mutation and settle emits canonical tag arrays.
 
 A well-formed SemVer higher than all supported versions opens quietly for
-read-only display. Unknown record kinds and item extras are skipped in this
+read-only display. Unknown record kinds and extras on every record kind are skipped in this
 view; the canonical file and any sidecar remain untouched. Project menus and
 MCP project lists report the version-specific read-only reason. Unsupported
 older or malformed versions, and unknown kinds in supported versions, are
 refused. Ordinary writes retain the source version; advancing 1.0 to 2.0 still
 requires the explicit approved upgrade workflow.
+
+Collision aliases are session-only metadata. IDs minted under an alias retain
+that prefix after the session ends.

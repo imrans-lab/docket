@@ -51,7 +51,7 @@ static func parse_bytes(bytes: PackedByteArray, path: String) -> Dictionary:
 	# Determine compatibility before interpreting records, even if meta is last.
 	var announced_version := ""
 	for raw: String in bytes.get_string_from_utf8().split("\n"):
-		if raw.strip_edges().is_empty(): continue
+		if not raw.contains("meta"): continue
 		# Compatibility discovery must stay quiet; the main pass diagnoses corruption.
 		var discovery := JSON.new()
 		if discovery.parse(raw) != OK: continue

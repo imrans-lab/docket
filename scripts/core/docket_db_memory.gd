@@ -95,7 +95,7 @@ func reload() -> bool:
 
 
 func _mutation_precheck() -> String:
-	return last_write_error if _write_blocked else ""
+	return get_write_block_reason()
 
 
 func _flush_jsonl() -> String:

@@ -59,6 +59,10 @@ func checkpoint() -> void:
 		_exec("PRAGMA wal_checkpoint(PASSIVE);")
 
 
+func get_write_block_reason() -> String:
+	return ""
+
+
 func is_open() -> bool:
 	return _is_open
 

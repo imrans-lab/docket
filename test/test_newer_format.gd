@@ -86,9 +86,17 @@ func test_supported_unknown_kind_and_invalid_versions_are_refused() -> Variant:
 		_db = DocketDBJsonl.open_jsonl(PATH)
 		if _db != null: return "incorrectly opened unsupported/unknown-kind version " + version
 		if FileAccess.get_file_as_bytes(PATH) != original: return "refusal changed file " + version
+	for version: String in ["0.9.0", "3"]:
+		var original := _write(version, false)
+		_db = DocketDBJsonl.open_jsonl(PATH)
+		if _db != null: return "version-only refusal failed: " + version
+		if FileAccess.get_file_as_bytes(PATH) != original: return "version-only refusal changed bytes"
 	return true
 
 func test_semver_newer_discrimination() -> Variant:
+	var meta_last := ITEM + '\n{"_type":"meta","version":"3.0.0","counter":1,"id_prefix":"FUT"}\n'
+	if not str(JSONLParser.parse_bytes(meta_last.to_utf8_buffer(), PATH).get("read_only_reason", "")).contains("3.0.0"):
+		return "compatibility discovery missed meta at end"
 	for version: String in ["2.0.1", "2.1.0-alpha.1", "3.0.0-beta+build.4", "999999999999999999999.0.0"]:
 		if not JSONLParser.is_newer_version(version): return "valid future SemVer refused: " + version
 	for version: String in ["2.0.0-rc.1", "2.0.0", "1.999.0", "v3.0.0", "3.0.0-00"]:
@@ -118,6 +126,9 @@ func test_reload_from_supported_to_future_prevents_first_write() -> Variant:
 	_write("1.0.0", false)
 	_db = DocketDBJsonl.open_jsonl(PATH)
 	if _db == null: return DocketDBJsonl.last_open_error
+	_db.last_write_error = "reference rewrite failed"
+	if not _db.reload(): return "supported reload failed"
+	if _db.last_write_error != "reference rewrite failed": return "reload erased an unrelated write error"
 	var original := _write("3.0.0")
 	var error := _db.update_item_fields_checked("FUT-0001", {"title":"Refused after external upgrade"})
 	if not error.contains("3.0.0"): return "freshness reload allowed first mutation: " + error
@@ -141,3 +152,19 @@ func test_future_sidecar_is_neither_replayed_nor_retired() -> Variant:
 	_db = null
 	if FileAccess.get_file_as_bytes(PATH) != original: return "future sidecar settle changed canonical"
 	return AssertHelpers.eq(FileAccess.get_file_as_bytes(PATH + ".log"), journal, "future sidecar preserved")
+
+func test_pending_settle_after_external_upgrade_retains_version_reason() -> Variant:
+	_write("1.0.0", false)
+	_db = DocketDBJsonl.open_jsonl(PATH)
+	if _db == null: return DocketDBJsonl.last_open_error
+	var error := _db.update_item_fields_checked("FUT-0001", {"title":"Pending before pull"})
+	if not error.is_empty(): return error
+	var journal := FileAccess.get_file_as_bytes(PATH + ".log")
+	var original := _write("3.0.0")
+	if _db.flush_checked().is_empty(): return "settle overwrote externally upgraded source"
+	if not _db.get_write_block_reason().contains("3.0.0"): return "failed settle recovery lost version reason"
+	if not _db.update_item_fields_checked("FUT-0001", {"title":"Refused"}).contains("3.0.0"): return "next mutation lost version reason"
+	_db.close()
+	_db = null
+	if FileAccess.get_file_as_bytes(PATH + ".log") != journal: return "failed settle changed preexisting sidecar"
+	return AssertHelpers.eq(FileAccess.get_file_as_bytes(PATH), original, "failed settle preserves external future bytes")
