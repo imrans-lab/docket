@@ -78,7 +78,8 @@ def request(p, method, ident, params=None):
 def finish(p):
     p.stdin.close()
     assert p.wait(timeout=10) == 0, 'EOF exit failure'
-    assert p.stdout.read() == b'', 'unexpected protocol output after EOF'
+    # GUI children may print engine teardown text after EOF; only a protocol frame is a defect.
+    assert b'"jsonrpc"' not in p.stdout.read(), 'unexpected protocol output after EOF'
 
 try:
     p = launch('scratch')
