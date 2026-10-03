@@ -99,8 +99,11 @@ godot --headless --path . -- validate --file docket.dct
   enabled once immediately before the reader starts, after loads/migrations.
   Docket diagnostics use stderr; both transports checkpoint after every valid
   request, including notifications. The real-child oracle rejects every
-  non-JSON-RPC line and trailing byte. `test_stdio_transport` executes on Linux
-  and macOS with POSIX pipes; unsupported platforms report SKIP/not-run, not PASS.
+  non-JSON-RPC line and trailing byte. `test_stdio_transport` runs the same three strict scenarios on Linux, macOS
+  and Windows with bounded thread/queue pipe I/O and read/write/run deadlines.
+  Its launcher uses Python tempfile scratch and child-only absolute XDG paths
+  plus private APPDATA/LOCALAPPDATA; Windows uses `python` from setup-python,
+  Linux/macOS use `python3`. Missing Python or child failures fail, never skip.
   Linux deep GUI acceptance (separate from author static gates and the automatic
   cross-platform suite): `xvfb-run -a python3 test/runtime_process_oracle.py
   <absolute Godot binary> <absolute project directory>`. It uses disposable

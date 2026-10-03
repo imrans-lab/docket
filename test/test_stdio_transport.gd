@@ -3,64 +3,149 @@ extends Node
 ## deadlines and isolated XDG paths; it never touches the owner's user data.
 
 const DRIVER := """
-import json, os, pathlib, selectors, signal, subprocess, sys, tempfile, time
-def watchdog_timeout(signum, frame):
-    raise TimeoutError('whole child oracle exceeded 180s')
-signal.signal(signal.SIGALRM, watchdog_timeout)
-signal.alarm(180)
+import json, os, pathlib, queue, subprocess, sys, tempfile, threading, time
 engine, project = sys.argv[1:]
 root = tempfile.TemporaryDirectory(prefix='docket-stdio-')
-base = pathlib.Path(root.name)
+base = pathlib.Path(root.name).resolve()
 env = os.environ.copy()
-for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME'):
+for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'APPDATA', 'LOCALAPPDATA'):
     env[key] = str(base / key)
     pathlib.Path(env[key]).mkdir()
 args = [engine, '--headless', '--quiet', '--path', project, '--', '--serve', '--stdio']
 children = []
+completed = threading.Event()
+
+def diagnose():
+    # Kill all owned children before waiting, then retain actual exit/stderr.
+    for child, err in children:
+        if child.poll() is None:
+            child.kill()
+    for child, err in children:
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print('CHILD reap exceeded 10s', file=sys.stderr, flush=True)
+        if not err.closed:
+            err.flush()
+        with open(err.name, 'rb') as log:
+            log.seek(0, os.SEEK_END)
+            size = log.tell()
+            log.seek(max(0, size - 8192))
+            tail = log.read().decode('utf-8', errors='replace')
+        print('CHILD %s exit=%s stderr(last 8192 bytes):\\n%s' %
+              (pathlib.Path(err.name).stem, child.returncode, tail), file=sys.stderr, flush=True)
+
+def watchdog():
+    if not completed.wait(180):
+        print('whole child oracle exceeded 180s', file=sys.stderr, flush=True)
+        try:
+            diagnose()
+        finally:
+            # A blocked main thread must not keep OS.execute waiting forever.
+            os._exit(1)
+threading.Thread(target=watchdog, daemon=True).start()
 
 def launch(name, extra=()):
     err = open(base / (name + '.stderr'), 'wb')
-    p = subprocess.Popen(args + ['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))] + list(extra),
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, bufsize=0)
-    os.set_blocking(p.stdin.fileno(), False)
+    try:
+        p = subprocess.Popen(args + ['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))] + list(extra),
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, bufsize=0)
+    except BaseException:
+        err.close()
+        raise
     children.append((p, err))
+    # Bounded chunks prevent unsolicited stdout from growing memory forever.
+    p.output_queue = queue.Queue(maxsize=64)
+    p.write_queue = queue.Queue(maxsize=1)
+    p.pending = bytearray()
+    p.output_eof = False
+    p.stop_io = threading.Event()
+    def reader():
+        try:
+            while True:
+                chunk = p.stdout.read(4096)
+                while not p.stop_io.is_set():
+                    try:
+                        p.output_queue.put(chunk, timeout=.1)
+                        break
+                    except queue.Full:
+                        pass
+                if not chunk or p.stop_io.is_set():
+                    return
+        except BaseException as error:
+            while not p.stop_io.is_set():
+                try:
+                    p.output_queue.put(error, timeout=.1)
+                    return
+                except queue.Full:
+                    pass
+    def writer():
+        while not p.stop_io.is_set():
+            try:
+                data, done, errors = p.write_queue.get(timeout=.1)
+            except queue.Empty:
+                continue
+            try:
+                data = memoryview(data)
+                while data:
+                    count = p.stdin.write(data)
+                    assert count and count > 0, 'stdin write made no progress'
+                    data = data[count:]
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                done.set()
+    p.io_threads = [threading.Thread(target=reader, daemon=True), threading.Thread(target=writer, daemon=True)]
+    for worker in p.io_threads:
+        worker.start()
     return p
 
 def write(p, data):
-    data = memoryview(data)
-    selector = selectors.DefaultSelector()
-    selector.register(p.stdin, selectors.EVENT_WRITE)
     deadline = time.monotonic() + 30
+    done, errors = threading.Event(), []
+    p.write_queue.put((data, done, errors), timeout=max(0, deadline - time.monotonic()))
+    assert done.wait(max(0, deadline - time.monotonic())), 'stdin write exceeded 30s'
+    if errors:
+        raise errors[0]
+
+def read_chunk(p, deadline):
+    remaining = deadline - time.monotonic()
+    assert remaining > 0, 'stdout deadline exceeded'
     try:
-        while data:
-            remaining = deadline - time.monotonic()
-            assert remaining > 0 and selector.select(remaining), 'stdin write exceeded 30s'
-            try:
-                count = os.write(p.stdin.fileno(), data)
-            except BlockingIOError:
-                continue
-            assert count > 0, 'stdin write made no progress'
-            data = data[count:]
-    finally:
-        selector.close()
+        chunk = p.output_queue.get(timeout=remaining)
+    except queue.Empty:
+        raise TimeoutError('response not flushed within stdout deadline')
+    if isinstance(chunk, BaseException):
+        raise chunk
+    if not chunk:
+        p.output_eof = True
+    return chunk
+
+def remaining_stdout(p):
+    deadline = time.monotonic() + 5
+    tail = bytearray(p.pending)
+    p.pending.clear()
+    while not p.output_eof:
+        tail.extend(read_chunk(p, deadline))
+        assert len(tail) <= 8 * 1024 * 1024, 'oversized trailing stdout'
+    return bytes(tail)
 
 def send(p, obj):
     write(p, (json.dumps(obj, ensure_ascii=False) + '\\n').encode())
 
-# Every stdout line, including startup and EOF, must be JSON-RPC; trailing
-# bytes are refused by finish/EOF assertions rather than ignored.
+# Active stdout lines must be JSON-RPC. Immediate mutation/partial EOF checks
+# reject every trailing byte; finish retains the engine teardown allowance.
 def receive(p):
-    selector = selectors.DefaultSelector()
-    selector.register(p.stdout, selectors.EVENT_READ)
     deadline = time.monotonic() + 5
-    raw = bytearray()
-    while not raw.endswith(b'\\n'):
-        assert selector.select(max(0, deadline - time.monotonic())), 'response not flushed within 5s'
-        byte = os.read(p.stdout.fileno(), 1)
-        assert byte, 'unexpected stdout EOF'
-        raw.extend(byte)
-        assert len(raw) <= 8 * 1024 * 1024, 'oversized response'
-    selector.close()
+    while b'\\n' not in p.pending:
+        chunk = read_chunk(p, deadline)
+        assert chunk, 'unexpected stdout EOF'
+        p.pending.extend(chunk)
+        assert len(p.pending) <= 8 * 1024 * 1024 + 4096, 'oversized response'
+    newline = p.pending.index(b'\\n') + 1
+    assert newline <= 8 * 1024 * 1024, 'oversized response'
+    raw = bytes(p.pending[:newline])
+    del p.pending[:newline]
     assert raw.endswith(b'\\n'), ('missing response newline', raw)
     value = json.loads(raw)
     assert isinstance(value, dict) and value.get('jsonrpc') == '2.0', raw
@@ -79,7 +164,7 @@ def finish(p):
     p.stdin.close()
     assert p.wait(timeout=10) == 0, 'EOF exit failure'
     # GUI children may print engine teardown text after EOF; only a protocol frame is a defect.
-    assert b'"jsonrpc"' not in p.stdout.read(), 'unexpected protocol output after EOF'
+    assert b'"jsonrpc"' not in remaining_stdout(p), 'unexpected protocol output after EOF'
 
 try:
     p = launch('scratch')
@@ -160,12 +245,12 @@ try:
     reply = receive(p)
     assert reply['id'] == 'eof' and not reply['result'].get('isError'), reply
     assert p.wait(timeout=10) == 0, 'EOF exit failure'
-    assert p.stdout.read() == b'', 'unexpected protocol output after EOF'
-    canonical = (base / 'scratch.dct').read_text()
+    assert remaining_stdout(p) == b'', 'unexpected protocol output after EOF'
+    canonical = (base / 'scratch.dct').read_text(encoding='utf-8')
     assert title in canonical and eof_title in canonical, 'EOF did not settle the immediate write'
     assert not pathlib.Path(str(base / 'scratch.dct') + '.lock').exists(), 'EOF retained lock'
     spill = base / 'scratch-state' / 'sessions' / 'leased.dct'
-    assert spill.exists() and 'leased spill' in spill.read_text(), 'headless EOF did not spill privately'
+    assert spill.exists() and 'leased spill' in spill.read_text(encoding='utf-8'), 'headless EOF did not spill privately'
     print('PASS explicit-owner-heartbeat/renewal/expiry/private-spill')
     print('PASS protocol/unicode/notifications/malformed/EOF-settle/no-http')
 
@@ -182,7 +267,7 @@ try:
     p.stdin.close()
     assert receive(p)['error']['code'] == -32700
     assert p.wait(timeout=10) == 0
-    assert p.stdout.read() == b''
+    assert remaining_stdout(p) == b''
     print('PASS oversized/recovery/backpressure/partial-EOF')
 
     p = launch('empty')
@@ -191,51 +276,33 @@ try:
     for p, err in children:
         err.close()
     for log in base.glob('*.stderr'):
-        assert b'SCRIPT ERROR' not in log.read_bytes(), log.read_text()
+        assert b'SCRIPT ERROR' not in log.read_bytes(), log.read_text(encoding='utf-8', errors='replace')
     print('STDIO REAL PROCESS: 3 scenarios passed, 0 skipped')
 except BaseException:
-    # Preserve the original traceback and report each child's actual failure.
-    # Kill still-running children first so their final stderr is available.
-    for child, err in children:
-        if child.poll() is None:
-            child.kill()
-        child.wait(timeout=10)
-        if not err.closed:
-            err.flush()
-        with open(err.name, 'rb') as log:
-            log.seek(0, os.SEEK_END)
-            size = log.tell()
-            log.seek(max(0, size - 8192))
-            tail = log.read().decode('utf-8', errors='replace')
-        print('CHILD %s exit=%s stderr(last 8192 bytes):\\n%s' %
-              (pathlib.Path(err.name).stem, child.returncode, tail), file=sys.stderr)
+    diagnose()
     raise
 finally:
     for p, err in children:
         if p.poll() is None:
             p.kill()
-            p.wait()
+            p.wait(timeout=10)
+        p.stop_io.set()
+        for worker in p.io_threads:
+            worker.join(timeout=1)
+        p.stdin.close()
+        p.stdout.close()
         err.close()
     root.cleanup()
+    completed.set()
 """
 
 
 func test_real_child_stdio() -> Variant:
-	if OS.get_name() not in ["Linux", "macOS"]:
-		return {"skip": "Real stdio oracle requires POSIX pipes (Linux/macOS); platform not executed"}
-	var temp_dir := "/tmp/docket-stdio-oracle-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()]
-	if DirAccess.make_dir_absolute(temp_dir) != OK:
-		return "Cannot create absolute isolated oracle directory"
-	var script_path := temp_dir.path_join("driver.py")
-	var file := FileAccess.open(script_path, FileAccess.WRITE)
-	if file == null:
-		return "Cannot write isolated stdio oracle"
-	file.store_string(DRIVER)
-	file.close()
+	# setup-python installs `python` on Windows (release.yml uses the same name).
+	# -c avoids a launcher file in Godot user:// or a platform-specific /tmp.
+	var python := "python" if OS.get_name() == "Windows" else "python3"
 	var output: Array = []
-	var code := OS.execute("python3", PackedStringArray([script_path, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
-	DirAccess.remove_absolute(script_path)
-	DirAccess.remove_absolute(temp_dir)
+	var code := OS.execute(python, PackedStringArray(["-c", DRIVER, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
 	var report := "\n".join(PackedStringArray(output))
 	print(report)
 	if code != 0 or not report.contains("3 scenarios passed, 0 skipped"):
