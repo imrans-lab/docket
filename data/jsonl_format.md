@@ -20,6 +20,22 @@ human-readable.
 
 The adjacent SQLite cache is disposable and rebuilt from the `.dct` source.
 
+Opening a clean 1.0 file, starting an idle settle, and polling it leave its
+canonical bytes unchanged. A surviving non-empty `.dct.log` is different:
+opening replays and compacts those pending mutations into the canonical file.
+A normal mutation or explicit settle can also canonicalise record ordering and
+metadata. These are writes; a cache rebuild alone is not a canonical write.
+
+`version` is the required format discriminator. `jsonl_version` is a
+cache-derived alias of that discriminator, not canonical metadata. A legacy
+file may contain the alias; merely loading it preserves those bytes. On an
+actual mutation, explicit settle or surviving-journal compaction, serialization
+omits the alias and keeps `version`. This is canonicalisation, not a format
+upgrade. The cache derives its alias again on rebuild. A removed
+`jsonl_version` field therefore proves that a canonical write occurred; the
+alias omission itself does not explain what triggered that write.
+
+
 ### 1.1 File Extension
 
 - Canonical file: `<project>.dct`
