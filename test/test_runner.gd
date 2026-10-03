@@ -39,6 +39,7 @@ func _ready() -> void:
 		preload("res://test/test_jsonl_serializer.gd"),
 		preload("res://test/test_jsonl_parser.gd"),
 		preload("res://test/test_legacy_tags.gd"),
+		preload("res://test/test_newer_format.gd"),
 		preload("res://test/test_jsonl_migration.gd"),
 		preload("res://test/test_jsonl_cache.gd"),
 		preload("res://test/test_docket_db_jsonl.gd"),

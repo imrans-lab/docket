@@ -123,7 +123,7 @@ static func _read_source(jsonl_path: String, cache_path: String) -> Dictionary:
 		return {}
 	# Same refusal rule as the canonical: a sidecar that cannot be replayed
 	# faithfully aborts before the cache is touched.
-	var replay_error := JSONLSidecar.replay_into(parsed, jsonl_path, canonical_sha, sidecar_bytes)
+	var replay_error := "" if not str(parsed.get("read_only_reason", "")).is_empty() else JSONLSidecar.replay_into(parsed, jsonl_path, canonical_sha, sidecar_bytes)
 	if not replay_error.is_empty():
 		last_error = replay_error
 		push_error("JSONLCache: %s" % replay_error)
@@ -315,10 +315,10 @@ static func cache_path_for(jsonl_path: String) -> String:
 	return jsonl_path + ".cache"
 
 static func cache_path_for_version(jsonl_path: String, version: String) -> String:
-	return jsonl_path + (".v2.cache" if version == "2.0.0" else ".cache")
+	return jsonl_path + (".v2.cache" if version == "2.0.0" else (".future.cache" if JSONLParser.is_newer_version(version) else ".cache"))
 
 static func delete_cache_family(jsonl_path: String) -> String:
-	for base in [jsonl_path + ".cache", jsonl_path + ".v2.cache"]:
+	for base in [jsonl_path + ".cache", jsonl_path + ".v2.cache", jsonl_path + ".future.cache"]:
 		var error := _delete_cache_files(base)
 		if not error.is_empty(): return error
 	return ""

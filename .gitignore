@@ -41,6 +41,9 @@ export_presets_local.cfg
 *.dct.cache
 *.dct.cache-shm
 *.dct.cache-wal
+*.dct.future.cache
+*.dct.future.cache-shm
+*.dct.future.cache-wal
 *.dct-shm
 *.dct-wal
 *.dct.lock

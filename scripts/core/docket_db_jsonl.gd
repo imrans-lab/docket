@@ -121,7 +121,7 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 	# the cache; compact it now. On failure the records stay journaled and
 	# visible, and the next settle retries. While another process holds the
 	# lock it is writing this sidecar, so it is replayed but left in place.
-	if JSONLSidecar.has_content(JSONLSidecar.path_for(path)) and not FileLock.held_by_other(path):
+	if not wrapper._write_blocked and JSONLSidecar.has_content(JSONLSidecar.path_for(path)) and not FileLock.held_by_other(path):
 		var compact_error := wrapper._settle_canonical()
 		if not compact_error.is_empty():
 			push_warning("DocketDBJsonl: sidecar for %s not compacted: %s" % [path, compact_error])
@@ -394,6 +394,10 @@ func _adopt(source: DocketDB) -> void:
 	_is_open = true
 	source._db = null
 	source._is_open = false
+	var version := super.get_meta_value("jsonl_version", "1.0.0")
+	last_write_error = "format %s is newer than this Docket; project is read-only" % version if JSONLParser.is_newer_version(version) else ""
+	_write_blocked = not last_write_error.is_empty()
+	if _write_blocked: return
 	var diagnostics := super.get_meta_value("registry_diagnostics", "")
 	_write_blocked = not diagnostics.is_empty()
 	if _write_blocked: last_write_error = "unresolved type definition data; project is read-only: %s" % diagnostics
@@ -402,6 +406,10 @@ func _adopt(source: DocketDB) -> void:
 		if not tracking_error.is_empty():
 			_write_blocked = true
 			last_write_error = tracking_error
+
+
+func get_write_block_reason() -> String:
+	return last_write_error if _write_blocked else ""
 
 
 func get_storage_diagnostics() -> Array:
@@ -420,7 +428,7 @@ func _mutation_precheck() -> String:
 		_write_blocked = true
 		if last_write_error.is_empty(): last_write_error = "canonical source could not be reloaded"
 		return last_write_error
-	return ""
+	return last_write_error if _write_blocked else ""
 
 
 func _begin_canonical_mutation(write_lock: bool = false) -> String:

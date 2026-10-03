@@ -3,7 +3,7 @@ class_name JSONLParser
 ## Reads a .dct.jsonl file and produces structured in-memory dictionaries.
 ## Implements the supported Docket JSONL 1.0.0 and 2.0.0 contracts.
 
-# Unknown record kinds are refused because this writer cannot preserve them.
+# Unknown record kinds are refused in writable formats because they cannot be reproduced.
 const KNOWN_TYPES := [
 	"meta", "item", "event", "comment", "link",
 	"attachment", "secret", "secret_version", "saved_query",
@@ -48,6 +48,14 @@ static func parse_bytes(bytes: PackedByteArray, path: String) -> Dictionary:
 
 	var result := _empty_result()
 	var line_number := 0
+	# Determine compatibility before interpreting records, even if meta is last.
+	var announced_version := ""
+	for raw: String in bytes.get_string_from_utf8().split("\n"):
+		var candidate: Variant = JSON.parse_string(raw)
+		if candidate is Dictionary and candidate.get("_type") == "meta":
+			announced_version = str(candidate.get("version", ""))
+	var newer := is_newer_version(announced_version)
+	result["read_only_reason"] = "format %s is newer than this Docket; project is read-only" % announced_version if newer else ""
 
 	for raw_line: String in bytes.get_string_from_utf8().split("\n"):
 		line_number += 1
@@ -88,11 +96,7 @@ static func parse_bytes(bytes: PackedByteArray, path: String) -> Dictionary:
 
 		var line_type: String = str(type_val)
 		if line_type not in KNOWN_TYPES:
-			# Fatal, despite looking like forward compatibility. The serializer
-			# emits only known types, so a line this build cannot reproduce is a
-			# line the next flush deletes. Tolerating it was destructive, not
-			# lenient. A genuinely newer format must announce itself with a
-			# higher meta.version, which is refused separately and clearly.
+			if newer: continue
 			return _corrupt(path, line_number,
 				"unknown record type '%s' — written by a newer Docket?" % line_type, line)
 
@@ -143,10 +147,11 @@ static func parse_bytes(bytes: PackedByteArray, path: String) -> Dictionary:
 			if record.is_empty():
 				return _corrupt(path, line_number,
 					"%s record is missing required fields" % line_type, line)
+			if newer: record.erase("extras")
 			result[bucket].append(record)
 
 	var version := str(result.meta.get("version", ""))
-	if version not in SUPPORTED_VERSIONS:
+	if version not in SUPPORTED_VERSIONS and not newer:
 		return _corrupt(path, 0, "unsupported format version '%s'" % version, "")
 	var registry_error := _validate_registry_records(result)
 	if not registry_error.is_empty():
@@ -156,6 +161,27 @@ static func parse_bytes(bytes: PackedByteArray, path: String) -> Dictionary:
 		return _corrupt(path, 0, dependency_error, "")
 	result["registry_diagnostics"] = _item_registry_diagnostics(result)
 	return result
+
+
+static func is_newer_version(version: String) -> bool:
+	# Strict SemVer, including numeric prerelease identifiers without leading zeros.
+	var pattern := RegEx.new()
+	pattern.compile("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$")
+	var matched := pattern.search(version)
+	if matched == null: return false
+	for identifier: String in matched.get_string(4).split("."):
+		if identifier.is_valid_int() and identifier.length() > 1 and identifier.begins_with("0"): return false
+	for supported: String in SUPPORTED_VERSIONS:
+		var known := pattern.search(supported)
+		var greater := false
+		for component in range(1, 4):
+			var left := matched.get_string(component)
+			var right := known.get_string(component)
+			if left == right: continue
+			greater = left.length() > right.length() or (left.length() == right.length() and left > right)
+			break
+		if not greater: return false
+	return true
 
 
 static func parse_line(json_text: String) -> Dictionary:
