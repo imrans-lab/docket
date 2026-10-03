@@ -3,6 +3,9 @@ class_name DocketHttpServer
 ## TCPServer-based HTTP server for MCP Streamable HTTP.
 ## Supports multiple .dct files loaded simultaneously.
 
+var stdio: bool = false
+var _stdio: DocketStdioTransport
+
 var port: int = 3010
 var dct_path: String = "docket.dct"
 var dct_paths: Array = []  # Multiple --file paths
@@ -24,12 +27,15 @@ const LEASE_CHECK_INTERVAL_MS := 5000
 
 
 func _ready() -> void:
-	_server = TCPServer.new()
-	var err := _server.listen(port, "127.0.0.1")
-	if err != OK:
-		push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
-		return
-	SessionProject.set_endpoint(port)
+	if stdio:
+		Engine.print_to_stdout = false
+	if not stdio:
+		_server = TCPServer.new()
+		var err := _server.listen(port, "127.0.0.1")
+		if err != OK:
+			push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
+			return
+		SessionProject.set_endpoint(port)
 
 	if external_state != null:
 		# GUI mode — track AppState, stay in sync on file changes
@@ -90,8 +96,15 @@ func _ready() -> void:
 	_handler = McpHandler.new()
 	_handler.init_with_registry(_registry)
 
+	if stdio:
+		_stdio = DocketStdioTransport.new()
+		if _stdio.start() != OK:
+			printerr("Docket: could not start stdin reader")
+			get_tree().quit(2)
+			set_process(false)
+
 	# Cap frame rate to avoid busy-spinning the main loop
-	if DisplayServer.get_name() == "headless":
+	if DisplayServer.get_name() == "headless" and not stdio:
 		Engine.max_fps = 1
 	else:
 		Engine.max_fps = 30
@@ -212,12 +225,18 @@ func _process(_delta: float) -> void:
 		external_state.settle_projects()
 	else:
 		DocketDBJsonl.settle_projects(_project_dbs, true)
-	if _server == null or not _server.is_listening():
+	if _registry == null:
 		return
-
 	if Time.get_ticks_msec() >= _next_lease_check_msec:
 		_next_lease_check_msec = Time.get_ticks_msec() + LEASE_CHECK_INTERVAL_MS
 		_registry.enforce_memory_lease()
+
+	if stdio:
+		if _stdio.poll(_handler):
+			get_tree().quit()
+		return
+	if _server == null or not _server.is_listening():
+		return
 
 	# Accept new connections
 	while _server.is_connection_available():

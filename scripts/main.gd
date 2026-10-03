@@ -20,6 +20,11 @@ var _http_server: Node
 func _ready() -> void:
 	var opts := _parse_args()
 
+	if opts.stdio and (opts.mode != "serve" or DisplayServer.get_name() != "headless" or "--quiet" not in OS.get_cmdline_args()):
+		printerr("Docket: --stdio requires --headless --quiet and --serve")
+		get_tree().quit(2)
+		return
+
 	match opts.mode:
 		"help":
 			_print_help()
@@ -53,7 +58,7 @@ func _parse_args() -> Dictionary:
 
 
 func _parse_arg_values(args: Array) -> Dictionary:
-	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": ""}
+	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false}
 
 	var i := 0
 	while i < args.size():
@@ -62,6 +67,8 @@ func _parse_arg_values(args: Array) -> Dictionary:
 				opts.mode = "help"
 			"--serve", "serve":
 				opts.mode = "serve"
+			"--stdio":
+				opts.stdio = true
 			"--build-info":
 				opts.mode = "build_info"
 			"--test", "test":
@@ -148,6 +155,7 @@ func _print_help() -> void:
 	print("  --file <path.dct>   Data file to open (repeatable for multi-project)")
 	print("  --query <path.dcq>  Load a .dcq query file on startup")
 	print("  --serve             Run as headless MCP server (no GUI)")
+	print("  --stdio             Use newline JSON-RPC (requires --headless --quiet --serve)")
 	print("  --port <number>     MCP server port (default: 3010)")
 	print("  --build-info        Print embedded build identity and exit")
 	print("  --test              Run tests and exit")
@@ -187,11 +195,14 @@ func _run_tests() -> void:
 func _start_server(opts: Dictionary) -> void:
 	var ServerScript = load("res://scripts/mcp/http_server.gd")
 	_http_server = ServerScript.new()
+	_http_server.stdio = opts.stdio
 	_http_server.port = opts.port
 	_http_server.dct_path = opts.file
 	_http_server.dct_paths = opts.get("files", [opts.file])
 	add_child(_http_server)
 	var file_list := ", ".join(PackedStringArray(opts.get("files", [opts.file])))
+	if opts.stdio:
+		return
 	print("Docket MCP server listening on 127.0.0.1:%d — files: %s" % [opts.port, file_list])
 
 

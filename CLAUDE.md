@@ -17,6 +17,9 @@ godot --headless --path . -- test
 # Start MCP server
 godot --headless --path . -- serve --port 3010
 
+# Child-process MCP transport (close stdin for a clean, settled exit)
+godot --headless --quiet --path . -- --serve --stdio --file scratch.dct
+
 # Launch GUI (default)
 godot --path .
 
@@ -62,7 +65,11 @@ godot --headless --path . -- validate --file docket.dct
 - **Type source of truth:** each project owns immutable definition revisions in
   JSONL 2.0. `data/schema.json` remains the compatibility source for legacy
   files and the input for protected built-in starter definitions.
-- **MCP transport:** HTTP server on 127.0.0.1:3010, JSON-RPC 2.0 over POST `/mcp`
+- **MCP transport:** HTTP server on 127.0.0.1:3010, JSON-RPC 2.0 over POST `/mcp`;
+  `--headless --quiet --serve --stdio` uses newline JSON-RPC without an HTTP listener.
+  Frames are UTF-8, limited to 8 MiB; oversized/incomplete frames return parse
+  errors. Close stdin to drain replies and settle projects. Use an isolated
+  absolute XDG profile for child tests; current session restoration is retained.
 - **MCP tools:** the authoritative tool registry is
   `scripts/tools/tool_registry.gd`; do not maintain a second hardcoded list here
 - **Vault encryption:** handle-based vault entries use AES-256-CBC with

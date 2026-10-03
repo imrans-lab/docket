@@ -93,7 +93,7 @@ static func migrate_to_jsonl(sqlite_path: String) -> Dictionary:
 		result["error"] = "not a SQLite file: %s" % sqlite_path
 		return result
 
-	print("JSONLMigration: migrating %s from SQLite to JSONL..." % sqlite_path)
+	printerr("JSONLMigration: migrating %s from SQLite to JSONL..." % sqlite_path)
 
 	# Step 2: Open via DocketDB.
 	var db := DocketDB.new()
@@ -165,9 +165,9 @@ static func migrate_to_jsonl(sqlite_path: String) -> Dictionary:
 		for p: String in [sqlite_path + suffix, backup_path + suffix]:
 			if FileAccess.file_exists(p):
 				DirAccess.remove_absolute(p)
-				print("JSONLMigration: removed WAL artifact %s" % p)
+				printerr("JSONLMigration: removed WAL artifact %s" % p)
 
 	result["success"] = true
 	result["item_count"] = item_count
-	print("JSONLMigration: migration complete — %d items, backup at %s" % [item_count, backup_path])
+	printerr("JSONLMigration: migration complete — %d items, backup at %s" % [item_count, backup_path])
 	return result
