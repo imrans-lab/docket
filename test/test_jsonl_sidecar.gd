@@ -320,3 +320,50 @@ func _close_all(state: AppState, result: Variant) -> Variant:
 	for name in state.get_project_dbs().keys():
 		state.remove_project(str(name))
 	return result
+
+
+func test_later_tick_refused_settle_notifies_and_refreshes_rebuilt_rows_once() -> Variant:
+	var fixture := preload("res://test/test_poll_freshness.gd").new()
+	add_child(fixture)
+	fixture.setup()
+	var error: String = fixture._fixture(2)
+	var outcome: Variant = error if not error.is_empty() else true
+	if outcome == true:
+		outcome = _later_tick_refusal(fixture)
+	fixture.teardown()
+	remove_child(fixture)
+	fixture.free()
+	return outcome
+
+func _later_tick_refusal(fixture: Node) -> Variant:
+	var db: DocketDBJsonl = fixture.dbs[0]
+	var registry: TypeRegistry = fixture.state.get_type_registry("poll0")
+	var item := registry.create_item({"type": "chore", "title": "row original"}, "tester")
+	if item.has("error"): return item.error
+	var error := db.flush_checked()
+	if not error.is_empty(): return error
+	var canonical := FileAccess.get_file_as_string(db.get_path())
+	error = db.update_item_fields_checked(str(item.id), {"title": "row pending"})
+	if not error.is_empty(): return error
+	fixture.shell._query_grid.refresh()
+	error = db.settle_in_background()
+	if not error.is_empty() or not db.is_settling(): return "background job did not start: %s" % error
+	# Worker completion is distinct from its later main-thread commit. An
+	# external replacement makes that commit refuse and reload real files.
+	db._settle_job.wait()
+	var file := FileAccess.open(db.get_path(), FileAccess.WRITE)
+	file.store_string(canonical.replace("row original", "row rebuilt"))
+	file.close()
+	DirAccess.remove_absolute(db.get_path() + ".log")
+	var signals: Array = []
+	fixture.state.data_changed.connect(func() -> void: signals.append("changed"))
+	var queries: int = fixture.state.queries
+	fixture.shell._process(0.0)
+	var r = A.is_true(not db.last_write_error.is_empty() and signals.size() == 1 and fixture.state.queries == queries + 1, "later refused commit emits once and queries once (%s)" % db.last_write_error)
+	if r is String: return r
+	r = A.eq(fixture._shown_rows(), fixture._expected_rows(), "visible rows equal rebuilt core query")
+	if r is String: return r
+	r = A.eq(str(db.get_item(str(item.id)).title), "row rebuilt", "rebuilt external title is shown")
+	if r is String: return r
+	fixture.shell._on_poll_external_changes()
+	return A.is_true(signals.size() == 1 and fixture.state.queries == queries + 1, "next idle tick neither signals nor queries again")

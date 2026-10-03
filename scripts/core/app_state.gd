@@ -698,6 +698,19 @@ func _replace_project_predicates(node: Variant, project_name: String) -> Diction
 	return {"value": replaced_dict}
 
 
+func settle_projects() -> Array:
+	## A later-tick refusal can rebuild a cache after Save already returned.
+	## Publish one change for the whole tick, only if rows were reloaded.
+	var reloaded := DocketDBJsonl.settle_projects(_project_dbs, true)
+	for project in reloaded:
+		var registry: TypeRegistry = _type_registries[project]
+		var error := registry.reload()
+		if error.is_empty(): registry_diagnostics.erase(project)
+		else: registry_diagnostics[project] = error
+	if not reloaded.is_empty(): data_changed.emit()
+	return reloaded
+
+
 func reload_stale() -> Array:
 	## Reload any JSONL-backed project whose file changed on disk (git pull,
 	## another Docket instance, the MCP server). Returns names reloaded.

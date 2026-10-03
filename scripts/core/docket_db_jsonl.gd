@@ -34,6 +34,8 @@ class_name DocketDBJsonl
 
 var _jsonl_path: String
 var last_write_error: String = ""
+## Successful cache replacements, including a refused settle recovery.
+var reload_generation: int = 0
 var _write_blocked: bool = false
 var _allow_initial_write: bool = false
 var _lock_timeout_ms: int = 5000
@@ -259,6 +261,7 @@ func reload() -> bool:
 		return false
 
 	_adopt(fresh)
+	reload_generation += 1
 	last_open_error = ""
 	return true
 
@@ -352,15 +355,19 @@ func settle_if_idle(now_ms: int) -> String:
 	return error
 
 
-static func settle_projects(project_dbs: Dictionary, idle_only: bool) -> void:
+static func settle_projects(project_dbs: Dictionary, idle_only: bool) -> Array:
 	## Debounce tick (idle_only) and quit hook for a project map. On quit every
 	## project with pending appends starts formatting first, so the workers run
 	## in parallel; then each is waited for and committed, and anything
 	## appended meanwhile settles synchronously. Quit returns only after that.
+	var reloaded: Array = []
+	var generations := {}
 	var now_ms := Time.get_ticks_msec()
 	var jsonl_dbs := {}
 	for project_name in project_dbs:
 		if project_dbs[project_name] is DocketDBJsonl: jsonl_dbs[project_name] = project_dbs[project_name]
+	for project_name in jsonl_dbs:
+		generations[project_name] = jsonl_dbs[project_name].reload_generation
 	if not idle_only:
 		for project_name in jsonl_dbs:
 			var jsonl_db: DocketDBJsonl = jsonl_dbs[project_name]
@@ -371,6 +378,8 @@ static func settle_projects(project_dbs: Dictionary, idle_only: bool) -> void:
 		var jsonl_db: DocketDBJsonl = jsonl_dbs[project_name]
 		var error := jsonl_db.settle_if_idle(now_ms) if idle_only else jsonl_db.settle_if_pending()
 		if not error.is_empty(): push_warning("DocketDBJsonl: settle of %s deferred: %s" % [project_name, error])
+		if jsonl_db.reload_generation != generations[project_name]: reloaded.append(project_name)
+	return reloaded
 
 
 func _uses_sidecar() -> bool:

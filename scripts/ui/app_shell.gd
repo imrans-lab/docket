@@ -107,7 +107,7 @@ func _process(_delta: float) -> void:
 	## Reads each background settle's next snapshot slice, and commits it on
 	## the first frame after its worker finishes, so the canonical is on disk
 	## for a git add right after Save; stops once nothing is in flight.
-	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
+	_state.settle_projects()
 	for pdb in _state.get_project_dbs().values():
 		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): return
 	set_process(false)
@@ -564,7 +564,7 @@ func _on_load_failed(path: String, reason: String) -> void:
 func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 	## Stable JSONL tokens reuse the canonical's verified hash and include the
 	## unsettled sidecar. A racy timestamp or foreign lock forces a full hash.
-	DocketDBJsonl.settle_projects(_state.get_project_dbs(), true)
+	_state.settle_projects()
 	# A debounce settle this tick started reads its slices on every frame.
 	for pdb in _state.get_project_dbs().values():
 		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): set_process(true)
