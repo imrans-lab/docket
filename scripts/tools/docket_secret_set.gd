@@ -58,30 +58,34 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 			+ "Choose a different handle, or edit the item directly to change its secret."
 		)}
 
-	# Load vault password
-	var password := UserPrefs.load_vault_password()
-	if password.is_empty():
-		var hint := UserPrefs.load_vault_password_hint()
-		var hint_msg := " Hint: %s" % hint if not hint.is_empty() else ""
-		return {"error": "Vault password not configured. Set it in Preferences first.%s" % hint_msg}
-
-	# Get or create vault salt
 	var salt: PackedByteArray
 	var key: PackedByteArray
-
-	if db.has_vault():
+	if DocketRuntimeState.hosted:
+		key = VaultKeySession.key_for(db)
+		if key.is_empty():
+			return {"error":"Hosted vault is locked or unavailable. Unlock this opening through the host panel."}
 		salt = db.get_vault_salt()
-		key = VaultCrypto.derive_key(password, salt, db.get_vault_iterations())
-		if not db.verify_vault(key):
-			AuditLog.record(db.get_path(), AuditLog.UNLOCK_FAILED, handle, false, "mcp",
-				"vault password did not verify")
-			return {"error": "Vault password does not match. Check Preferences."}
 	else:
-		# First secret — initialize vault
-		salt = VaultCrypto.generate_salt()
-		key = VaultCrypto.derive_key(password, salt, VaultCrypto.PBKDF2_ITERATIONS)
-		db.init_vault(key, salt, VaultCrypto.PBKDF2_ITERATIONS)
-
+		var password := UserPrefs.load_vault_password()
+		if password.is_empty():
+			var hint := UserPrefs.load_vault_password_hint()
+			var hint_msg := " Hint: %s" % hint if not hint.is_empty() else ""
+			return {"error": "Vault password not configured. Set it in Preferences first.%s" % hint_msg}
+	
+		# Get or create vault salt
+	
+		if db.has_vault():
+			salt = db.get_vault_salt()
+			key = VaultCrypto.derive_key(password, salt, db.get_vault_iterations())
+			if not db.verify_vault(key):
+				AuditLog.record(db.get_path(), AuditLog.UNLOCK_FAILED, handle, false, "mcp",
+					"vault password did not verify")
+				return {"error": "Vault password does not match. Check Preferences."}
+		else:
+			# First secret — initialize vault
+			salt = VaultCrypto.generate_salt()
+			key = VaultCrypto.derive_key(password, salt, VaultCrypto.PBKDF2_ITERATIONS)
+			db.init_vault(key, salt, VaultCrypto.PBKDF2_ITERATIONS)
 	var is_update := not db.get_secret_raw(handle).is_empty()
 
 	# Replacing a value archives the old one. The GUI has always done this

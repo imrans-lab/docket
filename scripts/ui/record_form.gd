@@ -817,6 +817,7 @@ func _build_ui() -> void:
 	_secret_2fa_input.placeholder_text = "Secondary password"
 	dialog_vbox.add_child(_secret_2fa_input)
 	_secret_2fa_dialog.add_child(dialog_vbox)
+	add_child(_secret_2fa_dialog)
 
 	_hide_all_optional_fields()
 
@@ -1981,7 +1982,12 @@ func _show_transition_error(msg: String) -> void:
 # -- Secret / Encrypted Note helpers ----------------------------------------
 
 func _derive_vault_key(db: DocketDB) -> PackedByteArray:
-	## Derive vault key from stored password. Returns empty on failure.
+	## Hosted consumers share the exact live opening's verified memory key.
+	if DocketRuntimeState.hosted:
+		var key := VaultKeySession.key_for(db)
+		if key.is_empty():
+			_show_vault_error("Hosted vault is locked or unavailable. Unlock this opening through the host panel.")
+		return key
 	var password := UserPrefs.load_vault_password()
 	if password.is_empty():
 		return PackedByteArray()
@@ -1995,7 +2001,9 @@ func _derive_vault_key(db: DocketDB) -> PackedByteArray:
 
 
 func _ensure_vault(db: DocketDB) -> PackedByteArray:
-	## Get or initialize vault key. Returns empty on failure.
+	## Ordinary standalone mode may initialize; hosted mode must never do so.
+	if DocketRuntimeState.hosted:
+		return _derive_vault_key(db)
 	var password := UserPrefs.load_vault_password()
 	if password.is_empty():
 		_show_vault_error("Vault password not set. Go to Preferences first.")
@@ -2026,7 +2034,7 @@ func _load_secret_value(item_db: DocketDB) -> void:
 	if key.is_empty():
 		_secret_value_edit.text = ""
 		_secret_value_decrypted = ""
-		if not UserPrefs.load_vault_password().is_empty():
+		if not DocketRuntimeState.hosted and not UserPrefs.load_vault_password().is_empty():
 			_show_vault_error("Vault password mismatch or no vault.")
 		return
 
@@ -2073,6 +2081,7 @@ func _load_secret_value(item_db: DocketDB) -> void:
 
 func _load_encrypted_notes(item_db: DocketDB, handle: String) -> void:
 	## Decrypt and display encrypted notes.
+	_secret_vault_error_label.visible = false
 	var key := _derive_vault_key(item_db)
 	if key.is_empty():
 		_encrypted_notes_edit.text = ""
@@ -2331,8 +2340,6 @@ func _save_encrypted_notes(db: DocketDB, item_id: String, handle_suffix: String)
 func _prompt_secondary_password() -> String:
 	## Show a blocking dialog for secondary password input. Returns empty on cancel.
 	_secret_2fa_input.text = ""
-	if not _secret_2fa_dialog.is_inside_tree():
-		add_child(_secret_2fa_dialog)
 	_secret_2fa_dialog.popup_centered(Vector2i(300, 150))
 	var result: Array = await _wait_for_2fa_dialog()
 	if result[0]:
@@ -2352,6 +2359,10 @@ func _wait_for_2fa_dialog() -> Array:
 	_secret_2fa_dialog.canceled.connect(on_cancel, CONNECT_ONE_SHOT)
 	while not state.done:
 		await get_tree().process_frame
+	if _secret_2fa_dialog.confirmed.is_connected(on_confirm):
+		_secret_2fa_dialog.confirmed.disconnect(on_confirm)
+	if _secret_2fa_dialog.canceled.is_connected(on_cancel):
+		_secret_2fa_dialog.canceled.disconnect(on_cancel)
 	return [state.confirmed]
 
 

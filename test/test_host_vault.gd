@@ -215,6 +215,9 @@ finally:
 """
 
 func test_actual_child_vault_contract() -> Variant:
+	return run_actual_child(DRIVER)
+
+func run_actual_child(scenario_driver: String) -> Variant:
 	var driver := StdioFixture.DRIVER.replace("\r\n", "\n")
 	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
 	if helpers == driver: return "stdio driver slice marker not found"
@@ -248,13 +251,13 @@ def diagnose():
 	var unsafe_reporter := helpers.get_slice("def diagnose():", 1).get_slice("def watchdog():", 0)
 	helpers = helpers.replace("def diagnose():" + unsafe_reporter, "")
 	# Install before fixture startup; diagnostics identify actual composed lines.
-	var source := helpers + DRIVER
+	var source := helpers + scenario_driver
 	var prefix := "import sys\nSOURCE = " + JSON.stringify(source) + "\n" + diagnostic
 	var output: Array = []
 	var python := "python" if OS.get_name() == "Windows" else "python3"
 	# Unix captured OS.execute wraps arguments in shell double quotes without
 	# escaping their contents. Encode the code, including SOURCE's JSON quotes.
-	var encoded := Marshalls.raw_to_base64((prefix + helpers + DRIVER).to_utf8_buffer())
+	var encoded := Marshalls.raw_to_base64((prefix + helpers + scenario_driver).to_utf8_buffer())
 	var bootstrap := "import base64; exec(compile(base64.b64decode('" + encoded + "'), '<string>', 'exec'))"
 	var code := OS.execute(python, PackedStringArray(["-c", bootstrap, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
 	var report := "\n".join(PackedStringArray(output))
@@ -334,8 +337,6 @@ func test_visible_app_shell_preferences_subset_save() -> Variant:
 	var saved := UserPrefs._load_data()
 	safe = safe and UserPrefs.load_vault_password().is_empty() and str(saved.get("vault_password", "")) == credential_before and saved.get("first_name") == "Hosted" and UserPrefs.load_session() == PackedStringArray(["synthetic-session"]) and UserPrefs.load_last_query().get("filter") == "synthetic-filter" and UserPrefs.load_vault_password_hint() == "synthetic-hint" and UserPrefs.load_type_shortcuts("ui").pinned == ["bug"] and db.has_vault() and FileAccess.get_file_as_bytes(db_path) == vault_before
 	db.close()
-	# RecordForm creates this dialog unparented until first use; free it so teardown is clean.
-	shell._record_form._secret_2fa_dialog.free()
 	shell.free()
 	await get_tree().process_frame
 	DocketRuntimeState.hosted = hosted
