@@ -40,8 +40,34 @@ def private(p, method, fields, auth=None, kdf_stage=None):
 def locked(p, name):
     assert 'locked' in call(p, 'docket_secret_get', dict(project=name, handle='entry'), True)['error'].lower(), 'key remained accessible'
 
+def fixture_path(value, expected):
+    # Only this freshly allocated root's known fixture files may be printed.
+    # samefile preserves returned case/8.3/separator spellings in diagnostics.
+    if not isinstance(value, str) or len(value) > 2048 or any(ord(c) < 32 for c in value):
+        return None
+    candidate = pathlib.Path(value)
+    try:
+        if candidate.is_absolute() and os.path.samefile(candidate.parent, base) and os.path.samefile(candidate, expected):
+            return value
+    except (OSError, ValueError):
+        pass
+    return None
+
+def diagnose_paths(p, path):
+    fixtures = {name: base/(name+'.dct') for name in ('legacy', 'current', 'empty')}
+    supplied = next((value for expected in fixtures.values() if (value := fixture_path(str(path), expected)) is not None), None)
+    assert supplied is not None, 'diagnostic fixture path provenance'
+    served = []
+    for entry in call(p, 'docket_project_list', {})['projects']:
+        expected = fixtures.get(entry.get('name'))
+        value = fixture_path(entry.get('path'), expected) if expected is not None else None
+        if value is not None and value not in served: served.append(value)
+    assert len(served) <= 3, 'diagnostic fixture path count'
+    print('HOST_VAULT_PATHS supplied=%s served=%s' % (json.dumps(supplied), json.dumps(served)), flush=True)
+
 def bind(p, path):
     reply = private(p, 'vault_challenge', dict(path=str(path)))
+    if 'result' not in reply: diagnose_paths(p, path)
     assert 'result' in reply, 'vault challenge refused'
     return reply['result']
 
@@ -297,11 +323,16 @@ def diagnose():
 	var code := OS.execute(python, PackedStringArray([driver_path, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
 	DirAccess.remove_absolute(driver_path)
 	var report := "\n".join(PackedStringArray(output))
-	# Forward only fixed stages and numeric durations from the captured driver.
+	# The explicit path exception is provenance-checked in the Python driver.
+	# Match only bounded JSON strings/lists, never arbitrary captured output.
+	var json_path := "\"(?:[^\"\\\\\\x00-\\x1f]|\\\\(?:[\"\\\\]|u[0-9a-fA-F]{4}))*\""
+	var paths_pattern := RegEx.create_from_string("^HOST_VAULT_PATHS supplied=" + json_path + " served=\\[(?:" + json_path + "(?:, " + json_path + "){0,2})?\\]$")
+	# Forward only fixed stages, numeric durations and verified fixture paths.
 	var timing_pattern := RegEx.create_from_string("^HOST_VAULT_KDF_TIMING stage=(producer_primary_write|producer_secondary_write|vault_unlock|consumer_secondary_write|consumer_secondary_current|consumer_secondary_archive) seconds=[0-9]+\\.[0-9]{3}$")
 	for line in report.split("\n"):
 		var timing_line := line.trim_suffix("\r")
 		if timing_pattern.search(timing_line): print(timing_line)
+		if timing_line.length() <= 16640 and paths_pattern.search(timing_line): print(timing_line)
 	# Emit labels only, even when the composed driver's watchdog diagnoses.
 	if code != 0 or not report.contains("HOST VAULT receiver-consumer-lifetime-privacy PASS"):
 		var lines := report.trim_suffix("\n").split("\n") if not report.is_empty() else PackedStringArray()
