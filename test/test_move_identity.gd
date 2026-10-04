@@ -2,12 +2,15 @@ extends Node
 ## Filesystem fixtures are independent OS operations, never identity-helper mocks.
 const DIR := "user://test_move_identity"
 var _dbs: Array[DocketDB] = []
+var _foreign_pid := 0
 
 func before_each() -> void:
 	DirAccess.make_dir_recursive_absolute(DIR)
 
 func after_each() -> void:
 	JSONLCheckedCommit.stage_hook = Callable()
+	if _foreign_pid > 0: OS.kill(_foreign_pid)
+	_foreign_pid = 0
 	for db in _dbs: db.close()
 	_dbs.clear()
 	_remove_tree(DIR)
@@ -83,7 +86,7 @@ func test_replacement_invalidates_opening_before_move() -> Variant:
 	return true
 
 func test_temp_namespace_refusal_preserves_existing_evidence() -> Variant:
-	var target := DIR + "/target.dct"
+	var target := JSONLSidecar.path_for(DIR + "/target.dct")
 	var temp := target + ".tmp.%d" % OS.get_process_id()
 	var original := DIR + "/original.dct"
 	for path in [target, original]:
@@ -100,6 +103,14 @@ func test_temp_namespace_refusal_preserves_existing_evidence() -> Variant:
 		if result.error.is_empty() or result.committed: return "occupied temp commit was accepted"
 		if FileAccess.get_file_as_string(target) != "nonsecret fixture original" or FileAccess.get_file_as_string(original) != "nonsecret fixture original": return "temp refusal changed original bytes"
 		if mode != "dangling" and FileAccess.get_file_as_bytes(temp) != before: return "temp refusal changed source bytes"
+		var job := JSONLSettleJob.new()
+		job.canonical_path = target.trim_suffix(JSONLSidecar.SUFFIX)
+		job.sidecar_prefix = "prefix".to_utf8_buffer()
+		for operation in ["marker", "retirement"]:
+			var refusal := job.mark_sidecar("prefixtail".to_utf8_buffer()) if operation == "marker" else job.retire_prefix("prefixtail".to_utf8_buffer())
+			if refusal.is_empty() or not refusal.contains(temp): return "WAL temp refusal missing path"
+			if FileAccess.get_file_as_string(original) != "nonsecret fixture original" or FileAccess.get_file_as_string(target) != "nonsecret fixture original": return "WAL temp guard damaged evidence"
+			if mode != "dangling" and FileAccess.get_file_as_bytes(temp) != before: return "WAL temp guard changed occupied bytes"
 		var dir := DirAccess.open(DIR)
 		if mode == "dangling" and not dir.is_link(temp.get_file()): return "refusal removed unowned link"
 		if DirAccess.remove_absolute(temp) != OK: return "temp evidence cleanup failed"
@@ -195,3 +206,53 @@ func test_reserved_siblings_refuse_before_open() -> Variant:
 		if FileAccess.get_file_as_bytes(sibling) != bytes: return "reserved evidence changed"
 		DirAccess.remove_absolute(alias); DirAccess.remove_absolute(sibling)
 	return true
+
+func test_reload_adopts_only_rebuilt_identity_and_multi_owner_write() -> Variant:
+	var db := _create("reload-owner")
+	if db == null: return "creation failed"
+	var other := DocketDBJsonl.open_jsonl(db.get_path())
+	if other == null: return "second owner failed"
+	_dbs.append(other)
+	var settled := other.set_project_name_checked("refreshed-owner")
+	if settled.is_empty(): settled = other.flush_checked()
+	if not settled.is_empty(): return "second owner settle failed: " + settled
+	if not db.ensure_fresh() or not ProjectOpenings.opening_refusal(db).is_empty(): return "settle reload identity not adopted"
+	var id := db.next_uuid7_id()
+	var error := db.insert_item(id, {"type":"chore", "title":"after reload", "status":"open", "created_at":"2026-10-04T00:00:00Z", "updated_at":"2026-10-04T00:00:00Z"})
+	return true if error.is_empty() and db.has_item(id) else "multi-owner reload write refused: " + error
+
+func test_real_lock_contention_identical_replacement_refuses_append() -> Variant:
+	var db := _create("contended")
+	if db == null: return "creation failed"
+	var path := db.get_path()
+	var driver := "import os,sys,time,pathlib,json; p=pathlib.Path(sys.argv[1]); lock=pathlib.Path(str(p)+'.lock'); lock.write_text(json.dumps(dict(pid=os.getpid(),timestamp=time.time()))); pathlib.Path(str(p)+'.ready').touch(); time.sleep(1); data=p.read_bytes(); p.rename(str(p)+'.saved'); p.write_bytes(data); lock.unlink(); time.sleep(5)"
+	var python := "python" if OS.get_name() == "Windows" else "python3"
+	_foreign_pid = OS.create_process(python, PackedStringArray(["-c", driver, ProjectSettings.globalize_path(path)]))
+	var deadline := Time.get_ticks_msec() + 3000
+	while not FileAccess.file_exists(path + ".ready") and Time.get_ticks_msec() < deadline: OS.delay_msec(10)
+	if not FileAccess.file_exists(path + ".ready"): return "contention child not ready"
+	var bytes := FileAccess.get_file_as_bytes(path)
+	var wal := FileAccess.get_file_as_bytes(JSONLSidecar.path_for(path))
+	var id := db.next_uuid7_id()
+	var error := db.insert_item(id, {"type":"chore", "title":"refused append", "status":"open", "created_at":"2026-10-04T00:00:00Z", "updated_at":"2026-10-04T00:00:00Z"})
+	if not error.contains("replaced") or not error.contains(path) or db.has_item(id): return "post-lock replacement committed cache rows"
+	return true if FileAccess.get_file_as_bytes(path) == bytes and FileAccess.get_file_as_bytes(JSONLSidecar.path_for(path)) == wal else "post-lock refusal changed bytes"
+
+func test_strict_temp_query_error_refuses_before_install_and_marker() -> Variant:
+	var db := _create("receipt-error")
+	if db == null: return "creation failed"
+	var path := db.get_path()
+	var sidecar := JSONLSidecar.path_for(path)
+	var f := FileAccess.open(sidecar, FileAccess.WRITE)
+	f.store_string("nonsecret retained WAL evidence"); f.close()
+	var bytes := FileAccess.get_file_as_bytes(path)
+	var wal := FileAccess.get_file_as_bytes(sidecar)
+	JSONLCheckedCommit.stage_hook = func(stage: String, _path: String, temp: String) -> String:
+		if stage == "before_verify":
+			DirAccess.remove_absolute(temp)
+			DirAccess.make_dir_absolute(temp)
+		return ""
+	var result := JSONLCheckedCommit.replace(path, "replacement", func() -> String: return "")
+	JSONLCheckedCommit.stage_hook = Callable()
+	if result.committed or not str(result.error).contains("ERROR") or not str(result.error).contains(path + ".tmp."): return "strict temp query error was not refused before install"
+	return true if FileAccess.get_file_as_bytes(path) == bytes and FileAccess.get_file_as_bytes(sidecar) == wal else "failed strict receipt changed canonical or WAL"

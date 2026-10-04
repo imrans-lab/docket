@@ -8,7 +8,7 @@ class_name JSONLCheckedCommit
 ## Bounded disk-failure seam; tests operate on actual temporary files.
 static var stage_hook: Callable
 
-static func replace(path: String, text: String, verify: Callable, write_hook: Callable = Callable()) -> Dictionary:
+static func replace(path: String, text: String, verify: Callable, write_hook: Callable = Callable(), strict_identity: bool = true) -> Dictionary:
 	var temp := ""
 	var error := ""
 	if not write_hook.is_valid():
@@ -17,11 +17,13 @@ static func replace(path: String, text: String, verify: Callable, write_hook: Ca
 		error = str(written.error)
 	if error.is_empty() and stage_hook.is_valid(): error = str(stage_hook.call("before_verify", path, temp))
 	if error.is_empty(): error = str(verify.call())
+	var identity := ProjectOpenings.inspect(temp) if not temp.is_empty() else {}
+	if error.is_empty() and strict_identity: error = ProjectOpenings.receipt_refusal(temp if not temp.is_empty() else path, identity)
 	var sidecar := JSONLSidecar.path_for(path)
 	if error.is_empty() and JSONLSidecar.has_content(sidecar):
 		error = JSONLSidecar.append(sidecar, JSONLSidecar.settle_marker(text.sha256_text()))
 	if error.is_empty() and stage_hook.is_valid(): error = str(stage_hook.call("before_rename", path, temp))
-	var identity := ProjectOpenings.inspect(temp) if not temp.is_empty() else {}
+	if error.is_empty() and strict_identity and ProjectOpenings.inspect(temp) != identity: error = "Owned temp identity changed: " + temp
 	if error.is_empty():
 		error = str(write_hook.call(path, text)) if write_hook.is_valid() else DocketDBJsonl._rename_over(temp, path)
 	if not error.is_empty():

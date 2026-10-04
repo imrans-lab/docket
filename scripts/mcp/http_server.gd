@@ -492,8 +492,9 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 			var pid := int(owner.get("pid", 0))
 			if not SessionProject.path_error(path).is_empty() or (pid > 0 and pid != OS.get_process_id() and FileLock.is_pid_running(pid)):
 				return DocketHostAuthority._error(-32602, "Bootstrap session admission refused")
-	if live != null and not ProjectOpenings.opening_refusal(live).is_empty():
-		return DocketHostAuthority._error(-32602, "Bootstrap opening identity refused")
+	var opening_error := ProjectOpenings.opening_refusal(live) if live != null else ""
+	if not opening_error.is_empty():
+		return DocketHostAuthority._error(-32602, opening_error)
 	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema(), live.get_meta("physical_opening", {}) if live != null else {})
 	if report.status == "refused":
 		return DocketHostAuthority._error(-32602, "Bootstrap disk apply refused: " + str(report.error))

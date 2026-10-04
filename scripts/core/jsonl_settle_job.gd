@@ -212,13 +212,9 @@ static func _rewrite_last_byte(path: String) -> String:
 
 
 static func _replace_bytes(path: String, content: PackedByteArray) -> String:
-	var tmp_path := path + ".tmp.%d" % OS.get_process_id()
-	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
-	if f == null: return "cannot open %s for writing (error %d)" % [tmp_path, FileAccess.get_open_error()]
-	f.store_buffer(content)
-	f.flush()
-	var file_error := f.get_error()
-	f.close()
-	var error := "cannot rewrite sidecar %s (error %d)" % [path, file_error] if file_error != OK else JSONLReplace.replace(tmp_path, path, true)
+	var written := DocketDBJsonl._write_temp(path, content)
+	if not str(written.error).is_empty(): return str(written.error)
+	var tmp_path := str(written.path)
+	var error := JSONLReplace.replace(tmp_path, path, true)
 	if not error.is_empty(): DirAccess.remove_absolute(tmp_path)
 	return error

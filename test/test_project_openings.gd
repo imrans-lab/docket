@@ -84,12 +84,16 @@ try:
     if extension_list.exists():
         extension_list.write_text('\\n'.join(line for line in extension_list.read_text().splitlines() if 'docket-file-identity' not in line) + '\\n')
     p = launch('helper-absent', ['--file', str(first)])
-    assert listed(p)[0]['path'] == str(first)
+    assert listed(p) == []
     reply = request(p, 'tools/list', 99, {})
     assert reply['result']['tools']
     error = call(p, 'docket_project_add', dict(path=str(other)), True)
-    assert 'identity' in error.lower()
+    assert 'identity' in error.lower() and 'helper absent' in error and str(other) in error
     finish(p)
+    ordinary = pathlib.Path(project) / 'ordinary_unknown.gd'
+    ordinary.write_text(('extends SceneTree\\nfunc _init():\\n var db = DocketDBJsonl.open_jsonl(\"' + str(first).replace('\\\\', '/') + '\")\\n assert(db != null)\\n assert(not ProjectOpenings.opening_refusal(db).is_empty())\\n assert(not ProjectOpenings.move_refusal(db, db).is_empty())\\n assert(db.insert_item(db.next_uuid7_id(), {\"type\":\"chore\",\"title\":\"fallback\",\"status\":\"open\",\"created_at\":\"2026-10-04T00:00:00Z\",\"updated_at\":\"2026-10-04T00:00:00Z\"}).is_empty())\\n assert(db.flush_checked().is_empty())\\n assert(db.get_meta(\"physical_opening\").state == \"UNKNOWN\")\\n var shipment = FileAccess.get_file_as_string(\"' + str(first).replace('\\\\', '/') + '\")\\n assert(MasterBootstrapApply.apply(\"' + str(first).replace('\\\\', '/') + '\", shipment, {}).status == \"refused\")\\n db.close()\\n print(\"UNKNOWN_WRITE_STRICT_REFUSAL_PASS\")\\n quit()\\n').replace(chr(92) + chr(34), chr(34)))
+    run = subprocess.run([engine, '--headless', '--path', project, '-s', str(ordinary)], env=env, capture_output=True, timeout=30)
+    assert run.returncode == 0 and b'UNKNOWN_WRITE_STRICT_REFUSAL_PASS' in run.stdout and b'SCRIPT ERROR' not in run.stderr, 'unavailable identity fallback stage'
     for log in base.glob('*.stderr'):
         assert b'SCRIPT ERROR' not in log.read_bytes(), 'child script error'
     print('PROJECT OPENINGS PASS')

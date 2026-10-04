@@ -11,7 +11,7 @@ static func normalized_path(path: String) -> String:
 ## change which physical file is queried. Dynamic construction tolerates absence.
 static func inspect(path: String) -> Dictionary:
 	if DocketDBMemory.is_memory_path(path): return {"state":"PRESENT", "token":path}
-	if not ClassDB.class_exists("DocketFileIdentity"): return {"state":"ERROR", "token":""}
+	if not ClassDB.class_exists("DocketFileIdentity"): return {"state":"UNKNOWN", "token":"", "reason":"helper absent"}
 	var helper: Object = ClassDB.instantiate("DocketFileIdentity")
 	return helper.call("inspect", ProjectSettings.globalize_path(path))
 
@@ -25,13 +25,14 @@ static func compare(left: String, right: String) -> Dictionary:
 static func capture(db: DocketDB) -> void:
 	db.set_meta("physical_opening", inspect(db.get_path()))
 
-static func opening_refusal(db: DocketDB) -> String:
+static func opening_refusal(db: DocketDB, strict: bool = true) -> String:
 	if db is DocketDBMemory: return ""
 	var current := inspect(db.get_path())
 	var opened: Dictionary = db.get_meta("physical_opening", {})
+	if not strict and opened.get("state") != "PRESENT": return ""
 	if current.get("state") != "PRESENT" or opened.get("state") != "PRESENT":
-		return "Cannot prove project opening identity"
-	return "Project file was replaced after opening" if current.token != opened.token else ""
+		return "Cannot prove project opening identity: %s (current %s, opened %s)" % [db.get_path(), identity_reason(current), identity_reason(opened)]
+	return "Project file was replaced after opening: " + db.get_path() if current.token != opened.token else ""
 
 static func move_refusal(source: DocketDB, target: DocketDB) -> String:
 	for db in [source, target]:
@@ -43,17 +44,19 @@ static func move_refusal(source: DocketDB, target: DocketDB) -> String:
 	var reserved := namespace_refusal(source.get_path(), target.get_path())
 	if not reserved.is_empty(): return reserved
 	var state: String = compare(source.get_path(), target.get_path()).state
-	return "" if state == "DIFFERENT" else "Move refused: project identity is " + state
+	return "" if state == "DIFFERENT" else "Move refused: %s and %s identity is %s" % [source.get_path(), target.get_path(), state]
 
 static func path_refusal(path: String, projects: Dictionary) -> String:
+	var candidate := inspect(path)
+	if candidate.get("state") not in ["PRESENT", "ABSENT"]: return "Cannot prove project identity: %s (%s)" % [path, identity_reason(candidate)]
 	for name in projects:
 		var db: DocketDB = projects[name]
 		if normalized_path(db.get_path()) == normalized_path(path):
-			return "Project already loaded: %s" % name
+			return "Project already loaded: %s (%s)" % [name, db.get_path()]
 		var reserved := namespace_refusal(path, db.get_path())
 		if not reserved.is_empty(): return reserved
 		var result := compare(db.get_path(), path)
-		if result.state == "SAME": return "Project already loaded: %s" % name
+		if result.state == "SAME": return "Project already loaded: %s (%s)" % [name, db.get_path()]
 		# A genuinely absent candidate remains eligible for ordinary creation.
 		if result.state == "ABSENT" and result.get("right", {}).get("state") == "ABSENT" and result.get("left", {}).get("state") == "PRESENT": continue
 		if result.state != "DIFFERENT":
@@ -69,7 +72,7 @@ static func namespace_refusal(left: String, right: String) -> String:
 			if normalized_path(pair[0]) == normalized_path(sibling): return "Project overlaps reserved namespace: " + sibling
 			var state: String = compare(pair[0], sibling).state
 			if state == "SAME": return "Project overlaps reserved namespace: " + sibling
-			if state == "ERROR": return "Cannot prove reserved namespace identity: " + sibling
+			if state == "ERROR": return "Cannot prove reserved namespace identity: %s (%s)" % [sibling, "helper absent" if not ClassDB.class_exists("DocketFileIdentity") else "native query error"]
 	return ""
 
 static func reserved_paths(path: String) -> Array[String]:
@@ -81,9 +84,12 @@ static func reserved_paths(path: String) -> Array[String]:
 	return paths
 
 ## Receipt was captured from our temp before installation, never the fresh path.
-static func accept_replacement(db: DocketDB, receipt: Dictionary) -> String:
+static func accept_replacement(db: DocketDB, receipt: Dictionary, strict: bool = true) -> String:
+	if not strict and db.get_meta("physical_opening", {}).get("state") != "PRESENT":
+		db.set_meta("physical_opening", {"state":"UNKNOWN", "reason":"unavailable identity"})
+		return ""
 	var current := inspect(db.get_path())
-	if receipt.get("state") != "PRESENT" or current != receipt: return "Owned replacement identity could not be verified"
+	if receipt.get("state") != "PRESENT" or current != receipt: return "Owned replacement identity could not be verified: %s (receipt %s, current %s)" % [db.get_path(), identity_reason(receipt), identity_reason(current)]
 	db.set_meta("physical_opening", receipt)
 	return ""
 
@@ -104,3 +110,9 @@ static func descriptor(name: String, db: DocketDB, primary: DocketDB) -> Diction
 		entry["owner"] = SessionProject.read_owner(db.get_path())
 	if db is DocketDBMemory: entry["usage"] = (db as DocketDBMemory).usage()
 	return entry
+
+static func identity_reason(value: Dictionary) -> String:
+	return str(value.get("state", "UNKNOWN")) + ": " + str(value.get("reason", "loaded file missing" if value.get("state") == "ABSENT" else "native query error" if value.get("state") == "ERROR" else "identity unavailable"))
+
+static func receipt_refusal(path: String, receipt: Dictionary) -> String:
+	return "" if receipt.get("state") == "PRESENT" else "Owned temp identity unavailable: %s (%s)" % [path, identity_reason(receipt)]

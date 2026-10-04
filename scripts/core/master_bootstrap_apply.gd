@@ -26,7 +26,8 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 	var recovery_error := JSONLReplace.recover(path)
 	if not recovery_error.is_empty(): return _refuse(recovery_error)
 	var opening := ProjectOpenings.inspect(path)
-	if not expected_opening.is_empty() and opening != expected_opening: return _refuse("Bootstrap opening identity changed")
+	if not expected_opening.is_empty() and opening != expected_opening: return _refuse("Bootstrap opening identity changed: " + path)
+	if opening.get("state") not in ["PRESENT", "ABSENT"]: return _refuse("Bootstrap identity unavailable: %s (%s)" % [path, ProjectOpenings.identity_reason(opening)])
 	var exists := FileAccess.file_exists(path)
 	if not exists and DirAccess.dir_exists_absolute(path): return _refuse("Canonical path is unreadable")
 	var source := {}
@@ -63,7 +64,7 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 	# so advancing an integer event head is not mistaken for formatter loss.
 	if JSONLSerializer._json_value(reparsed.meta) != JSONLSerializer._json_value(merged.meta): return _refuse("Output changed parsed metadata")
 	var verify := func() -> String:
-		if ProjectOpenings.inspect(path) != opening: return "Bootstrap source identity changed"
+		if ProjectOpenings.inspect(path) != opening: return "Bootstrap source identity changed: " + path
 		return _verify_source(path, exists, source)
 	var committed := JSONLCheckedCommit.replace(path, text, verify)
 	if not str(committed.error).is_empty(): return _refuse(committed.error)
