@@ -34,8 +34,9 @@ static func _canonical(path: String) -> Dictionary:
 	var bytes := FileAccess.get_file_as_bytes(path)
 	if FileAccess.get_open_error() != OK: return {"error":"cannot read canonical " + path}
 	var parsed := JSONLParser.parse_bytes(bytes, path)
-	if not str(parsed.get("error", "")).is_empty() or not str(parsed.get("read_only_reason", "")).is_empty():
-		return {"error":"invalid or unsupported canonical " + path}
+	var error := JSONLCache._parsed_source_error(parsed, path)
+	if error.is_empty(): error = str(parsed.get("read_only_reason", ""))
+	if not error.is_empty(): return {"error":"invalid or unsupported canonical %s: %s" % [path, error]}
 	return {"parsed":parsed, "sha":JSONLSidecar.sha256_bytes(bytes)}
 
 static func _recover_locked(path: String) -> String:
@@ -48,7 +49,7 @@ static func _recover_locked(path: String) -> String:
 	for candidate in [backup, path]:
 		if not _exists(candidate): continue
 		var checked := _canonical(candidate)
-		if checked.has("error"): return "%s; recovery preserved %s" % [checked.error, backup]
+		if checked.has("error"): return "%s; recovery preserved target %s and backup %s" % [checked.error, path, backup]
 		canonical = checked # Valid destination wins when both are present.
 	if canonical.is_empty(): return "missing canonical for recovery of %s; files preserved" % path
 	for candidate in [wal + SUFFIX, wal]:

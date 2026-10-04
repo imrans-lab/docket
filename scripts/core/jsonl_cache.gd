@@ -118,14 +118,10 @@ static func read_source(jsonl_path: String, cache_path: String = "") -> Dictiona
 	# A hard parse error (conflict markers, unreadable file) must abort before we
 	# touch the cache. Rebuilding from a conflicted file would union both sides,
 	# and the next flush would write that back over the file.
-	var parse_error: String = str(parsed.get("error", ""))
+	var parse_error := _parsed_source_error(parsed, jsonl_path)
 	if not parse_error.is_empty():
 		last_error = parse_error
 		push_error("JSONLCache: %s" % parse_error)
-		return {}
-	if parsed.is_empty() or parsed["meta"].is_empty():
-		last_error = "failed to parse JSONL (or missing meta): %s" % jsonl_path
-		push_error("JSONLCache: %s" % last_error)
 		return {}
 	var expected_cache_path := cache_path_for_version(jsonl_path, str(parsed.meta.version))
 	if not cache_path.is_empty() and cache_path != expected_cache_path:
@@ -140,6 +136,16 @@ static func read_source(jsonl_path: String, cache_path: String = "") -> Dictiona
 		return {}
 	last_error = ""
 	return {"parsed": parsed, "canonical": canonical_bytes, "sidecar": sidecar_bytes, "sidecar_exists": FileAccess.file_exists(JSONLSidecar.path_for(jsonl_path)), "fingerprint": JSONLSidecar.fingerprint_of(canonical_sha, sidecar_bytes)}
+
+
+static func _parsed_source_error(parsed: Dictionary, path: String) -> String:
+	## Shared source minimum for loading and interrupted replacement recovery.
+	## Newer supported-to-read formats remain read-only, not parse failures.
+	var error := str(parsed.get("error", ""))
+	if not error.is_empty(): return error
+	if parsed.is_empty() or parsed["meta"].is_empty():
+		return "failed to parse JSONL (or missing meta): %s" % path
+	return ""
 
 
 static func _open_for_rebuild(jsonl_path: String, cache_path: String) -> DocketDB:

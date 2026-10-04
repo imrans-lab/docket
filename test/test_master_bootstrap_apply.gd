@@ -309,12 +309,14 @@ func test_windows_replacement_failure_restores_and_reserved_invalid_files_refuse
 	var r = A.is_true(not error.is_empty() and FileAccess.get_file_as_bytes(path) == old and not FileAccess.file_exists(path + ".docket-replace-backup"), "real install failure restores exact old bytes")
 	if r is String: return r
 	# Each invalid role/state must preserve every fixture, including WAL backup.
-	for invalid in ["corrupt", "future", "wal", "target", "directory"]:
+	for invalid in ["corrupt", "empty", "metadata-less", "future", "wal", "target", "directory"]:
 		var backup := path + ".docket-replace-backup"
 		_write(path, META + ITEMS)
 		_write(backup, META + ITEMS)
 		_write(path + ".log.docket-replace-backup", '{"_type":"wal","base":"old","replace":[["B","item"]],"records":[]}\n{torn')
 		if invalid == "corrupt": _write(backup, "not canonical")
+		if invalid == "empty": _write(backup, "")
+		if invalid == "metadata-less": _write(backup, ITEMS)
 		if invalid == "future": _write(backup, META.replace("1.0.0", "9.0.0") + ITEMS)
 		if invalid == "wal": _write(path + ".log.docket-replace-backup", '{"_type":"unknown"}\n')
 		if invalid == "target": _write(path, "not canonical")
@@ -326,6 +328,9 @@ func test_windows_replacement_failure_restores_and_reserved_invalid_files_refuse
 		var refused := _apply(path, META + ITEMS)
 		r = A.is_true(refused.status == "refused" and FileAccess.get_file_as_bytes(path) == before and FileAccess.get_file_as_bytes(path + ".log.docket-replace-backup") == wal_before, "invalid reserved evidence refuses without touching authority or WAL")
 		if r is String: return r
+		if invalid in ["empty", "metadata-less"]:
+			r = A.is_true(str(refused.error).contains("target " + path) and str(refused.error).contains("backup " + backup), "empty/metadata-less refusal names both preserved paths")
+			if r is String: return r
 		r = A.is_true(DirAccess.dir_exists_absolute(backup) if invalid == "directory" else FileAccess.get_file_as_bytes(backup) == backup_before, "invalid backup retained")
 		if r is String: return r
 		DirAccess.remove_absolute(backup); DirAccess.remove_absolute(path + ".log.docket-replace-backup")
