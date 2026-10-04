@@ -17,6 +17,7 @@
 
 # GDExtension build output
 addons/godot-sqlite/bin/
+addons/docket-file-identity/bin/
 
 # SCons build state
 .sconsign.dblite

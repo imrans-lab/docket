@@ -63,6 +63,9 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 	if source_db == target_db:
 		return {"error": "Item is already in project '%s'" % canonical_target}
 
+	var identity_error := ProjectOpenings.move_refusal(source_db, target_db)
+	if not identity_error.is_empty(): return {"error":identity_error}
+
 	# Refuse to move anything holding vault content.
 	#
 	# export_item_full carries the item, tags, events, links, comments and
@@ -102,11 +105,15 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 	new_id = item_id if DocketDB._is_uuid7(item_id) else target_db.next_uuid7_id()
 	var reference_prepare_error: String = _prepare_export_refs(exported, source_registry, source_name, canonical_target, item_id, new_id)
 	if not reference_prepare_error.is_empty(): return {"error":"Source reference semantics are unresolved; nothing was copied: %s" % reference_prepare_error}
+	identity_error = ProjectOpenings.move_refusal(source_db, target_db)
+	if not identity_error.is_empty(): return {"error":identity_error}
 	var target_error: String = import_checked(target_db, new_id, exported, target_registry, type_plan.type, type_plan.revisions, str(args.get("author", "")), str(args.get("reason", "")))
 	if not target_error.is_empty(): return {"error":"Target write failed; source preserved: %s" % target_error}
 	var old_qualified: String = "%s:%s" % [source_name,item_id]
 	var new_qualified: String = "%s:%s" % [canonical_target,new_id]
 	for proj_name in project_dbs:
+		identity_error = ProjectOpenings.move_refusal(source_db, target_db)
+		if not identity_error.is_empty(): return {"error":identity_error,"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
 		var pdb: DocketDB = project_dbs[proj_name]
 		# Bare IDs are local. Only the source project's bare reference identifies
 		# the moved item; another project may own an unrelated item with that ID.
@@ -115,6 +122,8 @@ func execute(args: Dictionary, _schema: Dictionary, _primary_db: DocketDB, proje
 		var rewrite: Dictionary = project_registry.rewrite_move_references(old_qualified,new_qualified,item_id,bare_target,str(proj_name) == source_name)
 		if not str(rewrite.get("error", "")).is_empty(): return {"error":"Target copy is durable, but reference rewrite failed in '%s': %s" % [proj_name,rewrite.error],"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
 		refs_updated += int(rewrite.count)
+	identity_error = ProjectOpenings.move_refusal(source_db, target_db)
+	if not identity_error.is_empty(): return {"error":identity_error,"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
 	var source_error: String = _delete_checked(source_db,item_id)
 	if not source_error.is_empty(): return {"error":"Target copy is durable but source deletion failed: %s" % source_error,"partial_copy":true,"new_id":new_id,"new_project":canonical_target}
 

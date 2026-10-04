@@ -1,0 +1,4 @@
+env = SConscript('godot-cpp/SConstruct')
+library = env.SharedLibrary('bin/libdocket_file_identity' + env['suffix'] + env['SHLIBSUFFIX'],
+                            source=['file_identity.cpp'])
+Default(library)

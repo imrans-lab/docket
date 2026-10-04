@@ -125,3 +125,11 @@ Then rebuild and run the tests before committing the new pin.
 If a local patch is ever needed, add it under `third_party/patches/` and apply
 it from the build script — never commit modified vendored source in place, so
 the delta from upstream stays visible.
+
+The same wrapper builds Docket's file-identity extension from `native/file_identity`
+and the unchanged pinned godot-cpp source, in a private temporary build copy.
+Both debug and release libraries are mapped by its descriptor; macOS builds are
+universal dylibs exported and signed as nested app libraries by Godot. Outputs
+and a candidate/dependency/hash build stamp live in the ignored addon `bin/`.
+Identity query errors or missing libraries refuse cross-project moves. CI must
+execute the identity fixtures on Linux, macOS and Windows before acceptance.

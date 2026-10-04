@@ -205,6 +205,10 @@ func _headless_add_project(path: String) -> Dictionary:
 	var loaded_db := _open_or_create_db(path)
 	if not loaded_db:
 		return {"error": "Failed to open: %s" % path}
+	var post_open_refusal := ProjectOpenings.path_refusal(path, _project_dbs)
+	if not post_open_refusal.is_empty():
+		loaded_db.close()
+		return {"error":post_open_refusal}
 	var proj_name := loaded_db.get_project_name()
 	if proj_name.is_empty():
 		proj_name = path.get_file().get_basename()
@@ -471,6 +475,8 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 			return DocketHostAuthority._error(-32602, "Bootstrap pending settle refused")
 		break
 	if live == null:
+		var physical_refusal := ProjectOpenings.path_refusal(path, projects)
+		if not physical_refusal.is_empty(): return DocketHostAuthority._error(-32602, physical_refusal)
 		var metadata: Dictionary = parsed.meta
 		if FileAccess.file_exists(path):
 			var source := JSONLCache.read_source(path)
@@ -491,6 +497,7 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 		return DocketHostAuthority._error(-32602, "Bootstrap disk apply refused: " + str(report.error))
 	if live != null:
 		if not live.reload(): return _bootstrap_committed_failure(report, "reload", name, live)
+		ProjectOpenings.capture(live)  # This bootstrap specifically committed its replacement.
 		# Refresh the shared registry in place, preserving primary and map bindings.
 		var registry := external_state.get_type_registry(name) if external_state != null else _registry.get_type_registry(name)
 		if registry == null or not registry.get_diagnostic().is_empty():

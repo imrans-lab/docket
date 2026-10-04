@@ -40,11 +40,15 @@ try:
         assert listed(p) == [opened]
         token = opened['open_generation']
         before_other = other.read_bytes()
-        for path in (first, first.parent / '.' / first.name, other):
+        aliases = [base / ('hard-%s.dct' % gui), base / ('soft-%s.dct' % gui)]
+        os.link(first, aliases[0]); os.symlink(first, aliases[1])
+        before_first = first.read_bytes()
+        for path in (first, first.parent / '.' / first.name, other, *aliases):
             error = call(p, 'docket_project_add', dict(path=str(path)), True)
             assert 'already loaded' in error.lower()
             assert listed(p) == [opened]
-        assert other.read_bytes() == before_other
+        assert other.read_bytes() == before_other and first.read_bytes() == before_first
+        for alias in aliases: assert not type(base)(str(alias) + '.cache').exists()
         reply = call(p, 'docket_reload', dict(project='shared'))
         assert reply['reloaded'] == ['shared'] and reply['count'] == 1 and not reply.get('failed')
         assert listed(p)[0]['open_generation'] == token
@@ -73,6 +77,18 @@ try:
     entries = listed(p)
     shared = [entry for entry in entries if entry['name'] == 'shared']
     assert len(shared) == 1 and shared[0]['path'] == str(first)
+    finish(p)
+    # A fresh child with the helper absent must still expose ordinary tools.
+    shutil.rmtree(pathlib.Path(project) / 'addons' / 'docket-file-identity')
+    extension_list = pathlib.Path(project) / '.godot' / 'extension_list.cfg'
+    if extension_list.exists():
+        extension_list.write_text('\\n'.join(line for line in extension_list.read_text().splitlines() if 'docket-file-identity' not in line) + '\\n')
+    p = launch('helper-absent', ['--file', str(first)])
+    assert listed(p)[0]['path'] == str(first)
+    reply = request(p, 'tools/list', 99, {})
+    assert reply['result']['tools']
+    error = call(p, 'docket_project_add', dict(path=str(other)), True)
+    assert 'identity' in error.lower()
     finish(p)
     for log in base.glob('*.stderr'):
         assert b'SCRIPT ERROR' not in log.read_bytes(), 'child script error'
@@ -283,6 +299,7 @@ func test_bootstrap_pending_sliced_worker_identity_ephemerals_registry_and_cold_
 		var result := server._bootstrap_project(path, text.replace("Before definition", "Shipped upgrade"))
 		server.free()
 		if not result.has("result"): return "Loaded private bootstrap refused"
+		if not ProjectOpenings.opening_refusal(live).is_empty(): return "Own bootstrap replacement invalidated physical opening"
 		var descriptor: Dictionary = result.result.project
 		if descriptor.open_generation != token or descriptor.primary or live != _state.get_project_dbs()[mode] or registry != _state.get_type_registry(mode): return "Bootstrap replaced live identity or registry"
 		if live.get_item("ORD-0001").description != "acknowledged WAL" or live.get_item("ephemeral").title != "cache only" or live.get_item("ephemeral").storage != "ephemeral" or live.is_settling(): return "Bootstrap lost pending WAL, ephemeral row or retained stale worker"
@@ -347,29 +364,43 @@ func test_bootstrap_session_preflight_and_concurrent_admission_failure() -> Vari
 	var disk := JSONLParser.parse_file(path)
 	return true if disk.meta.get("master_bootstrap_state") is String else "Postcommit failure lost installed disk state"
 
-func test_bootstrap_vault_metadata_movement_invalidates_real_key_session() -> Variant:
-	var path := ProjectSettings.globalize_path(DIR + "/vault.dct")
+func test_bootstrap_physical_alias_refuses_before_disk_apply() -> Variant:
+	var path := ProjectSettings.globalize_path(DIR + "/bootstrap-source.dct")
+	var alias := ProjectSettings.globalize_path(DIR + "/bootstrap-alias.dct")
 	_seed(path)
-	if not _state.add_project(path).is_empty(): return "Vault bootstrap fixture failed"
-	var live := _state.db as DocketDBJsonl
-	var salt := PackedByteArray(); salt.resize(16); salt.fill(7)
-	var password := "bootstrap fixture"
-	var key := VaultCrypto.derive_key(password, salt, 10000)
-	live.init_vault(key, salt, 10000)
-	if not live.flush_checked().is_empty(): return "Vault fixture settle failed"
-	var challenge := VaultKeySession.descriptor(live)
-	var unlocked := VaultKeySession.handle("vault_unlock", {"panel_secret":"fixture", "path":path, "open_generation":challenge.open_generation, "fingerprint":challenge.fingerprint, "password":password}, live)
-	if not unlocked.has("result") or not unlocked.result.unlocked: return "Actual vault key session unlock failed"
-	salt.fill(8)
-	live.set_meta_value("vault_salt", Marshalls.raw_to_base64(salt))
-	var shipment := FileAccess.get_file_as_string(path)
+	if not _state.add_project(path).is_empty(): return "Alias bootstrap admission failed"
+	# Disk metadata drift makes name-only refusal insufficient.
+	var lines := FileAccess.get_file_as_string(path).split("\n")
+	var meta: Dictionary = JSON.parse_string(lines[0])
+	meta.project = "external-renamed"
+	lines[0] = JSON.stringify(meta)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string("\n".join(lines)); f.close()
+	var links := preload("res://test/test_move_identity.gd").new()
+	var linked: bool = links._link(path, alias, true)
+	links.free()
+	if not linked: return "Bootstrap hardlink fixture failed"
+	var before := FileAccess.get_file_as_bytes(path)
 	var server := _bootstrap_server()
-	var result := server._bootstrap_project(path, shipment)
+	var result := server._bootstrap_project(alias, before.get_string_from_utf8())
 	server.free()
-	if not result.has("result") or not VaultKeySession.key_for(live).is_empty(): return "Bootstrap retained stale vault key"
-	var stale := VaultKeySession.handle("vault_lock", {"panel_secret":"fixture", "path":path, "open_generation":challenge.open_generation, "fingerprint":challenge.fingerprint}, live)
-	var disk := JSONLParser.parse_file(path)
-	return true if stale.has("error") and disk.meta.vault_kdf_iterations == 10000.0 and disk.meta.vault_salt == Marshalls.raw_to_base64(salt) and disk.meta.version == "2.0.0" else "Vault movement changed KDF/format or accepted stale descriptor"
+	if not result.has("error") or not str(result.error.message).contains("already loaded"): return "Bootstrap physical alias was not refused"
+	return true if FileAccess.get_file_as_bytes(path) == before and FileAccess.get_file_as_bytes(alias) == before and not FileAccess.file_exists(alias + ".cache") else "Bootstrap alias wrote before refusal"
+
+func test_bootstrap_vault_metadata_movement_invalidates_real_key_session() -> Variant:
+	var fixture := preload("res://test/test_host_vault.gd").new()
+	var result: Variant = fixture.run_actual_child(BOOTSTRAP_DRIVER)
+	fixture.free()
+	return result
+
+func test_bootstrap_privacy_logging_on_negative_control() -> Variant:
+	var fixture := preload("res://test/test_host_vault.gd").new()
+	var result: Variant = fixture.run_actual_child(BOOTSTRAP_DRIVER.replace("negative = False", "negative = True"))
+	fixture.free()
+	if result is String and result.contains("exit 1") and result.contains("AssertionError") and result.contains("vault material persisted/logged"):
+		print("BOOTSTRAP_PRIVACY_LOGGING_CONTROL_DETECTED exit=1")
+		return true
+	return "Logging control did not specifically detect persisted vault material"
 
 func test_bootstrap_concurrent_name_collision_commits_without_orphan_opening() -> Variant:
 	var path := ProjectSettings.globalize_path(DIR + "/install-collision.dct")
@@ -388,3 +419,98 @@ func test_bootstrap_concurrent_name_collision_commits_without_orphan_opening() -
 	if projects.size() != 1 or _state.db != projects["order-fixture"] or ProjectOpenings.normalized_path(_state.db.get_path()) != other: return "Concurrent name collision registered orphan or disturbed authoritative opening"
 	var disk := JSONLParser.parse_file(path)
 	return true if disk.items.size() == 1 and disk.items[0].id == "ORD-0001" and not MasterBootstrapApply.read_state(disk.meta).has("error") else "Postcommit name collision lost installed disk authority"
+
+const BOOTSTRAP_DRIVER := """
+import base64, hashlib, hmac, secrets
+negative = False
+password = secrets.token_hex(24)
+value = secrets.token_hex(24)
+salt = secrets.token_bytes(16)
+key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 10000)
+auth = secrets.token_hex(32)
+env['DOCKET_PANEL_SECRET'] = auth
+schema = json.loads((pathlib.Path(project) / 'data/schema.json').read_text())
+
+def private(p, name, fields):
+    return request(p, 'docket/panel/' + name, 93, dict(panel_secret=auth, **fields), receive_timeout=30)
+
+def call(p, name, fields, failure=False):
+    reply = request(p, 'tools/call', 94, dict(name=name, arguments=fields))
+    assert bool(reply['result'].get('isError')) == failure, 'tool result stage'
+    text = reply['result']['content'][0]['text']
+    return text if failure else json.loads(text)
+
+def opened(name, path):
+    p = launch(name, ['--host-authority'])
+    assert 'result' in private(p, 'declare_schema', dict(schema=schema, version='bootstrap-privacy')), 'declare stage'
+    call(p, 'docket_project_add', dict(path=str(path)))
+    descriptor = private(p, 'vault_challenge', dict(path=str(path)))['result']
+    fields = {k: descriptor[k] for k in ('path', 'open_generation', 'fingerprint')}
+    reply = private(p, 'vault_unlock', dict(**fields, password=password))
+    assert reply.get('result', {}).get('unlocked'), 'unlock stage'
+    return p, fields
+
+def scan():
+    needles = [password.encode(), value.encode(), key, key.hex().encode(), base64.b64encode(key)]
+    assert all(needle not in pathlib.Path(__file__).read_bytes() for needle in needles), 'vault material persisted/logged'
+    # Entire private root, including project, generated driver, logs and caches.
+    for path in base.rglob('*'):
+        if path.is_file():
+            data = path.read_bytes()
+            assert all(needle not in data for needle in needles), 'vault material persisted/logged'
+            if path.suffix == '.stderr': assert b'SCRIPT ERROR' not in data, 'child script error'
+
+try:
+    if negative:
+        settings = pathlib.Path(project) / 'project.godot'
+        text = settings.read_text()
+        assert 'file_logging/enable_file_logging=false' in text and 'file_logging/enable_file_logging.pc=false' in text, 'logging mutation stage'
+        settings.write_text(text.replace('file_logging/enable_file_logging=false', 'file_logging/enable_file_logging=true').replace('file_logging/enable_file_logging.pc=false', 'file_logging/enable_file_logging.pc=true'))
+    path = base / 'vault.dct'
+    metadata = dict(_type='meta', version='1.0.0', counter=0, id_prefix='VLT', project='vault', vault_kdf_iterations=10000, vault_salt=base64.b64encode(salt).decode(), vault_verify=base64.b64encode(hmac.new(key, b'docket-vault-verify', hashlib.sha256).digest()).decode())
+    path.write_text(json.dumps(metadata) + '\\n')
+    p, fields = opened('bootstrap-private', path)
+    call(p, 'docket_secret_set', dict(handle='entry', value=value))
+    assert call(p, 'docket_secret_get', dict(handle='entry'))['value'] == value, 'secret response stage'
+    call(p, 'docket_flush', dict(project='vault'))
+    original = path.read_bytes()
+    if not negative:
+        lines = path.read_text().splitlines()
+        metadata = json.loads(lines[0])
+        moved_salt = base64.b64encode(secrets.token_bytes(16)).decode()
+        metadata['vault_salt'] = moved_salt
+        lines[0] = json.dumps(metadata)
+        path.write_text('\\n'.join(lines) + '\\n')
+        shipment = base64.b64encode(path.read_bytes()).decode()
+        reply = private(p, 'bootstrap_project', dict(path=str(path), content=shipment))
+        assert 'result' in reply, 'bootstrap apply stage'
+        assert 'locked' in call(p, 'docket_secret_get', dict(handle='entry'), True).lower(), 'bootstrap key invalidation stage'
+        assert 'error' in private(p, 'vault_lock', fields), 'stale descriptor stage'
+        disk = json.loads(path.read_text().splitlines()[0])
+        assert disk['vault_kdf_iterations'] == 10000, 'bootstrap KDF preservation stage'
+        assert disk['vault_salt'] == moved_salt, 'bootstrap moved salt stage'
+        assert disk['version'] == '1.0.0', 'bootstrap seeded format preservation stage'
+    finish(p)
+    scan()  # after actual graceful EOF and before cleanup/reopen
+    assert not negative, 'logging control failed to detect leak'
+    interrupted = base / 'interrupted.dct'
+    interrupted.write_bytes(original)
+    p, fields = opened('bootstrap-interrupted', interrupted)
+    assert call(p, 'docket_secret_get', dict(handle='entry'))['value'] == value, 'interrupt read stage'
+    p.terminate(); p.wait(timeout=10)
+    remaining_stdout(p)
+    scan()  # after bounded termination, before artifact cleanup
+    print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
+except BaseException as error:
+    safe_diagnostic(type(error), error, error.__traceback__)
+    sys.exit(1)
+finally:
+    for p, err in children:
+        if p.poll() is None: p.kill(); p.wait(timeout=10)
+        p.stop_io.set()
+        for worker in p.io_threads: worker.join(timeout=1)
+        if not p.stdin.closed: p.stdin.close()
+        p.stdout.close(); err.close()
+    root.cleanup()
+    completed.set()
+"""

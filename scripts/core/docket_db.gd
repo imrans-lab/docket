@@ -43,6 +43,7 @@ func open(path: String, name_defaults: bool = true) -> bool:
 	if get_id_prefix() == "DKT" and not basename.is_empty() and basename != "docket":
 		set_id_prefix(_derive_prefix(basename))
 
+	ProjectOpenings.capture(self)
 	return true
 
 
@@ -163,6 +164,7 @@ static func create_new(path: String) -> DocketDB:
 	if db.get_id_prefix() == "DKT" and not basename.is_empty():
 		db.set_id_prefix(_derive_prefix(basename))
 
+	ProjectOpenings.capture(db)
 	return db
 
 

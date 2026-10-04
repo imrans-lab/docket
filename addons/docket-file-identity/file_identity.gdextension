@@ -1,0 +1,13 @@
+[configuration]
+entry_symbol = "docket_file_identity_init"
+compatibility_minimum = "4.5"
+
+[libraries]
+linux.debug.x86_64 = "res://addons/docket-file-identity/bin/libdocket_file_identity.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://addons/docket-file-identity/bin/libdocket_file_identity.linux.template_release.x86_64.so"
+linux.debug.arm64 = "res://addons/docket-file-identity/bin/libdocket_file_identity.linux.template_debug.arm64.so"
+linux.release.arm64 = "res://addons/docket-file-identity/bin/libdocket_file_identity.linux.template_release.arm64.so"
+macos.debug = "res://addons/docket-file-identity/bin/libdocket_file_identity.macos.template_debug.universal.dylib"
+macos.release = "res://addons/docket-file-identity/bin/libdocket_file_identity.macos.template_release.universal.dylib"
+windows.debug.x86_64 = "res://addons/docket-file-identity/bin/libdocket_file_identity.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/docket-file-identity/bin/libdocket_file_identity.windows.template_release.x86_64.dll"

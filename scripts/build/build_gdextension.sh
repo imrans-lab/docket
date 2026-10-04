@@ -134,5 +134,7 @@ PLIST
 	done
 fi
 
+"$REPO_ROOT/native/file_identity/build.sh" "$PLATFORM" "$ARCH" "$TARGET"
+
 echo "==> Built artifacts:"
 ls -la "$OUT_DIR"

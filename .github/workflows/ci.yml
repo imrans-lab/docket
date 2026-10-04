@@ -63,7 +63,7 @@ jobs:
             arch: x86_64
           - os: macos-latest
             platform: macos
-            arch: arm64
+            arch: universal
           - os: windows-latest
             platform: windows
             arch: x86_64
@@ -146,6 +146,16 @@ jobs:
       - name: Import project
         run: |
           "$GODOT_BIN" --headless --path . --import 2>&1 | tail -20 || true
+
+      - name: Native identity and temporary namespace oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$GODOT_BIN" --headless --path . -- test --test-class=test_move_identity 2>&1 | tee identity-output.txt
+          grep -q "ALL TESTS PASSED" identity-output.txt
+          grep -Eq "Results: [1-9][0-9]* total, [1-9][0-9]* passed, 0 failed" identity-output.txt
+          grep -q "Skipped (not executed): 0" identity-output.txt
+          ! grep -q "SCRIPT ERROR" identity-output.txt
 
       - name: Run test suite
         run: |

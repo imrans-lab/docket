@@ -164,6 +164,11 @@ func add_project(path: String) -> String:
 		load_failed.emit(path, reason)
 		return reason
 
+	var post_open_refusal := ProjectOpenings.path_refusal(path, _project_dbs)
+	if not post_open_refusal.is_empty():
+		new_db.close()
+		return post_open_refusal
+
 	var proj_name := new_db.get_project_name()
 	if proj_name.is_empty():
 		proj_name = path.get_file().get_basename()

@@ -138,6 +138,7 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 		if not compact_error.is_empty():
 			push_warning("DocketDBJsonl: sidecar for %s not compacted: %s" % [path, compact_error])
 
+	ProjectOpenings.capture(wrapper)
 	return wrapper
 
 
@@ -187,6 +188,7 @@ static func create_new_jsonl(path: String) -> DocketDBJsonl:
 		wrapper.close()
 		return null
 
+	ProjectOpenings.capture(wrapper)
 	return wrapper
 
 
@@ -676,6 +678,7 @@ func _settle_canonical() -> String:
 	if not write_error.is_empty():
 		return _fail_flush(write_error)
 
+	ProjectOpenings.capture(self)
 	# Update cache fingerprint so it stays valid
 	if not fingerprint.is_empty():
 		# Use super to avoid triggering another flush
@@ -836,6 +839,7 @@ func _commit_settle_job() -> String:
 		write_error = job.replace_canonical()
 	var fingerprint := ""
 	if write_error.is_empty():
+		ProjectOpenings.capture(self)
 		_freshness.forget()
 		var retire_error := job.retire_prefix(sidecar_now)
 		# The canonical is complete; a leftover prefix is skipped by its marker.
@@ -904,11 +908,21 @@ static func _atomic_write(path: String, content: String) -> String:
 	return _rename_over(str(written.path), path)
 
 
-static func _write_temp(path: String, content: String) -> Dictionary:
-	## {"path": temp file beside path holding content, "error": ""}. Touches only
-	## that temp file, so a worker thread may call it.
+static func temp_refusal(path: String) -> String:
 	var tmp_path := path + ".tmp.%d" % OS.get_process_id()
+	var directory := DirAccess.open(ProjectSettings.globalize_path(tmp_path).get_base_dir())
+	if directory == null or directory.file_exists(tmp_path.get_file()) or directory.dir_exists(tmp_path.get_file()) or directory.is_link(tmp_path.get_file()):
+		return "temporary namespace is occupied or inaccessible"
+	return ""
 
+
+static func _write_temp(path: String, content: String) -> Dictionary:
+	## Only a successfully created temp belongs to us; refusal returns no path
+	## so every synchronous/background cleanup leaves old evidence untouched.
+	var tmp_path := path + ".tmp.%d" % OS.get_process_id()
+	var refusal := temp_refusal(path)
+	if not refusal.is_empty(): return {"path":"", "error":refusal}
+	# This check does not promise safety against malicious post-check races.
 	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
 	if f == null:
 		return {"path": "", "error": "cannot open temp file %s for writing" % tmp_path}
