@@ -1,6 +1,7 @@
 extends Node
 ## Fresh real children with synthetic authentication only. Reuse the stdio
 ## fixture's bounded pipe I/O, watchdog and private process directories.
+const HostAuthority := preload("res://scripts/mcp/host_authority.gd")
 const StdioFixture := preload("res://test/test_stdio_transport.gd")
 const DRIVER := """
 a, b = 'a' * 64, 'b' * 64
@@ -149,3 +150,22 @@ func test_private_authentication_and_restart() -> Variant:
 
 func test_ordinary_stdio_and_http() -> Variant:
 	return _run_scenario("transports")
+
+
+func test_environment_secret_consumed() -> Variant:
+	var was_present := OS.has_environment("DOCKET_PANEL_SECRET")
+	var previous := OS.get_environment("DOCKET_PANEL_SECRET")
+	for enabled in [false, true]:
+		OS.set_environment("DOCKET_PANEL_SECRET", "a".repeat(64))
+		var authority := HostAuthority.new()
+		var error := authority.configure_from_environment(enabled, true)
+		var cleared := OS.get_environment("DOCKET_PANEL_SECRET").is_empty()
+		if was_present:
+			OS.set_environment("DOCKET_PANEL_SECRET", previous)
+		else:
+			OS.unset_environment("DOCKET_PANEL_SECRET")
+		if not cleared:
+			return "Host authority retained environment secret (enabled=%s)" % enabled
+		if not error.is_empty():
+			return "Host authority configuration failed (enabled=%s)" % enabled
+	return true
