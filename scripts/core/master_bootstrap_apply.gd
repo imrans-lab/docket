@@ -10,7 +10,7 @@ static var lock_timeout_ms := 5000
 ## Called after authoritative acquisition, before planning, for real drift tests.
 static var acquired_hook: Callable
 
-static func apply(path: String, shipment_jsonl: String, declared_schema: Dictionary) -> Dictionary:
+static func apply(path: String, shipment_jsonl: String, declared_schema: Dictionary, expected_opening: Dictionary = {}) -> Dictionary:
 	if path.is_empty(): return _refuse("Canonical path is empty")
 	var shipment := JSONLParser.parse_bytes(shipment_jsonl.to_utf8_buffer(), "shipment")
 	var error := MasterBootstrapPlan._validate(shipment)
@@ -18,13 +18,15 @@ static func apply(path: String, shipment_jsonl: String, declared_schema: Diction
 	if shipment.meta.has(STATE_KEY): return _refuse("Shipment may not seed reserved bootstrap state")
 	var lock := FileLock.acquire(path, lock_timeout_ms)
 	if lock == null: return _refuse("Could not acquire advisory lock")
-	var result := _apply_locked(path, shipment, declared_schema)
+	var result := _apply_locked(path, shipment, declared_schema, expected_opening)
 	lock.release()
 	return result
 
-static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary) -> Dictionary:
+static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary, expected_opening: Dictionary = {}) -> Dictionary:
 	var recovery_error := JSONLReplace.recover(path)
 	if not recovery_error.is_empty(): return _refuse(recovery_error)
+	var opening := ProjectOpenings.inspect(path)
+	if not expected_opening.is_empty() and opening != expected_opening: return _refuse("Bootstrap opening identity changed")
 	var exists := FileAccess.file_exists(path)
 	if not exists and DirAccess.dir_exists_absolute(path): return _refuse("Canonical path is unreadable")
 	var source := {}
@@ -60,10 +62,12 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 	# Generic metadata numbers parse as floats; compare canonical JSON values,
 	# so advancing an integer event head is not mistaken for formatter loss.
 	if JSONLSerializer._json_value(reparsed.meta) != JSONLSerializer._json_value(merged.meta): return _refuse("Output changed parsed metadata")
-	var verify := func() -> String: return _verify_source(path, exists, source)
+	var verify := func() -> String:
+		if ProjectOpenings.inspect(path) != opening: return "Bootstrap source identity changed"
+		return _verify_source(path, exists, source)
 	var committed := JSONLCheckedCommit.replace(path, text, verify)
 	if not str(committed.error).is_empty(): return _refuse(committed.error)
-	var response := {"status":"installed" if not exists else "applied", "warning":committed.warning}
+	var response := {"status":"installed" if not exists else "applied", "warning":committed.warning, "identity":committed.get("identity", {})}
 	for key in ["inserted", "updated", "unchanged", "deleted", "conflicts", "capability_gaps", "limitations"]: response[key] = proposal[key]
 	return response
 

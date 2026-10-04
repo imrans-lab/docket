@@ -1,5 +1,6 @@
 extends RefCounted
 class_name FileLock
+const SUFFIX := ".lock"
 ## Advisory file lock using a .lock sidecar file — same pattern as git.
 ##
 ## Usage:
@@ -32,7 +33,7 @@ var contended: bool = false
 static func acquire(path: String, timeout_ms: int = 5000) -> FileLock:
 	## Try to acquire a lock for `path`. Returns a locked FileLock on success,
 	## or null if the lock could not be acquired within timeout_ms.
-	var lock_path := path + ".lock"
+	var lock_path := path + SUFFIX
 	var deadline_ms := Time.get_ticks_msec() + timeout_ms
 	var saw_holder := false
 
@@ -80,7 +81,7 @@ func is_locked() -> bool:
 static func held_by_other(path: String) -> bool:
 	## True when path's lock file exists and does not name this process. An
 	## unreadable lock counts as another holder.
-	var lock_path := path + ".lock"
+	var lock_path := path + SUFFIX
 	return FileAccess.file_exists(lock_path) and _read_lock_pid(lock_path) != OS.get_process_id()
 
 

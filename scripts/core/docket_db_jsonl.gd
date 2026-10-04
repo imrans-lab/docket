@@ -129,6 +129,7 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 	# Transfer the opened SQLite connection to our wrapper (which IS a DocketDB)
 	wrapper._adopt(cache_db)
 
+	ProjectOpenings.capture(wrapper)
 	# A sidecar that outlived its writer (crash, kill) is already replayed into
 	# the cache; compact it now. On failure the records stay journaled and
 	# visible, and the next settle retries. While another process holds the
@@ -138,7 +139,6 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 		if not compact_error.is_empty():
 			push_warning("DocketDBJsonl: sidecar for %s not compacted: %s" % [path, compact_error])
 
-	ProjectOpenings.capture(wrapper)
 	return wrapper
 
 
@@ -188,7 +188,6 @@ static func create_new_jsonl(path: String) -> DocketDBJsonl:
 		wrapper.close()
 		return null
 
-	ProjectOpenings.capture(wrapper)
 	return wrapper
 
 
@@ -564,6 +563,8 @@ func _commit_mutation() -> String:
 	## settles them.
 	if not _uses_sidecar() or _allow_initial_write: return _exec_checked("COMMIT;")
 	if _write_blocked: return last_write_error
+	var identity_error := ProjectOpenings.opening_refusal(self)
+	if not identity_error.is_empty(): return identity_error
 	var recovery_error := JSONLReplace.recover(_jsonl_path)
 	if not recovery_error.is_empty(): return recovery_error
 	if not FileAccess.file_exists(_jsonl_path): return "canonical source is missing; refusing to recreate it from cache"
@@ -641,6 +642,8 @@ func _settle_canonical() -> String:
 		return join_error
 	if _write_blocked:
 		return last_write_error
+	var identity_error := "" if _allow_initial_write else ProjectOpenings.opening_refusal(self)
+	if not identity_error.is_empty(): return _fail_flush(identity_error)
 	var recovery_error := JSONLReplace.recover(_jsonl_path)
 	if not recovery_error.is_empty(): return _fail_flush(recovery_error)
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
@@ -668,6 +671,8 @@ func _settle_canonical() -> String:
 		return _fail_flush("canonical source changed while acquiring write lock")
 
 	var verify := func() -> String:
+		var refusal := "" if _allow_initial_write else ProjectOpenings.opening_refusal(self)
+		if not refusal.is_empty(): return refusal
 		return "" if _allow_initial_write or _source_fingerprint(true) == expected_source_hash else "canonical source changed while settling"
 	var committed := JSONLCheckedCommit.replace(_jsonl_path, jsonl_text, verify, _atomic_write_hook)
 	var write_error: String = committed.error
@@ -678,7 +683,8 @@ func _settle_canonical() -> String:
 	if not write_error.is_empty():
 		return _fail_flush(write_error)
 
-	ProjectOpenings.capture(self)
+	var replacement_error := ProjectOpenings.accept_replacement(self, committed.get("identity", {}))
+	if not replacement_error.is_empty(): return _fail_flush(replacement_error)
 	# Update cache fingerprint so it stays valid
 	if not fingerprint.is_empty():
 		# Use super to avoid triggering another flush
@@ -696,6 +702,8 @@ func _start_settle_job(sliced: bool = false) -> String:
 	## ticks (_advance_settle_job) before the hold; otherwise the hold is now.
 	if _write_blocked:
 		return last_write_error
+	var identity_error := "" if _allow_initial_write else ProjectOpenings.opening_refusal(self)
+	if not identity_error.is_empty(): return _fail_flush(identity_error)
 	var recovery_error := JSONLReplace.recover(_jsonl_path)
 	if not recovery_error.is_empty(): return _fail_flush(recovery_error)
 	if not FileAccess.file_exists(_jsonl_path):
@@ -834,12 +842,15 @@ func _commit_settle_job() -> String:
 		lock.release()
 		job.remove_temp()
 		return _fail_flush("canonical source changed while settling")
-	var write_error := job.mark_sidecar(sidecar_now)
+	var write_error := ProjectOpenings.opening_refusal(self)
+	if write_error.is_empty(): write_error = job.mark_sidecar(sidecar_now)
+	var replacement_identity := ProjectOpenings.inspect(job.temp_path)
 	if write_error.is_empty():
 		write_error = job.replace_canonical()
 	var fingerprint := ""
 	if write_error.is_empty():
-		ProjectOpenings.capture(self)
+		write_error = ProjectOpenings.accept_replacement(self, replacement_identity)
+	if write_error.is_empty():
 		_freshness.forget()
 		var retire_error := job.retire_prefix(sidecar_now)
 		# The canonical is complete; a leftover prefix is skipped by its marker.

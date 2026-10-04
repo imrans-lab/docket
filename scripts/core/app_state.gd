@@ -167,6 +167,7 @@ func add_project(path: String) -> String:
 	var post_open_refusal := ProjectOpenings.path_refusal(path, _project_dbs)
 	if not post_open_refusal.is_empty():
 		new_db.close()
+		load_failed.emit(path, post_open_refusal)
 		return post_open_refusal
 
 	var proj_name := new_db.get_project_name()
@@ -474,6 +475,11 @@ func create_and_add_project(path: String) -> void:
 	# Default new dockets to JSONL format
 	var new_db := DocketDBJsonl.create_new_jsonl(path)
 	if new_db == null:
+		return
+	refusal = ProjectOpenings.path_refusal(path, _project_dbs)
+	if not refusal.is_empty():
+		new_db.close()
+		load_failed.emit(path, refusal)
 		return
 	var proj_name := new_db.get_project_name()
 	if proj_name.is_empty():

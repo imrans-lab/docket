@@ -492,12 +492,15 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 			var pid := int(owner.get("pid", 0))
 			if not SessionProject.path_error(path).is_empty() or (pid > 0 and pid != OS.get_process_id() and FileLock.is_pid_running(pid)):
 				return DocketHostAuthority._error(-32602, "Bootstrap session admission refused")
-	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema())
+	if live != null and not ProjectOpenings.opening_refusal(live).is_empty():
+		return DocketHostAuthority._error(-32602, "Bootstrap opening identity refused")
+	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema(), live.get_meta("physical_opening", {}) if live != null else {})
 	if report.status == "refused":
 		return DocketHostAuthority._error(-32602, "Bootstrap disk apply refused: " + str(report.error))
 	if live != null:
 		if not live.reload(): return _bootstrap_committed_failure(report, "reload", name, live)
-		ProjectOpenings.capture(live)  # This bootstrap specifically committed its replacement.
+		if not ProjectOpenings.accept_replacement(live, report.get("identity", {})).is_empty():
+			return _bootstrap_committed_failure(report, "identity", name, live)
 		# Refresh the shared registry in place, preserving primary and map bindings.
 		var registry := external_state.get_type_registry(name) if external_state != null else _registry.get_type_registry(name)
 		if registry == null or not registry.get_diagnostic().is_empty():

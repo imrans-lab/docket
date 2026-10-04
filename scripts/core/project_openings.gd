@@ -37,9 +37,11 @@ static func move_refusal(source: DocketDB, target: DocketDB) -> String:
 	for db in [source, target]:
 		var refusal := opening_refusal(db)
 		if not refusal.is_empty(): return refusal
-		if db is DocketDBJsonl:
+		if db is DocketDBJsonl and not db is DocketDBMemory:
 			refusal = DocketDBJsonl.temp_refusal(db.get_path())
 			if not refusal.is_empty(): return refusal
+	var reserved := namespace_refusal(source.get_path(), target.get_path())
+	if not reserved.is_empty(): return reserved
 	var state: String = compare(source.get_path(), target.get_path()).state
 	return "" if state == "DIFFERENT" else "Move refused: project identity is " + state
 
@@ -48,11 +50,41 @@ static func path_refusal(path: String, projects: Dictionary) -> String:
 		var db: DocketDB = projects[name]
 		if normalized_path(db.get_path()) == normalized_path(path):
 			return "Project already loaded: %s" % name
+		var reserved := namespace_refusal(path, db.get_path())
+		if not reserved.is_empty(): return reserved
 		var result := compare(db.get_path(), path)
 		if result.state == "SAME": return "Project already loaded: %s" % name
 		# A genuinely absent candidate remains eligible for ordinary creation.
 		if result.state == "ABSENT" and result.get("right", {}).get("state") == "ABSENT" and result.get("left", {}).get("state") == "PRESENT": continue
-		if result.state != "DIFFERENT": return "Cannot prove distinct project identity"
+		if result.state != "DIFFERENT":
+			var reason := "helper absent" if not ClassDB.class_exists("DocketFileIdentity") else ("loaded file missing" if result.get("left", {}).get("state") == "ABSENT" else "query error")
+			return "Cannot prove distinct project identity: %s (%s)" % [db.get_path(), reason]
+	return ""
+
+## Protect canonical files from another project's mutable/recovery namespaces.
+static func namespace_refusal(left: String, right: String) -> String:
+	if DocketDBMemory.is_memory_path(left) or DocketDBMemory.is_memory_path(right): return ""
+	for pair in [[left, right], [right, left]]:
+		for sibling in reserved_paths(pair[1]):
+			if normalized_path(pair[0]) == normalized_path(sibling): return "Project overlaps reserved namespace: " + sibling
+			var state: String = compare(pair[0], sibling).state
+			if state == "SAME": return "Project overlaps reserved namespace: " + sibling
+			if state == "ERROR": return "Cannot prove reserved namespace identity: " + sibling
+	return ""
+
+static func reserved_paths(path: String) -> Array[String]:
+	var wal := JSONLSidecar.path_for(path)
+	var paths: Array[String] = [wal, path + FileLock.SUFFIX, path + JSONLReplace.SUFFIX, wal + JSONLReplace.SUFFIX]
+	for cache in JSONLCache.cache_family(path):
+		for suffix in ["", "-wal", "-shm"]: paths.append(cache + suffix)
+	for base in [path, wal]: paths.append(base + ".tmp.%d" % OS.get_process_id())
+	return paths
+
+## Receipt was captured from our temp before installation, never the fresh path.
+static func accept_replacement(db: DocketDB, receipt: Dictionary) -> String:
+	var current := inspect(db.get_path())
+	if receipt.get("state") != "PRESENT" or current != receipt: return "Owned replacement identity could not be verified"
+	db.set_meta("physical_opening", receipt)
 	return ""
 
 static func name_refusal(name: String, projects: Dictionary) -> String:

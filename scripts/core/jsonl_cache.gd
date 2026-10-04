@@ -341,8 +341,11 @@ static func cache_path_for(jsonl_path: String) -> String:
 static func cache_path_for_version(jsonl_path: String, version: String) -> String:
 	return jsonl_path + (".v2.cache" if version == "2.0.0" else (".future.cache" if JSONLParser.is_newer_version(version) else ".cache"))
 
+static func cache_family(jsonl_path: String) -> Array[String]:
+	return [cache_path_for_version(jsonl_path, "1.0.0"), cache_path_for_version(jsonl_path, "2.0.0"), jsonl_path + ".future.cache"]
+
 static func delete_cache_family(jsonl_path: String) -> String:
-	for base in [jsonl_path + ".cache", jsonl_path + ".v2.cache", jsonl_path + ".future.cache"]:
+	for base in cache_family(jsonl_path):
 		var error := _delete_cache_files(base)
 		if not error.is_empty(): return error
 	return ""

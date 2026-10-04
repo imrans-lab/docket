@@ -58,7 +58,7 @@ func test_native_filesystem_states_and_admission() -> Variant:
 	if not _link(ProjectSettings.globalize_path(DIR + "/real/sub"), DIR + "/directory-link"): return "directory symlink fixture failed"
 	if not _link(path, DIR + "/real/copy.dct", true): return "dot-segment hardlink fixture failed"
 	var dotted := DIR + "/directory-link/../copy.dct"
-	if ProjectOpenings.compare(path, dotted).state != "SAME": return "symlink parent identity oracle failed"
+	if ProjectOpenings.compare(path, dotted).state != ("DIFFERENT" if OS.get_name() == "Windows" else "SAME"): return "symlink parent identity oracle failed"
 	if FileAccess.get_file_as_bytes(path) != bytes: return "admission changed source bytes"
 	if not ProjectOpenings.path_refusal(DIR + "/new.dct", {"source":source}).is_empty(): return "new file admission refused"
 	return true
@@ -138,4 +138,60 @@ func test_move_temp_hardlink_refuses_before_target_write() -> Variant:
 	if not result.has("error") or not str(result.error).contains("temporary namespace") or result.get("partial_copy", false): return "temp hardlink move was not refused before write"
 	if not source.has_item(item) or target.has_item(item): return "temp hardlink changed rows"
 	if FileAccess.get_file_as_bytes(source.get_path()) != source_bytes or FileAccess.get_file_as_bytes(temp) != source_bytes or FileAccess.get_file_as_bytes(target.get_path()) != target_bytes: return "temp hardlink changed bytes"
+	return true
+
+func test_identical_replacement_never_refreshes_opening() -> Variant:
+	for stage in ["before_settle", "after_rename"]:
+		var db := _create(stage)
+		if db == null: return "creation failed"
+		var old: Dictionary = db.get_meta("physical_opening")
+		var replace_file := func() -> void:
+			var bytes := FileAccess.get_file_as_bytes(db.get_path())
+			DirAccess.rename_absolute(db.get_path(), db.get_path() + ".saved")
+			var f := FileAccess.open(db.get_path(), FileAccess.WRITE)
+			f.store_buffer(bytes); f.close()
+		if stage == "before_settle": replace_file.call()
+		else:
+			JSONLCheckedCommit.stage_hook = func(at: String, _path: String, _temp: String) -> String:
+				if at == "after_rename": replace_file.call()
+				return ""
+		var error := db._settle_canonical()
+		JSONLCheckedCommit.stage_hook = Callable()
+		if error.is_empty() or db.get_meta("physical_opening") != old or ProjectOpenings.opening_refusal(db).is_empty(): return "replacement was blessed by settle"
+	return true
+
+func test_memory_file_round_trip_move() -> Variant:
+	var memory := DocketDBMemory.create("memory")
+	var file := _create("file")
+	if memory == null or file == null: return "creation failed"
+	_dbs.append(memory)
+	var id := memory.next_uuid7_id()
+	if not memory.insert_item(id, {"type":"chore", "title":"memory move", "status":"open", "created_at":"2026-10-04T00:00:00Z", "updated_at":"2026-10-04T00:00:00Z"}).is_empty(): return "insert failed"
+	var projects := {"memory":memory, "file":file}
+	for route in [["memory", "file"], ["file", "memory"]]:
+		var result := DocketMove.new().execute({"id":id,"source_project":route[0],"target_project":route[1]}, {}, memory, projects)
+		if result.has("error"): return "memory/file move failed"
+		id = str(result.new_id)
+		if not projects[route[1]].has_item(id): return "move destination missing"
+	return true
+
+func test_reserved_siblings_refuse_before_open() -> Variant:
+	var target := _create("target")
+	if target == null: return "creation failed"
+	var source := _create("reserved-source")
+	if source == null: return "source creation failed"
+	var bytes := FileAccess.get_file_as_bytes(source.get_path())
+	for sibling in ProjectOpenings.reserved_paths(target.get_path()):
+		if FileAccess.file_exists(sibling): continue
+		if not _link(source.get_path(), sibling, true): return "reserved fixture failed"
+		if ProjectOpenings.path_refusal(sibling, {"target":target}).is_empty(): return "reserved name admission accepted"
+		var alias := DIR + "/alias.dct"
+		if not _link(sibling, alias, true): return "reserved alias fixture failed"
+		# Distinct source overlaps the destination namespace, including backup recovery.
+		if ProjectOpenings.path_refusal(alias, {"target":target}).is_empty(): return "reserved alias admission accepted"
+		var state := AppState.new()
+		state._project_dbs = {"source":source}
+		if state.add_project(target.get_path()).is_empty(): return "destination opened over reserved source"
+		if FileAccess.get_file_as_bytes(sibling) != bytes: return "reserved evidence changed"
+		DirAccess.remove_absolute(alias); DirAccess.remove_absolute(sibling)
 	return true
