@@ -120,8 +120,8 @@ func add_project_result(path: String) -> Dictionary:
 		return {"error": error}
 	for proj_name in _project_dbs:
 		var pdb: DocketDB = _project_dbs[proj_name]
-		if pdb.get_path() == path:
-			return {"name": proj_name, "path": path, "prefix": pdb.get_id_prefix(), "storage_mode": SessionProject.mode_of(pdb)}
+		if ProjectOpenings.normalized_path(pdb.get_path()) == ProjectOpenings.normalized_path(path):
+			return ProjectOpenings.descriptor(str(proj_name), pdb, db)
 	return {"error": "Project did not load: %s" % path}
 
 
@@ -132,6 +132,10 @@ func add_project(path: String) -> String:
 		return schema_refusal
 	## Load an additional .dct project without closing the primary.
 	## Returns "" on success, else the reason it was refused (also emitted).
+	var duplicate := ProjectOpenings.path_refusal(path, _project_dbs)
+	if not duplicate.is_empty():
+		load_failed.emit(path, duplicate)
+		return duplicate
 	var new_db: DocketDB
 	if DocketDBMemory.is_memory_path(path):
 		new_db = DocketDBMemory.create(path.trim_prefix(DocketDBMemory.PATH_SCHEME))
@@ -160,6 +164,17 @@ func add_project(path: String) -> String:
 		load_failed.emit(path, reason)
 		return reason
 
+	var proj_name := new_db.get_project_name()
+	if proj_name.is_empty():
+		proj_name = path.get_file().get_basename()
+		new_db.set_project_name(proj_name)
+
+	var collision := ProjectOpenings.name_refusal(proj_name, _project_dbs)
+	if not collision.is_empty():
+		new_db.close()
+		load_failed.emit(path, collision)
+		return collision
+
 	var refusal := SessionProject.admit(new_db)
 	if not refusal.is_empty():
 		new_db.close()
@@ -167,10 +182,6 @@ func add_project(path: String) -> String:
 		load_failed.emit(path, refusal)
 		return refusal
 
-	var proj_name := new_db.get_project_name()
-	if proj_name.is_empty():
-		proj_name = path.get_file().get_basename()
-		new_db.set_project_name(proj_name)
 
 	# Resolve ID prefix collisions by appending chars from project name
 	var new_prefix := new_db.get_id_prefix()
@@ -214,8 +225,8 @@ func add_project(path: String) -> String:
 			else:
 				new_db.set_id_prefix(new_prefix)
 
-	# The first successful open establishes the primary; replacing it follows suit.
-	if db == null or _project_dbs.get(proj_name) == db:
+	# The first successful additive open establishes the primary.
+	if db == null:
 		db = new_db
 		dct_path = path
 	_project_dbs[proj_name] = new_db
@@ -447,6 +458,12 @@ func create_and_add_project(path: String) -> void:
 		load_failed.emit(path, schema_refusal)
 		return
 	## Create a new .dct and add it alongside existing projects (does NOT replace).
+	var refusal := ProjectOpenings.path_refusal(path, _project_dbs)
+	if refusal.is_empty(): refusal = ProjectOpenings.name_refusal(path.get_file().get_basename(), _project_dbs)
+	if refusal.is_empty() and FileAccess.file_exists(path): refusal = "Destination already exists: %s" % path
+	if not refusal.is_empty():
+		load_failed.emit(path, refusal)
+		return
 	# Default new dockets to JSONL format
 	var new_db := DocketDBJsonl.create_new_jsonl(path)
 	if new_db == null:

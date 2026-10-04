@@ -58,8 +58,13 @@ func _ready() -> void:
 				paths_to_load.append(sp)
 		if not TypeRegistryBootstrap.opening_refusal().is_empty(): paths_to_load.clear()
 		for path in paths_to_load:
+			var duplicate := ProjectOpenings.path_refusal(str(path), _project_dbs)
+			if not duplicate.is_empty():
+				printerr("Docket: %s" % duplicate)
+				continue
 			var loaded_db := _open_or_create_db(str(path))
-			var refusal: String = SessionProject.admit(loaded_db) if loaded_db else ""
+			var refusal: String = ProjectOpenings.name_refusal(loaded_db.get_project_name() if not loaded_db.get_project_name().is_empty() else str(path).get_file().get_basename(), _project_dbs) if loaded_db else ""
+			if refusal.is_empty() and loaded_db: refusal = SessionProject.admit(loaded_db)
 			if not refusal.is_empty():
 				loaded_db.close()
 				printerr("Docket: %s" % refusal)
@@ -192,25 +197,26 @@ func _gui_open(request: Dictionary) -> Dictionary:
 func _headless_add_project(path: String) -> Dictionary:
 	var refusal_before_open := TypeRegistryBootstrap.opening_refusal()
 	if not refusal_before_open.is_empty(): return {"error":refusal_before_open}
+	var duplicate := ProjectOpenings.path_refusal(path, _project_dbs)
+	if not duplicate.is_empty(): return {"error":duplicate}
 	var loaded_db := _open_or_create_db(path)
 	if not loaded_db:
 		return {"error": "Failed to open: %s" % path}
-	var refusal := SessionProject.admit(loaded_db)
-	if not refusal.is_empty():
-		loaded_db.close()
-		return {"error": refusal}
 	var proj_name := loaded_db.get_project_name()
 	if proj_name.is_empty():
 		proj_name = path.get_file().get_basename()
 		loaded_db.set_project_name(proj_name)
-	# A project loaded under a name already served replaces it, including as primary.
-	if _db == null or _project_dbs.get(proj_name) == _db:
-		_db = loaded_db
+	var refusal := ProjectOpenings.name_refusal(proj_name, _project_dbs)
+	if refusal.is_empty(): refusal = SessionProject.admit(loaded_db)
+	if not refusal.is_empty():
+		loaded_db.close()
+		return {"error": refusal}
+	if _db == null: _db = loaded_db
 	TypeRegistryBootstrap.projects_opened = true
 	_project_dbs[proj_name] = loaded_db
 	_registry.update_db(_schema, _db, _project_dbs)
 	_persist_headless_session()
-	return {"name": proj_name, "path": path, "prefix": loaded_db.get_id_prefix(), "storage_mode": SessionProject.mode_of(loaded_db)}
+	return ProjectOpenings.descriptor(proj_name, loaded_db, _db)
 
 
 func _headless_remove_project(proj_name: String) -> Dictionary:

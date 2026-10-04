@@ -37,7 +37,7 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	# Check if already loaded
 	for loaded_name in project_dbs:
 		var pdb: DocketDB = project_dbs[loaded_name]
-		if pdb.get_path() == path:
+		if ProjectOpenings.normalized_path(pdb.get_path()) == ProjectOpenings.normalized_path(path):
 			return {"error": "Project already loaded: %s" % loaded_name}
 
 	if mode == SessionProject.MODE_SESSION_FILE:

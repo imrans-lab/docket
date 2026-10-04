@@ -18,23 +18,7 @@ func execute(_args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: 
 	var projects: Array = []
 	for proj_name in project_dbs:
 		var pdb: DocketDB = project_dbs[proj_name]
-		var entry := {
-			"name": proj_name,
-			"path": pdb.get_path(),
-			"prefix": pdb.get_id_prefix(),
-			"primary": pdb == db,
-		}
-		entry["read_only_reason"] = pdb.get_write_block_reason()
-		var meta := pdb.get_project_meta()
-		for key in meta:
-			entry[key] = meta[key]
-		# Storage mode is reported beside the lifecycle stage, never folded into it.
-		entry["storage_mode"] = SessionProject.mode_of(pdb)
-		entry["stage"] = str(meta.get("stage", ""))
-		if entry.storage_mode == SessionProject.MODE_SESSION_FILE:
-			entry["owner"] = SessionProject.read_owner(pdb.get_path())
-		if pdb is DocketDBMemory:
-			entry["usage"] = (pdb as DocketDBMemory).usage()
+		var entry := ProjectOpenings.descriptor(str(proj_name), pdb, db)
 		projects.append(entry)
 	var result := {"projects": projects, "count": projects.size(), "memory_lease": MemoryProject.lease_status()}
 	if not MemoryProject.last_spills.is_empty():

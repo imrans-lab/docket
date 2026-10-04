@@ -36,6 +36,9 @@ var _jsonl_path: String
 # Load-time collision aliases never enter stored metadata or canonical snapshots.
 var _session_id_prefix: String = ""
 var last_write_error: String = ""
+## Emitted only after a successful content reload, never a new opening.
+signal content_reloaded
+
 ## Successful cache replacements, including a refused settle recovery.
 var reload_generation: int = 0
 var _write_blocked: bool = false
@@ -266,6 +269,7 @@ func reload() -> bool:
 	_adopt(fresh)
 	reload_generation += 1
 	last_open_error = ""
+	content_reloaded.emit()
 	return true
 
 
