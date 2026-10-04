@@ -138,6 +138,8 @@ try:
         name = path.stem
         locked(p, name)
         d = bind(p, path)
+        # Exercise the safe forwarding channel through the real child listing.
+        if i == 0: diagnose_paths(p, path)
         # Equivalent absolute paths retain the same opening identity. Native
         # Windows backslashes exercise real client input; slash form also binds.
         equivalent = str(path.parent) + '/./' + path.name
