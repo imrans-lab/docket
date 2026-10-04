@@ -4,6 +4,7 @@ class_name DocketHttpServer
 ## Supports multiple .dct files loaded simultaneously.
 
 var stdio: bool = false
+var host_authority: DocketHostAuthority
 var _stdio: DocketStdioTransport
 
 var port: int = 3010
@@ -93,6 +94,8 @@ func _ready() -> void:
 
 	_handler = McpHandler.new()
 	_handler.init_with_registry(_registry)
+	if stdio:
+		_handler.host_authority = host_authority
 
 	if stdio:
 		_stdio = DocketStdioTransport.new()

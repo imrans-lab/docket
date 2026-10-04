@@ -15,11 +15,20 @@ const FrameProbe := preload("res://scripts/ui/frame_probe.gd")
 
 var _test_runner: Node
 var _http_server: Node
+var _host_authority: DocketHostAuthority
 
 
 func _ready() -> void:
 	var opts := _parse_args()
 	DocketRuntimeState.stdio = opts.stdio
+	var authority := DocketHostAuthority.new()
+	var auth_error := authority.configure_from_environment(opts.host_authority, opts.stdio)
+	if not auth_error.is_empty():
+		printerr("Docket: %s" % auth_error)
+		DocketRuntimeState.quit(get_tree(), 2)
+		return
+	if opts.host_authority:
+		_host_authority = authority
 
 	# Godot consumes --quiet before exposing cmdline args; inspect its effect.
 	if opts.stdio and (opts.mode not in ["serve", "gui"] or Engine.print_to_stdout or opts.state_dir.is_empty()):
@@ -66,7 +75,7 @@ func _parse_args() -> Dictionary:
 
 
 func _parse_arg_values(args: Array) -> Dictionary:
-	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false, "state_dir": "", "restore_session": false}
+	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false, "host_authority": false, "state_dir": "", "restore_session": false}
 
 	var i := 0
 	while i < args.size():
@@ -75,6 +84,8 @@ func _parse_arg_values(args: Array) -> Dictionary:
 				opts.mode = "help"
 			"--serve", "serve":
 				opts.mode = "serve"
+			"--host-authority":
+				opts.host_authority = true
 			"--stdio":
 				opts.stdio = true
 			"--state-dir":
@@ -170,6 +181,7 @@ func _print_help() -> void:
 	print("  --query <path.dcq>  Load a .dcq query file on startup")
 	print("  --serve             Run as headless MCP server (no GUI)")
 	print("  --stdio             Use newline JSON-RPC (requires --quiet --state-dir)")
+	print("  --host-authority    Enable private host authentication (stdio only)")
 	print("  --state-dir <dir>   Private absolute state directory (required for stdio)")
 	print("  --restore-session  Deliberately restore the private profile session")
 	print("  --port <number>     MCP server port (default: 3010)")
@@ -212,6 +224,7 @@ func _start_server(opts: Dictionary) -> void:
 	var ServerScript = load("res://scripts/mcp/http_server.gd")
 	_http_server = ServerScript.new()
 	_http_server.stdio = opts.stdio
+	_http_server.host_authority = _host_authority
 	_http_server.port = opts.port
 	_http_server.dct_path = opts.file
 	_http_server.dct_paths = opts.get("files", [opts.file])
@@ -288,6 +301,7 @@ func _start_gui(opts: Dictionary) -> void:
 	var server = ServerScript.new()
 	server.port = opts.port
 	server.stdio = opts.stdio
+	server.host_authority = _host_authority
 	server.external_state = state
 	add_child(server)
 	if not opts.stdio:

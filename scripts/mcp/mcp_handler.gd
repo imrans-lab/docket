@@ -5,6 +5,7 @@ class_name McpHandler
 const PROTOCOL_VERSION := "2025-03-26"
 
 var _registry: ToolRegistry
+var host_authority: DocketHostAuthority
 
 
 func init_with_registry(registry: ToolRegistry) -> void:
@@ -16,6 +17,12 @@ func handle(request: Dictionary) -> Variant:
 	var id = request.get("id")
 	if id is float:
 		id = int(id)
+	if method.begins_with(DocketHostAuthority.PREFIX):
+		if host_authority == null:
+			return _make_error(id, -32601, "Private method unavailable")
+		var reply := host_authority.handle(method, request.get("params", {}))
+		reply.merge({"jsonrpc": "2.0", "id": id})
+		return reply
 	var params: Dictionary = request.get("params", {})
 
 	match method:
