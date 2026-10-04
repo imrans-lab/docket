@@ -113,7 +113,8 @@ try:
             refused(malformed, -32602)
             assert 'malformed JSONL at line 1' in malformed['error']['message'], 'shipment refusal reason omitted'
             assert result['status'] == 'installed' and result['inserted'] == ['BTS-0001']
-            assert opened['name'] == 'bootstrap' and opened['path'] == str(path)
+            # Descriptor paths use forward slashes on every platform.
+            assert opened['name'] == 'bootstrap' and opened['path'] == path.as_posix()
             assert opened['primary'] and opened['open_generation'] and opened['read_only_reason'] == ''
             assert call(p, 'docket_project_list', {})['projects'] == [opened]
             assert call(p, 'docket_get', dict(id='BTS-0001'))['title'] == 'shipped'
