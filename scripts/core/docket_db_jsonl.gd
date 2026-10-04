@@ -649,18 +649,10 @@ func _settle_canonical() -> String:
 		lock.release()
 		return _fail_flush("canonical source changed while acquiring write lock")
 
-	# Canonical first, sidecar second. The marker lets a replay after a crash
-	# between the two recognise that the canonical already holds every record.
-	var sidecar := JSONLSidecar.path_for(_jsonl_path)
-	var write_error := ""
-	if JSONLSidecar.has_content(sidecar):
-		write_error = JSONLSidecar.append(sidecar, JSONLSidecar.settle_marker(jsonl_text.sha256_text()))
-	if write_error.is_empty():
-		write_error = str(_atomic_write_hook.call(_jsonl_path, jsonl_text)) if _atomic_write_hook.is_valid() else _atomic_write(_jsonl_path, jsonl_text)
-	if write_error.is_empty():
-		var remove_error := JSONLSidecar.remove(sidecar)
-		# The canonical is complete; a leftover sidecar is skipped by its marker.
-		if not remove_error.is_empty(): push_warning("DocketDBJsonl: %s" % remove_error)
+	var verify := func() -> String:
+		return "" if _allow_initial_write or _source_fingerprint(true) == expected_source_hash else "canonical source changed while settling"
+	var committed := JSONLCheckedCommit.replace(_jsonl_path, jsonl_text, verify, _atomic_write_hook)
+	var write_error: String = committed.error
 	# Our own replacement is always hashed in full: its stat is fresh, so the
 	# hash is reused only after a later check past the mtime window.
 	var fingerprint := _source_fingerprint(true)

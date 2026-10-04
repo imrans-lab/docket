@@ -24,6 +24,7 @@ func _ready() -> void:
 		preload("res://test/test_host_vault_consumers.gd"),
 		preload("res://test/test_host_schema.gd"),
 		preload("res://test/test_master_bootstrap_plan.gd"),
+		preload("res://test/test_master_bootstrap_apply.gd"),
 		preload("res://test/test_http_origin_guard.gd"),
 		preload("res://test/test_mcp_handler.gd"),
 		preload("res://test/test_build_info.gd"),

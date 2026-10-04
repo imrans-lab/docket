@@ -699,3 +699,19 @@ requires the explicit approved upgrade workflow.
 
 Collision aliases are session-only metadata. IDs minted under an alias retain
 that prefix after the session ends.
+
+### Master bootstrap metadata
+
+`master_bootstrap_state` is reserved for the internal checked disk bootstrap.
+Its value is a JSON **string**, containing `version: 1`, `baseline_b64` (base64
+of the complete canonical JSONL shipment), and `ever_shipped` (sorted unique
+nonempty item IDs, including every baseline ID). The baseline must have the
+resident supported format and cannot itself contain this key. Shipment callers
+may not seed the key; malformed resident state refuses apply. Records and state
+are replaced together, using ordinary synchronous settle's sidecar target marker.
+The string survives ordinary cache metadata import, mutation, settle and restart.
+Bootstrap preserves the parser/ordinary-writer record contract; fixed-family
+unknown-field loss already present in ordinary writers is not repaired here.
+Its advisory lock and final exact canonical/WAL check refuse observed drift;
+the ordinary check-to-rename race remains. Rename guarantees atomic visibility,
+without a power-loss fsync guarantee.

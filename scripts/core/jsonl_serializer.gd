@@ -36,6 +36,24 @@ static func serialize_all(db: DocketDB) -> String:
 	return format_all(snapshot(db))
 
 
+static func format_parsed(snapshot: Dictionary) -> String:
+	## Parser records, never SQL rows. Event extras are flattened back into the
+	## wire object; binary inspection aliases are not additional wire fields.
+	var lines: PackedStringArray = [_to_ordered_json(snapshot.meta)]
+	for section in ["type_defs", "type_def_versions", "items", "events", "comments", "links", "attachments", "secrets", "secret_versions", "saved_queries"]:
+		for record: Dictionary in snapshot[section]:
+			var wire := record.duplicate(true)
+			if section == "events" and wire.has("extras"):
+				var extras: Dictionary = wire.extras
+				wire.erase("extras")
+				for key in extras: wire[key] = extras[key]
+			if section in ["attachments", "secrets", "secret_versions"]:
+				for field in ["data", "ciphertext", "iv", "mac"]:
+					if wire.get(field) is PackedByteArray: wire.erase(field + "_b64")
+			lines.append(_to_ordered_json(wire))
+	return "\n".join(lines) + "\n"
+
+
 static func snapshot(db: DocketDB, read: Dictionary = {}) -> Dictionary:
 	## Every cache read serialize_all needs, as the meta line plus plain row
 	## arrays (the binding returns copies, so no row aliases the connection).

@@ -80,6 +80,10 @@ static func rebuild_cache(jsonl_path: String, cache_path: String) -> DocketDB:
 
 
 static func _read_source(jsonl_path: String, cache_path: String) -> Dictionary:
+	return read_source(jsonl_path, cache_path)
+
+
+static func read_source(jsonl_path: String, cache_path: String = "") -> Dictionary:
 	## {"parsed": canonical with the sidecar replayed, "fingerprint": of the
 	## bytes parsed}, or {} with last_error set.
 
@@ -118,7 +122,7 @@ static func _read_source(jsonl_path: String, cache_path: String) -> Dictionary:
 		push_error("JSONLCache: %s" % last_error)
 		return {}
 	var expected_cache_path := cache_path_for_version(jsonl_path, str(parsed.meta.version))
-	if cache_path != expected_cache_path:
+	if not cache_path.is_empty() and cache_path != expected_cache_path:
 		last_error = "format %s requires cache path %s" % [parsed.meta.version, expected_cache_path]
 		return {}
 	# Same refusal rule as the canonical: a sidecar that cannot be replayed
@@ -129,7 +133,7 @@ static func _read_source(jsonl_path: String, cache_path: String) -> Dictionary:
 		push_error("JSONLCache: %s" % replay_error)
 		return {}
 	last_error = ""
-	return {"parsed": parsed, "fingerprint": JSONLSidecar.fingerprint_of(canonical_sha, sidecar_bytes)}
+	return {"parsed": parsed, "canonical": canonical_bytes, "sidecar": sidecar_bytes, "sidecar_exists": FileAccess.file_exists(JSONLSidecar.path_for(jsonl_path)), "fingerprint": JSONLSidecar.fingerprint_of(canonical_sha, sidecar_bytes)}
 
 
 static func _open_for_rebuild(jsonl_path: String, cache_path: String) -> DocketDB:
