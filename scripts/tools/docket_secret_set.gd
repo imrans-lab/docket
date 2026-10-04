@@ -71,9 +71,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 			var hint := UserPrefs.load_vault_password_hint()
 			var hint_msg := " Hint: %s" % hint if not hint.is_empty() else ""
 			return {"error": "Vault password not configured. Set it in Preferences first.%s" % hint_msg}
-	
-		# Get or create vault salt
-	
+
 		if db.has_vault():
 			salt = db.get_vault_salt()
 			key = VaultCrypto.derive_key(password, salt, db.get_vault_iterations())
@@ -86,6 +84,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 			salt = VaultCrypto.generate_salt()
 			key = VaultCrypto.derive_key(password, salt, VaultCrypto.PBKDF2_ITERATIONS)
 			db.init_vault(key, salt, VaultCrypto.PBKDF2_ITERATIONS)
+
 	var is_update := not db.get_secret_raw(handle).is_empty()
 
 	# Replacing a value archives the old one. The GUI has always done this
