@@ -52,28 +52,7 @@ def watchdog():
 threading.Thread(target=watchdog, daemon=True).start()
 
 # Query the actual engine path with the same project/environment before traffic.
-probe_script = base / 'userdir-probe.gd'
-probe_script.write_text('\\n'.join([
-    'extends SceneTree',
-    'func _initialize():',
-    '    var base := OS.get_cmdline_user_args()[0]',
-    '    var actual := ProjectSettings.globalize_path("user://").simplify_path()',
-    '    if not actual.is_absolute_path():',
-    '        actual = DirAccess.open(".").get_current_dir().path_join(actual).simplify_path()',
-    '    if not actual.begins_with(base + "/"):',
-    '        quit(1)',
-    '        return',
-    '    var marker := FileAccess.open("user://docket-fixture-userdir.txt", FileAccess.WRITE)',
-    '    if marker == null:',
-    '        quit(1)',
-    '        return',
-    '    marker.store_string("private fixture marker")',
-    '    marker.close()',
-    '    var report := FileAccess.open(base.path_join("userdir-report.json"), FileAccess.WRITE)',
-    '    report.store_string(JSON.stringify(actual))',
-    '    report.close()',
-    '    quit(0)',
-]))
+probe_script = pathlib.Path(project) / 'test' / 'fixtures' / 'userdir_probe.gd'
 
 def verify_userdir():
     report = base / 'userdir-report.json'
