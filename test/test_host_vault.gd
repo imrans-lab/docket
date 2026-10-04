@@ -237,7 +237,7 @@ def safe_diagnostic(kind, error, trace):
     line = 0
     call_site = 0
     while trace is not None:
-        if trace.tb_frame.f_code.co_filename == '<string>':
+        if trace.tb_frame.f_code.co_filename == __file__:
             if call_site == 0: call_site = trace.tb_lineno
             line = trace.tb_lineno
         trace = trace.tb_next
@@ -255,11 +255,15 @@ def diagnose():
 	var prefix := "import sys\nSOURCE = " + JSON.stringify(source) + "\n" + diagnostic
 	var output: Array = []
 	var python := "python" if OS.get_name() == "Windows" else "python3"
-	# Unix captured OS.execute wraps arguments in shell double quotes without
-	# escaping their contents. Encode the code, including SOURCE's JSON quotes.
-	var encoded := Marshalls.raw_to_base64((prefix + helpers + scenario_driver).to_utf8_buffer())
-	var bootstrap := "import base64; exec(compile(base64.b64decode('" + encoded + "'), '<string>', 'exec'))"
-	var code := OS.execute(python, PackedStringArray(["-c", bootstrap, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
+	# Windows CreateProcess caps command lines at 32,767 characters. Keep the
+	# composed source in isolated test scratch; secrets are generated at runtime.
+	var driver_path := ProjectSettings.globalize_path("user://host-vault-driver-%d.py" % Time.get_ticks_usec())
+	var driver_file := FileAccess.open(driver_path, FileAccess.WRITE)
+	if driver_file == null: return "Host vault driver scratch creation failed"
+	driver_file.store_string(prefix + helpers + scenario_driver)
+	driver_file.close()
+	var code := OS.execute(python, PackedStringArray([driver_path, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
+	DirAccess.remove_absolute(driver_path)
 	var report := "\n".join(PackedStringArray(output))
 	# Emit labels only, even when the composed driver's watchdog diagnoses.
 	if code != 0 or not report.contains("HOST VAULT receiver-consumer-lifetime-privacy PASS"):
