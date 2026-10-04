@@ -105,6 +105,7 @@ func _ready() -> void:
 		if host_authority != null:
 			host_authority.schema_adopted = _adopt_schema
 			host_authority.resolve_vault = _resolve_vault
+			host_authority.bootstrap_project = _bootstrap_project
 
 	if stdio:
 		_stdio = DocketStdioTransport.new()
@@ -446,3 +447,67 @@ func _resolve_vault(path: Variant) -> DocketDB:
 		if ProjectOpenings.normalized_path(db.get_path()) == normalized:
 			return db
 	return null
+
+
+func _bootstrap_project(path: String, shipment: String) -> Dictionary:
+	# Preflight uses disk metadata without opening a cache or registering a project.
+	# Existing metadata wins in the disk core; shipment metadata only seeds installs.
+	var parsed := JSONLParser.parse_bytes(shipment.to_utf8_buffer(), "bootstrap shipment")
+	if not MasterBootstrapPlan._validate(parsed).is_empty():
+		return DocketHostAuthority._error(-32602, "Bootstrap shipment refused")
+	var projects := external_state.get_project_dbs() if external_state != null else _project_dbs
+	var live: DocketDBJsonl
+	var name := ""
+	for key in projects:
+		var db: DocketDB = projects[key]
+		if ProjectOpenings.normalized_path(db.get_path()) != path: continue
+		if not db is DocketDBJsonl or not db.is_open() or not db.get_write_block_reason().is_empty() or not FileAccess.file_exists(path):
+			return DocketHostAuthority._error(-32602, "Bootstrap live project unavailable or read-only")
+		live = db as DocketDBJsonl
+		name = str(key)
+		# Finish a worker before acquisition; sliced readers leave their WAL intact.
+		if not live.finish_settle().is_empty():
+			return DocketHostAuthority._error(-32602, "Bootstrap pending settle refused")
+		break
+	if live == null:
+		var metadata: Dictionary = parsed.meta
+		if FileAccess.file_exists(path):
+			var source := JSONLCache.read_source(path)
+			if source.is_empty() or not MasterBootstrapPlan._validate(source.parsed).is_empty():
+				return DocketHostAuthority._error(-32602, "Bootstrap current project refused")
+			metadata = source.parsed.meta
+		name = str(metadata.get("project", ""))
+		if name.is_empty(): name = path.get_file().get_basename()
+		if not ProjectOpenings.name_refusal(name, projects).is_empty():
+			return DocketHostAuthority._error(-32602, "Bootstrap project name already loaded")
+		if metadata.get(SessionProject.META_KEY) == SessionProject.MODE_SESSION_FILE:
+			var owner := SessionProject.read_owner(path)
+			var pid := int(owner.get("pid", 0))
+			if not SessionProject.path_error(path).is_empty() or (pid > 0 and pid != OS.get_process_id() and FileLock.is_pid_running(pid)):
+				return DocketHostAuthority._error(-32602, "Bootstrap session admission refused")
+	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema())
+	if report.status == "refused":
+		return DocketHostAuthority._error(-32602, "Bootstrap disk apply refused")
+	if live != null:
+		if not live.reload(): return _bootstrap_committed_failure(report, "reload", name, live)
+		# Refresh the shared registry in place, preserving primary and map bindings.
+		var registry := external_state.get_type_registry(name) if external_state != null else _registry.get_type_registry(name)
+		if registry == null or not registry.get_diagnostic().is_empty():
+			return _bootstrap_committed_failure(report, "registry", name, live)
+		if external_state != null: external_state.data_changed.emit()
+		report["project"] = ProjectOpenings.descriptor(name, live, external_state.db if external_state != null else _db)
+	else:
+		var opened := _gui_add_project(path) if external_state != null else _headless_add_project(path)
+		if opened.has("error"): return _bootstrap_committed_failure(report, "open")
+		report["project"] = opened
+	return {"result":report}
+
+
+func _bootstrap_committed_failure(report: Dictionary, stage: String, name: String = "", live: DocketDB = null) -> Dictionary:
+	# Disk replacement has happened: preserve its report, never imply rollback.
+	report["disk_committed"] = true
+	report["live_status"] = "unavailable"
+	report["failure_stage"] = stage
+	if live != null:
+		report["project"] = ProjectOpenings.descriptor(name, live, external_state.db if external_state != null else _db)
+	return {"error":{"code":-32603, "message":"Bootstrap committed; live project unavailable", "data":report}}

@@ -61,11 +61,65 @@ try:
         assert current == {'protocol': 'docket_panel_v1', 'pid': q.pid}, 'fresh secret refused'
         assert current['pid'] != first['pid'], 'restart reused process'
         finish(q)
+    elif scenario == 'bootstrap':
+        import base64
+        stage = 'bootstrap_setup'
+        schema = {'types': {'chore': {'label': 'Chore', 'states': ['open', 'done'], 'initial_state': 'open', 'terminal_states': ['done'], 'transitions': {'open': ['done'], 'done': []}, 'required_fields': ['title'], 'optional_fields': []}}}
+        shipment = '{"_type":"meta","version":"1.0.0","counter":1,"id_prefix":"BTS","project":"bootstrap"}\\n{"_type":"item","id":"BTS-0001","type":"chore","status":"open","title":"shipped","created_at":"t","updated_at":"t"}\\n'
+        def call(p, name, arguments):
+            reply = request(p, 'tools/call', 92, dict(name=name, arguments=arguments))
+            assert not reply['result'].get('isError'), 'ordinary tool refused'
+            return json.loads(reply['result']['content'][0]['text'])
+        def bootstrap(p, canonical_path, text=shipment, **extra):
+            fields = dict(path=str(canonical_path), content=base64.b64encode(text.encode()).decode())
+            fields.update(extra)
+            return private(p, a, 93, 'docket/panel/bootstrap_project', fields)
+        for gui in (False, True):
+            stage = 'bootstrap_gui' if gui else 'bootstrap_headless'
+            if gui: args.remove('--serve')
+            env['DOCKET_PANEL_SECRET'] = a
+            p = launch('bootstrap-%s' % gui, ['--host-authority'])
+            path = base / ('bootstrap-%s.dct' % gui)
+            refused(bootstrap(p, path), -32602)
+            assert not path.exists(), 'undeclared schema mutated disk'
+            assert 'result' in private(p, a, 94, 'docket/panel/declare_schema', dict(schema=schema, version='bootstrap-fixture'))
+            for fields in ({'content': '!!!!'}, {'content': 'YQ=='}, {'content': '/w=='}, {'content': 'YQ='}, {'path': 'relative.dct'}, {'extra': True}):
+                refused(bootstrap(p, path, **fields), -32602)
+                assert not path.exists(), 'invalid request mutated disk'
+            refused(private(p, b, 95, 'docket/panel/bootstrap_project', dict(path=str(path), content=base64.b64encode(shipment.encode()).decode())), -32001)
+            result = bootstrap(p, path)['result']
+            opened = result['project']
+            assert result['status'] == 'installed' and result['inserted'] == ['BTS-0001']
+            assert opened['name'] == 'bootstrap' and opened['path'] == str(path)
+            assert opened['primary'] and opened['open_generation'] and opened['read_only_reason'] == ''
+            assert call(p, 'docket_project_list', {})['projects'] == [opened]
+            assert call(p, 'docket_get', dict(id='BTS-0001'))['title'] == 'shipped'
+            installed = path.read_bytes()
+            repeated = bootstrap(p, path)['result']
+            assert repeated['project'] == opened and path.read_bytes() == installed
+            collision = base / ('collision-%s.dct' % gui)
+            refused(bootstrap(p, collision), -32602)
+            assert not collision.exists() and call(p, 'docket_project_list', {})['projects'] == [opened]
+            current = bootstrap(p, path, shipment.replace('shipped', 'upgraded'))['result']
+            assert current['updated'] == ['BTS-0001'] and current['project']['open_generation'] == opened['open_generation']
+            assert call(p, 'docket_get', dict(id='BTS-0001'))['title'] == 'upgraded'
+            state = json.loads(path.read_text().splitlines()[0])['master_bootstrap_state']
+            assert isinstance(state, str) and json.loads(state)['ever_shipped'] == ['BTS-0001']
+            changed = call(p, 'docket_project_meta', dict(action='set', stage='experiment', hypothesis='ordinary', master_bootstrap_state='forged'))
+            call(p, 'docket_flush', {})
+            assert json.loads(path.read_text().splitlines()[0])['master_bootstrap_state'] == state
+            for reply in (result, repeated, current, changed, call(p, 'docket_project_meta', dict(action='get')), call(p, 'docket_project_list', {})):
+                assert 'master_bootstrap_state' not in json.dumps(reply) and 'baseline_b64' not in json.dumps(reply), 'internal state exposed'
+            refused(request(p, 'tools/call', 96, dict(name='docket/panel/bootstrap_project', arguments={})), -32602)
+            assert not any(t['name'] == 'docket/panel/bootstrap_project' for t in request(p, 'tools/list', 97)['result']['tools'])
+            finish(p)
+        args.append('--serve')
     elif scenario == 'transports':
         env['DOCKET_PANEL_SECRET'] = a  # presence alone must never enable authority
         p = launch('ordinary')
         assert request(p, 'ping', 0)['result'] == {}
         refused(private(p, a), -32601)
+        refused(private(p, a, 3, 'docket/panel/bootstrap_project', dict(path=str(base / 'private.dct'), content='YQ==')), -32601)
         assert request(p, 'tools/list', 2)['result']['tools'], 'ordinary stdio registry missing'
         finish(p)
         import socket, urllib.request, urllib.error
@@ -91,6 +145,7 @@ try:
         assert http('ping')['result'] == {}, 'ordinary HTTP ping failed'
         assert http('tools/list')['result']['tools'], 'ordinary HTTP registry missing'
         refused(http('docket/panel/status', {'panel_secret': a}), -32601)
+        refused(http('docket/panel/bootstrap_project', {'panel_secret': a, 'path': str(base / 'private.dct'), 'content': 'YQ=='}), -32601)
         refused(http('tools/call', {'name': 'docket/panel/status', 'arguments': {}}), -32602)
         q.terminate()
         q.wait(timeout=10)
@@ -106,6 +161,11 @@ try:
             data = path.read_bytes()
             assert a.encode() not in data and b.encode() not in data, 'authentication persisted'
     print('HOST AUTH %s PASS' % scenario)
+except BaseException as error:
+    trace = error.__traceback__
+    while trace.tb_next is not None: trace = trace.tb_next
+    print('HOST_AUTH_DIAGNOSTIC %s line=%d stage=%s' % (type(error).__name__, trace.tb_lineno, scenario), file=sys.stderr, flush=True)
+    sys.exit(1)
 finally:
     for p, err in children:
         if p.poll() is None:
@@ -129,6 +189,9 @@ func _run_scenario(scenario: String) -> Variant:
 	if helpers == driver:
 		return "stdio driver slice marker not found"
 	helpers = helpers.replace("['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))]", "['--state-dir', str(base / (name + '-state'))] + ([] if '--host-authority' in extra else ['--file', str(base / (name + '.dct'))])")
+	var unsafe_reporter := helpers.get_slice("def diagnose():", 1).get_slice("def watchdog():", 0)
+	helpers = helpers.replace("def diagnose():" + unsafe_reporter, "def diagnose():\n    print('HOST_AUTH_DIAGNOSTIC TimeoutError line=0 stage=watchdog', file=sys.stderr, flush=True)\n\n")
+	helpers = helpers.replace("completed.wait(180)", "completed.wait(540)")
 	var source := "import sys\nscenario = sys.argv.pop()\n" + helpers + DRIVER
 	var python := "python" if OS.get_name() == "Windows" else "python3"
 	var output: Array = []
@@ -178,3 +241,7 @@ func test_environment_secret_consumed() -> Variant:
 			if refusal.get("error", {}).get("code") != -32001:
 				return "Unauthenticated private parameter shape did not refuse authentication"
 	return true
+
+
+func test_private_bootstrap_gui_and_headless() -> Variant:
+	return _run_scenario("bootstrap")

@@ -105,6 +105,7 @@ const DIR := "user://test_project_openings"
 var _state: AppState
 var _reloads := 0
 var _failures := 0
+var _bootstrap_foreign_pid := 0
 
 func before_each() -> void:
 	DirAccess.make_dir_recursive_absolute(DIR)
@@ -115,6 +116,10 @@ func before_each() -> void:
 	_state.load_failed.connect(func(_path: String, _reason: String) -> void: _failures += 1)
 
 func after_each() -> void:
+	JSONLCheckedCommit.stage_hook = Callable()
+	if _bootstrap_foreign_pid > 0:
+		OS.kill(_bootstrap_foreign_pid)
+		_bootstrap_foreign_pid = 0
 	for name in _state.get_project_dbs().keys(): _state.remove_project(str(name))
 	_remove_tree(DIR)
 
@@ -231,3 +236,132 @@ func test_session_ownership_and_memory_descriptors_survive_refusals() -> Variant
 	if memory != entry or entry.storage_mode != "memory" or not entry.has("usage") or entry.has("owner") or entry.primary:
 		return "Memory descriptor lost usage or storage semantics"
 	return true
+
+# Drive the same private callback as stdio without starting a second listener.
+func _bootstrap_server() -> DocketHttpServer:
+	var server := DocketHttpServer.new()
+	server.external_state = _state
+	server._project_dbs = _state.get_project_dbs()
+	server._db = _state.db
+	server._schema = _state.schema
+	server._registry = ToolRegistry.new()
+	server._registry.init(_state.schema, _state.db, _state.get_project_dbs())
+	return server
+
+func test_bootstrap_pending_sliced_worker_identity_ephemerals_registry_and_restart() -> Variant:
+	var shipment := FileAccess.get_file_as_string("res://test/fixtures/dynamic_types_record_order_v2.jsonl")
+	var other := DIR + "/unrelated.dct"
+	_seed(other, "unrelated")
+	if not _state.add_project(other).is_empty(): return "Unrelated fixture admission failed"
+	var primary := _state.db
+	var unrelated_registry := _state.get_type_registry("unrelated")
+	var unrelated_generation: int = (primary as DocketDBJsonl).reload_generation
+	var signals: Array = []
+	_state.data_changed.connect(func() -> void: signals.append("changed"))
+	for mode in ["pending", "sliced", "worker"]:
+		var path := ProjectSettings.globalize_path(DIR + "/" + mode + ".dct")
+		var text := shipment.replace("order-fixture", mode)
+		var installed := MasterBootstrapApply.apply(path, text, _state.schema)
+		if installed.has("error") or not _state.add_project(path).is_empty(): return "Bootstrap fixture admission failed"
+		var live := _state.get_project_dbs()[mode] as DocketDBJsonl
+		var registry := _state.get_type_registry(mode)
+		var token := str(live.get_instance_id())
+		if not live.update_item_fields_checked("ORD-0001", {"description":"acknowledged WAL"}).is_empty(): return "Pending WAL mutation failed"
+		if not live.insert_item("ephemeral", {"type":"widget", "status":"queued", "title":"cache only", "storage":"ephemeral"}).is_empty(): return "Ephemeral fixture insertion failed"
+		if mode == "sliced":
+			var saved_slice := DocketDBJsonl.snapshot_slice_ms
+			DocketDBJsonl.snapshot_slice_ms = 0
+			var error := live.settle_in_background()
+			DocketDBJsonl.snapshot_slice_ms = saved_slice
+			if not error.is_empty() or not live.is_settling() or not live._settle_job.reading: return "Sliced background fixture failed"
+		elif mode == "worker":
+			if not live._start_settle_job().is_empty() or not live.is_settling() or live._settle_job.reading: return "Worker background fixture failed"
+		var server := _bootstrap_server()
+		var result := server._bootstrap_project(path, text.replace("Before definition", "Shipped upgrade"))
+		server.free()
+		if not result.has("result"): return "Loaded private bootstrap refused"
+		var descriptor: Dictionary = result.result.project
+		if descriptor.open_generation != token or descriptor.primary or live != _state.get_project_dbs()[mode] or registry != _state.get_type_registry(mode): return "Bootstrap replaced live identity or registry"
+		if live.get_item("ORD-0001").description != "acknowledged WAL" or live.get_item("ephemeral").title != "cache only" or live.is_settling(): return "Bootstrap lost pending WAL, ephemeral row or retained stale worker"
+		if not registry.get_type("widget").has("definition") or not registry.get_diagnostic().is_empty(): return "Registry unavailable after bootstrap"
+		if result.result.conflicts != [{"id":"ORD-0001", "reason":"customized"}]: return "Bootstrap report missed pending customization"
+		if not live.flush_checked().is_empty(): return "Ordinary post-bootstrap settle failed"
+		var disk := JSONLParser.parse_file(path)
+		if disk.items.size() != 1 or disk.items[0].description != "acknowledged WAL" or disk.meta.version != "2.0.0" or not disk.meta.get("master_bootstrap_state") is String: return "Ordinary settle lost bootstrap authority"
+		_state.remove_project(mode)
+		if not _state.add_project(path).is_empty(): return "Post-bootstrap restart failed"
+		var restarted: DocketDB = _state.get_project_dbs()[mode]
+		if restarted.get_item("ORD-0001").description != "acknowledged WAL" or restarted.has_item("ephemeral"): return "Restart lost durable state or serialized ephemeral"
+		_state.remove_project(mode)
+	if signals.size() != 3 or _state.db != primary or _state.get_type_registry("unrelated") != unrelated_registry or (primary as DocketDBJsonl).reload_generation != unrelated_generation: return "Bootstrap disturbed primary, unrelated project or data notification"
+	return true
+
+func test_bootstrap_actual_postcommit_reload_failure_is_honest() -> Variant:
+	var path := ProjectSettings.globalize_path(DIR + "/failure.dct")
+	_seed(path)
+	if not _state.add_project(path).is_empty(): return "Reload failure fixture admission failed"
+	var live := _state.db as DocketDBJsonl
+	var token := str(live.get_instance_id())
+	var shipment := FileAccess.get_file_as_string(path)
+	# Simulate a competing writer after the successful canonical replacement.
+	JSONLCheckedCommit.stage_hook = func(stage: String, target: String, _temp: String) -> String:
+		if stage == "after_rename":
+			var file := FileAccess.open(target, FileAccess.WRITE)
+			file.store_string("broken concurrent canonical\n"); file.close()
+		return ""
+	var server := _bootstrap_server()
+	var result := server._bootstrap_project(path, shipment)
+	server.free()
+	JSONLCheckedCommit.stage_hook = Callable()
+	if not result.has("error"): return "Postcommit reload failure reported success"
+	var failure: Dictionary = result.error.data
+	if not failure.disk_committed or failure.live_status != "unavailable" or failure.failure_stage != "reload" or failure.project.open_generation != token or failure.project.read_only_reason.is_empty(): return "Postcommit reload failure implied rollback or lost opening"
+	return true
+
+func test_bootstrap_session_preflight_and_concurrent_admission_failure() -> Variant:
+	var path := ProjectSettings.globalize_path(DIR + "/session.dct")
+	var shipment := '{"_type":"meta","version":"1.0.0","counter":0,"id_prefix":"SES","project":"session","project_storage_mode":"session_file"}\n'
+	_bootstrap_foreign_pid = OS.create_process("ping", ["-n", "60", "127.0.0.1"]) if OS.get_name() == "Windows" else OS.create_process("sleep", ["60"])
+	if _bootstrap_foreign_pid <= 0: return "Foreign session owner fixture failed"
+	var owner := FileAccess.open(path + ".owner", FileAccess.WRITE)
+	owner.store_string(JSON.stringify({"pid":_bootstrap_foreign_pid,"role":"serve","port":0})); owner.close()
+	var server := _bootstrap_server()
+	var result := server._bootstrap_project(path, shipment)
+	if not result.has("error") or FileAccess.file_exists(path) or not _state.get_project_dbs().is_empty():
+		server.free(); return "Session ownership preflight mutated or registered project"
+	DirAccess.remove_absolute(path + ".owner")
+	JSONLCheckedCommit.stage_hook = func(stage: String, target: String, _temp: String) -> String:
+		if stage == "after_rename":
+			var file := FileAccess.open(target + ".owner", FileAccess.WRITE)
+			file.store_string(JSON.stringify({"pid":_bootstrap_foreign_pid,"role":"serve","port":0})); file.close()
+		return ""
+	result = server._bootstrap_project(path, shipment)
+	server.free()
+	JSONLCheckedCommit.stage_hook = Callable()
+	if not result.has("error") or not result.error.get("data", {}).get("disk_committed", false) or result.error.data.failure_stage != "open" or not _state.get_project_dbs().is_empty(): return "Concurrent postcommit admission failure hid commit or registered orphan"
+	var disk := JSONLParser.parse_file(path)
+	return true if disk.meta.get("master_bootstrap_state") is String else "Postcommit failure lost installed disk state"
+
+func test_bootstrap_vault_metadata_movement_invalidates_real_key_session() -> Variant:
+	var path := ProjectSettings.globalize_path(DIR + "/vault.dct")
+	_seed(path)
+	if not _state.add_project(path).is_empty(): return "Vault bootstrap fixture failed"
+	var live := _state.db as DocketDBJsonl
+	var salt := PackedByteArray(); salt.resize(16); salt.fill(7)
+	var password := "bootstrap fixture"
+	var key := VaultCrypto.derive_key(password, salt, 10000)
+	live.init_vault(key, salt, 10000)
+	if not live.flush_checked().is_empty(): return "Vault fixture settle failed"
+	var challenge := VaultKeySession.descriptor(live)
+	var unlocked := VaultKeySession.handle("vault_unlock", {"panel_secret":"fixture", "path":path, "open_generation":challenge.open_generation, "fingerprint":challenge.fingerprint, "password":password}, live)
+	if not unlocked.has("result") or not unlocked.result.unlocked: return "Actual vault key session unlock failed"
+	salt.fill(8)
+	live.set_meta_value("vault_salt", Marshalls.raw_to_base64(salt))
+	var shipment := FileAccess.get_file_as_string(path)
+	var server := _bootstrap_server()
+	var result := server._bootstrap_project(path, shipment)
+	server.free()
+	if not result.has("result") or not VaultKeySession.key_for(live).is_empty(): return "Bootstrap retained stale vault key"
+	var stale := VaultKeySession.handle("vault_lock", {"panel_secret":"fixture", "path":path, "open_generation":challenge.open_generation, "fingerprint":challenge.fingerprint}, live)
+	var disk := JSONLParser.parse_file(path)
+	return true if stale.has("error") and disk.meta.vault_kdf_iterations == 10000.0 and disk.meta.vault_salt == Marshalls.raw_to_base64(salt) and disk.meta.version == "2.0.0" else "Vault movement changed KDF/format or accepted stale descriptor"

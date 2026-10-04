@@ -8,6 +8,7 @@ const SECRET_ENV := "DOCKET_PANEL_SECRET"
 var _secret := PackedByteArray()
 var schema_adopted: Callable
 var resolve_vault: Callable
+var bootstrap_project: Callable
 
 
 func configure_from_environment(enabled: bool, stdio: bool) -> String:
@@ -38,6 +39,29 @@ func handle(method: String, params: Variant) -> Dictionary:
 		difference |= supplied[i] ^ _secret[i]
 	if difference != 0:
 		return _error(-32001, "Private authentication refused")
+	if method == PREFIX + "bootstrap_project":
+		if params.size() != 3 or not params.get("path") is String or not params.get("content") is String:
+			return _error(-32602, "Invalid private parameters")
+		var path: String = params.path
+		if path.is_empty() or not path.is_absolute_path() or path.contains("://") or path.get_file().is_empty():
+			return _error(-32602, "Bootstrap requires an absolute file path")
+		var refusal := TypeRegistryBootstrap.opening_refusal()
+		if not refusal.is_empty(): return _error(-32602, refusal)
+		var encoded: String = params.content
+		if encoded.is_empty() or encoded.length() % 4 != 0:
+			return _error(-32602, "Invalid bootstrap encoding")
+		for i in encoded.length():
+			var character := encoded.substr(i, 1)
+			if not character in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" and not (character == "=" and i >= encoded.length() - 2):
+				return _error(-32602, "Invalid bootstrap encoding")
+		var bytes := Marshalls.base64_to_raw(encoded)
+		if bytes.is_empty() or Marshalls.raw_to_base64(bytes) != encoded:
+			return _error(-32602, "Invalid bootstrap encoding")
+		var shipment := bytes.get_string_from_utf8()
+		if shipment.to_utf8_buffer() != bytes:
+			return _error(-32602, "Bootstrap content must be UTF-8")
+		if not bootstrap_project.is_valid(): return _error(-32603, "Bootstrap unavailable")
+		return bootstrap_project.call(ProjectOpenings.normalized_path(path), shipment)
 	if method in [PREFIX + "vault_challenge", PREFIX + "vault_unlock", PREFIX + "vault_lock"]:
 		var db: DocketDB = resolve_vault.call(params.get("path")) if resolve_vault.is_valid() else null
 		if db == null: return _error(-32602, "Vault request refused")
