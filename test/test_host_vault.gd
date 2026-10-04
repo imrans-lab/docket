@@ -105,6 +105,10 @@ try:
         for password in (None, 42, '', 'x'*1025, passwords[1-i]):
             assert 'error' in unlock(p, d, password), 'invalid password accepted'
             locked(p, name)
+        audit = [json.loads(line) for line in pathlib.Path(str(path)+'.audit.jsonl').read_text().splitlines()]
+        failures = [entry for entry in audit if entry['event'] == 'vault_unlock_failed' and entry.get('source') == 'host']
+        assert len(failures) == 1 and failures[0]['ok'] is False and 'handle' not in failures[0], 'host verification failure audit'
+        assert all(pw not in json.dumps(failures) for pw in passwords), 'password sentinel in failed unlock audit'
         assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
         item = call(p, 'docket_create', dict(project=name, type='bug', title='unrelated'))
         assert bind(p, path) == dict(d, unlocked=True), 'unrelated edit changed vault identity'
@@ -269,7 +273,7 @@ def diagnose():
 	print("HOST VAULT receiver-consumer-lifetime-privacy PASS")
 	return true
 
-func test_visible_app_shell_preferences_refusal() -> Variant:
+func test_visible_app_shell_preferences_subset_save() -> Variant:
 	# Actual AppShell and dialogs, in a disposable domain directory. No mock
 	# acceptance; exercises the same signal handler as clicking Preferences Save.
 	var directory := DocketRuntimeState.directory
@@ -279,9 +283,16 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	DocketRuntimeState.directory = path
 	DocketRuntimeState.hosted = false
 	UserPrefs.save_vault_password("synthetic-existing-ui")
-	var prefs_path := path.path_join("docket_prefs.json")
 	var credential_before := str(UserPrefs._load_data().get("vault_password", ""))
-	var db := DocketDBJsonl.create_new_jsonl(path.path_join("ui.dct"))
+	var db_path := path.path_join("ui.dct")
+	var db := DocketDBJsonl.create_new_jsonl(db_path)
+	var salt := VaultCrypto.generate_salt()
+	var key := VaultCrypto.derive_key(credential_before, salt)
+	db.init_vault(key, salt)
+	var encrypted := VaultCrypto.encrypt("synthetic-ui-secret", key)
+	db.set_secret("entry", encrypted.ciphertext, encrypted.iv, encrypted.mac)
+	db.flush()
+	var vault_before := FileAccess.get_file_as_bytes(db_path)
 	var state := AppState.new()
 	state.schema = TypeRegistryBootstrap.load_shipped_schema()
 	state.prefs = UserPrefs.new()
@@ -293,10 +304,25 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	DocketRuntimeState.hosted = true
 	shell._show_preferences()
 	var safe := shell._prefs_vault_pw.text.is_empty() and shell._prefs_dialog.visible
+	shell._prefs_first.text = " Ordinary "
+	shell._prefs_last.text = " Hosted "
+	shell._prefs_vault_hint.text = " ordinary hint "
+	shell._prefs_dialog.hide()
+	shell._prefs_dialog.confirmed.emit()
+	db.flush()
+	var ordinary := UserPrefs._load_data()
+	safe = safe and not shell._info_dialog.visible and ordinary.get("first_name") == "Ordinary" and ordinary.get("last_name") == "Hosted" and ordinary.get("vault_password_hint") == "ordinary hint" and str(ordinary.get("vault_password", "")) == credential_before and FileAccess.get_file_as_bytes(db_path) == vault_before
+	shell._show_preferences()
+	safe = safe and shell._prefs_vault_pw.text.is_empty()
+	shell._prefs_first.text = " Attempted "
+	shell._prefs_last.text = " Change "
+	shell._prefs_vault_hint.text = " attempted hint "
 	shell._prefs_vault_pw.text = "synthetic-new-ui"
 	shell._prefs_dialog.hide()
 	shell._prefs_dialog.confirmed.emit()
-	safe = safe and shell._info_dialog.visible and shell._info_dialog.dialog_text.contains("unavailable")
+	db.flush()
+	var attempted := UserPrefs._load_data()
+	safe = safe and shell._info_dialog.visible and shell._info_dialog.dialog_text.contains("unavailable") and attempted.get("first_name") == "Attempted" and attempted.get("last_name") == "Change" and attempted.get("vault_password_hint") == "attempted hint" and str(attempted.get("vault_password", "")) == credential_before and UserPrefs.load_vault_password().is_empty() and FileAccess.get_file_as_bytes(db_path) == vault_before
 	UserPrefs.save_vault_password("synthetic-api-write")
 	UserPrefs.clear_vault_password()
 	state.prefs.first_name = "Hosted"
@@ -306,7 +332,7 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	UserPrefs.save_vault_password_hint("synthetic-hint")
 	UserPrefs.save_type_shortcuts("ui", ["bug"], ["chore"])
 	var saved := UserPrefs._load_data()
-	safe = safe and UserPrefs.load_vault_password().is_empty() and str(saved.get("vault_password", "")) == credential_before and saved.get("first_name") == "Hosted" and UserPrefs.load_session() == PackedStringArray(["synthetic-session"]) and UserPrefs.load_last_query().get("filter") == "synthetic-filter" and UserPrefs.load_vault_password_hint() == "synthetic-hint" and UserPrefs.load_type_shortcuts("ui").pinned == ["bug"] and not db.has_vault()
+	safe = safe and UserPrefs.load_vault_password().is_empty() and str(saved.get("vault_password", "")) == credential_before and saved.get("first_name") == "Hosted" and UserPrefs.load_session() == PackedStringArray(["synthetic-session"]) and UserPrefs.load_last_query().get("filter") == "synthetic-filter" and UserPrefs.load_vault_password_hint() == "synthetic-hint" and UserPrefs.load_type_shortcuts("ui").pinned == ["bug"] and db.has_vault() and FileAccess.get_file_as_bytes(db_path) == vault_before
 	db.close()
 	# RecordForm creates this dialog unparented until first use; free it so teardown is clean.
 	shell._record_form._secret_2fa_dialog.free()
@@ -316,4 +342,4 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	DocketRuntimeState.directory = directory
 	for file in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
 	DirAccess.remove_absolute(path)
-	return true if safe else "Hosted visible Preferences/password guard failed"
+	return true if safe else "Hosted visible Preferences subset-save/password guard failed"

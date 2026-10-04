@@ -53,6 +53,7 @@ static func handle(method: String, params: Dictionary, db: DocketDB) -> Dictiona
 		forget(db)
 		var key := VaultCrypto.derive_key(params.password, db.get_vault_salt(), db.get_vault_iterations())
 		if not db.verify_vault(key):
+			AuditLog.record(db.get_path(), AuditLog.UNLOCK_FAILED, "", false, "host", "vault password did not verify")
 			return {"error":{"code":-32002, "message":"Vault unlock refused"}}
 		_entries[db.get_instance_id()] = {"descriptor":current.duplicate(), "key":key}
 	elif method == "vault_lock":

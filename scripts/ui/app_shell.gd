@@ -1214,10 +1214,6 @@ func _show_preferences() -> void:
 
 
 func _on_prefs_confirmed() -> void:
-	if DocketRuntimeState.hosted:
-		_info_dialog.dialog_text = "Hosted preferences are managed by the host. Password changes are unavailable."
-		_info_dialog.popup_centered()
-		return
 	_state.prefs.first_name = _prefs_first.text.strip_edges()
 	_state.prefs.last_name = _prefs_last.text.strip_edges()
 	_state.prefs.save()
@@ -1229,6 +1225,10 @@ func _on_prefs_confirmed() -> void:
 	var new_password := _prefs_vault_pw.text
 	var old_password := UserPrefs.load_vault_password()
 	if new_password != old_password:
+		if DocketRuntimeState.hosted:
+			_info_dialog.dialog_text = "Password changes are unavailable in hosted mode."
+			_info_dialog.popup_centered()
+			return
 		_reencrypt_vault_secrets(old_password, new_password)
 		if new_password.is_empty():
 			UserPrefs.clear_vault_password()
