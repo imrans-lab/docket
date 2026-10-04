@@ -102,7 +102,9 @@ func _ready() -> void:
 	_handler.init_with_registry(_registry)
 	if stdio:
 		_handler.host_authority = host_authority
-		if host_authority != null: host_authority.schema_adopted = _adopt_schema
+		if host_authority != null:
+			host_authority.schema_adopted = _adopt_schema
+			host_authority.resolve_vault = _resolve_vault
 
 	if stdio:
 		_stdio = DocketStdioTransport.new()
@@ -433,3 +435,13 @@ func _post_request() -> void:
 		dbs.append(_db)
 	for db: DocketDB in dbs:
 		db.checkpoint()
+
+
+func _resolve_vault(path: Variant) -> DocketDB:
+	if not path is String or not path.is_absolute_path(): return null
+	# Consult the live authoritative map, never a caller name or stored descriptor.
+	var projects := external_state.get_project_dbs() if external_state != null else _project_dbs
+	for db: DocketDB in projects.values():
+		if ProjectOpenings.normalized_path(db.get_path()) == path:
+			return db
+	return null

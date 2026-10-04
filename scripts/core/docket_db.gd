@@ -47,6 +47,7 @@ func open(path: String, name_defaults: bool = true) -> bool:
 
 
 func close() -> void:
+	VaultKeySession.forget(self)
 	if _db:
 		_exec("PRAGMA wal_checkpoint(TRUNCATE);")
 		_db.close_db()

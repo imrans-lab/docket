@@ -20,6 +20,7 @@ func _ready() -> void:
 		preload("res://test/test_http_server.gd"),
 		preload("res://test/test_stdio_transport.gd"),
 		preload("res://test/test_host_authority.gd"),
+		preload("res://test/test_host_vault.gd"),
 		preload("res://test/test_host_schema.gd"),
 		preload("res://test/test_master_bootstrap_plan.gd"),
 		preload("res://test/test_http_origin_guard.gd"),

@@ -24,6 +24,8 @@ static func _load_data() -> Dictionary:
 
 
 static func _save_data(data: Dictionary) -> void:
+	# Hosted mode must not copy a preexisting credential into another write.
+	if DocketRuntimeState.hosted: return
 	var f := FileAccess.open(DocketRuntimeState.path_for(_PREFS_PATH), FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data))
@@ -58,10 +60,12 @@ func get_display_name() -> String:
 # -- Vault password -----------------------------------------------------------
 
 static func load_vault_password() -> String:
+	if DocketRuntimeState.hosted: return ""
 	return str(_load_data().get("vault_password", ""))
 
 
 static func save_vault_password(pw: String) -> void:
+	if DocketRuntimeState.hosted: return
 	var data := _load_data()
 	data["vault_password"] = pw
 	_save_data(data)

@@ -7,6 +7,7 @@ const PREFIX := "docket/panel/"
 const SECRET_ENV := "DOCKET_PANEL_SECRET"
 var _secret := PackedByteArray()
 var schema_adopted: Callable
+var resolve_vault: Callable
 
 
 func configure_from_environment(enabled: bool, stdio: bool) -> String:
@@ -37,6 +38,10 @@ func handle(method: String, params: Variant) -> Dictionary:
 		difference |= supplied[i] ^ _secret[i]
 	if difference != 0:
 		return _error(-32001, "Private authentication refused")
+	if method in [PREFIX + "vault_challenge", PREFIX + "vault_unlock", PREFIX + "vault_lock"]:
+		var db: DocketDB = resolve_vault.call(params.get("path")) if resolve_vault.is_valid() else null
+		if db == null: return _error(-32602, "Vault request refused")
+		return VaultKeySession.handle(method.trim_prefix(PREFIX), params, db)
 	if method == PREFIX + "declare_schema":
 		if params.size() != 3 or not params.has("schema") or not params.has("version"):
 			return _error(-32602, "Invalid private parameters")

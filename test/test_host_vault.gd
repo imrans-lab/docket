@@ -1,0 +1,251 @@
+extends Node
+## Synthetic standalone producers; hosted consumers use private memory only.
+const StdioFixture := preload("res://test/test_stdio_transport.gd")
+const DRIVER := """
+import base64, hashlib, hmac, secrets, socket, urllib.request, urllib.error
+passwords = [secrets.token_hex(24), secrets.token_hex(24)]
+values = [secrets.token_hex(24), secrets.token_hex(24)]
+token = secrets.token_hex(32)
+keys = []
+seen = bytearray()
+original_receive = receive
+def receive(p):
+    value = original_receive(p)
+    seen.extend(json.dumps(value).encode())
+    return value
+
+def call(p, name, arguments, failure=False):
+    reply = request(p, 'tools/call', 80, dict(name=name, arguments=arguments))
+    assert bool(reply['result'].get('isError')) == failure, 'tool result status'
+    text = reply['result']['content'][0]['text']
+    return {'error': text} if failure else json.loads(text)
+
+def private(p, method, fields, auth=None):
+    auth = token if auth is None else auth
+    return request(p, 'docket/panel/' + method, 81, dict(panel_secret=auth, **fields))
+
+def locked(p, name):
+    assert 'locked' in call(p, 'docket_secret_get', dict(project=name, handle='entry'), True)['error'].lower(), 'key remained accessible'
+
+def bind(p, path):
+    return private(p, 'vault_challenge', dict(path=str(path)))['result']
+
+def unlock(p, descriptor, password):
+    fields = {k: descriptor[k] for k in ('path', 'open_generation', 'fingerprint')}
+    return private(p, 'vault_unlock', dict(**fields, password=password))
+
+def open_host(name, auth=token):
+    env['DOCKET_PANEL_SECRET'] = auth
+    p = launch(name, ['--host-authority'])
+    assert 'result' in private(p, 'declare_schema', dict(schema=json.loads((pathlib.Path(project)/'data/schema.json').read_text()), version='synthetic'), auth)
+    for path in paths:
+        call(p, 'docket_project_add', dict(path=str(path)))
+    return p
+
+try:
+    # Producer and consumer have distinct state and XDG directories. Only the
+    # ordinary synthetic producer may persist its fixture password.
+    paths = [base/'legacy.dct', base/'current.dct']
+    for i, path in enumerate(paths):
+        name = 'producer-%d' % i
+        state = base/(name+'-state')
+        state.mkdir()
+        (state/'docket_prefs.json').write_text(json.dumps(dict(vault_password=passwords[i])))
+        if i == 0:
+            salt = secrets.token_bytes(16)
+            key = hashlib.pbkdf2_hmac('sha256', passwords[i].encode(), salt, 10000)
+            verify = hmac.new(key, b'docket-vault-verify', hashlib.sha256).digest()
+            # Same retained legacy fixture route as test_vault_kdf_migration:
+            # absent iteration metadata explicitly means 10,000.
+            path.write_text(json.dumps(dict(_type='meta', version='1.0.0', counter=0, id_prefix='L', project='legacy', vault_salt=base64.b64encode(salt).decode(), vault_verify=base64.b64encode(verify).decode())) + '\\n')
+        p = launch(name, ['--file', str(path)])
+        call(p, 'docket_secret_set', dict(handle='entry', value=values[0]))
+        call(p, 'docket_secret_set', dict(handle='entry', value=values[1]))
+        call(p, 'docket_secret_set', dict(handle='dual', value=values[0], secondary_password=secrets.token_hex(16)))
+        finish(p)
+        (state/'docket_prefs.json').unlink()
+        meta = json.loads(path.read_text().splitlines()[0])
+        keys.append(hashlib.pbkdf2_hmac('sha256', passwords[i].encode(), base64.b64decode(meta['vault_salt']), 10000 if i == 0 else 600000))
+    # A conflicting preexisting hosted preference never supplies a fallback.
+    state = base/'hosted-state'
+    state.mkdir()
+    prefs = state/'docket_prefs.json'
+    pref_bytes = json.dumps(dict(vault_password='synthetic-conflicting-persisted')).encode()
+    prefs.write_bytes(pref_bytes)
+    for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'APPDATA', 'LOCALAPPDATA'):
+        env[key] = str(base/('host-'+key))
+        pathlib.Path(env[key]).mkdir()
+    before = [path.read_bytes() for path in paths]
+    p = open_host('hosted')
+    tools = request(p, 'tools/list', 1)['result']['tools']
+    assert all(not t['name'].startswith('docket/panel/') for t in tools), 'private vault tool listed'
+    assert request(p, 'tools/call', 1, dict(name='docket/panel/vault_unlock', arguments={}))['error']['code'] == -32602
+    if sys.platform.startswith('linux'):
+        proc = pathlib.Path('/proc')/str(p.pid)
+        seen.extend((proc/'cmdline').read_bytes() + (proc/'environ').read_bytes())
+    descriptors = []
+    for i, path in enumerate(paths):
+        name = path.stem
+        locked(p, name)
+        d = bind(p, path)
+        descriptors.append(d)
+        for auth in (None, 'f'*64):
+            fields = dict(path=str(path))
+            reply = request(p, 'docket/panel/vault_challenge', 2, fields) if auth is None else private(p, 'vault_challenge', fields, auth)
+            assert reply['error']['code'] == -32001, 'auth bypass'
+        for password in (None, 42, '', 'x'*1025, passwords[1-i]):
+            assert 'error' in unlock(p, d, password), 'invalid password accepted'
+            locked(p, name)
+        assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
+        item = call(p, 'docket_create', dict(project=name, type='bug', title='unrelated'))
+        assert bind(p, path) == dict(d, unlocked=True), 'unrelated edit changed vault identity'
+        before[i] = path.read_bytes()
+        assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[1], 'current plaintext'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='entry', version=1))['value'] == values[0], 'archived plaintext'
+        assert 'secondary password' in call(p, 'docket_secret_get', dict(project=name, handle='dual'), True)['error'], '2FA refusal'
+        # Never print or retain response plaintexts. They are expected consumer
+        # outputs, unlike the password/key sentinels checked below.
+        for field in ('unknown', 'key', 'project', 'migrate', 'initialize'):
+            params = {k:d[k] for k in ('path','open_generation','fingerprint')}
+            assert 'error' in private(p, 'vault_unlock', dict(**params, password=passwords[i], **{field:True})), 'unknown parameter'
+            locked(p, name)
+        params = {k:d[k] for k in ('path','open_generation','fingerprint')}
+        for _ in range(2):
+            assert unlock(p, d, passwords[i])['result']['unlocked']
+            assert not private(p, 'vault_lock', params)['result']['unlocked']
+            locked(p, name)
+        assert unlock(p, d, passwords[i])['result']['unlocked']
+        assert 'error' in unlock(p, dict(d, fingerprint='stale'), passwords[i])
+        locked(p, name)
+        assert path.read_bytes() == before[i], 'unlock mutated vault'
+    assert 'error' in private(p, 'vault_challenge', dict(path=str(base/'absent.dct')))
+    d = descriptors[0]
+    assert unlock(p, d, passwords[0])['result']['unlocked']
+    call(p, 'docket_project_remove', dict(name='legacy'))
+    assert 'error' in unlock(p, d, passwords[0]), 'closed opening accepted'
+    call(p, 'docket_project_add', dict(path=str(paths[0])))
+    locked(p, 'legacy')
+    assert 'error' in unlock(p, d, passwords[0]), 'reopened descriptor accepted'
+    fresh = bind(p, paths[0])
+    assert fresh['open_generation'] != d['open_generation']
+    assert unlock(p, fresh, passwords[0])['result']['unlocked']
+    finish(p)
+    token2 = secrets.token_hex(32)
+    q = open_host('hosted', token2)
+    assert 'error' in private(q, 'vault_challenge', dict(path=str(paths[0])))
+    token = token2
+    locked(q, 'legacy')
+    assert 'error' in unlock(q, fresh, passwords[0]), 'restart descriptor accepted'
+    for field in ('vault_salt','vault_kdf_iterations','vault_verify'):
+        d = bind(q, paths[1])
+        assert unlock(q, d, passwords[1])['result']['unlocked']
+        lines = paths[1].read_text().splitlines()
+        meta = json.loads(lines[0])
+        meta[field] = 10000 if field == 'vault_kdf_iterations' else base64.b64encode(secrets.token_bytes(16 if field == 'vault_salt' else 32)).decode()
+        lines[0] = json.dumps(meta)
+        paths[1].write_text('\\n'.join(lines)+'\\n')
+        locked(q, 'current')
+        assert 'error' in unlock(q, d, passwords[1]), 'replaced metadata accepted'
+        paths[1].write_bytes(before[1])
+    finish(q)
+    assert prefs.read_bytes() == pref_bytes, 'hosted preferences changed'
+    # Ordinary HTTP refuses every private vault method (token presence does
+    # not opt in). Reserve a disposable port and use the actual HTTP server.
+    with socket.socket() as reservation:
+        reservation.bind(('127.0.0.1',0))
+        port = reservation.getsockname()[1]
+    args.remove('--stdio')
+    q = launch('http', ['--port',str(port)])
+    for method in ('vault_challenge','vault_unlock','vault_lock'):
+        body = json.dumps(dict(jsonrpc='2.0', id=1, method='docket/panel/'+method, params=dict(panel_secret=token))).encode()
+        req = urllib.request.Request('http://127.0.0.1:%d/mcp'%port, data=body, headers={'Content-Type':'application/json'})
+        deadline = time.monotonic()+10
+        while True:
+            try:
+                with urllib.request.urlopen(req,timeout=2) as response: reply=json.load(response)
+                break
+            except urllib.error.URLError:
+                assert q.poll() is None and time.monotonic()<deadline, 'HTTP startup'
+                time.sleep(.1)
+        assert reply['error']['code'] == -32601, 'HTTP private bypass'
+    q.terminate()
+    q.wait(timeout=10)
+    needles = [pw.encode() for pw in passwords]
+    for key in keys: needles.extend((key, key.hex().encode(), base64.b64encode(key)))
+    assert all(needle not in seen for needle in needles), 'vault material in output/proc'
+    for path in base.rglob('*'):
+        if path.is_file():
+            data = path.read_bytes()
+            assert all(needle not in data for needle in needles), 'vault material persisted/logged'
+            if path.suffix == '.stderr': assert b'SCRIPT ERROR' not in data, 'child script error'
+    print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
+finally:
+    for p, err in children:
+        if p.poll() is None:
+            p.kill()
+            p.wait(timeout=10)
+        p.stop_io.set()
+        for worker in p.io_threads: worker.join(timeout=1)
+        if not p.stdin.closed: p.stdin.close()
+        p.stdout.close()
+        err.close()
+    root.cleanup()
+    completed.set()
+"""
+
+func test_actual_child_vault_contract() -> Variant:
+	var driver := StdioFixture.DRIVER.replace("\r\n", "\n")
+	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
+	if helpers == driver: return "stdio driver slice marker not found"
+	helpers = helpers.replace("['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))]", "['--state-dir', str(base / (name + '-state'))]")
+	# Diagnostics must never publish response bodies or secret-bearing frames.
+	helpers = helpers.replace("assert value['id'] == ident, value", "assert value['id'] == ident, 'response id'")
+	helpers = helpers.replace("assert b'\"jsonrpc\"' not in remaining_stdout(p)", "assert remaining_stdout(p) == b''")
+	var output: Array = []
+	var python := "python" if OS.get_name() == "Windows" else "python3"
+	var code := OS.execute(python, PackedStringArray(["-c", helpers + DRIVER, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
+	var report := "\n".join(PackedStringArray(output))
+	# Emit labels only, even when the composed driver's watchdog diagnoses.
+	if code != 0 or not report.contains("HOST VAULT receiver-consumer-lifetime-privacy PASS"):
+		return "Host vault actual-child contract failed (exit %d)" % code
+	print("HOST VAULT receiver-consumer-lifetime-privacy PASS")
+	return true
+
+func test_visible_app_shell_preferences_refusal() -> Variant:
+	# Actual AppShell and dialogs, in a disposable domain directory. No mock
+	# acceptance; exercises the same signal handler as clicking Preferences Save.
+	var directory := DocketRuntimeState.directory
+	var hosted := DocketRuntimeState.hosted
+	var path := ProjectSettings.globalize_path("user://host-vault-ui")
+	DirAccess.make_dir_recursive_absolute(path)
+	DocketRuntimeState.directory = path
+	DocketRuntimeState.hosted = false
+	UserPrefs.save_vault_password("synthetic-existing-ui")
+	var prefs_path := path.path_join("docket_prefs.json")
+	var before := FileAccess.get_file_as_bytes(prefs_path)
+	var db := DocketDBJsonl.create_new_jsonl(path.path_join("ui.dct"))
+	var state := AppState.new()
+	state.schema = TypeRegistryBootstrap.load_shipped_schema()
+	state.prefs = UserPrefs.new()
+	state.db = db
+	state._project_dbs = {"ui":db}
+	var shell := AppShell.new()
+	shell.init(state)
+	add_child(shell)
+	DocketRuntimeState.hosted = true
+	shell._show_preferences()
+	var safe := shell._prefs_vault_pw.text.is_empty() and shell._prefs_dialog.visible
+	shell._prefs_vault_pw.text = "synthetic-new-ui"
+	shell._prefs_dialog.confirmed.emit()
+	safe = safe and shell._info_dialog.visible and shell._info_dialog.dialog_text.contains("unavailable")
+	UserPrefs.save_vault_password("synthetic-api-write")
+	UserPrefs.clear_vault_password()
+	state.prefs.save()
+	safe = safe and UserPrefs.load_vault_password().is_empty() and FileAccess.get_file_as_bytes(prefs_path) == before and not db.has_vault()
+	db.close()
+	shell.free()
+	DocketRuntimeState.hosted = hosted
+	DocketRuntimeState.directory = directory
+	for file in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
+	DirAccess.remove_absolute(path)
+	return true if safe else "Hosted visible Preferences/password guard failed"

@@ -26,25 +26,23 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if handle.is_empty():
 		return {"error": "'handle' is required"}
 
-	# Load vault password
-	var password := UserPrefs.load_vault_password()
-	if password.is_empty():
-		var hint := UserPrefs.load_vault_password_hint()
-		var hint_msg := " Hint: %s" % hint if not hint.is_empty() else ""
-		return {"error": "Vault password not configured. Set it in Preferences first.%s" % hint_msg}
-
-	if not db.has_vault():
-		return {"error": "No vault initialized in this docket. Store a secret first."}
-
+	var key := PackedByteArray()
+	if DocketRuntimeState.hosted:
+		key = VaultKeySession.key_for(db)
+		if key.is_empty(): return {"error":"Hosted vault is locked. Unlock through the host."}
+	else:
+		var password := UserPrefs.load_vault_password()
+		if password.is_empty():
+			var hint := UserPrefs.load_vault_password_hint()
+			var hint_msg := " Hint: %s" % hint if not hint.is_empty() else ""
+			return {"error":"Vault password not configured. Set it in Preferences first.%s" % hint_msg}
+		if not db.has_vault():
+			return {"error":"No vault initialized in this docket. Store a secret first."}
+		key = VaultCrypto.derive_key(password, db.get_vault_salt(), db.get_vault_iterations())
+		if not db.verify_vault(key):
+			AuditLog.record(db.get_path(), AuditLog.UNLOCK_FAILED, handle, false, "mcp", "vault password did not verify")
+			return {"error":"Vault password does not match. Check Preferences."}
 	var salt := db.get_vault_salt()
-	var key := VaultCrypto.derive_key(password, salt, db.get_vault_iterations())
-
-	if not db.verify_vault(key):
-		# A wrong password is the signal worth keeping — repeated failures are
-		# what a guessing attempt looks like.
-		AuditLog.record(db.get_path(), AuditLog.UNLOCK_FAILED, handle, false, "mcp",
-			"vault password did not verify")
-		return {"error": "Vault password does not match. Check Preferences."}
 
 	# Check if requesting a specific version
 	var version: int = int(args.get("version", 0))

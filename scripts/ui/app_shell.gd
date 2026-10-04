@@ -1214,6 +1214,10 @@ func _show_preferences() -> void:
 
 
 func _on_prefs_confirmed() -> void:
+	if DocketRuntimeState.hosted:
+		_info_dialog.dialog_text = "Hosted preferences are managed by the host. Password changes are unavailable."
+		_info_dialog.popup_centered()
+		return
 	_state.prefs.first_name = _prefs_first.text.strip_edges()
 	_state.prefs.last_name = _prefs_last.text.strip_edges()
 	_state.prefs.save()
