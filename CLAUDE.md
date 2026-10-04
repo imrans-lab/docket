@@ -111,8 +111,10 @@ godot --headless --path . -- validate --file docket.dct
   request, including notifications. The real-child oracle rejects every
   non-JSON-RPC line and trailing byte. `test_stdio_transport` runs the same three strict scenarios on Linux, macOS
   and Windows with bounded thread/queue pipe I/O and read/write/run deadlines.
-  Its launcher uses Python tempfile scratch and child-only absolute XDG paths
-  plus private APPDATA/LOCALAPPDATA; Windows uses `python` from setup-python,
+  Its launcher copies the imported project into Python tempfile scratch, omits
+  HOME from the child environment (macOS falls back to its project cwd), and
+  proves actual engine user:// containment with a fixed marker before traffic.
+  It also sets child-only absolute XDG paths plus private APPDATA/LOCALAPPDATA; Windows uses `python` from setup-python,
   Linux/macOS use `python3`. Missing Python or child failures fail, never skip.
   Linux deep GUI acceptance (separate from author static gates and the automatic
   cross-platform suite): `xvfb-run -a python3 test/runtime_process_oracle.py

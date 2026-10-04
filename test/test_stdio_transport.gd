@@ -3,11 +3,15 @@ extends Node
 ## deadlines and isolated XDG paths; it never touches the owner's user data.
 
 const DRIVER := """
-import json, os, pathlib, queue, subprocess, sys, tempfile, threading, time
+import json, os, pathlib, queue, shutil, subprocess, sys, tempfile, threading, time
 engine, project = sys.argv[1:]
 root = tempfile.TemporaryDirectory(prefix='docket-stdio-')
 base = pathlib.Path(root.name).resolve()
+# --path changes the engine cwd; macOS falls back there when HOME is absent.
+# Keep the real project settings, imports and native extension in private scratch.
+project = str(shutil.copytree(project, base / 'project', ignore=shutil.ignore_patterns('.git')))
 env = os.environ.copy()
+env.pop('HOME', None)
 for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'APPDATA', 'LOCALAPPDATA'):
     env[key] = str(base / key)
     pathlib.Path(env[key]).mkdir()
@@ -47,11 +51,49 @@ def watchdog():
             os._exit(1)
 threading.Thread(target=watchdog, daemon=True).start()
 
+# Query the actual engine path with the same project/environment before traffic.
+probe_script = base / 'userdir-probe.gd'
+probe_script.write_text('\\n'.join([
+    'extends SceneTree',
+    'func _initialize():',
+    '    var base := OS.get_cmdline_user_args()[0]',
+    '    var actual := ProjectSettings.globalize_path("user://").simplify_path()',
+    '    if not actual.is_absolute_path():',
+    '        actual = DirAccess.open(".").get_current_dir().path_join(actual).simplify_path()',
+    '    if not actual.begins_with(base + "/"):',
+    '        quit(1)',
+    '        return',
+    '    var marker := FileAccess.open("user://docket-fixture-userdir.txt", FileAccess.WRITE)',
+    '    if marker == null:',
+    '        quit(1)',
+    '        return',
+    '    marker.store_string("private fixture marker")',
+    '    marker.close()',
+    '    var report := FileAccess.open(base.path_join("userdir-report.json"), FileAccess.WRITE)',
+    '    report.store_string(JSON.stringify(actual))',
+    '    report.close()',
+    '    quit(0)',
+]))
+
+def verify_userdir():
+    report = base / 'userdir-report.json'
+    report.unlink(missing_ok=True)
+    result = subprocess.run([engine, '--headless', '--quiet', '--path', project,
+                             '-s', str(probe_script), '--', base.as_posix()],
+                            cwd=base, env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=30)
+    assert result.returncode == 0 and report.is_file(), 'private engine userdir probe'
+    actual = pathlib.Path(json.loads(report.read_text())).resolve()
+    assert base in actual.parents, 'engine userdir outside private scratch'
+    assert (actual / 'docket-fixture-userdir.txt').read_text() == 'private fixture marker', 'engine userdir marker'
+    print('CHILD_USERDIR path=%s stage=before-traffic' % actual, flush=True)
+
 def launch(name, extra=()):
+    verify_userdir()
     err = open(base / (name + '.stderr'), 'wb')
     try:
         p = subprocess.Popen(args + ['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))] + list(extra),
-                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, bufsize=0)
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, cwd=base, bufsize=0)
     except BaseException:
         err.close()
         raise
