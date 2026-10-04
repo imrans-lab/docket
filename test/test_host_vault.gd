@@ -121,7 +121,7 @@ try:
         params = {k:d[k] for k in ('path','open_generation','fingerprint')}
         for _ in range(2):
             assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
-            assert not private(p, 'vault_lock', params)['result']['unlocked'], 'lock failed', 'valid unlock failed'
+            assert not private(p, 'vault_lock', params)['result']['unlocked'], 'lock failed'
             locked(p, name)
         assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
         assert 'error' in unlock(p, dict(d, fingerprint='stale'), passwords[i]), 'stale fingerprint accepted'
