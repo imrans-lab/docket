@@ -6,10 +6,20 @@ static func compare(registry: TypeRegistry) -> Dictionary:
 	if registry == null: return {"error":"Type registry is unavailable"}
 	var error := registry.refresh_if_changed()
 	if not error.is_empty(): return {"error":error}
-	var expected := TypeRegistryBootstrap.records(TypeRegistryBootstrap.effective_schema())
+	return compare_definitions(TypeRegistryBootstrap.effective_schema(), registry.list_types(true))
+
+static func compare_definitions(declared_schema: Dictionary, persisted_definitions: Array) -> Dictionary:
+	var error := TypeRegistryBootstrap.validate_schema(declared_schema)
+	if not error.is_empty(): return {"error":error}
+	var expected := TypeRegistryBootstrap.records(declared_schema)
 	var available := {}
-	for descriptor in registry.list_types(true):
+	for descriptor in persisted_definitions:
+		if not descriptor is Dictionary: return {"error":"Invalid persisted type descriptor"}
 		if descriptor.has("error"): return {"error":descriptor.error}
+		if not descriptor.get("slug") is String or not descriptor.get("definition") is Dictionary: return {"error":"Invalid persisted type descriptor"}
+		error = TypeRegistry.validate_definition(descriptor.definition)
+		if not error.is_empty(): return {"error":error}
+		if available.has(descriptor.slug): return {"error":"Duplicate persisted type slug"}
 		available[descriptor.slug] = descriptor.definition
 	var gaps: Array[String] = []
 	for revision in expected.type_def_versions:
