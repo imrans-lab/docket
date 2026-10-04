@@ -123,7 +123,11 @@ finally:
 
 
 func _run_scenario(scenario: String) -> Variant:
-	var helpers := StdioFixture.DRIVER.get_slice("\ntry:\n    p = launch('scratch')", 0)
+	# A Windows checkout may give CRLF sources; the slice marker is LF-only.
+	var driver := StdioFixture.DRIVER.replace("\r\n", "\n")
+	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
+	if helpers == driver:
+		return "stdio driver slice marker not found"
 	var source := "import sys\nscenario = sys.argv.pop()\n" + helpers + DRIVER
 	var python := "python" if OS.get_name() == "Windows" else "python3"
 	var output: Array = []
