@@ -74,6 +74,12 @@ try:
             fields = dict(path=str(canonical_path), content=base64.b64encode(text.encode()).decode())
             fields.update(extra)
             return private(p, a, 93, 'docket/panel/bootstrap_project', fields)
+        try:
+            assert shipment.count(chr(10)) == 2
+            for row in shipment.splitlines(): json.loads(row)
+        except BaseException as error:
+            print('BOOTSTRAP_FIXTURE_DIAGNOSTIC %s lf=%d lines=%d' % (type(error).__name__, shipment.count(chr(10)), len(shipment.splitlines())), file=sys.stderr, flush=True)
+            raise
         for gui in (False, True):
             stage = 'bootstrap_gui' if gui else 'bootstrap_headless'
             if gui: args.remove('--serve')
