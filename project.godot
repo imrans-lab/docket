@@ -19,6 +19,13 @@ boot_splash/bg_color=Color(0.169, 0.176, 0.259, 1)
 boot_splash/image="res://assets/splash.png"
 config/icon="res://icon.png"
 
+[debug]
+
+; Protocol stdout can contain authorized plaintext secrets. Disable the engine
+; file logger before startup, including the desktop feature override.
+file_logging/enable_file_logging=false
+file_logging/enable_file_logging.pc=false
+
 [display]
 
 window/size/viewport_width=1400

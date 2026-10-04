@@ -82,7 +82,10 @@ godot --headless --path . -- validate --file docket.dct
   `--user-data-dir` contract. The launcher must allocate a private directory
   outside the owner's profile and isolate the child's XDG paths as well.
   Known limit: `--state-dir` isolates only Docket domain state; engine `user://`
-  logs and shader caches remain shared without launcher XDG/profile isolation.
+  shader caches remain shared without launcher XDG/profile isolation. Engine
+  file logging is disabled project-wide, including the desktop override, before
+  engine startup: STDIO replies can contain authorized plaintext vault values.
+  Keep diagnostics on stderr; do not add `--log-file` (it overrides this policy).
   P1.3 must provide that engine isolation.
   The state directory contains prefs, recents, subscriptions and sessions /
   memory spills; authoritative `.dct` files and caches remain at their paths.

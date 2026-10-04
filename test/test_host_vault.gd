@@ -169,8 +169,8 @@ try:
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[1], 'current plaintext'
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry', version=1))['value'] == values[0], 'archived plaintext'
         assert 'secondary password' in call(p, 'docket_secret_get', dict(project=name, handle='dual'), True)['error'], '2FA refusal'
-        # Never print or retain response plaintexts. They are expected consumer
-        # outputs, unlike the password/key sentinels checked below.
+        assert {row['handle'] for row in call(p, 'docket_secret_list', dict(project=name))['secrets']} >= {'entry', 'dual'}, 'secret listing'
+        # Authorized response plaintext must remain in the pipe, never files.
         for field in ('unknown', 'key', 'project', 'migrate', 'initialize'):
             params = {k:d[k] for k in ('path','open_generation','fingerprint')}
             assert 'error' in private(p, 'vault_unlock', dict(**params, password=passwords[i], **{field:True})), 'unknown parameter'
@@ -203,6 +203,7 @@ try:
     locked(q, 'legacy')
     restart_descriptor = bind(q, paths[0])
     assert unlock(q, restart_descriptor, passwords[0], kdf_stage='vault_unlock')['result']['unlocked'], 'new connection unlock failed'
+    assert call(q, 'docket_secret_get', dict(project='legacy', handle='entry'))['value'] == values[1], 'restart plaintext'
     assert not private(q, 'vault_lock', {k:restart_descriptor[k] for k in ('path','open_generation','fingerprint')})['result']['unlocked'], 'new connection lock failed'
     # H3 generations are process-local: the new connection's token is the
     # restart boundary, tested above; generation values may repeat in a child.
@@ -240,13 +241,17 @@ try:
         assert reply['error']['code'] == -32601, 'HTTP private bypass'
     q.terminate()
     q.wait(timeout=10)
+    # Exact producer prefs were removed before consumers. Scan every remaining
+    # file, including encrypted payloads, stderr captures and rotated user logs.
     needles = [pw.encode() for pw in passwords]
+    persisted_needles = needles + [value.encode() for value in values]
     for key in keys: needles.extend((key, key.hex().encode(), base64.b64encode(key)))
+    persisted_needles.extend(needles[len(passwords):])
     assert all(needle not in seen for needle in needles), 'vault material in output/proc'
     for path in base.rglob('*'):
         if path.is_file():
             data = path.read_bytes()
-            assert all(needle not in data for needle in needles), 'vault material persisted/logged'
+            assert all(needle not in data for needle in persisted_needles), 'vault material persisted/logged'
             if path.suffix == '.stderr': assert b'SCRIPT ERROR' not in data, 'child script error'
     print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
 except BaseException as error:
