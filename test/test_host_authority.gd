@@ -65,7 +65,7 @@ try:
         import base64
         stage = 'bootstrap_setup'
         schema = {'types': {'chore': {'label': 'Chore', 'states': ['open', 'done'], 'initial_state': 'open', 'terminal_states': ['done'], 'transitions': {'open': ['done'], 'done': []}, 'required_fields': ['title'], 'optional_fields': []}}}
-        shipment = '{"_type":"meta","version":"1.0.0","counter":1,"id_prefix":"BTS","project":"bootstrap"}\\n{"_type":"item","id":"BTS-0001","type":"chore","status":"open","title":"shipped","created_at":"t","updated_at":"t"}\\n'
+        shipment = chr(10).join((json.dumps(dict(_type='meta', version='1.0.0', counter=1, id_prefix='BTS', project='bootstrap'), separators=(',', ':')), json.dumps(dict(_type='item', id='BTS-0001', type='chore', status='open', title='shipped', created_at='t', updated_at='t'), separators=(',', ':')), ''))
         def call(p, name, arguments):
             reply = request(p, 'tools/call', 92, dict(name=name, arguments=arguments))
             assert not reply['result'].get('isError'), 'ordinary tool refused'
