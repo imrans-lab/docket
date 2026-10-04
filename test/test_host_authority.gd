@@ -173,4 +173,8 @@ func test_environment_secret_consumed() -> Variant:
 			return "Host authority retained environment secret (enabled=%s)" % enabled
 		if not error.is_empty():
 			return "Host authority configuration failed (enabled=%s)" % enabled
+		for params in [null, []]:
+			var refusal := authority.handle("docket/panel/status", params)
+			if refusal.get("error", {}).get("code") != -32001:
+				return "Unauthenticated private parameter shape did not refuse authentication"
 	return true

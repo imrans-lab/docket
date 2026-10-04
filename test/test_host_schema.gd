@@ -18,7 +18,8 @@ def declare(p, value=schema, label=version, token=a, **extra):
 def call(p, name, arguments, failure=False):
     reply = request(p, 'tools/call', 92, dict(name=name, arguments=arguments))
     assert bool(reply['result'].get('isError')) == failure, reply
-    return json.loads(reply['result']['content'][0]['text'])
+    text = reply['result']['content'][0]['text']
+    return {'error': text} if failure else json.loads(text)
 
 def fields(p, project_name, slug):
     return call(p, 'docket_type_get', dict(project=project_name, type=slug))['definition']['fields']

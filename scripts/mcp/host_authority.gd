@@ -25,7 +25,7 @@ func configure_from_environment(enabled: bool, stdio: bool) -> String:
 
 func handle(method: String, params: Variant) -> Dictionary:
 	if not params is Dictionary:
-		return _error(-32602, "Invalid private parameters")
+		return _error(-32001, "Private authentication refused")
 	var token: Variant = params.get("panel_secret")
 	if not token is String:
 		return _error(-32001, "Private authentication refused")
