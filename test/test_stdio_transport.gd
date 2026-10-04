@@ -14,6 +14,8 @@ for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'APPDATA', 'LO
 args = [engine, '--headless', '--quiet', '--path', project, '--', '--serve', '--stdio']
 children = []
 completed = threading.Event()
+# Ordinary replies allow the same bounded 30 seconds as writes.
+DEFAULT_RECEIVE_TIMEOUT = 30
 
 def diagnose():
     # Kill all owned children before waiting, then retain actual exit/stderr.
@@ -135,7 +137,7 @@ def send(p, obj):
 
 # Active stdout lines must be JSON-RPC. Immediate mutation/partial EOF checks
 # reject every trailing byte; finish retains the engine teardown allowance.
-def receive(p, receive_timeout=5):
+def receive(p, receive_timeout=DEFAULT_RECEIVE_TIMEOUT):
     deadline = time.monotonic() + receive_timeout
     while b'\\n' not in p.pending:
         chunk = read_chunk(p, deadline)
@@ -151,7 +153,7 @@ def receive(p, receive_timeout=5):
     assert isinstance(value, dict) and value.get('jsonrpc') == '2.0', raw
     return value
 
-def request(p, method, ident, params=None, receive_timeout=5):
+def request(p, method, ident, params=None, receive_timeout=DEFAULT_RECEIVE_TIMEOUT):
     obj = {'jsonrpc': '2.0', 'method': method, 'id': ident}
     if params is not None:
         obj['params'] = params
