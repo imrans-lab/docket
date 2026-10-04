@@ -135,6 +135,20 @@ func _seed(path: String, name: String = "shared") -> void:
 func _listed() -> Array:
 	return DocketProjectList.new().execute({}, _state.schema, _state.db, _state.get_project_dbs()).projects
 
+func test_path_normalization_respects_platform_and_memory_identity() -> Variant:
+	var native := "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\docket-stdio-x85afjn8\\legacy.dct"
+	var mixed := "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\docket-stdio-x85afjn8/./legacy.dct"
+	var forward := "C:/Users/runneradmin/AppData/Local/Temp/docket-stdio-x85afjn8/legacy.dct"
+	var memory := "memory://scratch\\literal/./name"
+	if ProjectOpenings.normalized_path(memory) != memory: return "Memory opening path changed"
+	if ProjectOpenings.normalized_path(forward) != forward: return "Forward-slash opening path changed"
+	if OS.get_name() == "Windows":
+		if ProjectOpenings.normalized_path(native) != forward or ProjectOpenings.normalized_path(mixed) != forward: return "Native, mixed and forward Windows paths have different opening identities"
+	else:
+		var unchanged_mixed := "C:\\Users/runneradmin/AppData/Local/Temp/docket-stdio-x85afjn8/legacy.dct"
+		if ProjectOpenings.normalized_path(native) != forward or ProjectOpenings.normalized_path(mixed) != unchanged_mixed: return "Non-Windows opening normalization changed"
+	return true
+
 func test_descriptor_reload_failure_and_reopening() -> Variant:
 	var path := DIR + "/first.dct"
 	_seed(path)

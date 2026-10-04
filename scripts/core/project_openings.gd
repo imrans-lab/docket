@@ -4,6 +4,7 @@ class_name ProjectOpenings
 
 static func normalized_path(path: String) -> String:
 	if DocketDBMemory.is_memory_path(path): return path
+	if OS.get_name() == "Windows": path = path.replace("\\", "/")
 	return ProjectSettings.globalize_path(path).simplify_path()
 
 static func path_refusal(path: String, projects: Dictionary) -> String:
