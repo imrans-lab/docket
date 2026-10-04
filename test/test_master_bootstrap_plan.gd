@@ -167,7 +167,17 @@ func test_v2_immutable_pins_and_pure_capability_report() -> Variant:
 		r = A.is_true(MasterBootstrapPlan.plan(null, invalid, null, [], SCHEMA).has("error"), "absent installation refuses unresolved semantics")
 		if r is String: return r
 	var legacy := _parse("")
-	return A.eq(MasterBootstrapPlan.plan(legacy, shipment, null, [], SCHEMA).conflicts, [{"id":"V", "reason":"format_mismatch"}], "no implicit format upgrade")
+	return A.eq(MasterBootstrapPlan.plan(legacy, shipment, null, [], SCHEMA).conflicts, [{"reason":"format_mismatch"}, {"id":"V", "reason":"format_mismatch"}], "no implicit format upgrade")
+
+func test_empty_differing_formats_report_plan_conflict() -> Variant:
+	var current := _parse("")
+	var shipment := _v2("")
+	var before := [current.duplicate(true), shipment.duplicate(true)]
+	var result := MasterBootstrapPlan.plan(current, shipment, null, [], SCHEMA)
+	if result.has("error"): return result.error
+	var r = A.eq([result.conflicts, result.inserted, result.updated, result.unchanged, result.deleted], [[{"reason":"format_mismatch"}], [], [], [], []], "empty cross-format shipment reports plan-level refusal")
+	if r is String: return r
+	return A.eq([result.merged, current, shipment], [before[0], before[0], before[1]], "cross-format refusal retains current snapshot and both inputs")
 
 func test_invalid_snapshots_identities_heads_and_capability_inputs_refuse() -> Variant:
 	var valid := _parse(CURRENT)

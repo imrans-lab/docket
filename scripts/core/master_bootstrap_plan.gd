@@ -36,6 +36,8 @@ static func plan(current: Variant, shipment: Dictionary, baseline: Variant, ever
 	var unchanged: Array[String] = []
 	var deleted: Array[String] = []
 	var conflicts: Array = []
+	if current != null and current.meta.version != shipment.meta.version:
+		conflicts.append({"reason":"format_mismatch"})
 	var offered := _items(shipment)
 	var ids: Array = offered.keys()
 	ids.sort()
