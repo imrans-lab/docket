@@ -157,9 +157,9 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 		if form._secret_value_decrypted != "synthetic-current-" + name or form._encrypted_notes_decrypted != "synthetic-notes-" + name: return "real GUI secret/notes load"
 		var versions := db.get_secret_versions(id)
 		if versions.size() != 1: return "producer archive missing"
-		var history_button := form._secret_history_container.get_child(0).get_child(1) as Button
+		var history_button := form._secret_history_container.get_child(form._secret_history_container.get_child_count()-1).get_child(1) as Button
 		# Find the actual history Show button (optional author label precedes it).
-		for widget in form._secret_history_container.get_child(0).get_children():
+		for widget in form._secret_history_container.get_child(form._secret_history_container.get_child_count()-1).get_children():
 			if widget is Button and widget.text == "Show": history_button = widget
 		history_button.pressed.emit()
 		if history_button.text != "synthetic-old-" + name: return "actual GUI history decrypt"
