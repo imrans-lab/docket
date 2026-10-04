@@ -1,10 +1,6 @@
 extends RefCounted
 class_name ProjectOpenings
-## Opening identity also rejects descriptors from a previous child process.
-static var _process_nonce := Crypto.new().generate_random_bytes(16).hex_encode()
-
-static func generation(db: DocketDB) -> String:
-	return _process_nonce + ":" + str(db.get_instance_id())
+## Opening identity is process-local; clients also bind it to their connection.
 
 static func normalized_path(path: String) -> String:
 	if DocketDBMemory.is_memory_path(path): return path
@@ -25,7 +21,7 @@ static func descriptor(name: String, db: DocketDB, primary: DocketDB) -> Diction
 	var entry := db.get_project_meta().duplicate(true)
 	entry.merge({"name":name, "display_name":db.get_project_name(), "path":db.get_path(),
 		"prefix":db.get_id_prefix(), "primary":db == primary,
-		"open_generation":generation(db), "storage_mode":SessionProject.mode_of(db),
+		"open_generation":str(db.get_instance_id()), "storage_mode":SessionProject.mode_of(db),
 		"read_only_reason":db.get_write_block_reason()}, true)
 	entry["stage"] = str(entry.get("stage", ""))
 	entry.erase("owner")

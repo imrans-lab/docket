@@ -20,7 +20,7 @@ static func descriptor(db: DocketDB) -> Dictionary:
 	if raw[1] not in ["", "10000", "600000"]:
 		forget(db)
 		return {}
-	return {"path":ProjectOpenings.normalized_path(db.get_path()), "open_generation":ProjectOpenings.generation(db),
+	return {"path":ProjectOpenings.normalized_path(db.get_path()), "open_generation":str(db.get_instance_id()),
 		"fingerprint":JSON.stringify(raw).sha256_text()}
 
 static func key_for(db: DocketDB) -> PackedByteArray:

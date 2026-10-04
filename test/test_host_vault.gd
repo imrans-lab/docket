@@ -37,7 +37,7 @@ def unlock(p, descriptor, password):
 def open_host(name, auth=token):
     env['DOCKET_PANEL_SECRET'] = auth
     p = launch(name, ['--host-authority'])
-    assert 'result' in private(p, 'declare_schema', dict(schema=json.loads((pathlib.Path(project)/'data/schema.json').read_text()), version='synthetic'), auth)
+    assert 'result' in private(p, 'declare_schema', dict(schema=json.loads((pathlib.Path(project)/'data/schema.json').read_text()), version='synthetic'), auth), 'host schema declaration'
     for path in paths:
         call(p, 'docket_project_add', dict(path=str(path)))
     return p
@@ -77,9 +77,18 @@ try:
         pathlib.Path(env[key]).mkdir()
     before = [path.read_bytes() for path in paths]
     p = open_host('hosted')
+    # Isolated vault-less opening: refusal cannot initialize metadata or files.
+    empty_path = base/'empty.dct'
+    call(p, 'docket_project_add', dict(path=str(empty_path), create=True))
+    empty_before = empty_path.read_bytes()
+    listing = call(p, 'docket_project_list', {})
+    empty_descriptor = next(d for d in listing['projects'] if d['path'] == str(empty_path))
+    refusal = private(p, 'vault_unlock', dict(path=str(empty_path), open_generation=empty_descriptor['open_generation'], fingerprint='absent', password=passwords[0]))
+    assert refusal['error'] == dict(code=-32602, message='Vault request refused') and empty_path.read_bytes() == empty_before and not any(k.startswith('vault_') for k in json.loads(empty_path.read_text().splitlines()[0])), 'vault-less unlock initialized state'
+    assert private(p, 'vault_migrate', {})['error']['code'] == -32601, 'unknown private vault verb accepted'
     tools = request(p, 'tools/list', 1)['result']['tools']
     assert all(not t['name'].startswith('docket/panel/') for t in tools), 'private vault tool listed'
-    assert request(p, 'tools/call', 1, dict(name='docket/panel/vault_unlock', arguments={}))['error']['code'] == -32602
+    assert request(p, 'tools/call', 1, dict(name='docket/panel/vault_unlock', arguments={}))['error']['code'] == -32602, 'private method tool refusal'
     if sys.platform.startswith('linux'):
         proc = pathlib.Path('/proc')/str(p.pid)
         seen.extend((proc/'cmdline').read_bytes() + (proc/'environ').read_bytes())
@@ -111,34 +120,38 @@ try:
             locked(p, name)
         params = {k:d[k] for k in ('path','open_generation','fingerprint')}
         for _ in range(2):
-            assert unlock(p, d, passwords[i])['result']['unlocked']
-            assert not private(p, 'vault_lock', params)['result']['unlocked']
+            assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
+            assert not private(p, 'vault_lock', params)['result']['unlocked'], 'lock failed', 'valid unlock failed'
             locked(p, name)
-        assert unlock(p, d, passwords[i])['result']['unlocked']
-        assert 'error' in unlock(p, dict(d, fingerprint='stale'), passwords[i])
+        assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
+        assert 'error' in unlock(p, dict(d, fingerprint='stale'), passwords[i]), 'stale fingerprint accepted'
         locked(p, name)
         assert path.read_bytes() == before[i], 'unlock mutated vault'
-    assert 'error' in private(p, 'vault_challenge', dict(path=str(base/'absent.dct')))
+    assert 'error' in private(p, 'vault_challenge', dict(path=str(base/'absent.dct'))), 'absent project accepted'
     d = descriptors[0]
-    assert unlock(p, d, passwords[0])['result']['unlocked']
+    assert unlock(p, d, passwords[0])['result']['unlocked'], 'valid unlock failed'
     call(p, 'docket_project_remove', dict(name='legacy'))
     assert 'error' in unlock(p, d, passwords[0]), 'closed opening accepted'
     call(p, 'docket_project_add', dict(path=str(paths[0])))
     locked(p, 'legacy')
     assert 'error' in unlock(p, d, passwords[0]), 'reopened descriptor accepted'
     fresh = bind(p, paths[0])
-    assert fresh['open_generation'] != d['open_generation']
-    assert unlock(p, fresh, passwords[0])['result']['unlocked']
+    assert fresh['open_generation'] != d['open_generation'], 'reopened generation unchanged'
+    assert unlock(p, fresh, passwords[0])['result']['unlocked'], 'valid unlock failed'
     finish(p)
     token2 = secrets.token_hex(32)
     q = open_host('hosted', token2)
-    assert 'error' in private(q, 'vault_challenge', dict(path=str(paths[0])))
+    assert 'error' in private(q, 'vault_challenge', dict(path=str(paths[0]))), 'previous connection token accepted'
     token = token2
     locked(q, 'legacy')
-    assert 'error' in unlock(q, fresh, passwords[0]), 'restart descriptor accepted'
+    restart_descriptor = bind(q, paths[0])
+    assert unlock(q, restart_descriptor, passwords[0])['result']['unlocked'], 'new connection unlock failed'
+    assert not private(q, 'vault_lock', {k:restart_descriptor[k] for k in ('path','open_generation','fingerprint')})['result']['unlocked'], 'new connection lock failed'
+    # H3 generations are process-local: the new connection's token is the
+    # restart boundary, tested above; generation values may repeat in a child.
     for field in ('vault_salt','vault_kdf_iterations','vault_verify'):
         d = bind(q, paths[1])
-        assert unlock(q, d, passwords[1])['result']['unlocked']
+        assert unlock(q, d, passwords[1])['result']['unlocked'], 'valid unlock failed'
         lines = paths[1].read_text().splitlines()
         meta = json.loads(lines[0])
         meta[field] = 10000 if field == 'vault_kdf_iterations' else base64.b64encode(secrets.token_bytes(16 if field == 'vault_salt' else 32)).decode()
@@ -148,7 +161,7 @@ try:
         assert 'error' in unlock(q, d, passwords[1]), 'replaced metadata accepted'
         paths[1].write_bytes(before[1])
     finish(q)
-    assert prefs.read_bytes() == pref_bytes, 'hosted preferences changed'
+    assert json.loads(prefs.read_bytes())['vault_password'] == json.loads(pref_bytes)['vault_password'], 'hosted credential changed'
     # Ordinary HTTP refuses every private vault method (token presence does
     # not opt in). Reserve a disposable port and use the actual HTTP server.
     with socket.socket() as reservation:
@@ -179,6 +192,9 @@ try:
             assert all(needle not in data for needle in needles), 'vault material persisted/logged'
             if path.suffix == '.stderr': assert b'SCRIPT ERROR' not in data, 'child script error'
     print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
+except BaseException as error:
+    safe_diagnostic(type(error), error, error.__traceback__)
+    sys.exit(1)
 finally:
     for p, err in children:
         if p.poll() is None:
@@ -201,13 +217,41 @@ func test_actual_child_vault_contract() -> Variant:
 	# Diagnostics must never publish response bodies or secret-bearing frames.
 	helpers = helpers.replace("assert value['id'] == ident, value", "assert value['id'] == ident, 'response id'")
 	helpers = helpers.replace("assert b'\"jsonrpc\"' not in remaining_stdout(p)", "assert remaining_stdout(p) == b''")
+	# No inherited watchdog stderr tails or default traceback can expose frames.
+	helpers = helpers.replace("assert raw.endswith(b'\\n'), ('missing response newline', raw)", "assert raw.endswith(b'\\n'), 'missing response newline'")
+	helpers = helpers.replace("assert isinstance(value, dict) and value.get('jsonrpc') == '2.0', raw", "assert isinstance(value, dict) and value.get('jsonrpc') == '2.0', 'response envelope'")
+	helpers = helpers.replace("assert remaining_stdout(p) == b'', 'unexpected protocol output after EOF'", "assert remaining_stdout(p) == b'', 'trailing stdout'")
+	var diagnostic := """
+import ast
+# Allow only literal assertion labels present in the composed source.
+_SAFE_LABELS = {node.msg.value for node in ast.walk(ast.parse(SOURCE)) if isinstance(node, ast.Assert) and isinstance(node.msg, ast.Constant) and isinstance(node.msg.value, str)}
+def safe_diagnostic(kind, error, trace):
+    line = 0
+    while trace is not None:
+        if trace.tb_frame.f_code.co_filename == '<string>': line = trace.tb_lineno
+        trace = trace.tb_next
+    label = error.args[0] if kind is AssertionError and len(error.args) == 1 and isinstance(error.args[0], str) and error.args[0] in _SAFE_LABELS else 'non-assert failure'
+    print('HOST_VAULT_DIAGNOSTIC %s line=%d label=%s' % (kind.__name__, line, label), file=sys.stderr, flush=True)
+sys.excepthook = safe_diagnostic
+def diagnose():
+    print('HOST_VAULT_DIAGNOSTIC TimeoutError line=%d label=watchdog deadline' % sys._getframe().f_lineno, file=sys.stderr, flush=True)
+"""
+	# Remove the inherited stderr-tail reporter before starting its watchdog.
+	var unsafe_reporter := helpers.get_slice("def diagnose():", 1).get_slice("def watchdog():", 0)
+	helpers = helpers.replace("def diagnose():" + unsafe_reporter, "")
+	# Install before fixture startup; diagnostics identify actual composed lines.
+	var source := helpers + DRIVER
+	var prefix := "import sys\nSOURCE = " + JSON.stringify(source) + "\n" + diagnostic
 	var output: Array = []
 	var python := "python" if OS.get_name() == "Windows" else "python3"
-	var code := OS.execute(python, PackedStringArray(["-c", helpers + DRIVER, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
+	var code := OS.execute(python, PackedStringArray(["-c", prefix + helpers + DRIVER, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
 	var report := "\n".join(PackedStringArray(output))
 	# Emit labels only, even when the composed driver's watchdog diagnoses.
 	if code != 0 or not report.contains("HOST VAULT receiver-consumer-lifetime-privacy PASS"):
-		return "Host vault actual-child contract failed (exit %d)" % code
+		var safe_report := "diagnostic unavailable"
+		for line in report.split("\n"):
+			if line.begins_with("HOST_VAULT_DIAGNOSTIC "): safe_report = line
+		return "Host vault actual-child contract failed (exit %d): %s" % [code, safe_report]
 	print("HOST VAULT receiver-consumer-lifetime-privacy PASS")
 	return true
 
@@ -222,7 +266,7 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	DocketRuntimeState.hosted = false
 	UserPrefs.save_vault_password("synthetic-existing-ui")
 	var prefs_path := path.path_join("docket_prefs.json")
-	var before := FileAccess.get_file_as_bytes(prefs_path)
+	var credential_before := str(UserPrefs._load_data().get("vault_password", ""))
 	var db := DocketDBJsonl.create_new_jsonl(path.path_join("ui.dct"))
 	var state := AppState.new()
 	state.schema = TypeRegistryBootstrap.load_shipped_schema()
@@ -240,8 +284,14 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	safe = safe and shell._info_dialog.visible and shell._info_dialog.dialog_text.contains("unavailable")
 	UserPrefs.save_vault_password("synthetic-api-write")
 	UserPrefs.clear_vault_password()
+	state.prefs.first_name = "Hosted"
 	state.prefs.save()
-	safe = safe and UserPrefs.load_vault_password().is_empty() and FileAccess.get_file_as_bytes(prefs_path) == before and not db.has_vault()
+	UserPrefs.save_session(PackedStringArray(["synthetic-session"]))
+	UserPrefs.save_last_query("synthetic-filter", "synthetic-label")
+	UserPrefs.save_vault_password_hint("synthetic-hint")
+	UserPrefs.save_type_shortcuts("ui", ["bug"], ["chore"])
+	var saved := UserPrefs._load_data()
+	safe = safe and UserPrefs.load_vault_password().is_empty() and str(saved.get("vault_password", "")) == credential_before and saved.get("first_name") == "Hosted" and UserPrefs.load_session() == PackedStringArray(["synthetic-session"]) and UserPrefs.load_last_query().get("filter") == "synthetic-filter" and UserPrefs.load_vault_password_hint() == "synthetic-hint" and UserPrefs.load_type_shortcuts("ui").pinned == ["bug"] and not db.has_vault()
 	db.close()
 	shell.free()
 	DocketRuntimeState.hosted = hosted

@@ -24,8 +24,6 @@ static func _load_data() -> Dictionary:
 
 
 static func _save_data(data: Dictionary) -> void:
-	# Hosted mode must not copy a preexisting credential into another write.
-	if DocketRuntimeState.hosted: return
 	var f := FileAccess.open(DocketRuntimeState.path_for(_PREFS_PATH), FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data))
