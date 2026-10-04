@@ -165,6 +165,7 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 		var metadata := VaultKeySession.descriptor(db)
 		var key := VaultCrypto.derive_key(passwords[i], db.get_vault_salt(), db.get_vault_iterations())
 		if _server._resolve_vault(ProjectOpenings.normalized_path(db.get_path())) != _state.get_db_for_project(name): return "GUI/private resolver opening mismatch"
+		_private("vault_lock", db)
 		form.load_item(id, name)
 		if not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("locked"): return "locked GUI secret read invisible"
 		form.load_item(note_id, name)
