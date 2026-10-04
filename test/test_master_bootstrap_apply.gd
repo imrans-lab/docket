@@ -334,7 +334,8 @@ func test_windows_replacement_failure_restores_and_reserved_invalid_files_refuse
 func test_windows_missing_target_bootstrap_and_live_freshness_recover_before_classification() -> Variant:
 	JSONLReplace.force_windows = true
 	var path := DIR + "/windows-live.dct"
-	_write(path, META + ITEMS)
+	var installed := _apply(path, META + ITEMS)
+	if installed.has("error"): return installed.error
 	var db := DocketDBJsonl.open_jsonl(path)
 	if db == null: return DocketDBJsonl.last_open_error
 	var old := FileAccess.get_file_as_bytes(path)

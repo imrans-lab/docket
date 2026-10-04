@@ -451,6 +451,7 @@ func test_windows_background_wal_replacement_recovers_marker_prefix_and_tail() -
 	return true
 
 func test_posix_replacement_keeps_existing_rename_path() -> Variant:
+	JSONLReplace.force_windows = false
 	if OS.get_name() == "Windows": return true # Native Windows uses the protocol.
 	var path := DIR + "/posix.dct"
 	_replace_fixture(path, "old bytes")
