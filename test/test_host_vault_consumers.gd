@@ -8,11 +8,11 @@ const MCP_WRITES := """
         assert call(p, 'docket_secret_get', dict(project=name, handle='written'))['value'] == values[1], 'hosted write current'
         assert call(p, 'docket_secret_get', dict(project=name, handle='written', version=1))['value'] == values[0], 'hosted write archive'
         secondary = secrets.token_hex(16)
-        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[0], requires_2fa=True, secondary_password=secondary))
-        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[1], requires_2fa=True, secondary_password=secondary))
+        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[0], requires_2fa=True, secondary_password=secondary), kdf_stage='consumer_secondary_write')
+        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[1], requires_2fa=True, secondary_password=secondary), kdf_stage='consumer_secondary_write')
         assert 'secondary password' in call(p, 'docket_secret_get', dict(project=name, handle='written-dual'), True)['error'], 'hosted written 2FA refusal'
-        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary))['value'] == values[1], 'hosted written 2FA current'
-        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary, version=1))['value'] == values[0], 'hosted written 2FA archive'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary), kdf_stage='consumer_secondary_current')['value'] == values[1], 'hosted written 2FA current'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary, version=1), kdf_stage='consumer_secondary_archive')['value'] == values[0], 'hosted written 2FA archive'
         promoted = call(p, 'docket_secret_promote', dict(project=name, handle='written', title='owned encrypted value'))
         assert 'collides' in call(p, 'docket_secret_set', dict(project=name, handle=promoted['id'], value=values[0]), True)['error'], 'hosted ownership refusal'
         call(p, 'docket_flush', dict(project=name))
@@ -22,10 +22,10 @@ const MCP_WRITES := """
         private(p, 'vault_lock', fields)
         assert 'locked' in call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]), True)['error'], 'hosted locked write refusal'
         assert path.read_bytes() == before[i], 'hosted locked write mutated bytes'
-        assert 'error' in unlock(p, d, passwords[1-i]), 'hosted wrong opening password accepted'
+        assert 'error' in unlock(p, d, passwords[1-i], kdf_stage='vault_unlock'), 'hosted wrong opening password accepted'
         assert 'locked' in call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]), True)['error'], 'hosted wrong key write refusal'
         assert path.read_bytes() == before[i], 'hosted wrong key write mutated bytes'
-        assert unlock(p, d, passwords[i])['result']['unlocked'], 'hosted write re-unlock'
+        assert unlock(p, d, passwords[i], kdf_stage='vault_unlock')['result']['unlocked'], 'hosted write re-unlock'
 """
 
 func test_actual_child_encrypted_writes() -> Variant:

@@ -135,8 +135,8 @@ def send(p, obj):
 
 # Active stdout lines must be JSON-RPC. Immediate mutation/partial EOF checks
 # reject every trailing byte; finish retains the engine teardown allowance.
-def receive(p):
-    deadline = time.monotonic() + 5
+def receive(p, receive_timeout=5):
+    deadline = time.monotonic() + receive_timeout
     while b'\\n' not in p.pending:
         chunk = read_chunk(p, deadline)
         assert chunk, 'unexpected stdout EOF'
@@ -151,12 +151,12 @@ def receive(p):
     assert isinstance(value, dict) and value.get('jsonrpc') == '2.0', raw
     return value
 
-def request(p, method, ident, params=None):
+def request(p, method, ident, params=None, receive_timeout=5):
     obj = {'jsonrpc': '2.0', 'method': method, 'id': ident}
     if params is not None:
         obj['params'] = params
     send(p, obj)
-    value = receive(p)
+    value = receive(p, receive_timeout)
     assert value['id'] == ident, value
     return value
 

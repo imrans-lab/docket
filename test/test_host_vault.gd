@@ -9,20 +9,33 @@ token = secrets.token_hex(32)
 keys = []
 seen = bytearray()
 original_receive = receive
-def receive(p):
-    value = original_receive(p)
+def receive(p, receive_timeout=5):
+    value = original_receive(p, receive_timeout)
     seen.extend(json.dumps(value).encode())
     return value
 
-def call(p, name, arguments, failure=False):
-    reply = request(p, 'tools/call', 80, dict(name=name, arguments=arguments))
+# Only explicit derivation call sites get the longer receive deadline. All
+# ordinary calls, parameter/descriptor refusals and global bounds stay strict.
+KDF_STAGES = ('producer_primary_write', 'producer_secondary_write', 'vault_unlock',
+              'consumer_secondary_write', 'consumer_secondary_current', 'consumer_secondary_archive')
+def kdf_request(p, method, ident, params, stage):
+    assert stage in KDF_STAGES, 'KDF timing stage'
+    started = time.monotonic()
+    reply = request(p, method, ident, params, receive_timeout=120)
+    print('HOST_VAULT_KDF_TIMING stage=%s seconds=%.3f' % (stage, time.monotonic() - started), flush=True)
+    return reply
+
+def call(p, name, arguments, failure=False, kdf_stage=None):
+    params = dict(name=name, arguments=arguments)
+    reply = request(p, 'tools/call', 80, params) if kdf_stage is None else kdf_request(p, 'tools/call', 80, params, kdf_stage)
     assert bool(reply['result'].get('isError')) == failure, 'tool result status'
     text = reply['result']['content'][0]['text']
     return {'error': text} if failure else json.loads(text)
 
-def private(p, method, fields, auth=None):
+def private(p, method, fields, auth=None, kdf_stage=None):
     auth = token if auth is None else auth
-    return request(p, 'docket/panel/' + method, 81, dict(panel_secret=auth, **fields))
+    params = dict(panel_secret=auth, **fields)
+    return request(p, 'docket/panel/' + method, 81, params) if kdf_stage is None else kdf_request(p, 'docket/panel/' + method, 81, params, kdf_stage)
 
 def locked(p, name):
     assert 'locked' in call(p, 'docket_secret_get', dict(project=name, handle='entry'), True)['error'].lower(), 'key remained accessible'
@@ -30,9 +43,9 @@ def locked(p, name):
 def bind(p, path):
     return private(p, 'vault_challenge', dict(path=str(path)))['result']
 
-def unlock(p, descriptor, password):
+def unlock(p, descriptor, password, kdf_stage=None):
     fields = {k: descriptor[k] for k in ('path', 'open_generation', 'fingerprint')}
-    return private(p, 'vault_unlock', dict(**fields, password=password))
+    return private(p, 'vault_unlock', dict(**fields, password=password), kdf_stage=kdf_stage)
 
 def open_host(name, auth=token):
     env['DOCKET_PANEL_SECRET'] = auth
@@ -59,9 +72,9 @@ try:
             # absent iteration metadata explicitly means 10,000.
             path.write_text(json.dumps(dict(_type='meta', version='1.0.0', counter=0, id_prefix='L', project='legacy', vault_salt=base64.b64encode(salt).decode(), vault_verify=base64.b64encode(verify).decode())) + '\\n')
         p = launch(name, ['--file', str(path)])
-        call(p, 'docket_secret_set', dict(handle='entry', value=values[0]))
-        call(p, 'docket_secret_set', dict(handle='entry', value=values[1]))
-        call(p, 'docket_secret_set', dict(handle='dual', value=values[0], requires_2fa=True, secondary_password=secrets.token_hex(16)))
+        call(p, 'docket_secret_set', dict(handle='entry', value=values[0]), kdf_stage='producer_primary_write')
+        call(p, 'docket_secret_set', dict(handle='entry', value=values[1]), kdf_stage='producer_primary_write')
+        call(p, 'docket_secret_set', dict(handle='dual', value=values[0], requires_2fa=True, secondary_password=secrets.token_hex(16)), kdf_stage='producer_secondary_write')
         finish(p)
         (state/'docket_prefs.json').unlink()
         meta = json.loads(path.read_text().splitlines()[0])
@@ -102,14 +115,16 @@ try:
             fields = dict(path=str(path))
             reply = request(p, 'docket/panel/vault_challenge', 2, fields) if auth is None else private(p, 'vault_challenge', fields, auth)
             assert reply['error']['code'] == -32001, 'auth bypass'
-        for password in (None, 42, '', 'x'*1025, passwords[1-i]):
+        for password in (None, 42, '', 'x'*1025):
             assert 'error' in unlock(p, d, password), 'invalid password accepted'
             locked(p, name)
+        assert 'error' in unlock(p, d, passwords[1-i], kdf_stage='vault_unlock'), 'wrong password accepted'
+        locked(p, name)
         audit = [json.loads(line) for line in pathlib.Path(str(path)+'.audit.jsonl').read_text().splitlines()]
         failures = [entry for entry in audit if entry['event'] == 'vault_unlock_failed' and entry.get('source') == 'host']
         assert len(failures) == 1 and failures[0]['ok'] is False and 'handle' not in failures[0], 'host verification failure audit'
         assert all(pw not in json.dumps(failures) for pw in passwords), 'password sentinel in failed unlock audit'
-        assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
+        assert unlock(p, d, passwords[i], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
         item = call(p, 'docket_create', dict(project=name, type='bug', title='unrelated'))
         assert bind(p, path) == dict(d, unlocked=True), 'unrelated edit changed vault identity'
         call(p, 'docket_flush', dict(project=name))
@@ -125,16 +140,16 @@ try:
             locked(p, name)
         params = {k:d[k] for k in ('path','open_generation','fingerprint')}
         for _ in range(2):
-            assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
+            assert unlock(p, d, passwords[i], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
             assert not private(p, 'vault_lock', params)['result']['unlocked'], 'lock failed'
             locked(p, name)
-        assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
+        assert unlock(p, d, passwords[i], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
         assert 'error' in unlock(p, dict(d, fingerprint='stale'), passwords[i]), 'stale fingerprint accepted'
         locked(p, name)
         assert path.read_bytes() == before[i], 'unlock mutated vault'
     assert 'error' in private(p, 'vault_challenge', dict(path=str(base/'absent.dct'))), 'absent project accepted'
     d = descriptors[0]
-    assert unlock(p, d, passwords[0])['result']['unlocked'], 'valid unlock failed'
+    assert unlock(p, d, passwords[0], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
     call(p, 'docket_project_remove', dict(name='legacy'))
     assert 'error' in unlock(p, d, passwords[0]), 'closed opening accepted'
     call(p, 'docket_project_add', dict(path=str(paths[0])))
@@ -142,7 +157,7 @@ try:
     assert 'error' in unlock(p, d, passwords[0]), 'reopened descriptor accepted'
     fresh = bind(p, paths[0])
     assert fresh['open_generation'] != d['open_generation'], 'reopened generation unchanged'
-    assert unlock(p, fresh, passwords[0])['result']['unlocked'], 'valid unlock failed'
+    assert unlock(p, fresh, passwords[0], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
     finish(p)
     token2 = secrets.token_hex(32)
     q = open_host('hosted', token2)
@@ -150,13 +165,13 @@ try:
     token = token2
     locked(q, 'legacy')
     restart_descriptor = bind(q, paths[0])
-    assert unlock(q, restart_descriptor, passwords[0])['result']['unlocked'], 'new connection unlock failed'
+    assert unlock(q, restart_descriptor, passwords[0], kdf_stage='vault_unlock')['result']['unlocked'], 'new connection unlock failed'
     assert not private(q, 'vault_lock', {k:restart_descriptor[k] for k in ('path','open_generation','fingerprint')})['result']['unlocked'], 'new connection lock failed'
     # H3 generations are process-local: the new connection's token is the
     # restart boundary, tested above; generation values may repeat in a child.
     for field in ('vault_salt','vault_kdf_iterations','vault_verify'):
         d = bind(q, paths[1])
-        assert unlock(q, d, passwords[1])['result']['unlocked'], 'valid unlock failed'
+        assert unlock(q, d, passwords[1], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
         lines = paths[1].read_text().splitlines()
         meta = json.loads(lines[0])
         meta[field] = 10000 if field == 'vault_kdf_iterations' else base64.b64encode(secrets.token_bytes(16 if field == 'vault_salt' else 32)).decode()
@@ -265,6 +280,11 @@ def diagnose():
 	var code := OS.execute(python, PackedStringArray([driver_path, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
 	DirAccess.remove_absolute(driver_path)
 	var report := "\n".join(PackedStringArray(output))
+	# Forward only fixed stages and numeric durations from the captured driver.
+	var timing_pattern := RegEx.create_from_string("^HOST_VAULT_KDF_TIMING stage=(producer_primary_write|producer_secondary_write|vault_unlock|consumer_secondary_write|consumer_secondary_current|consumer_secondary_archive) seconds=[0-9]+\\.[0-9]{3}$")
+	for line in report.split("\n"):
+		var timing_line := line.trim_suffix("\r")
+		if timing_pattern.search(timing_line): print(timing_line)
 	# Emit labels only, even when the composed driver's watchdog diagnoses.
 	if code != 0 or not report.contains("HOST VAULT receiver-consumer-lifetime-privacy PASS"):
 		var lines := report.trim_suffix("\n").split("\n") if not report.is_empty() else PackedStringArray()
