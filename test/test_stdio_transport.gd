@@ -86,7 +86,7 @@ def verify_userdir():
     actual = pathlib.Path(json.loads(report.read_text())).resolve()
     assert base in actual.parents, 'engine userdir outside private scratch'
     assert (actual / 'docket-fixture-userdir.txt').read_text() == 'private fixture marker', 'engine userdir marker'
-    print('CHILD_USERDIR path=%s stage=before-traffic' % actual, flush=True)
+    print('CHILD_USERDIR path=%s stage=before-traffic' % json.dumps(str(actual)), flush=True)
 
 def launch(name, extra=()):
     verify_userdir()

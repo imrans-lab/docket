@@ -29,7 +29,9 @@ const MCP_WRITES := """
 """
 
 func test_actual_child_encrypted_writes() -> Variant:
-	var scenario := Fixture.DRIVER.replace("        # Never print", MCP_WRITES + "        # Never print")
+	var anchor := "        # Authorized response plaintext"
+	if Fixture.DRIVER.count(anchor) != 1: return "Host vault consumer insertion anchor missing or duplicated"
+	var scenario := Fixture.DRIVER.replace(anchor, MCP_WRITES + anchor)
 	scenario = scenario.replace("    empty_before = empty_path.read_bytes()", "    call(p, 'docket_flush', dict(project='empty'))\n    empty_before = empty_path.read_bytes()\n    assert 'locked' in call(p, 'docket_secret_set', dict(project='empty', handle='new', value=values[0]), True)['error'], 'vault-less write refusal'\n    assert 'locked' in call(p, 'docket_secret_get', dict(project='empty', handle='new'), True)['error'], 'vault-less read refusal'")
 	var fixture := Fixture.new()
 	var result: Variant = fixture.run_actual_child(scenario)

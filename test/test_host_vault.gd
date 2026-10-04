@@ -8,6 +8,16 @@ values = [secrets.token_hex(24), secrets.token_hex(24)]
 token = secrets.token_hex(32)
 keys = []
 seen = bytearray()
+# Check before restart/HTTP/probes can rotate away a previous child's logs.
+def assert_private_files():
+    persisted = [value.encode() for value in passwords + values]
+    for key in keys: persisted.extend((key, key.hex().encode(), base64.b64encode(key)))
+    for path in base.rglob('*'):
+        if path.is_file():
+            data = path.read_bytes()
+            assert all(needle not in data for needle in persisted), 'vault material persisted/logged'
+            if path.suffix == '.stderr': assert b'SCRIPT ERROR' not in data, 'child script error'
+
 original_receive = receive
 def receive(p, receive_timeout=5):
     value = original_receive(p, receive_timeout)
@@ -196,6 +206,7 @@ try:
     assert fresh['open_generation'] != d['open_generation'], 'reopened generation unchanged'
     assert unlock(p, fresh, passwords[0], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
     finish(p)
+    assert_private_files()
     token2 = secrets.token_hex(32)
     q = open_host('hosted', token2)
     assert 'error' in private(q, 'vault_challenge', dict(path=str(paths[0]))), 'previous connection token accepted'
@@ -219,6 +230,7 @@ try:
         assert 'error' in unlock(q, d, passwords[1]), 'replaced metadata accepted'
         paths[1].write_bytes(before[1])
     finish(q)
+    assert_private_files()
     assert json.loads(prefs.read_bytes())['vault_password'] == json.loads(pref_bytes)['vault_password'], 'hosted credential changed'
     # Ordinary HTTP refuses every private vault method (token presence does
     # not opt in). Reserve a disposable port and use the actual HTTP server.
@@ -244,15 +256,9 @@ try:
     # Exact producer prefs were removed before consumers. Scan every remaining
     # file, including encrypted payloads, stderr captures and rotated user logs.
     needles = [pw.encode() for pw in passwords]
-    persisted_needles = needles + [value.encode() for value in values]
     for key in keys: needles.extend((key, key.hex().encode(), base64.b64encode(key)))
-    persisted_needles.extend(needles[len(passwords):])
     assert all(needle not in seen for needle in needles), 'vault material in output/proc'
-    for path in base.rglob('*'):
-        if path.is_file():
-            data = path.read_bytes()
-            assert all(needle not in data for needle in persisted_needles), 'vault material persisted/logged'
-            if path.suffix == '.stderr': assert b'SCRIPT ERROR' not in data, 'child script error'
+    assert_private_files()
     print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
 except BaseException as error:
     safe_diagnostic(type(error), error, error.__traceback__)
@@ -340,6 +346,7 @@ def diagnose():
 		var timing_line := line.trim_suffix("\r")
 		if timing_pattern.search(timing_line): print(timing_line)
 		if timing_line.length() <= 16640 and paths_pattern.search(timing_line): print(timing_line)
+		if timing_line.length() <= 16640 and RegEx.create_from_string("^CHILD_USERDIR path=" + json_path + " stage=before-traffic$").search(timing_line): print(timing_line)
 	# Emit labels only, even when the composed driver's watchdog diagnoses.
 	if code != 0 or not report.contains("HOST VAULT receiver-consumer-lifetime-privacy PASS"):
 		var lines := report.trim_suffix("\n").split("\n") if not report.is_empty() else PackedStringArray()
