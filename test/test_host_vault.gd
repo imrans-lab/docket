@@ -61,7 +61,7 @@ try:
         p = launch(name, ['--file', str(path)])
         call(p, 'docket_secret_set', dict(handle='entry', value=values[0]))
         call(p, 'docket_secret_set', dict(handle='entry', value=values[1]))
-        call(p, 'docket_secret_set', dict(handle='dual', value=values[0], secondary_password=secrets.token_hex(16)))
+        call(p, 'docket_secret_set', dict(handle='dual', value=values[0], requires_2fa=True, secondary_password=secrets.token_hex(16)))
         finish(p)
         (state/'docket_prefs.json').unlink()
         meta = json.loads(path.read_text().splitlines()[0])
@@ -108,6 +108,7 @@ try:
         assert unlock(p, d, passwords[i])['result']['unlocked'], 'valid unlock failed'
         item = call(p, 'docket_create', dict(project=name, type='bug', title='unrelated'))
         assert bind(p, path) == dict(d, unlocked=True), 'unrelated edit changed vault identity'
+        call(p, 'docket_flush', dict(project=name))
         before[i] = path.read_bytes()
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[1], 'current plaintext'
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry', version=1))['value'] == values[0], 'archived plaintext'
@@ -227,11 +228,14 @@ import ast
 _SAFE_LABELS = {node.msg.value for node in ast.walk(ast.parse(SOURCE)) if isinstance(node, ast.Assert) and isinstance(node.msg, ast.Constant) and isinstance(node.msg.value, str)}
 def safe_diagnostic(kind, error, trace):
     line = 0
+    call_site = 0
     while trace is not None:
-        if trace.tb_frame.f_code.co_filename == '<string>': line = trace.tb_lineno
+        if trace.tb_frame.f_code.co_filename == '<string>':
+            if call_site == 0: call_site = trace.tb_lineno
+            line = trace.tb_lineno
         trace = trace.tb_next
     label = error.args[0] if kind is AssertionError and len(error.args) == 1 and isinstance(error.args[0], str) and error.args[0] in _SAFE_LABELS else 'non-assert failure'
-    print('HOST_VAULT_DIAGNOSTIC %s line=%d label=%s' % (kind.__name__, line, label), file=sys.stderr, flush=True)
+    print('HOST_VAULT_DIAGNOSTIC %s line=%d call_site=%d label=%s' % (kind.__name__, line, call_site, label), file=sys.stderr, flush=True)
 sys.excepthook = safe_diagnostic
 def diagnose():
     print('HOST_VAULT_DIAGNOSTIC TimeoutError line=%d label=watchdog deadline' % sys._getframe().f_lineno, file=sys.stderr, flush=True)
@@ -290,6 +294,7 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	shell._show_preferences()
 	var safe := shell._prefs_vault_pw.text.is_empty() and shell._prefs_dialog.visible
 	shell._prefs_vault_pw.text = "synthetic-new-ui"
+	shell._prefs_dialog.hide()
 	shell._prefs_dialog.confirmed.emit()
 	safe = safe and shell._info_dialog.visible and shell._info_dialog.dialog_text.contains("unavailable")
 	UserPrefs.save_vault_password("synthetic-api-write")
@@ -303,7 +308,10 @@ func test_visible_app_shell_preferences_refusal() -> Variant:
 	var saved := UserPrefs._load_data()
 	safe = safe and UserPrefs.load_vault_password().is_empty() and str(saved.get("vault_password", "")) == credential_before and saved.get("first_name") == "Hosted" and UserPrefs.load_session() == PackedStringArray(["synthetic-session"]) and UserPrefs.load_last_query().get("filter") == "synthetic-filter" and UserPrefs.load_vault_password_hint() == "synthetic-hint" and UserPrefs.load_type_shortcuts("ui").pinned == ["bug"] and not db.has_vault()
 	db.close()
+	# RecordForm creates this dialog unparented until first use; free it so teardown is clean.
+	shell._record_form._secret_2fa_dialog.free()
 	shell.free()
+	await get_tree().process_frame
 	DocketRuntimeState.hosted = hosted
 	DocketRuntimeState.directory = directory
 	for file in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
