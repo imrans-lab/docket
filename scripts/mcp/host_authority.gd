@@ -50,10 +50,6 @@ func handle(method: String, params: Variant) -> Dictionary:
 		var encoded: String = params.content
 		if encoded.is_empty() or encoded.length() % 4 != 0:
 			return _error(-32602, "Invalid bootstrap encoding")
-		for i in encoded.length():
-			var character := encoded.substr(i, 1)
-			if not character in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" and not (character == "=" and i >= encoded.length() - 2):
-				return _error(-32602, "Invalid bootstrap encoding")
 		var bytes := Marshalls.base64_to_raw(encoded)
 		if bytes.is_empty() or Marshalls.raw_to_base64(bytes) != encoded:
 			return _error(-32602, "Invalid bootstrap encoding")

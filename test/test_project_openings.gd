@@ -267,7 +267,10 @@ func test_bootstrap_pending_sliced_worker_identity_ephemerals_registry_and_resta
 		var registry := _state.get_type_registry(mode)
 		var token := str(live.get_instance_id())
 		if not live.update_item_fields_checked("ORD-0001", {"description":"acknowledged WAL"}).is_empty(): return "Pending WAL mutation failed"
-		if not live.insert_item("ephemeral", {"type":"widget", "status":"queued", "title":"cache only", "storage":"ephemeral"}).is_empty(): return "Ephemeral fixture insertion failed"
+		var ephemeral := live.get_item("ORD-0001").duplicate(true)
+		ephemeral["storage"] = "ephemeral"
+		ephemeral["title"] = "cache only"
+		if not live.insert_item("ephemeral", ephemeral, true).is_empty(): return "Ephemeral fixture insertion failed"
 		if mode == "sliced":
 			var saved_slice := DocketDBJsonl.snapshot_slice_ms
 			DocketDBJsonl.snapshot_slice_ms = 0
@@ -282,7 +285,7 @@ func test_bootstrap_pending_sliced_worker_identity_ephemerals_registry_and_resta
 		if not result.has("result"): return "Loaded private bootstrap refused"
 		var descriptor: Dictionary = result.result.project
 		if descriptor.open_generation != token or descriptor.primary or live != _state.get_project_dbs()[mode] or registry != _state.get_type_registry(mode): return "Bootstrap replaced live identity or registry"
-		if live.get_item("ORD-0001").description != "acknowledged WAL" or live.get_item("ephemeral").title != "cache only" or live.is_settling(): return "Bootstrap lost pending WAL, ephemeral row or retained stale worker"
+		if live.get_item("ORD-0001").description != "acknowledged WAL" or live.get_item("ephemeral").title != "cache only" or live.get_item("ephemeral").storage != "ephemeral" or live.is_settling(): return "Bootstrap lost pending WAL, ephemeral row or retained stale worker"
 		if not registry.get_type("widget").has("definition") or not registry.get_diagnostic().is_empty(): return "Registry unavailable after bootstrap"
 		if result.result.conflicts != [{"id":"ORD-0001", "reason":"customized"}]: return "Bootstrap report missed pending customization"
 		if not live.flush_checked().is_empty(): return "Ordinary post-bootstrap settle failed"
@@ -365,3 +368,21 @@ func test_bootstrap_vault_metadata_movement_invalidates_real_key_session() -> Va
 	var stale := VaultKeySession.handle("vault_lock", {"panel_secret":"fixture", "path":path, "open_generation":challenge.open_generation, "fingerprint":challenge.fingerprint}, live)
 	var disk := JSONLParser.parse_file(path)
 	return true if stale.has("error") and disk.meta.vault_kdf_iterations == 10000.0 and disk.meta.vault_salt == Marshalls.raw_to_base64(salt) and disk.meta.version == "2.0.0" else "Vault movement changed KDF/format or accepted stale descriptor"
+
+func test_bootstrap_concurrent_name_collision_commits_without_orphan_opening() -> Variant:
+	var path := ProjectSettings.globalize_path(DIR + "/install-collision.dct")
+	var other := ProjectSettings.globalize_path(DIR + "/served-collision.dct")
+	var shipment := FileAccess.get_file_as_string("res://test/fixtures/dynamic_types_record_order_v2.jsonl")
+	_seed(other, "order-fixture")
+	JSONLCheckedCommit.stage_hook = func(stage: String, _target: String, _temp: String) -> String:
+		if stage == "after_rename": _state.add_project(other)
+		return ""
+	var server := _bootstrap_server()
+	var result := server._bootstrap_project(path, shipment)
+	server.free()
+	JSONLCheckedCommit.stage_hook = Callable()
+	if not result.has("error") or not result.error.get("data", {}).get("disk_committed", false) or result.error.data.failure_stage != "open": return "Concurrent name collision hid committed apply"
+	var projects := _state.get_project_dbs()
+	if projects.size() != 1 or _state.db != projects["order-fixture"] or ProjectOpenings.normalized_path(_state.db.get_path()) != other: return "Concurrent name collision registered orphan or disturbed authoritative opening"
+	var disk := JSONLParser.parse_file(path)
+	return true if disk.items.size() == 1 and disk.items[0].id == "ORD-0001" and not MasterBootstrapApply.read_state(disk.meta).has("error") else "Postcommit name collision lost installed disk authority"

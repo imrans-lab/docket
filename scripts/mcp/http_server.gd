@@ -453,8 +453,9 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 	# Preflight uses disk metadata without opening a cache or registering a project.
 	# Existing metadata wins in the disk core; shipment metadata only seeds installs.
 	var parsed := JSONLParser.parse_bytes(shipment.to_utf8_buffer(), "bootstrap shipment")
-	if not MasterBootstrapPlan._validate(parsed).is_empty():
-		return DocketHostAuthority._error(-32602, "Bootstrap shipment refused")
+	var shipment_error := MasterBootstrapPlan._validate(parsed)
+	if not shipment_error.is_empty():
+		return DocketHostAuthority._error(-32602, "Bootstrap shipment refused: " + shipment_error)
 	var projects := external_state.get_project_dbs() if external_state != null else _project_dbs
 	var live: DocketDBJsonl
 	var name := ""
@@ -487,7 +488,7 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 				return DocketHostAuthority._error(-32602, "Bootstrap session admission refused")
 	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema())
 	if report.status == "refused":
-		return DocketHostAuthority._error(-32602, "Bootstrap disk apply refused")
+		return DocketHostAuthority._error(-32602, "Bootstrap disk apply refused: " + str(report.error))
 	if live != null:
 		if not live.reload(): return _bootstrap_committed_failure(report, "reload", name, live)
 		# Refresh the shared registry in place, preserving primary and map bindings.
