@@ -440,8 +440,9 @@ func _post_request() -> void:
 func _resolve_vault(path: Variant) -> DocketDB:
 	if not path is String or not path.is_absolute_path(): return null
 	# Consult the live authoritative map, never a caller name or stored descriptor.
+	var normalized := ProjectOpenings.normalized_path(path)
 	var projects := external_state.get_project_dbs() if external_state != null else _project_dbs
 	for db: DocketDB in projects.values():
-		if ProjectOpenings.normalized_path(db.get_path()) == path:
+		if ProjectOpenings.normalized_path(db.get_path()) == normalized:
 			return db
 	return null
