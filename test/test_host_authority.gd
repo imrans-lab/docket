@@ -16,6 +16,8 @@ def private(p, token, ident=1, method='docket/panel/status', extra=None):
     return reply
 
 def refused(reply, code):
+    if reply.get('error', {}).get('code') != code:
+        print('HOST_AUTH_REFUSAL_DIAGNOSTIC expected=%d actual=%d caller_line=%d' % (code, reply.get('error', {}).get('code', 0), sys._getframe(1).f_lineno), file=sys.stderr, flush=True)
     assert reply.get('error', {}).get('code') == code, 'wrong refusal'
 
 try:
@@ -100,7 +102,11 @@ try:
                 (diagnostic_dir / 'bootstrap-install-refusal.txt').write_text(first_reply['error']['message'])
             result = first_reply['result']
             opened = result['project']
-            seeded = bootstrap(p, path, shipment.replace('"counter":1', '"counter":1,"master_bootstrap_state":"forged"'))
+            seeded_meta = json.loads(shipment.splitlines()[0])
+            seeded_meta['master_bootstrap_state'] = 'forged'
+            seeded_text = json.dumps(seeded_meta, separators=(',', ':')) + chr(10) + shipment.splitlines()[1] + chr(10)
+            assert seeded_text != shipment and json.loads(seeded_text.splitlines()[0])['master_bootstrap_state'] == 'forged'
+            seeded = bootstrap(p, path, seeded_text)
             refused(seeded, -32602)
             assert 'Shipment may not seed reserved bootstrap state' in seeded['error']['message'], 'disk refusal reason omitted'
             malformed = bootstrap(p, path, 'bad JSONL')
