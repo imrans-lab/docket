@@ -87,12 +87,6 @@ try:
                 refused(bootstrap(p, path, **fields), -32602)
                 assert not path.exists(), 'invalid request mutated disk'
             refused(private(p, b, 95, 'docket/panel/bootstrap_project', dict(path=str(path), content=base64.b64encode(shipment.encode()).decode())), -32001)
-            seeded = bootstrap(p, path, shipment.replace('"counter":1', '"counter":1,"master_bootstrap_state":"forged"'))
-            refused(seeded, -32602)
-            assert 'Shipment may not seed reserved bootstrap state' in seeded['error']['message'], 'disk refusal reason omitted'
-            malformed = bootstrap(p, path, 'bad JSONL')
-            refused(malformed, -32602)
-            assert 'malformed JSONL at line 1' in malformed['error']['message'], 'shipment refusal reason omitted'
             first_reply = bootstrap(p, path)
             # Only this synthetic non-vault install's refusal message is retained.
             diagnostic_dir = pathlib.Path(project) / 'runtime-logs'
@@ -100,6 +94,12 @@ try:
                 (diagnostic_dir / 'bootstrap-install-refusal.txt').write_text(first_reply['error']['message'])
             result = first_reply['result']
             opened = result['project']
+            seeded = bootstrap(p, path, shipment.replace('"counter":1', '"counter":1,"master_bootstrap_state":"forged"'))
+            refused(seeded, -32602)
+            assert 'Shipment may not seed reserved bootstrap state' in seeded['error']['message'], 'disk refusal reason omitted'
+            malformed = bootstrap(p, path, 'bad JSONL')
+            refused(malformed, -32602)
+            assert 'malformed JSONL at line 1' in malformed['error']['message'], 'shipment refusal reason omitted'
             assert result['status'] == 'installed' and result['inserted'] == ['BTS-0001']
             assert opened['name'] == 'bootstrap' and opened['path'] == str(path)
             assert opened['primary'] and opened['open_generation'] and opened['read_only_reason'] == ''

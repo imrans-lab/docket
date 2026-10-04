@@ -248,7 +248,7 @@ func _bootstrap_server() -> DocketHttpServer:
 	server._registry.init(_state.schema, _state.db, _state.get_project_dbs())
 	return server
 
-func test_bootstrap_pending_sliced_worker_identity_ephemerals_registry_and_restart() -> Variant:
+func test_bootstrap_pending_sliced_worker_identity_ephemerals_registry_and_cold_restart() -> Variant:
 	var shipment := FileAccess.get_file_as_string("res://test/fixtures/dynamic_types_record_order_v2.jsonl")
 	var other := DIR + "/unrelated.dct"
 	_seed(other, "unrelated")
@@ -292,6 +292,8 @@ func test_bootstrap_pending_sliced_worker_identity_ephemerals_registry_and_resta
 		var disk := JSONLParser.parse_file(path)
 		if disk.items.size() != 1 or disk.items[0].description != "acknowledged WAL" or disk.meta.version != "2.0.0" or not disk.meta.get("master_bootstrap_state") is String: return "Ordinary settle lost bootstrap authority"
 		_state.remove_project(mode)
+		# Reopening an existing cache preserves ephemerals; a cold cache proves disk authority.
+		if not JSONLCache.delete_cache_family(path).is_empty(): return "Cold restart cache removal failed"
 		if not _state.add_project(path).is_empty(): return "Post-bootstrap restart failed"
 		var restarted: DocketDB = _state.get_project_dbs()[mode]
 		if restarted.get_item("ORD-0001").description != "acknowledged WAL" or restarted.has_item("ephemeral"): return "Restart lost durable state or serialized ephemeral"
