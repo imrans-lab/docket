@@ -80,7 +80,7 @@ func _produce(name: String, password: String, iterations: int) -> DocketDBJsonl:
 	db.set_secret(id + ":notes", notes.ciphertext, notes.iv, notes.mac, false, id)
 	# Existing compatibility item route; Encrypted Note is no longer creatable.
 	var note_id := DocketDB.generate_uuid7()
-	db.insert_item(note_id, {"id":note_id, "type":"encrypted_note", "status":"active", "title":"Encrypted Note", "created_at":"2026-01-01T00:00:00", "updated_at":"2026-01-01T00:00:00"})
+	db.insert_item(note_id, {"id":note_id, "type":"encrypted_note", "status":"draft", "title":"Encrypted Note", "created_at":"2026-01-01T00:00:00", "updated_at":"2026-01-01T00:00:00"})
 	db.set_secret(note_id, notes.ciphertext, notes.iv, notes.mac, false, note_id)
 	db.set_meta_value("fixture_note", note_id)
 	db.flush()
