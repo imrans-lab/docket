@@ -40,8 +40,20 @@ def private(p, method, fields, auth=None, kdf_stage=None):
 def locked(p, name):
     assert 'locked' in call(p, 'docket_secret_get', dict(project=name, handle='entry'), True)['error'].lower(), 'key remained accessible'
 
+# Private routing matches Godot's normalized absolute path exactly. Keep native
+# pathlib paths for filesystem/environment operations, slash paths for protocol.
+def protocol_path(path):
+    assert path.is_absolute(), 'protocol path must be absolute'
+    return path.as_posix()
+
+for windows_path in (pathlib.PureWindowsPath('C:/fixture/legacy.dct'), pathlib.PureWindowsPath('//server/share/current.dct')):
+    assert protocol_path(windows_path) == str(windows_path).replace(chr(92), '/'), 'Windows protocol path separators'
+
 def bind(p, path):
-    return private(p, 'vault_challenge', dict(path=str(path)))['result']
+    reply = private(p, 'vault_challenge', dict(path=protocol_path(path)))
+    assert 'result' in reply, 'vault challenge refused'
+    assert reply['result']['path'] == protocol_path(path), 'vault challenge path'
+    return reply['result']
 
 def unlock(p, descriptor, password, kdf_stage=None):
     fields = {k: descriptor[k] for k in ('path', 'open_generation', 'fingerprint')}
@@ -52,7 +64,7 @@ def open_host(name, auth=token):
     p = launch(name, ['--host-authority'])
     assert 'result' in private(p, 'declare_schema', dict(schema=json.loads((pathlib.Path(project)/'data/schema.json').read_text()), version='synthetic'), auth), 'host schema declaration'
     for path in paths:
-        call(p, 'docket_project_add', dict(path=str(path)))
+        call(p, 'docket_project_add', dict(path=protocol_path(path)))
     return p
 
 try:
@@ -71,7 +83,7 @@ try:
             # Same retained legacy fixture route as test_vault_kdf_migration:
             # absent iteration metadata explicitly means 10,000.
             path.write_text(json.dumps(dict(_type='meta', version='1.0.0', counter=0, id_prefix='L', project='legacy', vault_salt=base64.b64encode(salt).decode(), vault_verify=base64.b64encode(verify).decode())) + '\\n')
-        p = launch(name, ['--file', str(path)])
+        p = launch(name, ['--file', protocol_path(path)])
         call(p, 'docket_secret_set', dict(handle='entry', value=values[0]), kdf_stage='producer_primary_write')
         call(p, 'docket_secret_set', dict(handle='entry', value=values[1]), kdf_stage='producer_primary_write')
         call(p, 'docket_secret_set', dict(handle='dual', value=values[0], requires_2fa=True, secondary_password=secrets.token_hex(16)), kdf_stage='producer_secondary_write')
@@ -92,11 +104,11 @@ try:
     p = open_host('hosted')
     # Isolated vault-less opening: refusal cannot initialize metadata or files.
     empty_path = base/'empty.dct'
-    call(p, 'docket_project_add', dict(path=str(empty_path), create=True))
+    call(p, 'docket_project_add', dict(path=protocol_path(empty_path), create=True))
     empty_before = empty_path.read_bytes()
     listing = call(p, 'docket_project_list', {})
-    empty_descriptor = next(d for d in listing['projects'] if d['path'] == str(empty_path))
-    refusal = private(p, 'vault_unlock', dict(path=str(empty_path), open_generation=empty_descriptor['open_generation'], fingerprint='absent', password=passwords[0]))
+    empty_descriptor = next(d for d in listing['projects'] if d['path'] == protocol_path(empty_path))
+    refusal = private(p, 'vault_unlock', dict(path=protocol_path(empty_path), open_generation=empty_descriptor['open_generation'], fingerprint='absent', password=passwords[0]))
     assert refusal['error'] == dict(code=-32602, message='Vault request refused') and empty_path.read_bytes() == empty_before and not any(k.startswith('vault_') for k in json.loads(empty_path.read_text().splitlines()[0])), 'vault-less unlock initialized state'
     assert private(p, 'vault_migrate', {})['error']['code'] == -32601, 'unknown private vault verb accepted'
     tools = request(p, 'tools/list', 1)['result']['tools']
@@ -112,7 +124,7 @@ try:
         d = bind(p, path)
         descriptors.append(d)
         for auth in (None, 'f'*64):
-            fields = dict(path=str(path))
+            fields = dict(path=protocol_path(path))
             reply = request(p, 'docket/panel/vault_challenge', 2, fields) if auth is None else private(p, 'vault_challenge', fields, auth)
             assert reply['error']['code'] == -32001, 'auth bypass'
         for password in (None, 42, '', 'x'*1025):
@@ -147,12 +159,12 @@ try:
         assert 'error' in unlock(p, dict(d, fingerprint='stale'), passwords[i]), 'stale fingerprint accepted'
         locked(p, name)
         assert path.read_bytes() == before[i], 'unlock mutated vault'
-    assert 'error' in private(p, 'vault_challenge', dict(path=str(base/'absent.dct'))), 'absent project accepted'
+    assert 'error' in private(p, 'vault_challenge', dict(path=protocol_path(base/'absent.dct'))), 'absent project accepted'
     d = descriptors[0]
     assert unlock(p, d, passwords[0], kdf_stage='vault_unlock')['result']['unlocked'], 'valid unlock failed'
     call(p, 'docket_project_remove', dict(name='legacy'))
     assert 'error' in unlock(p, d, passwords[0]), 'closed opening accepted'
-    call(p, 'docket_project_add', dict(path=str(paths[0])))
+    call(p, 'docket_project_add', dict(path=protocol_path(paths[0])))
     locked(p, 'legacy')
     assert 'error' in unlock(p, d, passwords[0]), 'reopened descriptor accepted'
     fresh = bind(p, paths[0])
@@ -161,7 +173,7 @@ try:
     finish(p)
     token2 = secrets.token_hex(32)
     q = open_host('hosted', token2)
-    assert 'error' in private(q, 'vault_challenge', dict(path=str(paths[0]))), 'previous connection token accepted'
+    assert 'error' in private(q, 'vault_challenge', dict(path=protocol_path(paths[0]))), 'previous connection token accepted'
     token = token2
     locked(q, 'legacy')
     restart_descriptor = bind(q, paths[0])
@@ -239,6 +251,8 @@ func run_actual_child(scenario_driver: String) -> Variant:
 	helpers = helpers.replace("['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))]", "['--state-dir', str(base / (name + '-state'))]")
 	# These two vault drivers make repeated real KDF calls; leave room below
 	# the isolated runner's 600s class limit without widening other drivers.
+	for marker in ["completed.wait(180)", "whole child oracle exceeded 180s"]:
+		if not helpers.contains(marker): return "stdio watchdog replacement marker not found"
 	helpers = helpers.replace("completed.wait(180)", "completed.wait(540)")
 	helpers = helpers.replace("whole child oracle exceeded 180s", "whole child oracle exceeded 540s")
 	# Diagnostics must never publish response bodies or secret-bearing frames.
