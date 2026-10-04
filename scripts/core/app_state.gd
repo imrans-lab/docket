@@ -33,6 +33,10 @@ var last_cross_project_query_error: String = ""
 
 
 func load_dct(path: String) -> void:
+	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
+	if not schema_refusal.is_empty():
+		load_failed.emit(path, schema_refusal)
+		return
 	dct_path = path
 	if db:
 		db.close()
@@ -89,6 +93,7 @@ func load_dct(path: String) -> void:
 	_project_dbs[proj_name] = db
 	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
 
+	TypeRegistryBootstrap.projects_opened = true
 	project_opened.emit(path)
 	if not _holding_file_changed: file_changed.emit()
 
@@ -121,6 +126,10 @@ func add_project_result(path: String) -> Dictionary:
 
 
 func add_project(path: String) -> String:
+	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
+	if not schema_refusal.is_empty():
+		load_failed.emit(path, schema_refusal)
+		return schema_refusal
 	## Load an additional .dct project without closing the primary.
 	## Returns "" on success, else the reason it was refused (also emitted).
 	var new_db: DocketDB
@@ -213,6 +222,7 @@ func add_project(path: String) -> String:
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 	_registry_checks.erase(proj_name)
 
+	TypeRegistryBootstrap.projects_opened = true
 	project_opened.emit(path)
 	if not _holding_file_changed: file_changed.emit()
 	return ""
@@ -408,6 +418,10 @@ func move_item(item_id: String, target_project: String, source_project: String =
 
 
 func create_dct(path: String) -> void:
+	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
+	if not schema_refusal.is_empty():
+		load_failed.emit(path, schema_refusal)
+		return
 	dct_path = path
 	if db:
 		db.close()
@@ -422,11 +436,16 @@ func create_dct(path: String) -> void:
 	var proj_name := db.get_project_name()
 	_project_dbs[proj_name] = db
 	_type_registries[proj_name] = TypeRegistry.for_db(db, proj_name)
+	TypeRegistryBootstrap.projects_opened = true
 	project_opened.emit(path)
 	file_changed.emit()
 
 
 func create_and_add_project(path: String) -> void:
+	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
+	if not schema_refusal.is_empty():
+		load_failed.emit(path, schema_refusal)
+		return
 	## Create a new .dct and add it alongside existing projects (does NOT replace).
 	# Default new dockets to JSONL format
 	var new_db := DocketDBJsonl.create_new_jsonl(path)
@@ -447,6 +466,7 @@ func create_and_add_project(path: String) -> void:
 	_project_dbs[proj_name] = new_db
 	_type_registries[proj_name] = TypeRegistry.for_db(new_db, proj_name)
 	_registry_checks.erase(proj_name)
+	TypeRegistryBootstrap.projects_opened = true
 	project_opened.emit(path)
 	file_changed.emit()
 
@@ -789,6 +809,5 @@ func save() -> void:
 
 
 func load_schema() -> void:
-	var sf := FileAccess.open("res://data/schema.json", FileAccess.READ)
-	schema = JSON.parse_string(sf.get_as_text())
+	schema = TypeRegistryBootstrap.effective_schema()
 	prefs = UserPrefs.load_prefs()

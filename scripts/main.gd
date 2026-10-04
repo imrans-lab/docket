@@ -29,6 +29,11 @@ func _ready() -> void:
 		return
 	if opts.host_authority:
 		_host_authority = authority
+		DocketRuntimeState.hosted = true
+		if not opts.files.is_empty() or opts.restore_session:
+			printerr("Docket: hosted startup cannot open files or restore a session before schema declaration")
+			DocketRuntimeState.quit(get_tree(), 2)
+			return
 
 	# Godot consumes --quiet before exposing cmdline args; inspect its effect.
 	if opts.stdio and (opts.mode not in ["serve", "gui"] or Engine.print_to_stdout or opts.state_dir.is_empty()):

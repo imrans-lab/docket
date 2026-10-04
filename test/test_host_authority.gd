@@ -128,6 +128,7 @@ func _run_scenario(scenario: String) -> Variant:
 	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
 	if helpers == driver:
 		return "stdio driver slice marker not found"
+	helpers = helpers.replace("['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))]", "['--state-dir', str(base / (name + '-state'))] + ([] if '--host-authority' in extra else ['--file', str(base / (name + '.dct'))])")
 	var source := "import sys\nscenario = sys.argv.pop()\n" + helpers + DRIVER
 	var python := "python" if OS.get_name() == "Windows" else "python3"
 	var output: Array = []

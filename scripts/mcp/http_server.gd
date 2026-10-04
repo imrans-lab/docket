@@ -48,8 +48,7 @@ func _ready() -> void:
 		_schema = external_schema
 	else:
 		# Standalone headless mode — load schema and DB from files
-		var schema_file := FileAccess.open("res://data/schema.json", FileAccess.READ)
-		_schema = JSON.parse_string(schema_file.get_as_text())
+		_schema = TypeRegistryBootstrap.effective_schema()
 
 		# Merge CLI --file args with any previously persisted session paths
 		var paths_to_load: Array = dct_paths.duplicate() if dct_paths.size() > 0 else ([] if stdio and dct_path.is_empty() else [dct_path])
@@ -57,6 +56,7 @@ func _ready() -> void:
 		for sp in saved_paths:
 			if sp not in paths_to_load:
 				paths_to_load.append(sp)
+		if not TypeRegistryBootstrap.opening_refusal().is_empty(): paths_to_load.clear()
 		for path in paths_to_load:
 			var loaded_db := _open_or_create_db(str(path))
 			var refusal: String = SessionProject.admit(loaded_db) if loaded_db else ""
@@ -68,6 +68,7 @@ func _ready() -> void:
 				if proj_name.is_empty():
 					proj_name = str(path).get_file().get_basename()
 					loaded_db.set_project_name(proj_name)
+				TypeRegistryBootstrap.projects_opened = true
 				_project_dbs[proj_name] = loaded_db
 				if _db == null:
 					_db = loaded_db  # First DB is primary
@@ -96,6 +97,7 @@ func _ready() -> void:
 	_handler.init_with_registry(_registry)
 	if stdio:
 		_handler.host_authority = host_authority
+		if host_authority != null: host_authority.schema_adopted = _adopt_schema
 
 	if stdio:
 		_stdio = DocketStdioTransport.new()
@@ -117,6 +119,14 @@ func _exit_tree() -> void:
 	DocketDBJsonl.settle_projects(_project_dbs, false)
 	MemoryProject.spill_on_exit(_project_dbs)
 	SessionProject.release_all()
+
+
+func _adopt_schema() -> void:
+	_schema = TypeRegistryBootstrap.effective_schema()
+	if external_state != null:
+		external_state.schema = _schema
+		external_state.file_changed.emit()
+	_registry.update_db(_schema, _db, _project_dbs)
 
 
 func _on_file_changed() -> void:
@@ -180,6 +190,8 @@ func _gui_open(request: Dictionary) -> Dictionary:
 
 
 func _headless_add_project(path: String) -> Dictionary:
+	var refusal_before_open := TypeRegistryBootstrap.opening_refusal()
+	if not refusal_before_open.is_empty(): return {"error":refusal_before_open}
 	var loaded_db := _open_or_create_db(path)
 	if not loaded_db:
 		return {"error": "Failed to open: %s" % path}
@@ -194,6 +206,7 @@ func _headless_add_project(path: String) -> Dictionary:
 	# A project loaded under a name already served replaces it, including as primary.
 	if _db == null or _project_dbs.get(proj_name) == _db:
 		_db = loaded_db
+	TypeRegistryBootstrap.projects_opened = true
 	_project_dbs[proj_name] = loaded_db
 	_registry.update_db(_schema, _db, _project_dbs)
 	_persist_headless_session()

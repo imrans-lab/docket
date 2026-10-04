@@ -6,6 +6,7 @@ class_name DocketRuntimeState
 static var directory: String = ""
 static var restore_session: bool = false
 static var stdio: bool = false
+static var hosted: bool = false
 
 
 static func prepare_shutdown() -> void:
@@ -36,4 +37,4 @@ static func path_for(default_path: String) -> String:
 
 
 static func may_restore_session() -> bool:
-	return directory.is_empty() or restore_session
+	return not hosted and (directory.is_empty() or restore_session)

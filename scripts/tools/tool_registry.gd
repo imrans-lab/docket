@@ -134,6 +134,9 @@ const _ID_FIELDS := ["id", "item_id", "from", "to", "source_id", "target_id"]
 
 
 func call_tool(name: String, arguments: Dictionary) -> Dictionary:
+	if name == "docket_project_add":
+		var schema_refusal := TypeRegistryBootstrap.opening_refusal()
+		if not schema_refusal.is_empty(): return {"error":schema_refusal}
 	if not _tools.has(name):
 		var err := {"error": "Unknown tool: %s" % name}
 		_log_error(name, arguments, err)

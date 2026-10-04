@@ -1,11 +1,12 @@
 extends RefCounted
 class_name DocketHostAuthority
 ## Private stdio authority, separate from the agent tool registry. The token is
-## per child, not a vault password. Only status is implemented at this seam.
+## per child, not a vault password. Schema declaration precedes every hosted project opening.
 
 const PREFIX := "docket/panel/"
 const SECRET_ENV := "DOCKET_PANEL_SECRET"
 var _secret := PackedByteArray()
+var schema_adopted: Callable
 
 
 func configure_from_environment(enabled: bool, stdio: bool) -> String:
@@ -36,6 +37,13 @@ func handle(method: String, params: Variant) -> Dictionary:
 		difference |= supplied[i] ^ _secret[i]
 	if difference != 0:
 		return _error(-32001, "Private authentication refused")
+	if method == PREFIX + "declare_schema":
+		if params.size() != 3 or not params.has("schema") or not params.has("version"):
+			return _error(-32602, "Invalid private parameters")
+		var declaration := TypeRegistryBootstrap.declare_schema(params.schema, params.version)
+		if declaration.has("error"): return _error(-32602, declaration.error)
+		if not declaration.idempotent and schema_adopted.is_valid(): schema_adopted.call()
+		return {"result":declaration}
 	if method != PREFIX + "status":
 		return _error(-32601, "Private method not found")
 	# status accepts exactly {panel_secret}; no grants, sessions, tool arguments

@@ -43,6 +43,64 @@ static func load_shipped_schema() -> Dictionary:
 	file.close()
 	return parsed if parsed is Dictionary else {}
 
+static var _declared_schema: Dictionary = {}
+static var _declared_version: String = ""
+static var projects_opened: bool = false
+
+static func effective_schema() -> Dictionary:
+	return load_shipped_schema() if _declared_schema.is_empty() else _declared_schema.duplicate(true)
+
+static func opening_refusal() -> String:
+	return "Host schema must be declared before opening projects" if DocketRuntimeState.hosted and _declared_schema.is_empty() else ""
+
+static func declare_schema(schema: Variant, version: Variant) -> Dictionary:
+	if not version is String or version.strip_edges().is_empty(): return {"error":"Schema version must be a nonempty string"}
+	if not schema is Dictionary: return {"error":"Schema must be an object"}
+	if version == _declared_version and schema == _declared_schema: return {"version":version,"idempotent":true}
+	if projects_opened: return {"error":"Cannot change schema after projects have opened"}
+	var error := validate_schema(schema)
+	if not error.is_empty(): return {"error":error}
+	_declared_schema = schema.duplicate(true)
+	_declared_version = version
+	return {"version":version,"idempotent":false}
+
+static func validate_schema(schema: Dictionary) -> String:
+	if not schema.get("types") is Dictionary or schema.types.is_empty(): return "Schema types must be a nonempty object"
+	for property in ["version", "id_prefix", "id_format"]:
+		if schema.has(property) and not schema[property] is String: return "Schema %s must be a string" % property
+	for property in ["common_fields", "link_relations", "priority_values", "severity_values"]:
+		if schema.has(property) and not schema[property] is Array: return "Schema %s must be an array" % property
+		for value in schema.get(property, []):
+			if property in ["common_fields", "link_relations"] and not value is String: return "Schema %s must contain strings" % property
+			if property in ["priority_values", "severity_values"] and not (value is int or value is float): return "Schema %s must contain numbers" % property
+	for slug in schema.types:
+		if not slug is String or not schema.types[slug] is Dictionary: return "Type names and definitions have invalid shapes"
+		var source: Dictionary = schema.types[slug]
+		for property in ["label", "description", "use_when", "initial_state"]:
+			if source.has(property) and not source[property] is String: return "Type %s must be a string" % property
+		for property in ["states", "terminal_states", "required_fields", "optional_fields", "resolutions"]:
+			if not source.get(property, []) is Array: return "Type %s must be an array" % property
+			var seen := {}
+			for value in source.get(property, []):
+				if not value is String or seen.has(value): return "Type %s must contain unique strings" % property
+				seen[value] = true
+		for property in ["transitions", "transition_rules", "field_definitions"]:
+			if not source.get(property, {}) is Dictionary: return "Type %s must be an object" % property
+		for key in source.get("field_definitions", {}):
+			var descriptor: Variant = source.field_definitions[key]
+			if not key is String or not descriptor is Dictionary: return "Field descriptors must be objects with string keys"
+			if key not in source.get("required_fields", []) and key not in source.get("optional_fields", []) and key not in COMMON_ITEM_FIELDS: return "Field descriptor is not declared"
+			for property in ["type", "key", "label", "description", "help"]:
+				if descriptor.has(property) and not descriptor[property] is String: return "Field %s must be a string" % property
+			for flag in ["required", "nullable", "mutable"]:
+				if descriptor.has(flag) and not descriptor[flag] is bool: return "Field flags must be boolean"
+			if descriptor.has("key") and descriptor.key != key: return "Conflicting field key"
+	var validator := TypeRegistry.new(null)
+	for revision in records(schema).type_def_versions:
+		var error := validator.validate_definition(revision.definition)
+		if not error.is_empty(): return error
+	return ""
+
 static func records(schema: Dictionary) -> Dictionary:
 	var definitions: Array = []
 	var revisions: Array = []
@@ -105,7 +163,7 @@ static func _definition_hash(definition: Dictionary) -> String:
 	return context.finish().hex_encode()
 
 static func seed_cache(db: DocketDB, schema: Dictionary = {}) -> String:
-	var effective := schema if not schema.is_empty() else load_shipped_schema()
+	var effective := schema if not schema.is_empty() else effective_schema()
 	if effective.is_empty(): return "shipped schema is unavailable"
 	var bootstrap := records(effective)
 	db._last_sql_error = ""
