@@ -3,7 +3,7 @@ extends Node
 var A := AssertHelpers
 const SCHEMA := {"types":{"hint":{"states":["draft", "active"], "initial_state":"draft", "transitions":{"draft":["active"], "active":[]}, "optional_fields":["value"]}}}
 const META := '{"_type":"meta","version":"1.0.0","counter":4,"id_prefix":"T","event_counter":90,"project":"personal","custom":{"null":null,"false":false,"zero":0,"empty":[]}}\n'
-const CURRENT := """{"_type":"item","id":"A","type":"hint","status":"draft","title":"old","created_at":"t","updated_at":"t","retrieval_count":12,"tags":["z","a"],"fields":{"literal":"C:\\\\new\\\\tab","null":null,"false":false,"zero":0,"list":[2,1],"empty":{}},"extras":{"unicode":"雪","empty":""}}
+const CURRENT := """{"_type":"item","id":"A","type":"hint","status":"draft","title":"old","created_at":"t","updated_at":"t","retrieval_count":12,"tags":["z","a"],"fields":{"literal":"C:\\\\new\\\\tab","null":null,"false":false,"zero":0,"list":[2,1],"empty":{}},"extras":{"unicode":"雪","empty_text":""}}
 {"_type":"item","id":"B","type":"hint","status":"draft","title":"old B","created_at":"t","updated_at":"t"}
 {"_type":"item","id":"C","type":"hint","status":"draft","title":"deleted","created_at":"t","updated_at":"t"}
 {"_type":"item","id":"U","type":"hint","status":"draft","title":"personal","created_at":"t","updated_at":"t"}
@@ -15,7 +15,7 @@ const CURRENT := """{"_type":"item","id":"A","type":"hint","status":"draft","tit
 {"_type":"secret_version","handle":"h","version":1,"ciphertext":"YQ==","iv":"Yg==","mac":"Yw==","created_at":"t"}
 {"_type":"saved_query","name":"mine","query":{"zero":0,"false":false,"null":null}}
 """
-const SHIPMENT := """{"_type":"item","id":"A","type":"hint","status":"draft","title":"new","created_at":"t","updated_at":"t","retrieval_count":99,"tags":["a","z"],"fields":{"literal":"C:\\\\new\\\\tab","null":null,"false":false,"zero":0,"list":[2,1],"empty":{}},"extras":{"unicode":"雪","empty":""}}
+const SHIPMENT := """{"_type":"item","id":"A","type":"hint","status":"draft","title":"new","created_at":"t","updated_at":"t","retrieval_count":99,"tags":["a","z"],"fields":{"literal":"C:\\\\new\\\\tab","null":null,"false":false,"zero":0,"list":[2,1],"empty":{}},"extras":{"unicode":"雪","empty_text":""}}
 {"_type":"item","id":"B","type":"hint","status":"draft","title":"new B","created_at":"t","updated_at":"t"}
 {"_type":"item","id":"C","type":"hint","status":"draft","title":"resurrect","created_at":"t","updated_at":"t"}
 {"_type":"item","id":"Z","type":"hint","status":"draft","title":"new Z","created_at":"t","updated_at":"t"}
@@ -45,6 +45,8 @@ func test_replayed_merge_preserves_personal_payloads_sections_and_converges() ->
 	var current := _parse(CURRENT)
 	var baseline := _parse(CURRENT)
 	var shipment := _parse(SHIPMENT)
+	for snapshot in [current, baseline, shipment]:
+		if not str(snapshot.get("error", "")).is_empty(): return snapshot.error
 	var replay := JSONLSidecar.replay_into(current, "memory.dct", "canonical", WAL.to_utf8_buffer())
 	if not replay.is_empty(): return replay
 	var inputs := [current.duplicate(true), shipment.duplicate(true), baseline.duplicate(true)]
@@ -54,7 +56,7 @@ func test_replayed_merge_preserves_personal_payloads_sections_and_converges() ->
 	var r = A.eq([result.inserted, result.updated, result.deleted, result.conflicts], [["D", "Z"], ["A"], ["C"], [{"id":"B", "reason":"customized"}]], "literal merge decisions after WAL customization/deletion")
 	if r is String: return r
 	var merged: Dictionary = result.merged
-	r = A.eq(_find(merged, "A"), {"_type":"item", "id":"A", "type":"hint", "status":"draft", "title":"new", "created_at":"t", "updated_at":"t", "retrieval_count":12, "tags":["a", "z"], "fields":{"literal":"C:\\new\\tab", "null":null, "false":false, "zero":0, "list":[2,1], "empty":{}}, "extras":{"unicode":"雪", "empty":""}}, "independent complete replacement payload, literal escapes and envelopes")
+	r = A.eq(_find(merged, "A"), {"_type":"item", "id":"A", "type":"hint", "status":"draft", "title":"new", "created_at":"t", "updated_at":"t", "retrieval_count":12, "tags":["a", "z"], "fields":{"literal":"C:\\new\\tab", "null":null, "false":false, "zero":0.0, "list":[2.0,1.0], "empty":{}}, "extras":{"unicode":"雪", "empty_text":""}}, "independent complete replacement payload, literal escapes and envelopes")
 	if r is String: return r
 	r = A.eq([_find(merged, "B").title, _find(merged, "U").title, _find(merged, "C")], ["WAL customization", "personal", {}], "personal and deleted IDs")
 	if r is String: return r
@@ -65,7 +67,7 @@ func test_replayed_merge_preserves_personal_payloads_sections_and_converges() ->
 	expected_meta.event_counter = 93
 	r = A.eq(merged.meta, expected_meta, "only proposed event head changes")
 	if r is String: return r
-	r = A.eq(merged.events, [{"_type":"event", "item_id":"U", "seq":1, "eid":7, "event_type":"noted", "timestamp":"t", "extras":{"opaque":{"zero":0}}}, {"_type":"event", "item_id":"D", "seq":2, "eid":91, "event_type":"noted", "timestamp":"t", "extras":{"opaque":false}}, {"_type":"event", "item_id":"D", "seq":1, "eid":92, "event_type":"created", "timestamp":"t"}, {"_type":"event", "item_id":"Z", "seq":1, "eid":93, "event_type":"created", "timestamp":"t", "extras":{"opaque":{"literal":"\\n", "null":null}}}], "independent remapped history, lexical new IDs/source per-item order")
+	r = A.eq(merged.events, [{"_type":"event", "item_id":"U", "seq":1, "eid":7, "event_type":"noted", "timestamp":"t", "extras":{"opaque":{"zero":0.0}}}, {"_type":"event", "item_id":"D", "seq":2, "eid":91, "event_type":"noted", "timestamp":"t", "extras":{"opaque":false}}, {"_type":"event", "item_id":"D", "seq":1, "eid":92, "event_type":"created", "timestamp":"t"}, {"_type":"event", "item_id":"Z", "seq":1, "eid":93, "event_type":"created", "timestamp":"t", "extras":{"opaque":{"literal":"\\n", "null":null}}}], "independent remapped history, lexical new IDs/source per-item order")
 	if r is String: return r
 	for previous in [baseline, result.next_baseline]:
 		var repeated := MasterBootstrapPlan.plan(merged, shipment, previous, result.next_ever_shipped, SCHEMA)
@@ -126,7 +128,7 @@ func test_v2_immutable_pins_and_pure_capability_report() -> Variant:
 	var shipment := _v2(literal)
 	var result := MasterBootstrapPlan.plan(current, shipment, null, [], SCHEMA)
 	if result.has("error"): return result.error
-	var r = A.eq([result.inserted, result.merged.type_defs, result.merged.type_def_versions, _find(result.merged, "V").fields], [["V"], registry_before[0], registry_before[1], {"null":null, "false":false, "zero":0, "empty":[]}], "compatible pins and immutable registry")
+	var r = A.eq([result.inserted, result.merged.type_defs, result.merged.type_def_versions, _find(result.merged, "V").fields], [["V"], registry_before[0], registry_before[1], {"null":null, "false":false, "zero":0.0, "empty":[]}], "compatible pins and immutable registry")
 	if r is String: return r
 	var changed := SCHEMA.duplicate(true)
 	changed.types.hint.optional_fields = ["value", "source"]
@@ -169,6 +171,9 @@ func test_v2_immutable_pins_and_pure_capability_report() -> Variant:
 
 func test_invalid_snapshots_identities_heads_and_capability_inputs_refuse() -> Variant:
 	var valid := _parse(CURRENT)
+	if not str(valid.get("error", "")).is_empty(): return valid.error
+	var parsed = A.eq([valid.items.size(), valid.events.size(), valid.comments.size()], [4, 1, 1], "literal refusal fixture parsed before indexing")
+	if parsed is String: return parsed
 	var bad_counter := valid.duplicate(true)
 	bad_counter.meta.event_counter = -1
 	var fractional := valid.duplicate(true)
