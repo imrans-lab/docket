@@ -41,6 +41,13 @@ godot --headless --path . -- validate --file docket.dct
     unknown future payloads
   - Uses a best-effort advisory `.lock`; it reduces overlap but is not a
     correctness boundary
+  - Windows replacement stages `<target>.docket-replace-backup` (canonical and
+    WAL) and restores it on failure; open/reload recover under the same advisory
+    lock. The suffix is reserved: its presence implies Docket ownership, without
+    independent origin authentication. Invalid/unsupported evidence is retained
+    and refused. A valid destination wins over a valid stale backup. The target
+    can briefly be absent; failed restoration leaves bytes at the backup path.
+    POSIX retains rename visibility; neither path promises fsync durability.
 - **Cache layer:** `.v2.cache` for format 2.0 and `.cache` for format 1.0
   (SQLite, gitignored, auto-rebuilt)
   - Fast query engine, concurrent read/write (WAL mode, 15s timeout)

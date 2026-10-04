@@ -2,7 +2,8 @@ extends RefCounted
 class_name JSONLCheckedCommit
 ## Synchronous settle/bootstrap share one marker → replacement → retirement
 ## protocol. Caller holds FileLock. The background job retains its prefix/tail
-## protocol. Atomic rename promises visibility, not power-loss fsync durability.
+## protocol. POSIX rename provides atomic visibility; Windows stages a backup
+## with an absent-target window. Neither promises power-loss fsync durability.
 
 ## Bounded disk-failure seam; tests operate on actual temporary files.
 static var stage_hook: Callable

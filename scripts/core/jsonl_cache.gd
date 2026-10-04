@@ -87,6 +87,12 @@ static func read_source(jsonl_path: String, cache_path: String = "") -> Dictiona
 	## {"parsed": canonical with the sidecar replayed, "fingerprint": of the
 	## bytes parsed}, or {} with last_error set.
 
+	var recovery_error := JSONLReplace.recover(jsonl_path)
+	if not recovery_error.is_empty():
+		last_error = recovery_error
+		push_error("JSONLCache: " + recovery_error)
+		return {}
+
 	# Canonical and sidecar are each read once here. The cache is built from these
 	# bytes and its stored fingerprint is their hash, so a write by another
 	# process after the read makes this cache stale instead of hiding inside it.
@@ -289,6 +295,10 @@ static func is_cache_valid(jsonl_path: String, cache_path: String) -> bool:
 		return false
 	# Parse before trusting even a matching warm-cache fingerprint. This is the
 	# compatibility gate for higher versions, new record kinds and conflicts.
+	var recovery_error := JSONLReplace.recover(jsonl_path)
+	if not recovery_error.is_empty():
+		last_error = recovery_error
+		return false
 	var parsed := JSONLParser.parse_file(jsonl_path)
 	if not str(parsed.get("error", "")).is_empty():
 		last_error = parsed.error
@@ -314,6 +324,10 @@ static func is_cache_valid(jsonl_path: String, cache_path: String) -> bool:
 # -- Internal helpers ---------------------------------------------------------
 
 static func cache_path_for(jsonl_path: String) -> String:
+	var recovery_error := JSONLReplace.recover(jsonl_path)
+	if not recovery_error.is_empty():
+		last_error = recovery_error
+		return jsonl_path + ".cache"
 	var parsed := JSONLParser.parse_file(jsonl_path)
 	if str(parsed.get("error", "")).is_empty(): return cache_path_for_version(jsonl_path, str(parsed.meta.version))
 	return jsonl_path + ".cache"

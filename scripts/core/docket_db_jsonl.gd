@@ -6,8 +6,8 @@ class_name DocketDBJsonl
 ## Mutations pass a source-freshness gate and stage their rows in a
 ## transaction on the disposable SQLite cache; the outermost one appends one
 ## record to the write-ahead sidecar (JSONLSidecar, beside the canonical) and
-## commits the transaction under one FileLock hold. The canonical is rewritten
-## atomically only when it settles: on an idle debounce (settle_projects), on
+## commits the transaction under one FileLock hold. The canonical is replaced
+## only when it settles: on an idle debounce (settle_projects), on
 ## close() with pending records, on File → Save (settle_in_background), on
 ## flush() (docket_flush), on open when a sidecar survived, and at once for
 ## changes the sidecar does not journal (type registry, secrets, saved queries).
@@ -89,6 +89,12 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 	var wrapper := DocketDBJsonl.new()
 	wrapper._jsonl_path = path
 
+	var recovery_error := JSONLReplace.recover(path)
+	if not recovery_error.is_empty():
+		last_open_error = recovery_error
+		push_error("DocketDBJsonl: " + recovery_error)
+		return null
+
 	var cache_path := JSONLCache.cache_path_for(path)
 
 	if not FileAccess.file_exists(path):
@@ -138,6 +144,12 @@ static func open_jsonl(path: String) -> DocketDBJsonl:
 static func create_new_jsonl(path: String) -> DocketDBJsonl:
 	## Create a brand-new JSONL-backed docket at the canonical `.dct` path.
 	## Writes a 2.0 file with complete starter definitions and creates its cache.
+	var recovering := JSONLReplace.pending(path)
+	var recovery_error := JSONLReplace.recover(path)
+	if not recovery_error.is_empty():
+		last_open_error = recovery_error
+		return null
+	if recovering and FileAccess.file_exists(path): return open_jsonl(path)
 	var wrapper := DocketDBJsonl.new()
 	wrapper._jsonl_path = path
 	wrapper._allow_initial_write = true
@@ -550,6 +562,8 @@ func _commit_mutation() -> String:
 	## settles them.
 	if not _uses_sidecar() or _allow_initial_write: return _exec_checked("COMMIT;")
 	if _write_blocked: return last_write_error
+	var recovery_error := JSONLReplace.recover(_jsonl_path)
+	if not recovery_error.is_empty(): return recovery_error
 	if not FileAccess.file_exists(_jsonl_path): return "canonical source is missing; refusing to recreate it from cache"
 	var expected_source := super.get_meta_value("jsonl_hash", "")
 	var built := JSONLSidecar.build_record(self, JSONLSidecar.canonical_part(expected_source))
@@ -625,6 +639,8 @@ func _settle_canonical() -> String:
 		return join_error
 	if _write_blocked:
 		return last_write_error
+	var recovery_error := JSONLReplace.recover(_jsonl_path)
+	if not recovery_error.is_empty(): return _fail_flush(recovery_error)
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
 		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
 	if FileAccess.file_exists(_jsonl_path) and is_stale():
@@ -677,6 +693,8 @@ func _start_settle_job(sliced: bool = false) -> String:
 	## ticks (_advance_settle_job) before the hold; otherwise the hold is now.
 	if _write_blocked:
 		return last_write_error
+	var recovery_error := JSONLReplace.recover(_jsonl_path)
+	if not recovery_error.is_empty(): return _fail_flush(recovery_error)
 	if not FileAccess.file_exists(_jsonl_path):
 		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
 	if not sliced or snapshot_slice_ms < 0:
@@ -796,6 +814,11 @@ func _commit_settle_job() -> String:
 	if lock == null:
 		job.remove_temp()
 		return _fail_flush("could not acquire advisory lock for %s" % _jsonl_path)
+	var recovery_error := JSONLReplace.recover(_jsonl_path)
+	if not recovery_error.is_empty():
+		lock.release()
+		job.remove_temp()
+		return _fail_flush(recovery_error)
 	var stored := super.get_meta_value("jsonl_hash", "")
 	var sidecar_read := JSONLSidecar.read_bytes(JSONLSidecar.path_for(_jsonl_path))
 	if not str(sidecar_read.error).is_empty():
@@ -863,6 +886,12 @@ func _source_fingerprint(force_full: bool = false) -> String:
 	## JSONLSidecar.source_fingerprint; the canonical's hash is reused only under
 	## JSONLFreshness's rules, and the sidecar is always hashed, so another
 	## process's append also reads as a change.
+	var recovering := JSONLReplace.pending(_jsonl_path)
+	var recovery_error := JSONLReplace.recover(_jsonl_path)
+	if not recovery_error.is_empty():
+		last_write_error = recovery_error
+		return ""
+	if recovering: _freshness.forget()
 	var canonical_sha := _freshness.canonical_sha(_jsonl_path, force_full)
 	return "" if canonical_sha.is_empty() else JSONLSidecar.fingerprint_with(canonical_sha, _jsonl_path)
 
@@ -894,12 +923,12 @@ static func _write_temp(path: String, content: String) -> Dictionary:
 
 
 static func _rename_over(tmp_path: String, path: String) -> String:
-	var err := DirAccess.rename_absolute(tmp_path, path)
-	if err != OK:
-		push_error("DocketDBJsonl: rename %s → %s failed (error %d)" % [tmp_path, path, err])
+	var error := JSONLReplace.replace(tmp_path, path)
+	if not error.is_empty():
+		push_error("DocketDBJsonl: " + error)
 		# Clean up temp file on failure
 		DirAccess.remove_absolute(tmp_path)
-		return "cannot replace canonical file (error %d)" % err
+		return error
 	return ""
 
 

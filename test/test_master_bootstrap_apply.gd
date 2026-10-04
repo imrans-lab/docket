@@ -24,6 +24,8 @@ func teardown() -> void:
 	MasterBootstrapApply.acquired_hook = Callable()
 	MasterBootstrapApply.lock_timeout_ms = 5000
 	JSONLCheckedCommit.stage_hook = Callable()
+	JSONLReplace.stage_hook = Callable()
+	JSONLReplace.force_windows = false
 	var dir := DirAccess.open(DIR)
 	if dir != null:
 		for name in dir.get_files(): dir.remove(name)
@@ -251,3 +253,106 @@ func test_preservation_matches_actual_ordinary_settle_in_every_family() -> Varia
 	result = _apply(missing, text)
 	MasterBootstrapApply.acquired_hook = Callable()
 	return A.is_true(result.status == "refused" and not FileAccess.file_exists(missing), "missing acquired project is never silently recreated")
+
+# Restart-state simulations at the real protocol boundaries, not killed-child proof.
+func test_windows_replacement_boundaries_replay_markers_and_recover_idempotently() -> Variant:
+	JSONLReplace.force_windows = true
+	for boundary in ["after_backup", "after_install"]:
+		var path: String = DIR + "/windows-" + boundary + ".dct"
+		var result := _apply(path, META + ITEMS)
+		if result.has("error"): return result.error
+		var old := FileAccess.get_file_as_bytes(path)
+		JSONLSidecar.append(path + ".log", '{"_type":"wal","base":"%s","replace":[["B","item"]],"records":[]}' % FileAccess.get_sha256(path))
+		var observed: Array = []
+		JSONLReplace.stage_hook = func(stage: String, target: String, temp: String) -> String:
+			if target != path: return ""
+			if stage == boundary:
+				observed.append([FileAccess.file_exists(target), FileAccess.get_file_as_bytes(target + ".docket-replace-backup") == old])
+				if boundary == "after_backup": DirAccess.remove_absolute(temp)
+				return "simulated interrupted process" if boundary == "after_install" else ""
+			return "simulated unavailable restore" if boundary == "after_backup" and stage == "before_restore" else ""
+		result = _apply(path, (META + ITEMS).replace('"old"', '"updated"'))
+		JSONLReplace.stage_hook = Callable()
+		var r = A.eq(observed, [[boundary == "after_install", true]], "actual staged disk boundary observed")
+		if r is String: return r
+		r = A.eq(result.status, "refused" if boundary == "after_backup" else "applied", "restore failure versus committed cleanup failure")
+		if r is String: return r
+		if boundary == "after_backup":
+			r = A.is_true(str(result.error).contains(path + ".docket-replace-backup") and FileAccess.get_file_as_bytes(path + ".docket-replace-backup") == old, "restore failure names preserved bytes")
+			if r is String: return r
+		var source := JSONLCache.read_source(path)
+		if source.is_empty(): return JSONLCache.last_error
+		r = A.eq([_find(source.parsed,"A").title, _find(source.parsed,"B")], ["old" if boundary == "after_backup" else "updated", {}], "old target ignores new marker; valid new target skips prefix")
+		if r is String: return r
+		var recovered := FileAccess.get_file_as_bytes(path)
+		r = A.is_true(not FileAccess.file_exists(path + ".docket-replace-backup") and JSONLReplace.recover(path).is_empty() and FileAccess.get_file_as_bytes(path) == recovered, "recovery is byte-idempotent")
+		if r is String: return r
+		var db := DocketDBJsonl.open_jsonl(path)
+		if db == null: return DocketDBJsonl.last_open_error
+		db.close()
+		r = A.eq([_find(_disk(path),"A").title, _find(_disk(path),"B")], ["old" if boundary == "after_backup" else "updated", {}], "cold cache restart preserves acknowledged deletion")
+		if r is String: return r
+	return true
+
+func test_windows_replacement_failure_restores_and_reserved_invalid_files_refuse() -> Variant:
+	JSONLReplace.force_windows = true
+	var path := DIR + "/windows-restore.dct"
+	_write(path, META + ITEMS)
+	var old := FileAccess.get_file_as_bytes(path)
+	var temp := path + ".test-temp"
+	_write(temp, (META + ITEMS).replace('"old"', '"updated"'))
+	JSONLReplace.stage_hook = func(stage: String, _target: String, source: String) -> String:
+		if stage == "after_backup": DirAccess.remove_absolute(source)
+		return ""
+	var error := DocketDBJsonl._rename_over(temp, path)
+	JSONLReplace.stage_hook = Callable()
+	var r = A.is_true(not error.is_empty() and FileAccess.get_file_as_bytes(path) == old and not FileAccess.file_exists(path + ".docket-replace-backup"), "real install failure restores exact old bytes")
+	if r is String: return r
+	# Each invalid role/state must preserve every fixture, including WAL backup.
+	for invalid in ["corrupt", "future", "wal", "target", "directory"]:
+		var backup := path + ".docket-replace-backup"
+		_write(path, META + ITEMS)
+		_write(backup, META + ITEMS)
+		_write(path + ".log.docket-replace-backup", '{"_type":"wal","base":"old","replace":[["B","item"]],"records":[]}\n{torn')
+		if invalid == "corrupt": _write(backup, "not canonical")
+		if invalid == "future": _write(backup, META.replace("1.0.0", "9.0.0") + ITEMS)
+		if invalid == "wal": _write(path + ".log.docket-replace-backup", '{"_type":"unknown"}\n')
+		if invalid == "target": _write(path, "not canonical")
+		if invalid == "directory":
+			DirAccess.remove_absolute(backup); DirAccess.make_dir_absolute(backup)
+		var before := FileAccess.get_file_as_bytes(path)
+		var wal_before := FileAccess.get_file_as_bytes(path + ".log.docket-replace-backup")
+		var backup_before := FileAccess.get_file_as_bytes(backup) if invalid != "directory" else PackedByteArray()
+		var refused := _apply(path, META + ITEMS)
+		r = A.is_true(refused.status == "refused" and FileAccess.get_file_as_bytes(path) == before and FileAccess.get_file_as_bytes(path + ".log.docket-replace-backup") == wal_before, "invalid reserved evidence refuses without touching authority or WAL")
+		if r is String: return r
+		r = A.is_true(DirAccess.dir_exists_absolute(backup) if invalid == "directory" else FileAccess.get_file_as_bytes(backup) == backup_before, "invalid backup retained")
+		if r is String: return r
+		DirAccess.remove_absolute(backup); DirAccess.remove_absolute(path + ".log.docket-replace-backup")
+	return true
+
+func test_windows_missing_target_bootstrap_and_live_freshness_recover_before_classification() -> Variant:
+	JSONLReplace.force_windows = true
+	var path := DIR + "/windows-live.dct"
+	_write(path, META + ITEMS)
+	var db := DocketDBJsonl.open_jsonl(path)
+	if db == null: return DocketDBJsonl.last_open_error
+	var old := FileAccess.get_file_as_bytes(path)
+	DirAccess.rename_absolute(path, path + ".docket-replace-backup")
+	var stale := db.is_stale() # Recovers before fingerprint/missing classification.
+	var r = A.is_true(not stale and FileAccess.get_file_as_bytes(path) == old, "live freshness restores unchanged authority")
+	if r is String: db.close(); return r
+	DirAccess.rename_absolute(path, path + ".docket-replace-backup")
+	r = A.is_true(db.reload() and FileAccess.get_file_as_bytes(path) == old, "live reload restores before cache-path classification")
+	db.close()
+	if r is String: return r
+	DirAccess.rename_absolute(path, path + ".docket-replace-backup")
+	var result := _apply(path, (META + ITEMS).replace('"old"', '"updated"'))
+	r = A.eq(result.status, "applied", "missing-target recovery is existing bootstrap, not new installation")
+	if r is String: return r
+	DirAccess.rename_absolute(path, path + ".docket-replace-backup")
+	db = DocketDBJsonl.create_new_jsonl(path)
+	if db == null: return DocketDBJsonl.last_open_error
+	r = A.eq(db.get_item("A").title, "updated", "create path recovers existing content before seeding")
+	db.close()
+	return r

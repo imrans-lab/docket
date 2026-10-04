@@ -219,8 +219,6 @@ static func _replace_bytes(path: String, content: PackedByteArray) -> String:
 	f.flush()
 	var file_error := f.get_error()
 	f.close()
-	if file_error == OK: file_error = DirAccess.rename_absolute(tmp_path, path)
-	if file_error != OK:
-		DirAccess.remove_absolute(tmp_path)
-		return "cannot rewrite sidecar %s (error %d)" % [path, file_error]
-	return ""
+	var error := "cannot rewrite sidecar %s (error %d)" % [path, file_error] if file_error != OK else JSONLReplace.replace(tmp_path, path, true)
+	if not error.is_empty(): DirAccess.remove_absolute(tmp_path)
+	return error

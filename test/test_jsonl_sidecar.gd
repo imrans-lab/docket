@@ -13,6 +13,8 @@ const FIXTURE := "res://test/fixtures/dynamic_types_record_order_v2.jsonl"
 
 func setup() -> void: DirAccess.make_dir_recursive_absolute(DIR)
 func teardown() -> void:
+	JSONLReplace.force_windows = false
+	JSONLReplace.stage_hook = Callable()
 	var dir := DirAccess.open(DIR)
 	if dir != null:
 		for name in dir.get_files(): dir.remove(name)
@@ -389,3 +391,74 @@ func _later_tick_refusal(fixture: Node, server_owned: bool = false) -> Variant:
 	if r is String: return r
 	fixture.shell._on_poll_external_changes()
 	return A.is_true(signals.size() == 1 and fixture.state.queries == queries + 1, "next idle tick neither signals nor queries again")
+
+func _replace_fixture(path: String, text: String) -> void:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(text); f.flush(); f.close()
+
+# Actual background WAL replacement boundaries; restart layouts are simulated.
+func test_windows_background_wal_replacement_recovers_marker_prefix_and_tail() -> Variant:
+	JSONLReplace.force_windows = true
+	var old := '{"_type":"meta","version":"1.0.0","counter":0,"id_prefix":"T"}\n{"_type":"item","id":"A","type":"hint","status":"draft","title":"old","created_at":"t","updated_at":"t"}\n{"_type":"item","id":"B","type":"hint","status":"draft","title":"B","created_at":"t","updated_at":"t"}\n'
+	var new_text := old.replace('{"_type":"item","id":"B","type":"hint","status":"draft","title":"B","created_at":"t","updated_at":"t"}\n', "")
+	var prefix := '{"_type":"wal","base":"old","replace":[["B","item"]],"records":[]}\n'
+	var tail := '{"_type":"wal","base":"old","replace":[["A","item"]],"records":[{"_type":"item","id":"A","type":"hint","status":"draft","title":"late","created_at":"t","updated_at":"t"}]}\n{torn'
+	for boundary in ["after_backup", "after_install"]:
+		var path: String = DIR + "/wal-" + boundary + ".dct"
+		_replace_fixture(path, old)
+		_replace_fixture(path + ".log", prefix + tail)
+		var job := JSONLSettleJob.new()
+		job.canonical_path = path
+		job.sidecar_prefix = prefix.to_utf8_buffer()
+		job.text_sha = new_text.sha256_text()
+		var observed: Array = []
+		JSONLReplace.stage_hook = func(stage: String, target: String, temp: String) -> String:
+			if target != path + ".log": return ""
+			if stage == boundary:
+				observed.append(FileAccess.get_file_as_string(target + ".docket-replace-backup"))
+				if boundary == "after_backup": DirAccess.remove_absolute(temp)
+				return "simulated cleanup interruption" if boundary == "after_install" else ""
+			return "simulated restore unavailable" if stage == "before_restore" and boundary == "after_backup" else ""
+		var error := job.mark_sidecar((prefix + tail).to_utf8_buffer())
+		JSONLReplace.stage_hook = Callable()
+		var r = A.eq(observed, [prefix + tail], "actual WAL boundary preserves exact prefix and acknowledged tail")
+		if r is String: return r
+		r = A.eq(error.is_empty(), boundary == "after_install", "WAL replacement disposition")
+		if r is String: return r
+		var recovered := JSONLCache.read_source(path)
+		if recovered.is_empty(): return JSONLCache.last_error
+		r = A.eq([recovered.parsed.items.size(), recovered.parsed.items[0].title], [1, "late"], "old canonical replays deletion and tail, tolerating torn suffix")
+		if r is String: return r
+		if boundary == "after_backup":
+			r = A.eq(FileAccess.get_file_as_string(path + ".log"), prefix + tail, "missing WAL restores exact bytes")
+			if r is String: return r
+			error = job.mark_sidecar((prefix + tail).to_utf8_buffer())
+			if not error.is_empty(): return error
+		# Exact new canonical contains B's deletion; marker skips old prefix.
+		_replace_fixture(path + ".test-temp", new_text)
+		error = DocketDBJsonl._rename_over(path + ".test-temp", path)
+		if not error.is_empty(): return error
+		recovered = JSONLCache.read_source(path)
+		if recovered.is_empty(): return JSONLCache.last_error
+		r = A.eq([recovered.parsed.items.size(), recovered.parsed.items[0].title], [1, "late"], "new canonical plus marked WAL replays only tail")
+		if r is String: return r
+		error = job.retire_prefix((prefix + tail).to_utf8_buffer())
+		if not error.is_empty(): return error
+		r = A.eq(FileAccess.get_file_as_string(path + ".log"), tail, "background retirement preserves exact tail including torn suffix")
+		if r is String: return r
+		r = A.is_true(JSONLReplace.recover(path).is_empty() and not FileAccess.file_exists(path + ".log.docket-replace-backup"), "WAL recovery converges")
+		if r is String: return r
+	return true
+
+func test_posix_replacement_keeps_existing_rename_path() -> Variant:
+	if OS.get_name() == "Windows": return true # Native Windows uses the protocol.
+	var path := DIR + "/posix.dct"
+	_replace_fixture(path, "old bytes")
+	_replace_fixture(path + ".temp", "new bytes")
+	_replace_fixture(path + ".docket-replace-backup", "unrelated reserved bytes")
+	var stages: Array = []
+	JSONLReplace.stage_hook = func(stage: String, _target: String, _temp: String) -> String:
+		stages.append(stage); return ""
+	var error := DocketDBJsonl._rename_over(path + ".temp", path)
+	JSONLReplace.stage_hook = Callable()
+	return A.eq([error, FileAccess.get_file_as_string(path), FileAccess.get_file_as_string(path + ".docket-replace-backup"), stages], ["", "new bytes", "unrelated reserved bytes", []], "POSIX retains rename without backup protocol")

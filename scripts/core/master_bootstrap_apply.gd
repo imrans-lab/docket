@@ -23,6 +23,8 @@ static func apply(path: String, shipment_jsonl: String, declared_schema: Diction
 	return result
 
 static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary) -> Dictionary:
+	var recovery_error := JSONLReplace.recover(path)
+	if not recovery_error.is_empty(): return _refuse(recovery_error)
 	var exists := FileAccess.file_exists(path)
 	if not exists and DirAccess.dir_exists_absolute(path): return _refuse("Canonical path is unreadable")
 	var source := {}
