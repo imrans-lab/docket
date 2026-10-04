@@ -132,10 +132,10 @@ func test_v2_immutable_pins_and_pure_capability_report() -> Variant:
 	if r is String: return r
 	var changed := SCHEMA.duplicate(true)
 	changed.types.hint.optional_fields = ["value", "source"]
-	changed.types.hint.field_definitions = {"value":{"type":"integer"}}
+	changed.types.hint["field_definitions"] = {"value":{"type":"integer"}}
 	changed.types.hint.states.append("pending")
-	changed.types.hint.transitions.pending = []
-	changed.types.widget = SCHEMA.types.hint.duplicate(true)
+	changed.types.hint.transitions["pending"] = []
+	changed.types["widget"] = SCHEMA.types.hint.duplicate(true)
 	var descriptors: Array = [{"slug":"hint", "definition":current.type_def_versions[0].definition}]
 	var before := [changed.duplicate(true), descriptors.duplicate(true)]
 	var gaps := SchemaCapabilityGaps.compare_definitions(changed, descriptors)
