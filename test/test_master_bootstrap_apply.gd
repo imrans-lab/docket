@@ -85,7 +85,7 @@ func test_install_repeat_upgrade_wal_cache_settle_restart_no_resurrection() -> V
 	var merged := _disk(path)
 	r = A.eq([result.inserted, merged.events[-1].eid, merged.events[-1].item_id], [["D"], 92, "D"], "persisted WAL head remaps imported event IDs")
 	if r is String: return r
-	r = A.eq([result.updated, result.deleted, result.conflicts, _find(merged,"A").title, _find(merged,"A").retrieval_count, _find(merged,"B").title, _find(merged,"C"), merged.meta.event_counter], [["A"], ["C"], [{"id":"B","reason":"customized"}], "updated", 12, "personal", {}, 92], "WAL precedes planning; customization/deletion/counter retained")
+	r = A.eq([result.updated, result.deleted, result.conflicts, _find(merged,"A").title, _find(merged,"A").retrieval_count, _find(merged,"B").title, _find(merged,"C"), merged.meta.event_counter], [["A"], ["C"], [{"id":"B","reason":"customized"}], "updated", 12, "personal", {}, 92.0], "WAL precedes planning; customization/deletion/counter retained")
 	if r is String: return r
 	db = DocketDBJsonl.open_jsonl(path)
 	if db == null: return "upgrade cache open failed"
@@ -104,7 +104,7 @@ func test_install_repeat_upgrade_wal_cache_settle_restart_no_resurrection() -> V
 	merged = _disk(path)
 	r = A.is_true(not restarted_state.is_empty() and _find(merged,"C").is_empty() and _find(merged,"A").description == "personal after upgrade", "restart/bootstrap cannot resurrect or overwrite customization")
 	if r is String: return r
-	r = A.is_true([merged.secrets[0].ciphertext, merged.secrets[0].opaque, merged.secret_versions.size(), merged.secret_versions[0].ciphertext, merged.secret_versions[1].ciphertext, merged.meta.vault_kdf_iterations] == [PackedByteArray([0,1,2,255]), {"null":null,"false":false,"zero":0.0}, 2, PackedByteArray([97]), PackedByteArray([0,1,2,255]), 12000], "ordinary settle/restart preserves ciphertext, unknown secret payload, history and vault metadata")
+	r = A.is_true([merged.secrets[0].ciphertext, merged.secrets[0].opaque, merged.secret_versions.size(), merged.secret_versions[0].ciphertext, merged.secret_versions[1].ciphertext, merged.meta.vault_kdf_iterations] == [PackedByteArray([0,1,2,255]), {"null":null,"false":false,"zero":0.0}, 2, PackedByteArray([97]), PackedByteArray([0,1,2,255]), 12000.0], "ordinary settle/restart preserves ciphertext, unknown secret payload, history and vault metadata")
 	if r is String: return r
 	var v2path := DIR + "/v2.dct"
 	var v2 := FileAccess.get_file_as_string("res://test/fixtures/dynamic_types_record_order_v2.jsonl")
