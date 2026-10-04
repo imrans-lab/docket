@@ -33,6 +33,17 @@ static var _lease_holder: String = ""
 static var last_spill_error: String = ""
 ## Results of the most recent spill that did something, for docket_project_list.
 static var last_spills: Array[Dictionary] = []
+# Only persist's synchronous admission may replace its exact source opening.
+static var _persisting_db: DocketDBMemory
+static var _persisting_path: String = ""
+static var _persisting_mode: String = ""
+
+
+static func is_persist_replacement(existing: DocketDB, replacement: DocketDB) -> bool:
+	return _persisting_db != null and existing == _persisting_db and replacement is DocketDBJsonl \
+		and replacement.get_project_name() == existing.get_project_name() \
+		and ProjectOpenings.normalized_path(replacement.get_path()) == _persisting_path \
+		and SessionProject.mode_of(replacement) == _persisting_mode
 
 
 # -- Lease --------------------------------------------------------------------
@@ -142,11 +153,15 @@ static func persist(project_dbs: Dictionary, proj_name: String, mode: String, pa
 	var error := write_file(pdb, mode, target)
 	if not error.is_empty():
 		return {"error": error}
-	# Open the file before dropping the memory copy: loading a project under a
-	# name already served replaces that entry, so a failed open leaves the memory
-	# project served and listed. The unserved file is removed so a retry does
-	# not leave a trail of copies.
+	# Admit only this written file as the replacement, before closing memory.
+	# Failed admission leaves the source served; remove the unserved retry file.
+	_persisting_db = pdb
+	_persisting_path = ProjectOpenings.normalized_path(target)
+	_persisting_mode = mode
 	var added: Dictionary = add_fn.call(target)
+	_persisting_db = null
+	_persisting_path = ""
+	_persisting_mode = ""
 	if added.has("error"):
 		DirAccess.remove_absolute(target)
 		var failure := "Wrote %s but could not open it here, so %s stays in memory: %s" % [target, proj_name, added.error]

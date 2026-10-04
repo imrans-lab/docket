@@ -206,12 +206,14 @@ func _headless_add_project(path: String) -> Dictionary:
 	if proj_name.is_empty():
 		proj_name = path.get_file().get_basename()
 		loaded_db.set_project_name(proj_name)
-	var refusal := ProjectOpenings.name_refusal(proj_name, _project_dbs)
+	var existing: DocketDB = _project_dbs.get(proj_name)
+	var replaces_memory := MemoryProject.is_persist_replacement(existing, loaded_db)
+	var refusal := "" if replaces_memory else ProjectOpenings.name_refusal(proj_name, _project_dbs)
 	if refusal.is_empty(): refusal = SessionProject.admit(loaded_db)
 	if not refusal.is_empty():
 		loaded_db.close()
 		return {"error": refusal}
-	if _db == null: _db = loaded_db
+	if _db == null or (replaces_memory and _db == existing): _db = loaded_db
 	TypeRegistryBootstrap.projects_opened = true
 	_project_dbs[proj_name] = loaded_db
 	_registry.update_db(_schema, _db, _project_dbs)

@@ -169,7 +169,9 @@ func add_project(path: String) -> String:
 		proj_name = path.get_file().get_basename()
 		new_db.set_project_name(proj_name)
 
-	var collision := ProjectOpenings.name_refusal(proj_name, _project_dbs)
+	var existing: DocketDB = _project_dbs.get(proj_name)
+	var replaces_memory := MemoryProject.is_persist_replacement(existing, new_db)
+	var collision := "" if replaces_memory else ProjectOpenings.name_refusal(proj_name, _project_dbs)
 	if not collision.is_empty():
 		new_db.close()
 		load_failed.emit(path, collision)
@@ -225,8 +227,8 @@ func add_project(path: String) -> String:
 			else:
 				new_db.set_id_prefix(new_prefix)
 
-	# The first successful additive open establishes the primary.
-	if db == null:
+	# A spill replaces the primary only when it replaces that exact opening.
+	if db == null or (replaces_memory and db == existing):
 		db = new_db
 		dct_path = path
 	_project_dbs[proj_name] = new_db

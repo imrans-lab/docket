@@ -172,7 +172,14 @@ func test_additive_collisions_preserve_primary_registry_and_creation_destination
 	DirAccess.make_dir_recursive_absolute(DIR + "/nested")
 	_state.create_and_add_project(DIR + "/nested/shared.dct")
 	if FileAccess.file_exists(DIR + "/nested/shared.dct"): return "Creation touched colliding name"
-	return true if _state.db == primary and _state.get_type_registry("shared") == registry and _listed() == [descriptor] and FileAccess.get_file_as_string(first) == original and FileAccess.get_file_as_string(other) == rejected else "Collision changed original DB, registry, token or files"
+	if not (_state.db == primary and _state.get_type_registry("shared") == registry and _listed() == [descriptor] and FileAccess.get_file_as_string(first) == original and FileAccess.get_file_as_string(other) == rejected): return "Collision changed original DB, registry, token or files"
+	_state.remove_project("shared")
+	MemoryProject.renew("opening fixture")
+	_state.add_project("memory://shared")
+	var memory := _state.db
+	var refused := _state.add_project(other)
+	MemoryProject._lease_until_msec = 0
+	return true if refused == "Project name already loaded: shared" and _state.db == memory and _state.get_project_dbs()["shared"] == memory else "Ordinary file replaced served memory outside persist"
 
 func test_promotion_and_explicit_upgrade_are_new_openings() -> Variant:
 	var path := DIR + "/legacy.dct"
