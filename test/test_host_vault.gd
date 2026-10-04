@@ -237,6 +237,10 @@ func run_actual_child(scenario_driver: String) -> Variant:
 	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
 	if helpers == driver: return "stdio driver slice marker not found"
 	helpers = helpers.replace("['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))]", "['--state-dir', str(base / (name + '-state'))]")
+	# These two vault drivers make repeated real KDF calls; leave room below
+	# the isolated runner's 600s class limit without widening other drivers.
+	helpers = helpers.replace("completed.wait(180)", "completed.wait(540)")
+	helpers = helpers.replace("whole child oracle exceeded 180s", "whole child oracle exceeded 540s")
 	# Diagnostics must never publish response bodies or secret-bearing frames.
 	helpers = helpers.replace("assert value['id'] == ident, value", "assert value['id'] == ident, 'response id'")
 	helpers = helpers.replace("assert b'\"jsonrpc\"' not in remaining_stdout(p)", "assert remaining_stdout(p) == b''")
