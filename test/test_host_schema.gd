@@ -119,7 +119,11 @@ finally:
 """
 
 func _run_scenario(scenario: String) -> Variant:
-	var helpers := StdioFixture.DRIVER.get_slice("\ntry:\n    p = launch('scratch')", 0)
+	# A Windows checkout may give CRLF sources; the slice marker is LF-only.
+	var driver := StdioFixture.DRIVER.replace("\r\n", "\n")
+	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
+	if helpers == driver:
+		return "stdio driver slice marker not found"
 	# Hosted children intentionally start without the ordinary fixture's --file.
 	helpers = helpers.replace(", '--file', str(base / (name + '.dct'))", "")
 	var source := "import sys\nscenario = sys.argv.pop()\n" + helpers + DRIVER
@@ -140,6 +144,9 @@ var _saved_hosted: bool
 const DIR := "user://test_host_schema"
 
 func setup() -> void:
+	DirAccess.make_dir_recursive_absolute(DIR)
+
+func before_each() -> void:
 	_saved_schema = TypeRegistryBootstrap._declared_schema.duplicate(true)
 	_saved_version = TypeRegistryBootstrap._declared_version
 	_saved_opened = TypeRegistryBootstrap.projects_opened
@@ -148,13 +155,14 @@ func setup() -> void:
 	TypeRegistryBootstrap._declared_version = ""
 	TypeRegistryBootstrap.projects_opened = false
 	DocketRuntimeState.hosted = false
-	DirAccess.make_dir_recursive_absolute(DIR)
 
-func teardown() -> void:
+func after_each() -> void:
 	TypeRegistryBootstrap._declared_schema = _saved_schema
 	TypeRegistryBootstrap._declared_version = _saved_version
 	TypeRegistryBootstrap.projects_opened = _saved_opened
 	DocketRuntimeState.hosted = _saved_hosted
+
+func teardown() -> void:
 	var directory := DirAccess.open(DIR)
 	if directory != null:
 		for name in directory.get_files(): directory.remove(name)
@@ -199,11 +207,11 @@ func test_declaration_copy_replacement_and_gui_guards() -> Variant:
 	var state := AppState.new()
 	state.load_schema()
 	var path := DIR + "/refused.dct"
-	state.load_dct(path)
-	state.add_project(path)
-	state.create_dct(path)
-	state.create_and_add_project(path)
-	if FileAccess.file_exists(path) or state.db != null: return "GUI touched a pre-schema project"
+	# Check each refusal before reusing the path; a leaked declaration must
+	# fail here rather than attempt to seed an already-created cache again.
+	for opening in [state.load_dct, state.add_project, state.create_dct, state.create_and_add_project]:
+		opening.call(path)
+		if FileAccess.file_exists(path) or FileAccess.file_exists(JSONLCache.cache_path_for_version(path, "2.0.0")) or state.db != null: return "GUI touched a pre-schema project"
 	var schema := TypeRegistryBootstrap.load_shipped_schema()
 	if TypeRegistryBootstrap.declare_schema(schema, "first").has("error"): return "Valid first declaration refused"
 	schema.types.kb.description = "next"

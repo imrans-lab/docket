@@ -372,7 +372,7 @@ func _set_type_lifecycle(slug: String, lifecycle: String, expected_current: Stri
 	if error.is_empty(): error = reload()
 	return error
 
-func validate_definition(definition: Dictionary) -> String:
+static func validate_definition(definition: Dictionary) -> String:
 	for key in ["slug","label","description","fields","lifecycle","protected","protected_behavior"]:
 		if not definition.has(key): return "definition missing '%s'" % key
 	if not _valid_identifier(str(definition.slug)): return "slug must use lowercase letters, digits, and underscores"
@@ -927,7 +927,7 @@ func _descriptor(record: Dictionary) -> Dictionary:
 	var revision: Dictionary = _revisions.get(record.current_revision, {})
 	return {"project":_project,"id":record.id,"slug":record.slug,"lifecycle":record.lifecycle,"current_revision":record.current_revision,"provenance":record.provenance.duplicate(true),"definition":revision.get("definition", {}).duplicate(true),"label":revision.get("definition", {}).get("label", record.slug),"description":revision.get("definition", {}).get("description", ""),"use_when":revision.get("definition", {}).get("use_when", "")}
 
-func _state(definition: Dictionary, key: String) -> Dictionary:
+static func _state(definition: Dictionary, key: String) -> Dictionary:
 	for value in definition.lifecycle.states:
 		if str(value.key) == key: return value
 	return {}
@@ -989,7 +989,7 @@ func _validate_mutable_patch(definition: Dictionary, values: Dictionary, unset: 
 		if descriptors.has(key) and not bool(descriptors[key].get("mutable", true)): return "field '%s' is immutable" % key
 	return ""
 
-func _universal_descriptor(key: String) -> Dictionary:
+static func _universal_descriptor(key: String) -> Dictionary:
 	if key in ["priority", "severity"]: return {"key":key,"type":"integer","nullable":true}
 	if key == "tags": return {"key":key,"type":"array","nullable":true}
 	if key == "description": return {"key":key,"type":"markdown","nullable":true}
@@ -1008,7 +1008,7 @@ func _storage_patch(values: Dictionary, unset: Array, definition: Dictionary = {
 	if patch.unset_fields.is_empty(): patch.erase("unset_fields")
 	return patch
 
-func _validate_value(field: Dictionary, value, default_value: bool) -> String:
+static func _validate_value(field: Dictionary, value, default_value: bool) -> String:
 	if value == null: return "null is not allowed" if not bool(field.get("nullable", false)) else ""
 	var kind: String = str(field.type)
 	var valid: bool = false
@@ -1052,7 +1052,7 @@ func _legacy_builtin_time_value(field: Dictionary, value: Variant) -> bool:
 		return false
 	return _looks_like_timestamp(value + "Z")
 
-func _json_durable(value) -> bool:
+static func _json_durable(value) -> bool:
 	if value == null or value is bool or value is String or value is int: return true
 	if value is float: return is_finite(value)
 	if value is Array:
@@ -1065,7 +1065,7 @@ func _json_durable(value) -> bool:
 		return true
 	return false
 
-func _looks_like_date(value: String) -> bool:
+static func _looks_like_date(value: String) -> bool:
 	if value.length() != 10 or value[4] != "-" or value[7] != "-": return false
 	var year := value.substr(0,4); var month := value.substr(5,2); var day := value.substr(8,2)
 	if not _all_digits(year) or not _all_digits(month) or not _all_digits(day): return false
@@ -1075,19 +1075,19 @@ func _looks_like_date(value: String) -> bool:
 	if year_number % 400 == 0 or (year_number % 4 == 0 and year_number % 100 != 0): days[1] = 29
 	return day_number >= 1 and day_number <= days[month_number - 1]
 
-func _valid_identifier(value: String) -> bool:
+static func _valid_identifier(value: String) -> bool:
 	if value.is_empty() or not "abcdefghijklmnopqrstuvwxyz".contains(value[0]): return false
 	for character in value:
 		if not "abcdefghijklmnopqrstuvwxyz0123456789_".contains(character): return false
 	return true
 
-func _all_digits(value: String) -> bool:
+static func _all_digits(value: String) -> bool:
 	if value.is_empty(): return false
 	for character in value:
 		if not "0123456789".contains(character): return false
 	return true
 
-func _looks_like_timestamp(value: String) -> bool:
+static func _looks_like_timestamp(value: String) -> bool:
 	# Validate the RFC 3339 date/time core before accepting UTC or a numeric offset.
 	if value.length() < 20 or value[10] != "T" or not _looks_like_date(value.left(10)): return false
 	var hour := value.substr(11, 2); var minute := value.substr(14, 2); var second := value.substr(17, 2)

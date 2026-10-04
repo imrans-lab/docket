@@ -95,9 +95,8 @@ static func validate_schema(schema: Dictionary) -> String:
 			for flag in ["required", "nullable", "mutable"]:
 				if descriptor.has(flag) and not descriptor[flag] is bool: return "Field flags must be boolean"
 			if descriptor.has("key") and descriptor.key != key: return "Conflicting field key"
-	var validator := TypeRegistry.new(null)
 	for revision in records(schema).type_def_versions:
-		var error := validator.validate_definition(revision.definition)
+		var error := TypeRegistry.validate_definition(revision.definition)
 		if not error.is_empty(): return error
 	return ""
 
