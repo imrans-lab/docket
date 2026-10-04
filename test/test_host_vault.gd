@@ -244,11 +244,21 @@ def diagnose():
 	var prefix := "import sys\nSOURCE = " + JSON.stringify(source) + "\n" + diagnostic
 	var output: Array = []
 	var python := "python" if OS.get_name() == "Windows" else "python3"
-	var code := OS.execute(python, PackedStringArray(["-c", prefix + helpers + DRIVER, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
+	# Unix captured OS.execute wraps arguments in shell double quotes without
+	# escaping their contents. Encode the code, including SOURCE's JSON quotes.
+	var encoded := Marshalls.raw_to_base64((prefix + helpers + DRIVER).to_utf8_buffer())
+	var bootstrap := "import base64; exec(compile(base64.b64decode('" + encoded + "'), '<string>', 'exec'))"
+	var code := OS.execute(python, PackedStringArray(["-c", bootstrap, OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
 	var report := "\n".join(PackedStringArray(output))
 	# Emit labels only, even when the composed driver's watchdog diagnoses.
 	if code != 0 or not report.contains("HOST VAULT receiver-consumer-lifetime-privacy PASS"):
-		var safe_report := "diagnostic unavailable"
+		var lines := report.trim_suffix("\n").split("\n") if not report.is_empty() else PackedStringArray()
+		var exception_class := "unavailable"
+		var exception_pattern := RegEx.create_from_string("^[A-Za-z_]+(Error|Exception|Exit)\\b")
+		for line in lines:
+			var matched := exception_pattern.search(line)
+			if matched: exception_class = matched.get_string()
+		var safe_report := "diagnostic unavailable exit=%d lines=%d class=%s" % [code, lines.size(), exception_class]
 		for line in report.split("\n"):
 			if line.begins_with("HOST_VAULT_DIAGNOSTIC "): safe_report = line
 		return "Host vault actual-child contract failed (exit %d): %s" % [code, safe_report]
