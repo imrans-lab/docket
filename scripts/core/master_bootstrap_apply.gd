@@ -55,7 +55,9 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 	# Detect any formatter loss or normalization before replacing authority.
 	for section in MasterBootstrapPlan.SECTIONS:
 		if reparsed[section] != merged[section]: return _refuse("Output changed parsed section: " + section)
-	if reparsed.meta != merged.meta: return _refuse("Output changed parsed metadata")
+	# Generic metadata numbers parse as floats; compare canonical JSON values,
+	# so advancing an integer event head is not mistaken for formatter loss.
+	if JSONLSerializer._json_value(reparsed.meta) != JSONLSerializer._json_value(merged.meta): return _refuse("Output changed parsed metadata")
 	var verify := func() -> String: return _verify_source(path, exists, source)
 	var committed := JSONLCheckedCommit.replace(path, text, verify)
 	if not str(committed.error).is_empty(): return _refuse(committed.error)
