@@ -96,7 +96,14 @@ func _respond_secondary(form: RecordForm, confirm: bool, password: String, count
 		if confirm: form._secret_2fa_dialog.confirmed.emit()
 		else: form._secret_2fa_dialog.canceled.emit()
 
-func _invalidate_pending_prompt(form: RecordForm, db: DocketDB, action: String, other_id: String = "", project: String = "") -> void:
+func _secret_form_snapshot(form: RecordForm) -> Dictionary:
+	return {"id":form._current_id, "project":form._current_project, "generation":form._form_generation,
+		"title":form._title_edit.text, "description":form._desc_edit.text, "id_label":form._id_label.text,
+		"secret":form._secret_value_edit.text, "notes":form._encrypted_notes_edit.text,
+		"secret_cache":form._secret_value_decrypted, "notes_cache":form._encrypted_notes_decrypted,
+		"error":form._secret_vault_error_label.text, "error_visible":form._secret_vault_error_label.visible}
+
+func _invalidate_pending_prompt(form: RecordForm, db: DocketDB, action: String, other_id: String = "", project: String = "", preserved: Dictionary = {}) -> void:
 	await get_tree().process_frame
 	while not form._secret_2fa_dialog.visible:
 		await get_tree().process_frame
@@ -104,6 +111,11 @@ func _invalidate_pending_prompt(form: RecordForm, db: DocketDB, action: String, 
 		_private("vault_lock", db)
 	elif action == "switch":
 		form.load_item(other_id, project)
+		form._title_edit.text = "synthetic-new-title-edit"
+		form._desc_edit.text = "synthetic-new-description-edit"
+		form._secret_value_edit.text = "synthetic-new-secret-edit"
+		form._encrypted_notes_edit.text = "synthetic-new-notes-edit"
+		preserved.merge(_secret_form_snapshot(form))
 	elif action == "close":
 		db.close()
 	form._secret_2fa_input.text = "synthetic-secondary"
@@ -189,6 +201,16 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 		form._encrypted_notes_edit.text = "synthetic-edited-body-" + name
 		saved = await form._save_changes()
 		if not str(saved).is_empty() or _decrypt(db.get_secret_raw(note_id), key) != "synthetic-edited-body-" + name: return "independent GUI note edit ciphertext"
+		# Reloading the same item changes generation even though id/project match.
+		form.load_item(id, name)
+		db.flush()
+		var reload_before := FileAccess.get_file_as_bytes(db.get_path())
+		form._secret_value_edit.text = "synthetic-stale-reload"
+		form._secret_2fa_check.button_pressed = true
+		var reloaded := {}
+		_invalidate_pending_prompt(form, db, "switch", id, name, reloaded)
+		saved = await form._save_changes()
+		if str(saved).is_empty() or reloaded.is_empty() or _secret_form_snapshot(form) != reloaded or FileAccess.get_file_as_bytes(db.get_path()) != reload_before: return "pending secondary write erased reloaded form edits"
 		form.load_item(id, name)
 		form._secret_value_edit.text = "synthetic-dual-" + name
 		form._secret_2fa_check.button_pressed = true
@@ -220,24 +242,31 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 			_invalidate_pending_prompt(form, db, "lock")
 			saved = await form._save_encrypted_secret(db, id) if legacy_save else await form._save_changes()
 			if str(saved).is_empty() or not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("locked") or FileAccess.get_file_as_bytes(db.get_path()) != pending_before: return "pending secondary write ignored lock"
-		# Both prepared-payload callers must stop before using the new form's metadata.
-		for transition in [false, true]:
+		if _private("vault_unlock", _dbs[1-i], passwords[1-i]).has("error"): return "new form opening unlock"
+		# Every prompt consumer and prepared-payload caller preserves the new form.
+		for consumer in ["read", "save", "transition", "legacy", "draft"]:
 			if _private("vault_unlock", db, passwords[i]).has("error"): return "pending switch unlock"
 			_respond_secondary(form, false, "")
 			form.load_item(id, name)
 			await get_tree().process_frame
 			await get_tree().process_frame
+			if consumer == "draft": form.load_draft("secret", {"title":"synthetic-draft", "status":"draft"}, name)
 			form._secret_value_edit.text = "synthetic-pending-refused"
 			form._secret_2fa_check.button_pressed = true
-			_invalidate_pending_prompt(form, db, "switch", note_id, name)
-			saved = await form._do_status_transition("active", "") if transition else await form._save_changes()
-			if (bool(saved) if transition else str(saved).is_empty()) or not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("changed") or FileAccess.get_file_as_bytes(db.get_path()) != pending_before: return "pending secondary write followed switched form"
-			if transition:
-				for child in form.get_children():
-					if child is AcceptDialog and child.title == "Transition failed":
-						child.hide()
-						child.confirmed.emit()
-				await get_tree().process_frame
+			var preserved := {}
+			var other_project := "current" if i == 0 else "legacy"
+			var other_note := _dbs[1-i].get_meta_value("fixture_note", "")
+			_invalidate_pending_prompt(form, db, "switch", other_note, other_project, preserved)
+			if consumer == "read":
+				await form._load_secret_value(db)
+			elif consumer == "legacy":
+				saved = await form._save_encrypted_secret(db, id)
+			elif consumer == "transition":
+				saved = await form._do_status_transition("active", "")
+			else:
+				saved = await form._save_changes()
+			if consumer != "read" and (bool(saved) if consumer == "transition" else str(saved).is_empty()): return "pending secondary write followed switched form"
+			if preserved.is_empty() or _secret_form_snapshot(form) != preserved or FileAccess.get_file_as_bytes(db.get_path()) != pending_before: return "old secondary prompt mutated new form or edits: " + consumer
 		_private("vault_lock", db)
 		form.load_item(id, name)
 		db.flush()

@@ -1465,6 +1465,8 @@ func _save_changes() -> Variant:
 	if protected:
 		prepared_payload = await _prepare_protected_payload(item_db, _current_id, type_name)
 	if prepared_payload.has("error"):
+		if prepared_payload.get("form_changed", false):
+			return str(prepared_payload.error)
 		_id_label.text = "Save refused: %s" % prepared_payload.error
 		_show_vault_error(str(prepared_payload.error))
 		return str(prepared_payload.error)
@@ -1555,6 +1557,8 @@ func _save_draft() -> Variant:
 	if protected_payload:
 		prepared_payload = await _prepare_protected_payload(target_db, "", type_name)
 	if prepared_payload.has("error"):
+		if prepared_payload.get("form_changed", false):
+			return str(prepared_payload.error)
 		_id_label.text = "(new) Error: %s" % prepared_payload.error
 		return str(prepared_payload.error)
 	var transaction_error := registry._begin_item_mutation() if protected_payload else ""
@@ -1918,6 +1922,8 @@ func _do_status_transition(target: String, note: String, changes: Dictionary = {
 	if protected:
 		prepared_payload = await _prepare_protected_payload(trans_db, _current_id, type_name)
 	if prepared_payload.has("error"):
+		if prepared_payload.get("form_changed", false):
+			return false
 		_show_transition_error(str(prepared_payload.error))
 		return false
 	var error := registry._begin_item_mutation() if protected else ""
@@ -2037,8 +2043,15 @@ func _capture_secret_prompt(db: DocketDB) -> Dictionary:
 		"descriptor":VaultKeySession.descriptor(db) if DocketRuntimeState.hosted else {}}
 
 
+func _secret_prompt_matches_form(origin: Dictionary) -> bool:
+	return _current_id == origin.id and _current_project == origin.project and _form_generation == origin.generation
+
+
 func _key_after_secret_prompt(db: DocketDB, origin: Dictionary) -> PackedByteArray:
-	if _current_id != origin.id or _current_project != origin.project or _form_generation != origin.generation or _state.get_db_for_project(origin.project) != db or not db.is_open():
+	# An old continuation has no authority to clear or label a newly loaded form.
+	if not _secret_prompt_matches_form(origin):
+		return PackedByteArray()
+	if _state.get_db_for_project(origin.project) != db or not db.is_open():
 		_show_vault_error("Secret operation refused: the item or project opening changed during the secondary password prompt.")
 	elif DocketRuntimeState.hosted and VaultKeySession.descriptor(db) != origin.descriptor:
 		_show_vault_error("Hosted vault is locked or unavailable. The opening changed during the secondary password prompt.")
@@ -2219,6 +2232,8 @@ func _prepare_protected_payload(db: DocketDB, item_id: String, type_name: String
 				var secondary_password := await _prompt_secondary_password()
 				key = _key_after_secret_prompt(db, origin)
 				if key.is_empty():
+					if not _secret_prompt_matches_form(origin):
+						return {"error":"Secret operation refused: the form changed during the secondary password prompt.", "form_changed":true}
 					return {"error":_secret_vault_error_label.text}
 				if secondary_password.is_empty():
 					return {"error":"Secondary password required for 2FA secret."}
@@ -2311,6 +2326,8 @@ func _save_encrypted_secret(db: DocketDB, item_id: String) -> String:
 		var secondary_pw := await _prompt_secondary_password()
 		key = _key_after_secret_prompt(db, origin)
 		if key.is_empty():
+			if not _secret_prompt_matches_form(origin):
+				return "Secret operation refused: the form changed during the secondary password prompt."
 			return _secret_vault_error_label.text
 		if secondary_pw.is_empty():
 			_show_vault_error("Secondary password required for 2FA secret.")
