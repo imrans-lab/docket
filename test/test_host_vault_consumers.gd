@@ -96,6 +96,20 @@ func _respond_secondary(form: RecordForm, confirm: bool, password: String, count
 		if confirm: form._secret_2fa_dialog.confirmed.emit()
 		else: form._secret_2fa_dialog.canceled.emit()
 
+func _invalidate_pending_prompt(form: RecordForm, db: DocketDB, action: String, other_id: String = "", project: String = "") -> void:
+	await get_tree().process_frame
+	while not form._secret_2fa_dialog.visible:
+		await get_tree().process_frame
+	if action == "lock":
+		_private("vault_lock", db)
+	elif action == "switch":
+		form.load_item(other_id, project)
+	elif action == "close":
+		db.close()
+	form._secret_2fa_input.text = "synthetic-secondary"
+	form._secret_2fa_dialog.hide()
+	form._secret_2fa_dialog.confirmed.emit()
+
 func test_real_gui_current_edit_history_and_refusals() -> Variant:
 	_old_directory = DocketRuntimeState.directory
 	_old_hosted = DocketRuntimeState.hosted
@@ -193,7 +207,39 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 		_respond_secondary(form, true, "synthetic-secondary")
 		await form._load_secret_value(db)
 		if form._secret_value_decrypted != "synthetic-dual-" + name: return "secondary read confirm failed"
+		# Lock wins even after the real dialog has acquired a primary key.
+		db.flush()
+		var pending_before := FileAccess.get_file_as_bytes(db.get_path())
+		_invalidate_pending_prompt(form, db, "lock")
+		await form._load_secret_value(db)
+		if not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("locked") or not form._secret_value_decrypted.is_empty(): return "pending secondary read ignored lock"
+		for legacy_save in [false, true]:
+			if _private("vault_unlock", db, passwords[i]).has("error"): return "pending save unlock"
+			form._secret_value_edit.text = "synthetic-pending-refused"
+			form._secret_2fa_check.button_pressed = true
+			_invalidate_pending_prompt(form, db, "lock")
+			saved = await form._save_encrypted_secret(db, id) if legacy_save else await form._save_changes()
+			if str(saved).is_empty() or not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("locked") or FileAccess.get_file_as_bytes(db.get_path()) != pending_before: return "pending secondary write ignored lock"
+		# Both prepared-payload callers must stop before using the new form's metadata.
+		for transition in [false, true]:
+			if _private("vault_unlock", db, passwords[i]).has("error"): return "pending switch unlock"
+			_respond_secondary(form, false, "")
+			form.load_item(id, name)
+			await get_tree().process_frame
+			await get_tree().process_frame
+			form._secret_value_edit.text = "synthetic-pending-refused"
+			form._secret_2fa_check.button_pressed = true
+			_invalidate_pending_prompt(form, db, "switch", note_id, name)
+			saved = await form._do_status_transition("active", "") if transition else await form._save_changes()
+			if (bool(saved) if transition else str(saved).is_empty()) or not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("changed") or FileAccess.get_file_as_bytes(db.get_path()) != pending_before: return "pending secondary write followed switched form"
+			if transition:
+				for child in form.get_children():
+					if child is AcceptDialog and child.title == "Transition failed":
+						child.hide()
+						child.confirmed.emit()
+				await get_tree().process_frame
 		_private("vault_lock", db)
+		form.load_item(id, name)
 		db.flush()
 		var before := FileAccess.get_file_as_bytes(db.get_path())
 		form._secret_value_edit.text = "synthetic-refused"
@@ -205,6 +251,18 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 		var text := FileAccess.get_file_as_string(db.get_path())
 		for needle in [passwords[i], "synthetic-current-" + name, "synthetic-edited-" + name, "synthetic-edited-notes-" + name, "synthetic-edited-body-" + name, "synthetic-dual-" + name]:
 			if text.contains(needle): return "GUI persisted plaintext"
+	var closing_db := _dbs[1]
+	var closing_id := closing_db.get_meta_value("fixture_secret", "")
+	if _private("vault_unlock", closing_db, passwords[1]).has("error"): return "pending close unlock"
+	_respond_secondary(form, false, "")
+	form.load_item(closing_id, "current")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	closing_db.flush()
+	var closed_before := FileAccess.get_file_as_bytes(closing_db.get_path())
+	_invalidate_pending_prompt(form, closing_db, "close")
+	await form._load_secret_value(closing_db)
+	if not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("changed") or not form._secret_value_decrypted.is_empty() or FileAccess.get_file_as_bytes(closing_db.get_path()) != closed_before: return "pending secondary read ignored close"
 	empty.flush()
 	var empty_before := FileAccess.get_file_as_bytes(empty.get_path())
 	form._load_secret_value(empty)
@@ -217,7 +275,8 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 func teardown() -> void:
 	if _shell: _shell.free()
 	if _server: _server.free()
-	for db in _dbs: db.close()
+	for db in _dbs:
+		if db.is_open(): db.close()
 	_dbs.clear()
 	if not _directory.is_empty():
 		for filename in DirAccess.get_files_at(_directory): DirAccess.remove_absolute(_directory.path_join(filename))

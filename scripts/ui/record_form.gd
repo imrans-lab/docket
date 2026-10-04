@@ -9,6 +9,7 @@ signal child_opened(id: String, project: String)
 
 var _state: AppState
 var _current_id: String = ""
+var _form_generation: int = 0
 var _fields_grid: GridContainer
 var _title_edit: LineEdit
 var _type_option: OptionButton
@@ -187,6 +188,7 @@ func _on_file_changed() -> void:
 
 
 func _clear_fields() -> void:
+	_form_generation += 1
 	_loading = true
 	_title_edit.text = ""
 	_type_option.selected = 0
@@ -1199,6 +1201,7 @@ func attach_to_current(filename: String, data: PackedByteArray, mime: String = "
 
 
 func load_item(id: String, project: String = "") -> void:
+	_form_generation += 1
 	_loading = true
 	_current_id = id
 	_is_draft = false
@@ -1300,6 +1303,7 @@ func load_item(id: String, project: String = "") -> void:
 
 
 func load_draft(type_name: String, item: Dictionary, project: String = "") -> void:
+	_form_generation += 1
 	## Load an unsaved draft item into the form. Will be inserted into DB on Save.
 	_loading = true
 	_is_draft = true
@@ -2027,6 +2031,28 @@ func _show_vault_error(msg: String) -> void:
 	_secret_vault_error_label.visible = true
 
 
+# A user-paced prompt must not retain primary-key authority or form identity.
+func _capture_secret_prompt(db: DocketDB) -> Dictionary:
+	return {"id":_current_id, "project":_current_project, "generation":_form_generation,
+		"descriptor":VaultKeySession.descriptor(db) if DocketRuntimeState.hosted else {}}
+
+
+func _key_after_secret_prompt(db: DocketDB, origin: Dictionary) -> PackedByteArray:
+	if _current_id != origin.id or _current_project != origin.project or _form_generation != origin.generation or _state.get_db_for_project(origin.project) != db or not db.is_open():
+		_show_vault_error("Secret operation refused: the item or project opening changed during the secondary password prompt.")
+	elif DocketRuntimeState.hosted and VaultKeySession.descriptor(db) != origin.descriptor:
+		_show_vault_error("Hosted vault is locked or unavailable. The opening changed during the secondary password prompt.")
+	else:
+		var key := _derive_vault_key(db)
+		if not key.is_empty():
+			return key
+	_secret_value_decrypted = ""
+	_encrypted_notes_decrypted = ""
+	_secret_value_edit.text = ""
+	_encrypted_notes_edit.text = ""
+	return PackedByteArray()
+
+
 func _load_secret_value(item_db: DocketDB) -> void:
 	## Decrypt and display secret value for current item.
 	_secret_vault_error_label.visible = false
@@ -2048,7 +2074,12 @@ func _load_secret_value(item_db: DocketDB) -> void:
 
 	var plaintext: String
 	if raw.get("requires_2fa", false):
+		var origin := _capture_secret_prompt(item_db)
+		key = PackedByteArray()
 		var secondary_pw := await _prompt_secondary_password()
+		key = _key_after_secret_prompt(item_db, origin)
+		if key.is_empty():
+			return
 		if secondary_pw.is_empty():
 			_secret_value_edit.text = "********"
 			_secret_value_decrypted = ""
@@ -2183,7 +2214,12 @@ func _prepare_protected_payload(db: DocketDB, item_id: String, type_name: String
 		if not new_value.is_empty() and new_value != "********":
 			var encrypted: Dictionary
 			if _secret_2fa_check.button_pressed:
+				var origin := _capture_secret_prompt(db)
+				key = PackedByteArray()
 				var secondary_password := await _prompt_secondary_password()
+				key = _key_after_secret_prompt(db, origin)
+				if key.is_empty():
+					return {"error":_secret_vault_error_label.text}
 				if secondary_password.is_empty():
 					return {"error":"Secondary password required for 2FA secret."}
 				var secondary_key := VaultCrypto.derive_key(secondary_password, db.get_vault_salt(), db.get_vault_iterations())
@@ -2270,7 +2306,12 @@ func _save_encrypted_secret(db: DocketDB, item_id: String) -> String:
 
 	if requires_2fa:
 		# Double encrypt: inner with secondary key, outer with vault key
+		var origin := _capture_secret_prompt(db)
+		key = PackedByteArray()
 		var secondary_pw := await _prompt_secondary_password()
+		key = _key_after_secret_prompt(db, origin)
+		if key.is_empty():
+			return _secret_vault_error_label.text
 		if secondary_pw.is_empty():
 			_show_vault_error("Secondary password required for 2FA secret.")
 			return _secret_vault_error_label.text
