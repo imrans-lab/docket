@@ -118,7 +118,14 @@ func test_real_hosted_children_and_startup() -> Variant:
 	var source := "import sys\nscenario = sys.argv.pop()\n" + helpers + DRIVER
 	var output: Array = []
 	var python := "python" if OS.get_name() == "Windows" else "python3"
-	var code := OS.execute(python, PackedStringArray(["-c", source, OS.get_executable_path(), ProjectSettings.globalize_path("res://"), "openings"]), output, true)
+	# OS.execute can strip quotes from inline Python; preserve the source bytes.
+	var script_path := ProjectSettings.globalize_path("user://project_openings_driver_%d.py" % OS.get_process_id())
+	var script := FileAccess.open(script_path, FileAccess.WRITE)
+	if script == null: return "Project openings driver file unavailable"
+	script.store_string(source)
+	script.close()
+	var code := OS.execute(python, PackedStringArray([script_path, OS.get_executable_path(), ProjectSettings.globalize_path("res://"), "openings"]), output, true)
+	DirAccess.remove_absolute(script_path)
 	var report := "\n".join(PackedStringArray(output)).replace("a".repeat(64), "[redacted]")
 	print(report)
 	return true if code == 0 and report.contains("PROJECT OPENINGS PASS") else "Project openings child failed (exit %d)" % code
