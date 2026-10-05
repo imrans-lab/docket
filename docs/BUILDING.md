@@ -138,7 +138,8 @@ Release exports also run `python test/test_export_native_bundle.py linux` (or
 `macos` / `windows`). This copies the actual export outside the checkout, proves
 engine `user://` containment, checks the descriptor-mapped release helper and
 its architecture, then executes all 11 existing native identity scenarios.
-A separate disposable copy missing the helper must fail the presence verifier.
+An escaped userdir boundary must fail before any test runs. A separate
+disposable copy missing the helper must fail the presence verifier.
 macOS copies use `ditto` and verify the existing deep strict signature; the
 positive signed app is never modified.
 

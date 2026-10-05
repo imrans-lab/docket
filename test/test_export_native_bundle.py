@@ -7,11 +7,17 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts/build"))
 from verify_native_bundle import (ROOT, BundleError, copy_bundle, find_helper,
-                                  helper_name, verify)
+                                  helper_name, staged_bundle, verify)
 
 
 def exercise(platform):
     verify(platform)
+    try:
+        with staged_bundle(platform, probe_base=ROOT):
+            raise AssertionError("source userdir boundary was accepted")
+    except BundleError as error:
+        assert str(error) == "exported userdir probe failed before tests", error
+    print(f"EXPORT_NATIVE NEGATIVE PASS platform={platform} reason=userdir-before-tests")
     # Only the disposable negative copy loses its helper; signed positives stay sealed.
     with tempfile.TemporaryDirectory(prefix="docket-export-negative-") as temporary:
         root = pathlib.Path(temporary).resolve()
