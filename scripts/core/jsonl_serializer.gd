@@ -387,7 +387,7 @@ static func _format_attachments(rows: Array) -> String:
 		# data: base64-encode the BLOB
 		var raw_data = row.get("data", PackedByteArray())
 		if raw_data is PackedByteArray:
-			d["data"] = Marshalls.raw_to_base64(raw_data)
+			d["data"] = _bytes_to_b64(raw_data)
 		else:
 			d["data"] = ""
 
@@ -678,6 +678,8 @@ static func _nullable_str(val) -> String:
 static func _bytes_to_b64(val) -> String:
 	## Convert PackedByteArray (or already-base64 String) to base64 string.
 	if val is PackedByteArray:
+		if val.is_empty():
+			return ""
 		return Marshalls.raw_to_base64(val)
 	if val is String:
 		return val
@@ -729,7 +731,7 @@ static func _json_value(val) -> String:
 			parts.append('"%s":%s' % [_json_escape(str(key)), _json_value(val[key])])
 		return "{%s}" % ",".join(parts)
 	if val is PackedByteArray:
-		return '"%s"' % Marshalls.raw_to_base64(val)
+		return '"%s"' % _bytes_to_b64(val)
 	# Fallback
 	return '"%s"' % _json_escape(str(val))
 

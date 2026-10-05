@@ -45,6 +45,48 @@ func teardown() -> void:
 
 # -- _to_ordered_json ---------------------------------------------------------
 
+func test_empty_bytes_canonical_roundtrip() -> Variant:
+	## Exercise attachment BLOBs, the shared converter and generic JSON fields.
+	_db.insert_item("TST-0001", {
+		"type": "bug", "status": "new", "title": "Byte roundtrip",
+		"created_at": "2026-03-15T10:30:00Z", "updated_at": "2026-03-15T10:30:00Z",
+		"tags": [], "events": [], "links": [],
+	})
+	var snapshot := JSONLSerializer.snapshot(_db)
+	for bytes: PackedByteArray in [PackedByteArray(), PackedByteArray([0, 1, 254, 255])]:
+		var expected := "" if bytes.is_empty() else "AAH+/w=="
+		var r: Variant = A.eq(JSONLSerializer._bytes_to_b64(bytes), expected, "shared byte encoding")
+		if r is String: return r
+		r = A.eq(JSONLSerializer._json_value(bytes), '"%s"' % expected, "generic byte encoding")
+		if r is String: return r
+		snapshot.attachments = [{"id": 1, "item_id": "TST-0001", "filename": "bytes.bin",
+			"data": bytes, "created_at": "2026-03-15T10:30:00Z"}]
+		var attachment_line := JSONLSerializer._format_attachments(snapshot.attachments)
+		r = A.eq(JSON.parse_string(attachment_line).data, expected, "attachment wire encoding")
+		if r is String: return r
+		var parsed := JSONLParser.parse_bytes(JSONLSerializer.format_all(snapshot).to_utf8_buffer(), _test_file)
+		if not str(parsed.get("error", "")).is_empty(): return "byte snapshot did not parse"
+		parsed.items[0].fields = {"bytes": bytes}
+		var canonical := JSONLSerializer.format_parsed(parsed).to_utf8_buffer()
+		var reparsed := JSONLParser.parse_bytes(canonical, _test_file)
+		if not str(reparsed.get("error", "")).is_empty(): return "byte canonical did not reparse"
+		r = A.eq(reparsed.attachments[0].data, bytes, "attachment bytes roundtrip")
+		if r is String: return r
+		r = A.eq(reparsed.items[0].fields.bytes, expected, "byte field becomes base64 String")
+		if r is String: return r
+		r = A.eq(JSONLSerializer.format_parsed(reparsed).to_utf8_buffer(), canonical, "canonical byte identity")
+		if r is String: return r
+	for value in ["", "AAH+/w==", null]:
+		var r: Variant = A.eq(JSONLSerializer._bytes_to_b64(value), "" if value == null else value, "String and null semantics")
+		if r is String: return r
+	var attachment := {"id": 1, "item_id": "TST-0001", "filename": "bytes.bin", "created_at": ""}
+	for value in ["AAH+/w==", null]:
+		attachment.data = value
+		var r: Variant = A.eq(JSON.parse_string(JSONLSerializer._format_attachments([attachment])).data, "", "non-BLOB attachment semantics")
+		if r is String: return r
+	return A.eq(JSONLSerializer._json_value(null), "null", "generic null semantics")
+
+
 func test_ordered_json_type_first() -> Variant:
 	## _type must always be the first key.
 	var d := {"z_field": "z", "_type": "item", "a_field": "a"}
