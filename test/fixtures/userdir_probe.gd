@@ -4,11 +4,16 @@ func _initialize() -> void:
 	quit(0 if check(OS.get_cmdline_user_args()[0]) else 1)
 
 static func check(base: String) -> bool:
+	base = base.replace("\\", "/").simplify_path()
 	var actual := ProjectSettings.globalize_path('user://').simplify_path()
 	if not actual.is_absolute_path():
 		actual = DirAccess.open('.').get_current_dir().path_join(actual).simplify_path()
 	if not actual.begins_with(base + '/'):
 		return false
+	if OS.get_name() == "macOS":
+		var app := OS.get_executable_path().get_base_dir().get_base_dir().get_base_dir()
+		if app.ends_with(".app") and (actual == app or actual.begins_with(app + "/")):
+			return false
 	var marker := FileAccess.open('user://docket-fixture-userdir.txt', FileAccess.WRITE)
 	if marker == null:
 		return false

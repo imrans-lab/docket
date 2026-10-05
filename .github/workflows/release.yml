@@ -262,7 +262,7 @@ jobs:
               cp README.md LICENSE THIRD-PARTY-LICENSES.txt docs/sbom.cdx.json "$STAGE/"
               ditto -c -k --sequesterRsrc "$STAGE" "dist/docket-${VERSION}-macos-universal.zip"
               # The copy must still verify — catches any accidental mutation.
-              codesign --verify --deep "$STAGE/Docket.app"
+              codesign --verify --deep --strict "$STAGE/Docket.app"
               ;;
             linux)
               cp README.md LICENSE THIRD-PARTY-LICENSES.txt docs/sbom.cdx.json build/linux/

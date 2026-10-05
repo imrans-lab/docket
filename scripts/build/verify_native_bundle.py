@@ -20,16 +20,21 @@ class BundleError(RuntimeError):
 
 
 def run(binary, base, env, args, timeout=180):
-    result = subprocess.run([str(binary), "--headless", *args], cwd=binary.parent,
+    cwd = base / "build" / binary.relative_to(base / "build").parts[0]
+    result = subprocess.run([str(binary), "--headless", *args], cwd=cwd,
                             env=env, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=timeout)
     print(result.stdout, end="", flush=True)
+    engine_error = re.search(
+        r"SCRIPT ERROR|ERROR:|Can't open dynamic library|Failed loading", result.stdout)
     if "EXPORT_USERDIR_PROBE_FAIL stage=before-tests" in result.stdout:
+        if (result.returncode != 1 or engine_error
+                or result.stdout.splitlines().count("EXPORT_USERDIR_PROBE_FAIL stage=before-tests") != 1):
+            raise BundleError("invalid exported userdir refusal receipt or exit")
         if re.search(r"=== test_|^  (?:PASS|FAIL):", result.stdout, re.MULTILINE):
             raise BundleError("userdir refusal occurred after test traffic")
         raise BundleError("exported userdir probe failed before tests")
-    if result.returncode or re.search(
-            r"SCRIPT ERROR|ERROR:|Can't open dynamic library|Failed loading", result.stdout):
+    if result.returncode or engine_error:
         raise BundleError("exported child failed or reported an engine/native error")
     return result.stdout
 
@@ -52,26 +57,37 @@ def staged_bundle(platform, root=ROOT, probe_base=None):
         copy_bundle(platform, root / "build" / platform, destination)
         binary = exported_binary(platform, base)
         env = os.environ.copy()
-        # macOS selects the private bundle cwd when HOME is absent.
+        # macOS falls back to the private platform cwd outside the signed app.
         env.pop("HOME", None)
         for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA"):
             env[key] = str(base / key)
             pathlib.Path(env[key]).mkdir()
-        env["DOCKET_EXPORT_SCRATCH"] = str(base if probe_base is None else probe_base)
-        output = run(binary, base, env, ["--", "test", "--test-class=test_move_identity"])
-        if (output.count("EXPORT_USERDIR_PROBE_PASS stage=before-tests") != 1
-                or re.findall(r"Results: (\d+) total, (\d+) passed, (\d+) failed", output) != [("11", "11", "0")]
-                or "Skipped (not executed): 0" not in output or "ALL TESTS PASSED" not in output
-                or len(re.findall(r"^  PASS: test_", output, re.MULTILINE)) != 11):
-            raise BundleError("exported native identity oracle requires containment, 11 passed, 0 failed, 0 skipped")
-        report = base / "userdir-report.json"
-        if not report.is_file():
-            raise BundleError("exported engine userdir probe produced no report")
-        actual = pathlib.Path(json.loads(report.read_text())).resolve()
-        if base not in actual.parents or (actual / "docket-fixture-userdir.txt").read_text() != "private fixture marker":
-            raise BundleError("exported engine userdir escaped private scratch")
-        print(f"EXPORT_USERDIR contained=true platform={platform}", flush=True)
-        yield binary, base, env
+        env["DOCKET_EXPORT_SCRATCH"] = (base if probe_base is None else probe_base).as_posix()
+        app = destination / "Docket.app"
+        if platform == "macos":
+            subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)],
+                           check=True, timeout=60)
+        try:
+            output = run(binary, base, env, ["--", "test", "--test-class=test_move_identity"])
+            if (output.count("EXPORT_USERDIR_PROBE_PASS stage=before-tests") != 1
+                    or re.findall(r"Results: (\d+) total, (\d+) passed, (\d+) failed", output) != [("11", "11", "0")]
+                    or "Skipped (not executed): 0" not in output or "ALL TESTS PASSED" not in output
+                    or len(re.findall(r"^  PASS: test_", output, re.MULTILINE)) != 11):
+                raise BundleError("exported native identity oracle requires containment, 11 passed, 0 failed, 0 skipped")
+            report = base / "userdir-report.json"
+            if not report.is_file():
+                raise BundleError("exported engine userdir probe produced no report")
+            actual = pathlib.Path(json.loads(report.read_text())).resolve()
+            if base not in actual.parents or (actual / "docket-fixture-userdir.txt").read_text() != "private fixture marker":
+                raise BundleError("exported engine userdir escaped private scratch")
+            if platform == "macos" and (actual == app or app in actual.parents):
+                raise BundleError("exported engine userdir is inside signed app")
+            print(f"EXPORT_USERDIR contained=true platform={platform}", flush=True)
+            yield binary, base, env
+        finally:
+            if platform == "macos":
+                subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)],
+                               check=True, timeout=60)
 
 
 def helper_name(platform, root=ROOT):
@@ -107,9 +123,6 @@ def verify(platform, root=ROOT):
     architecture(platform, find_helper(platform, root, name))
     with staged_bundle(platform, root) as (binary, base, env):
         architecture(platform, find_helper(platform, base, name))
-        if platform == "macos":
-            subprocess.run(["codesign", "--verify", "--deep", "--strict", str(base / "build/macos/Docket.app")],
-                           check=True, timeout=60)
     print(f"EXPORT_NATIVE PASS platform={platform} tests=11 skipped=0")
 
 
