@@ -57,8 +57,10 @@ def staged_bundle(platform, root=ROOT, probe_base=None):
         copy_bundle(platform, root / "build" / platform, destination)
         binary = exported_binary(platform, base)
         env = os.environ.copy()
-        # macOS falls back to the private platform cwd outside the signed app.
-        env.pop("HOME", None)
+        # Release startup changes cwd into bundle resources before userdir setup.
+        private_home = base / "home"
+        private_home.mkdir()
+        env["HOME"] = str(private_home)
         for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA"):
             env[key] = str(base / key)
             pathlib.Path(env[key]).mkdir()
