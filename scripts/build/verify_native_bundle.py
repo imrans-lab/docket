@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Run the existing native identity scenarios using only an exported bundle."""
+import argparse
+from contextlib import contextmanager
+import configparser
+import json
+import os
+import pathlib
+import re
+import shutil
+import struct
+import subprocess
+import tempfile
+
+from verify_build_info import ROOT, exported_binary
+
+
+class BundleError(RuntimeError):
+    pass
+
+
+def run(binary, base, env, args, timeout=180):
+    result = subprocess.run([str(binary), "--headless", *args], cwd=binary.parent,
+                            env=env, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, timeout=timeout)
+    print(result.stdout, end="", flush=True)
+    if result.returncode or re.search(
+            r"SCRIPT ERROR|ERROR:|Can't open dynamic library|Failed loading", result.stdout):
+        raise BundleError("exported child failed or reported an engine/native error")
+    return result.stdout
+
+
+def copy_bundle(platform, source, destination):
+    if platform == "macos":
+        subprocess.run(["ditto", str(source), str(destination)], check=True, timeout=60)
+    else:
+        shutil.copytree(source, destination)
+
+
+@contextmanager
+def staged_bundle(platform, root=ROOT):
+    with tempfile.TemporaryDirectory(prefix="docket-export-") as temporary:
+        base = pathlib.Path(temporary).resolve()
+        if base == root or root in base.parents:
+            raise BundleError("bundle scratch must be outside source checkout")
+        destination = base / "build" / platform
+        destination.parent.mkdir()
+        copy_bundle(platform, root / "build" / platform, destination)
+        binary = exported_binary(platform, base)
+        env = os.environ.copy()
+        # macOS selects the private bundle cwd when HOME is absent.
+        env.pop("HOME", None)
+        for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA"):
+            env[key] = str(base / key)
+            pathlib.Path(env[key]).mkdir()
+        run(binary, base, env, ["--quiet", "-s", "res://test/fixtures/userdir_probe.gd",
+                               "--", base.as_posix()], 30)
+        report = base / "userdir-report.json"
+        if not report.is_file():
+            raise BundleError("exported engine userdir probe produced no report")
+        actual = pathlib.Path(json.loads(report.read_text())).resolve()
+        if base not in actual.parents or (actual / "docket-fixture-userdir.txt").read_text() != "private fixture marker":
+            raise BundleError("exported engine userdir escaped private scratch")
+        print(f"EXPORT_USERDIR contained=true platform={platform}", flush=True)
+        yield binary, base, env
+
+
+def helper_name(platform, root=ROOT):
+    descriptor = configparser.ConfigParser()
+    descriptor.read(root / "addons/docket-file-identity/file_identity.gdextension")
+    key = platform + ".release" + ("" if platform == "macos" else ".x86_64")
+    return pathlib.PurePosixPath(descriptor["libraries"][key].strip('"')).name
+
+
+def find_helper(platform, root, name):
+    matches = list((root / "build" / platform).rglob(name))
+    if len(matches) != 1 or not matches[0].is_file():
+        raise BundleError(f"missing mapped release helper: {name}")
+    return matches[0]
+
+
+def architecture(platform, helper):
+    data = helper.read_bytes()
+    if platform == "macos":
+        arches = subprocess.check_output(["lipo", "-archs", str(helper)], text=True, timeout=30).split()
+        valid = set(arches) == {"x86_64", "arm64"}
+    elif platform == "linux":
+        valid = data[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", data, 18)[0] == 62
+    else:
+        offset = struct.unpack_from("<I", data, 60)[0]
+        valid = data[:2] == b"MZ" and data[offset:offset + 6] == b"PE\0\0\x64\x86"
+    if not valid:
+        raise BundleError("mapped release helper architecture mismatch")
+
+
+def verify(platform, root=ROOT):
+    name = helper_name(platform)
+    architecture(platform, find_helper(platform, root, name))
+    with staged_bundle(platform, root) as (binary, base, env):
+        architecture(platform, find_helper(platform, base, name))
+        if platform == "macos":
+            subprocess.run(["codesign", "--verify", "--deep", "--strict", str(base / "build/macos/Docket.app")],
+                           check=True, timeout=60)
+        output = run(binary, base, env, ["--", "test", "--test-class=test_move_identity"])
+        if (re.findall(r"Results: (\d+) total, (\d+) passed, (\d+) failed", output) != [("11", "11", "0")]
+                or "Skipped (not executed): 0" not in output or "ALL TESTS PASSED" not in output
+                or len(re.findall(r"^  PASS: test_", output, re.MULTILINE)) != 11):
+            raise BundleError("exported native identity oracle requires 11 passed, 0 failed, 0 skipped")
+    print(f"EXPORT_NATIVE PASS platform={platform} tests=11 skipped=0")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("platform", choices=["linux", "macos", "windows"])
+    verify(parser.parse_args().platform)

@@ -133,3 +133,18 @@ universal dylibs exported and signed as nested app libraries by Godot. Outputs
 and a candidate/dependency/hash build stamp live in the ignored addon `bin/`.
 Identity query errors or missing libraries refuse cross-project moves. CI must
 execute the identity fixtures on Linux, macOS and Windows before acceptance.
+
+Release exports also run `python test/test_export_native_bundle.py linux` (or
+`macos` / `windows`). This copies the actual export outside the checkout, proves
+engine `user://` containment, checks the descriptor-mapped release helper and
+its architecture, then executes all 11 existing native identity scenarios.
+A separate disposable copy missing the helper must fail the presence verifier.
+macOS copies use `ditto` and verify the existing deep strict signature; the
+positive signed app is never modified.
+
+Manual Release dispatch defaults to a nonpublishing preview: `source_ref`
+selects the exact candidate independently of `tag`, build identity comes from
+`git describe` and the actual commit, and artifact filenames use `preview-<SHA>`.
+The entire signing/publish job is skipped. Tag pushes still publish; explicit
+manual publication requires an existing tag identifying the checked-out HEAD.
+Three-platform exported preview evidence is required before release acceptance.

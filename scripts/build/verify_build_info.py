@@ -10,6 +10,15 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
+def exported_binary(platform: str, root: pathlib.Path = ROOT) -> pathlib.Path:
+    if platform == "macos":
+        contents = root / "build/macos/Docket.app/Contents"
+        with (contents / "Info.plist").open("rb") as source:
+            return contents / "MacOS" / plistlib.load(source)["CFBundleExecutable"]
+    return root / ("build/windows/Docket.exe" if platform == "windows"
+                   else "build/linux/docket.x86_64")
+
+
 def verify(platform: str) -> None:
     expected = json.loads((ROOT / "build_info.json").read_text())
     if platform == "macos":
@@ -31,8 +40,9 @@ def verify(platform: str) -> None:
         assert stamped["file"] == numeric and stamped["product"] == numeric, stamped
     else:
         binary = ROOT / "build/linux/docket.x86_64"
-    output = subprocess.check_output(
-        [str(binary), "--headless", "--", "--build-info"], cwd=ROOT, text=True, timeout=60)
+    from verify_native_bundle import staged_bundle, run
+    with staged_bundle(platform, ROOT) as (binary, base, env):
+        output = run(binary, base, env, ["--", "--build-info"])
     rows = [json.loads(line) for line in output.splitlines() if line.startswith('{"')]
     assert len(rows) == 1, output
     actual = rows[0]

@@ -7,7 +7,14 @@ on:
     inputs:
       tag:
         description: "Tag to build (e.g. v0.1.0)"
-        required: true
+        required: false
+      source_ref:
+        description: "Exact source commit/ref (independent of release tag)"
+        required: false
+      publish:
+        description: "Sign checksums and publish an existing release tag"
+        type: boolean
+        default: false
 
 env:
   GODOT_VERSION: "4.7.1"
@@ -44,7 +51,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.source_ref || inputs.tag || github.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -116,7 +123,16 @@ jobs:
         shell: bash
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: python scripts/build/prepare_build_info.py --tag "$RELEASE_TAG"
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH" == true ]]; then
+            python scripts/build/prepare_build_info.py --tag "$RELEASE_TAG"
+          else
+            python scripts/build/prepare_build_info.py
+          fi
+          VERSION="$(python -c 'import json,os; i=json.load(open("build_info.json")); print(i["version"] if os.environ["PUBLISH"] == "true" else "preview-" + i["commit"])')"
+          echo "ARTIFACT_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Import project
         shell: bash
@@ -151,6 +167,10 @@ jobs:
       - name: Assert exported build identity and native versions
         shell: bash
         run: python scripts/build/verify_build_info.py ${{ matrix.platform }}
+
+      - name: Prove exported native helper and missing-helper refusal
+        shell: bash
+        run: python test/test_export_native_bundle.py ${{ matrix.platform }}
 
       # macOS: Godot invokes Apple's native codesign tool with an empty identity,
       # which selects ad-hoc signing (codesign/codesign=3). Godot's built-in
@@ -227,7 +247,7 @@ jobs:
           # Explicit input wins. On workflow_dispatch GITHUB_REF_NAME is the
           # *branch* ("development"), not a tag, so preferring it would name
           # every dispatched artifact after the branch.
-          VERSION="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          VERSION="$ARTIFACT_VERSION"
           mkdir -p dist
 
           case "${{ matrix.platform }}" in
@@ -274,6 +294,7 @@ jobs:
   publish:
     name: Sign checksums and publish release
     needs: build
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
     # Job-level env, deliberately: a step's own `env:` block is NOT visible to
     # that step's `if:` expression, so gating on it there silently evaluates to
