@@ -48,7 +48,7 @@ static func move_refusal(source: DocketDB, target: DocketDB) -> String:
 
 static func path_refusal(path: String, projects: Dictionary) -> String:
 	var candidate := inspect(path)
-	if candidate.get("state") not in ["PRESENT", "ABSENT"]: return "Cannot prove project identity: %s (%s)" % [path, identity_reason(candidate)]
+	if not projects.is_empty() and candidate.get("state") not in ["PRESENT", "ABSENT"]: return "Cannot prove project identity: %s (%s)" % [path, identity_reason(candidate)]
 	for name in projects:
 		var db: DocketDB = projects[name]
 		if normalized_path(db.get_path()) == normalized_path(path):

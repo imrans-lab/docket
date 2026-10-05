@@ -467,12 +467,13 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 		var db: DocketDB = projects[key]
 		if ProjectOpenings.normalized_path(db.get_path()) != path: continue
 		if not db is DocketDBJsonl or not db.is_open() or not db.get_write_block_reason().is_empty() or not FileAccess.file_exists(path):
-			return DocketHostAuthority._error(-32602, "Bootstrap live project unavailable or read-only")
+			return DocketHostAuthority._error(-32602, "Bootstrap live project unavailable or read-only: %s (%s)" % [path, db.get_write_block_reason() if not db.get_write_block_reason().is_empty() else "not open or canonical missing"])
 		live = db as DocketDBJsonl
 		name = str(key)
 		# Finish a worker before acquisition; sliced readers leave their WAL intact.
-		if not live.finish_settle().is_empty():
-			return DocketHostAuthority._error(-32602, "Bootstrap pending settle refused")
+		var settle_error := live.finish_settle()
+		if not settle_error.is_empty():
+			return DocketHostAuthority._error(-32602, "Bootstrap pending settle refused: %s (%s)" % [path, settle_error])
 		break
 	if live == null:
 		var physical_refusal := ProjectOpenings.path_refusal(path, projects)
@@ -480,18 +481,19 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 		var metadata: Dictionary = parsed.meta
 		if FileAccess.file_exists(path):
 			var source := JSONLCache.read_source(path)
-			if source.is_empty() or not MasterBootstrapPlan._validate(source.parsed).is_empty():
-				return DocketHostAuthority._error(-32602, "Bootstrap current project refused")
+			var source_error := JSONLCache.last_error if source.is_empty() else MasterBootstrapPlan._validate(source.parsed)
+			if not source_error.is_empty():
+				return DocketHostAuthority._error(-32602, "Bootstrap current project refused: %s (%s)" % [path, source_error])
 			metadata = source.parsed.meta
 		name = str(metadata.get("project", ""))
 		if name.is_empty(): name = path.get_file().get_basename()
 		if not ProjectOpenings.name_refusal(name, projects).is_empty():
-			return DocketHostAuthority._error(-32602, "Bootstrap project name already loaded")
+			return DocketHostAuthority._error(-32602, "Bootstrap project name already loaded: %s (%s)" % [name, path])
 		if metadata.get(SessionProject.META_KEY) == SessionProject.MODE_SESSION_FILE:
 			var owner := SessionProject.read_owner(path)
 			var pid := int(owner.get("pid", 0))
 			if not SessionProject.path_error(path).is_empty() or (pid > 0 and pid != OS.get_process_id() and FileLock.is_pid_running(pid)):
-				return DocketHostAuthority._error(-32602, "Bootstrap session admission refused")
+				return DocketHostAuthority._error(-32602, "Bootstrap session admission refused: %s (%s)" % [path, SessionProject.path_error(path) if not SessionProject.path_error(path).is_empty() else "owned by another live process"])
 	var opening_error := ProjectOpenings.opening_refusal(live) if live != null else ""
 	if not opening_error.is_empty():
 		return DocketHostAuthority._error(-32602, opening_error)

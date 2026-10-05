@@ -286,7 +286,7 @@ func _reload(adopt_identity: bool) -> bool:
 		if fallback.open(cache_path):
 			_adopt(fallback)
 		_write_blocked = true
-		last_write_error = "canonical reload failed; cached data is read-only"
+		last_write_error = "%s: canonical reload failed; cached data is read-only: %s" % [_jsonl_path, last_open_error]
 		return false
 
 	_adopt(fresh)
@@ -460,11 +460,11 @@ func _mutation_precheck() -> String:
 	if _write_blocked: return get_write_block_reason()
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
 		_write_blocked = true
-		last_write_error = "canonical source is missing; project is read-only"
+		last_write_error = "canonical source is missing; project is read-only: " + _jsonl_path
 		return last_write_error
 	if is_stale() and not reload():
 		_write_blocked = true
-		if last_write_error.is_empty(): last_write_error = "canonical source could not be reloaded"
+		if last_write_error.is_empty(): last_write_error = "canonical source could not be reloaded: " + _jsonl_path
 		return last_write_error
 	return get_write_block_reason()
 
@@ -578,7 +578,7 @@ func _commit_mutation() -> String:
 	if not identity_error.is_empty(): return identity_error
 	var recovery_error := JSONLReplace.recover(_jsonl_path)
 	if not recovery_error.is_empty(): return recovery_error
-	if not FileAccess.file_exists(_jsonl_path): return "canonical source is missing; refusing to recreate it from cache"
+	if not FileAccess.file_exists(_jsonl_path): return "canonical source is missing; refusing to recreate it from cache: " + _jsonl_path
 	var expected_source := super.get_meta_value("jsonl_hash", "")
 	var built := JSONLSidecar.build_record(self, JSONLSidecar.canonical_part(expected_source))
 	if built.has("error"): return str(built.error)
@@ -600,7 +600,7 @@ func _commit_mutation() -> String:
 		return committed
 	if _source_fingerprint(lock.contended) != expected_source:
 		lock.release()
-		return "canonical source changed while acquiring write lock"
+		return "canonical source changed while acquiring write lock: " + _jsonl_path
 	var length_before := JSONLSidecar.length_of(sidecar)
 	if length_before < 0 and FileAccess.file_exists(sidecar):
 		lock.release()
@@ -663,9 +663,9 @@ func _settle_canonical() -> String:
 	var recovery_error := JSONLReplace.recover(_jsonl_path)
 	if not recovery_error.is_empty(): return _fail_flush(recovery_error)
 	if not FileAccess.file_exists(_jsonl_path) and not _allow_initial_write:
-		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
+		return _fail_flush("canonical source is missing; refusing to recreate it from cache: " + _jsonl_path)
 	if FileAccess.file_exists(_jsonl_path) and is_stale():
-		return _fail_flush("canonical source changed; reload before writing")
+		return _fail_flush("canonical source changed; reload before writing: " + _jsonl_path)
 	_last_sql_error = ""
 	var expected_source_hash := super.get_meta_value("jsonl_hash", "")
 	var cache_error := _validate_cache_for_flush()
@@ -684,12 +684,12 @@ func _settle_canonical() -> String:
 		return _fail_flush("could not acquire advisory lock for %s" % _jsonl_path)
 	if not _allow_initial_write and _source_fingerprint(lock.contended) != expected_source_hash:
 		lock.release()
-		return _fail_flush("canonical source changed while acquiring write lock")
+		return _fail_flush("canonical source changed while acquiring write lock: " + _jsonl_path)
 
 	var verify := func() -> String:
 		var refusal := "" if _allow_initial_write else ProjectOpenings.opening_refusal(self, false)
 		if not refusal.is_empty(): return refusal
-		return "" if _allow_initial_write or _source_fingerprint(true) == expected_source_hash else "canonical source changed while settling"
+		return "" if _allow_initial_write or _source_fingerprint(true) == expected_source_hash else "canonical source changed while settling: " + _jsonl_path
 	var committed := JSONLCheckedCommit.replace(_jsonl_path, jsonl_text, verify, _atomic_write_hook, not _atomic_write_hook.is_valid() and get_meta("physical_opening", {}).get("state") == "PRESENT")
 	var write_error: String = committed.error
 	# Our own replacement is always hashed in full: its stat is fresh, so the
@@ -723,7 +723,7 @@ func _start_settle_job(sliced: bool = false) -> String:
 	var recovery_error := JSONLReplace.recover(_jsonl_path)
 	if not recovery_error.is_empty(): return _fail_flush(recovery_error)
 	if not FileAccess.file_exists(_jsonl_path):
-		return _fail_flush("canonical source is missing; refusing to recreate it from cache")
+		return _fail_flush("canonical source is missing; refusing to recreate it from cache: " + _jsonl_path)
 	if not sliced or snapshot_slice_ms < 0:
 		return _seal_settle_job(null)
 	var generation := cache_generation()
@@ -778,7 +778,7 @@ func _seal_settle_job(job: JSONLSettleJob) -> String:
 	if _source_fingerprint(lock.contended) != stored:
 		lock.release()
 		_settle_job = null
-		return _fail_flush("canonical source changed; reload before writing")
+		return _fail_flush("canonical source changed; reload before writing: " + _jsonl_path)
 	if job != null and cache_generation() != job.generation:
 		lock.release()
 		return ""
@@ -857,7 +857,7 @@ func _commit_settle_job() -> String:
 	if _source_fingerprint(lock.contended) != stored or JSONLSidecar.canonical_part(stored) != job.canonical_sha or not job.holds_prefix_of(sidecar_now):
 		lock.release()
 		job.remove_temp()
-		return _fail_flush("canonical source changed while settling")
+		return _fail_flush("canonical source changed while settling: " + _jsonl_path)
 	var write_error := ProjectOpenings.opening_refusal(self, false)
 	var replacement_identity := ProjectOpenings.inspect(job.temp_path)
 	if write_error.is_empty() and get_meta("physical_opening", {}).get("state") == "PRESENT": write_error = ProjectOpenings.receipt_refusal(job.temp_path, replacement_identity)
@@ -953,7 +953,7 @@ static func _write_temp(path: String, content: Variant) -> Dictionary:
 	# This check does not promise safety against malicious post-check races.
 	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
 	if f == null:
-		return {"path": "", "error": "cannot open temp file %s for writing" % tmp_path}
+		return {"path": "", "error": "cannot open temp file %s for writing (error %d)" % [tmp_path, FileAccess.get_open_error()]}
 	if content is PackedByteArray: f.store_buffer(content)
 	else: f.store_string(content)
 	f.flush()
@@ -961,7 +961,7 @@ static func _write_temp(path: String, content: Variant) -> Dictionary:
 	f.close()
 	if file_error != OK:
 		DirAccess.remove_absolute(tmp_path)
-		return {"path": "", "error": "temp file write failed (error %d)" % file_error}
+		return {"path": "", "error": "temp file write failed: %s (error %d)" % [tmp_path, file_error]}
 	return {"path": tmp_path, "error": ""}
 
 

@@ -17,7 +17,7 @@ static func apply(path: String, shipment_jsonl: String, declared_schema: Diction
 	if not error.is_empty(): return _refuse("Shipment: " + error)
 	if shipment.meta.has(STATE_KEY): return _refuse("Shipment may not seed reserved bootstrap state")
 	var lock := FileLock.acquire(path, lock_timeout_ms)
-	if lock == null: return _refuse("Could not acquire advisory lock")
+	if lock == null: return _refuse("Could not acquire advisory lock: " + path + FileLock.SUFFIX)
 	var result := _apply_locked(path, shipment, declared_schema, expected_opening)
 	lock.release()
 	return result
@@ -29,14 +29,14 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 	if not expected_opening.is_empty() and opening != expected_opening: return _refuse("Bootstrap opening identity changed: " + path)
 	if opening.get("state") not in ["PRESENT", "ABSENT"]: return _refuse("Bootstrap identity unavailable: %s (%s)" % [path, ProjectOpenings.identity_reason(opening)])
 	var exists := FileAccess.file_exists(path)
-	if not exists and DirAccess.dir_exists_absolute(path): return _refuse("Canonical path is unreadable")
+	if not exists and DirAccess.dir_exists_absolute(path): return _refuse("Canonical path is unreadable: " + path)
 	var source := {}
 	var current: Variant = null
 	var state := {"baseline":null, "ever_shipped":[]}
 	if exists:
-		if DirAccess.dir_exists_absolute(JSONLSidecar.path_for(path)): return _refuse("Sidecar path is unreadable")
+		if DirAccess.dir_exists_absolute(JSONLSidecar.path_for(path)): return _refuse("Sidecar path is unreadable: " + JSONLSidecar.path_for(path))
 		source = JSONLCache.read_source(path)
-		if source.is_empty(): return _refuse(JSONLCache.last_error)
+		if source.is_empty(): return _refuse("%s: %s" % [path, JSONLCache.last_error])
 		current = source.parsed
 		var error := MasterBootstrapPlan._validate(current)
 		if not error.is_empty(): return _refuse("Current: " + error)
@@ -45,7 +45,7 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 		if state.has("error"): return _refuse(state.error)
 	else:
 		if FileAccess.file_exists(JSONLSidecar.path_for(path)) or DirAccess.dir_exists_absolute(JSONLSidecar.path_for(path)):
-			return _refuse("Missing canonical with orphan sidecar")
+			return _refuse("Missing canonical %s with orphan sidecar %s" % [path, JSONLSidecar.path_for(path)])
 	if acquired_hook.is_valid(): acquired_hook.call(path)
 	var proposal := MasterBootstrapPlan.plan(current, shipment, state.baseline, state.ever_shipped, schema)
 	if proposal.has("error"): return _refuse(proposal.error)
@@ -75,14 +75,15 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 static func _verify_source(path: String, existed: bool, source: Dictionary) -> String:
 	var sidecar_path := JSONLSidecar.path_for(path)
 	if not existed:
-		return "Source changed before install" if FileAccess.file_exists(path) or DirAccess.dir_exists_absolute(path) or FileAccess.file_exists(sidecar_path) or DirAccess.dir_exists_absolute(sidecar_path) else ""
-	if not FileAccess.file_exists(path): return "Canonical disappeared before commit"
+		return "Source changed before install: " + path if FileAccess.file_exists(path) or DirAccess.dir_exists_absolute(path) or FileAccess.file_exists(sidecar_path) or DirAccess.dir_exists_absolute(sidecar_path) else ""
+	if not FileAccess.file_exists(path): return "Canonical disappeared before commit: " + path
 	var bytes := FileAccess.get_file_as_bytes(path)
-	if FileAccess.get_open_error() != OK or bytes != source.canonical: return "Canonical changed before commit"
-	if DirAccess.dir_exists_absolute(sidecar_path): return "Sidecar changed before commit"
+	if FileAccess.get_open_error() != OK or bytes != source.canonical: return "Canonical changed before commit: " + path
+	if DirAccess.dir_exists_absolute(sidecar_path): return "Sidecar changed before commit: " + sidecar_path
 	var sidecar := JSONLSidecar.read_bytes(sidecar_path)
-	if not str(sidecar.error).is_empty() or sidecar.bytes != source.sidecar or FileAccess.file_exists(sidecar_path) != source.sidecar_exists:
-		return "Sidecar changed before commit"
+	if not str(sidecar.error).is_empty(): return "%s: %s" % [sidecar_path, sidecar.error]
+	if sidecar.bytes != source.sidecar or FileAccess.file_exists(sidecar_path) != source.sidecar_exists:
+		return "Sidecar changed before commit: " + sidecar_path
 	return ""
 
 static func read_state(meta: Dictionary) -> Dictionary:
