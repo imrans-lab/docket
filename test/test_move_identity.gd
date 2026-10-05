@@ -156,19 +156,28 @@ func test_identical_replacement_never_refreshes_opening() -> Variant:
 		var db := _create(stage)
 		if db == null: return "creation failed"
 		var old: Dictionary = db.get_meta("physical_opening")
+		# Retain the original inode even after our settle replaces its last name.
+		var held := db.get_path() + ".held"
+		if not _link(db.get_path(), held, true): return "original inode hold failed"
+		var tokens := {"temp": {}}
 		var replace_file := func() -> void:
 			var bytes := FileAccess.get_file_as_bytes(db.get_path())
 			DirAccess.rename_absolute(db.get_path(), db.get_path() + ".saved")
 			var f := FileAccess.open(db.get_path(), FileAccess.WRITE)
 			f.store_buffer(bytes); f.close()
 		if stage == "before_settle": replace_file.call()
-		else:
-			JSONLCheckedCommit.stage_hook = func(at: String, _path: String, _temp: String) -> String:
-				if at == "after_rename": replace_file.call()
-				return ""
+		JSONLCheckedCommit.stage_hook = func(at: String, _path: String, temp: String) -> String:
+			if at == "before_verify": tokens.temp = ProjectOpenings.inspect(temp)
+			if at == "after_rename" and stage == "after_rename": replace_file.call()
+			return ""
 		var error := db._settle_canonical()
 		JSONLCheckedCommit.stage_hook = Callable()
-		if error.is_empty() or db.get_meta("physical_opening") != old or ProjectOpenings.opening_refusal(db).is_empty(): return "replacement was blessed by settle"
+		var current := ProjectOpenings.inspect(db.get_path())
+		print("REPLACEMENT_IDENTITY stage=", stage, " old=", old, " temp=", tokens.temp, " current=", current)
+		if ProjectOpenings.inspect(held) != old: return stage + ": original inode hold changed"
+		if error.is_empty(): return stage + ": settle accepted external replacement"
+		if db.get_meta("physical_opening") != old: return stage + ": refused settle refreshed opening"
+		if ProjectOpenings.opening_refusal(db).is_empty(): return stage + ": external replacement matches original opening"
 	return true
 
 func test_memory_file_round_trip_move() -> Variant:
