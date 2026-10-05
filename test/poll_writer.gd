@@ -7,28 +7,22 @@ func _init() -> void:
 		quit(2)
 		return
 	var path := args[0]
-	var db: DocketDBJsonl
-	if args[4] == "private":
-		# Open an identical sibling source through the supported entry point so
-		# the process has a genuinely separate cache, then append to the source
-		# watched by the shell. This fixture starts with no pending journal.
-		var copy_path := path + ".writer.dct"
-		if not JSONLSidecar.has_content(JSONLSidecar.path_for(path)):
-			var copy := FileAccess.open(copy_path, FileAccess.WRITE)
-			if copy != null:
-				copy.store_buffer(FileAccess.get_file_as_bytes(path))
-				copy.close()
-				db = DocketDBJsonl.open_jsonl(copy_path)
-				if db != null:
-					db._jsonl_path = path
-					db._freshness.forget()
-					# A mismatch would make mutation reload the shared cache and
-					# erase the independent-cache oracle; refuse that setup.
-					if db.is_stale():
-						db._jsonl_path = ""
-						db.close()
-						db = null
-	else: db = DocketDBJsonl.open_jsonl(path)
+	var db := DocketDBJsonl.open_jsonl(path)
+	if args[4] == "private" and db != null:
+		# Open the real canonical, preserving its receipt, but give this writer
+		# an independent SQLite cache so the shell must replay its journal.
+		db.checkpoint()
+		var cache_path := path + ".writer.cache"
+		var cache := DocketDB.new()
+		if DirAccess.copy_absolute(JSONLCache.cache_path_for(path), cache_path) != OK or not cache.open(cache_path, false):
+			db.close()
+			db = null
+		else:
+			db._db.close_db()
+			db._adopt(cache)
+			if db._path != cache_path or not ProjectOpenings.opening_refusal(db).is_empty() or db.is_stale():
+				db.close()
+				db = null
 	var result := {"error": "writer could not open project"}
 	if db != null:
 		var tools := ToolRegistry.new()
