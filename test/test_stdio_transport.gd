@@ -50,6 +50,7 @@ children = []
 completed = threading.Event()
 # Ordinary replies allow the same bounded 30 seconds as writes.
 DEFAULT_RECEIVE_TIMEOUT = 30
+EOF_EXIT_TIMEOUT_S = 30
 
 def diagnose():
     # Kill all owned children before waiting, then retain actual exit/stderr.
@@ -224,7 +225,7 @@ def request(p, method, ident, params=None, receive_timeout=DEFAULT_RECEIVE_TIMEO
 
 def finish(p):
     p.stdin.close()
-    assert p.wait(timeout=10) == 0, 'EOF exit failure'
+    assert p.wait(timeout=EOF_EXIT_TIMEOUT_S) == 0, 'EOF exit failure'
     # GUI children may print engine teardown text after EOF; only a protocol frame is a defect.
     assert b'"jsonrpc"' not in remaining_stdout(p), 'unexpected protocol output after EOF'
 

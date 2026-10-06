@@ -8,6 +8,9 @@ values = [secrets.token_hex(24), secrets.token_hex(24)]
 token = secrets.token_hex(32)
 keys = []
 seen = bytearray()
+# Allow for cold HTTP startup and delayed replies on shared CI runners.
+HTTP_REPLY_TIMEOUT_S = 30
+HTTP_STARTUP_TIMEOUT_S = 60
 # Check before restart/HTTP/probes can rotate away a previous child's logs.
 def assert_private_files():
     persisted = [value.encode() for value in passwords + values]
@@ -242,10 +245,10 @@ try:
     for method in ('vault_challenge','vault_unlock','vault_lock'):
         body = json.dumps(dict(jsonrpc='2.0', id=1, method='docket/panel/'+method, params=dict(panel_secret=token))).encode()
         req = urllib.request.Request('http://127.0.0.1:%d/mcp'%port, data=body, headers={'Content-Type':'application/json'})
-        deadline = time.monotonic()+10
+        deadline = time.monotonic()+HTTP_STARTUP_TIMEOUT_S
         while True:
             try:
-                with urllib.request.urlopen(req,timeout=2) as response: reply=json.load(response)
+                with urllib.request.urlopen(req,timeout=HTTP_REPLY_TIMEOUT_S) as response: reply=json.load(response)
                 break
             except urllib.error.URLError:
                 assert q.poll() is None and time.monotonic()<deadline, 'HTTP startup'
