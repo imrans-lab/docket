@@ -202,9 +202,11 @@ func _headless_add_project(path: String) -> Dictionary:
 	if not refusal_before_open.is_empty(): return {"error":refusal_before_open}
 	var duplicate := ProjectOpenings.path_refusal(path, _project_dbs)
 	if not duplicate.is_empty(): return {"error":duplicate}
+	DocketDBJsonl.last_open_error = ""
 	var loaded_db := _open_or_create_db(path)
+	var open_error := DocketDBJsonl.last_open_error
 	if not loaded_db:
-		return {"error": "Failed to open: %s" % path}
+		return {"error": "Failed to open: %s" % path + (": %s" % open_error if not open_error.is_empty() else "")}
 	var post_open_refusal := ProjectOpenings.path_refusal(path, _project_dbs)
 	if not post_open_refusal.is_empty():
 		loaded_db.close()
