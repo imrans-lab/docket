@@ -571,7 +571,7 @@ func update_item(id: String, changes: Dictionary, actor: String = "", expected_r
 			error = _db._last_sql_error
 	return _complete_item_mutation(error)
 
-func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT, holder: String = "") -> String:
+func transition_item(id: String, target: String, actor: String, note: String = "", extra: Dictionary = {}, expected_revision: String = "", expected_item_token: String = "", if_revision: int = ItemRevision.ABSENT, holder: String = "", baseline: Dictionary = {}) -> String:
 	var refresh_error := refresh_if_changed()
 	if not refresh_error.is_empty(): return refresh_error
 	var item: Dictionary = _db.get_item(id)
@@ -623,7 +623,10 @@ func transition_item(id: String, target: String, actor: String, note: String = "
 			else:
 				_db.add_link(blocker, id, "blocks")
 				error = _db._last_sql_error
-	return _complete_item_mutation(error)
+	error = _complete_item_mutation(error)
+	# Source status belongs to the successfully applied transition, after refresh.
+	if error.is_empty(): baseline.merge({"from_status":str(item.status), "to_status":target}, true)
+	return error
 
 func _foreign_reference_refusal(id: String, values: Dictionary) -> String:
 	return ItemStorage.foreign_reference_refusal(_db, values, project_dbs, "item %s" % id if ItemStorage.is_ephemeral(_db, id) else "")

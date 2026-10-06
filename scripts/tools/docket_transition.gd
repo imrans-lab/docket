@@ -43,7 +43,7 @@ func _build_description() -> String:
 	return _cached_description
 
 
-func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
+func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, baseline: Dictionary = {}) -> Dictionary:
 	var id: String = args.get("id", "")
 	if not db.has_item(id):
 		return {"error": "Item not found: %s" % id}
@@ -61,7 +61,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if if_revision.has("error"): return {"error":if_revision.error}
 	var transition_registry: TypeRegistry = TypeRegistry.for_db(db, db.get_project_name())
 	var holder: String = str(args.get("holder", ""))
-	var typed_error: String = transition_registry.transition_item(id, to, holder if not holder.is_empty() else "agent", note, extra, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")), int(if_revision.value), holder)
+	var typed_error: String = transition_registry.transition_item(id, to, holder if not holder.is_empty() else "agent", note, extra, str(args.get("expected_revision", "")), str(args.get("expected_item_token", "")), int(if_revision.value), holder, baseline)
 	if not typed_error.is_empty():
 		var failed_item: Dictionary = db.get_item(id)
 		db.log_transition(str(failed_item.get("type", "")), str(failed_item.get("status", "")), to, false, [])

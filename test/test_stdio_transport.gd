@@ -2,6 +2,36 @@ extends Node
 ## Real child-process oracle. Python owns independent stdin/stdout descriptors,
 ## deadlines and isolated XDG paths; it never touches the owner's user data.
 
+class ForeignTransition extends DocketTransition:
+	func execute(args: Dictionary, schema: Dictionary, db: DocketDB, baseline: Dictionary = {}) -> Dictionary:
+		# A supported second writer commits between dispatch and typed refresh.
+		var other := DocketDBJsonl.open_jsonl(db.get_path())
+		var error := TypeRegistry.for_db(other, other.get_project_name()).transition_item(args.id, "in_progress", "other")
+		other.close()
+		if not error.is_empty(): return {"error":error}
+		return super.execute(args, schema, db, baseline)
+
+
+func test_transition_baseline_after_foreign_refresh() -> Variant:
+	var directory := "user://event-refresh-" + DocketDB.generate_uuid7()
+	DirAccess.make_dir_recursive_absolute(directory)
+	var db := DocketDBJsonl.create_new_jsonl(directory + "/fixture.dct")
+	var registry := ToolRegistry.new()
+	registry.init(TypeRegistryBootstrap.effective_schema(), db, {"fixture":db})
+	var events: Array = []
+	registry.hosted_item_changed.connect(func(event: Dictionary) -> void: events.append(event))
+	var created := registry.call_tool("docket_create", {"type":"chore", "title":"refresh fixture"})
+	registry._tools["docket_transition"] = ForeignTransition.new()
+	var moved := registry.call_tool("docket_transition", {"id":created.id, "to":"done"})
+	var expected := {"kind":"transitioned", "from_status":"in_progress", "to_status":"done"}
+	var passed: bool = not moved.has("error") and events.size() == 2 and events[1].baseline == expected
+	db.close()
+	var dir := DirAccess.open(directory)
+	for file in dir.get_files(): dir.remove(file)
+	DirAccess.remove_absolute(directory)
+	return true if passed else "Transition baseline did not describe the refreshed state used by the mutation"
+
+
 const DRIVER := """
 import json, os, pathlib, queue, shutil, subprocess, sys, tempfile, threading, time
 engine, project = sys.argv[1:]
@@ -251,6 +281,8 @@ try:
     assert ident, result
     fetched = request(p, 'tools/call', 4, {'name': 'docket_get', 'arguments': {'id': ident}})
     assert json.loads(fetched['result']['content'][0]['text'])['title'] == title, fetched
+    assert tool('docket_transition', {'id': ident, 'to': 'in_progress'})['status'] == 'in_progress'
+    assert not p.events, 'ordinary mutation published event'
     # Notifications must execute without emitting even an unknown-method error.
     send(p, {'jsonrpc': '2.0', 'method': 'ping'})
     send(p, {'jsonrpc': '2.0', 'method': 'unknown'})
@@ -330,10 +362,7 @@ const HOSTED_DRIVER := """
 try:
     env['DOCKET_PANEL_SECRET'] = 'a' * 64
     p = launch('events', ['--host-authority'])
-    schema = {'types': {'chore': {'label': 'Chore', 'states': ['open', 'done'],
-        'initial_state': 'open', 'terminal_states': ['done'],
-        'transitions': {'open': ['done'], 'done': []},
-        'required_fields': ['title'], 'optional_fields': ['description']}}}
+    schema = json.loads((pathlib.Path(project) / 'data/schema.json').read_text())
     declared = request(p, 'docket/panel/declare_schema', 1,
         {'panel_secret': 'a' * 64, 'schema': schema, 'version': 'event-fixture'})
     assert 'result' in declared, 'schema declaration'
@@ -348,9 +377,9 @@ try:
     created = call('docket_create', dict(route, type='chore', title='event fixture',
         description='private-description-sentinel'))
     ident = created['id']
-    call('docket_transition', dict(route, id=ident, to='done'))
+    call('docket_transition', dict(route, id=ident, to='in_progress'))
     call('docket_update', dict(route, id=ident, description='private-update-sentinel'))
-    call('docket_comment', dict(route, item_id=ident, action='add', text='private-comment-sentinel'))
+    comment = call('docket_comment', dict(route, item_id=ident, action='add', text='private-comment-sentinel'))
     assert len(p.events) == 4, 'exactly one event per mutation'
     stream = p.events[0]['params']['payload']['stream']
     assert isinstance(stream, str) and stream, 'stream identity'
@@ -368,18 +397,27 @@ try:
             'event', 'title', 'baseline', 'stream', 'sequence'}, 'metadata allowlist'
     assert p.events[0]['params']['payload']['baseline'] == {'kind': 'created', 'item_type': 'chore'}
     assert p.events[1]['params']['payload']['baseline'] == {
-        'kind': 'transitioned', 'from_status': 'open', 'to_status': 'done'}
+        'kind': 'transitioned', 'from_status': 'open', 'to_status': 'in_progress'}
+    call('docket_comment', dict(route, comment_id=comment['id'], action='reply', text='private-reply-sentinel'))
+    assert len(p.events) == 5 and p.events[-1]['params']['payload']['id'] == ident
+    assert p.events[-1]['params']['payload']['baseline'] == {'kind': 'comment_added'}, 'reply baseline'
+    hint = call('docket_hint_set', dict(route, component='fixture', key='hint', value='private-hint-sentinel'))
+    call('docket_hint_set', dict(route, component='fixture', key='hint', value='private-hint-update-sentinel'))
+    call('docket_quality', dict(route, id=hint['id'], score=1, reason='private-quality-sentinel'))
+    assert len(p.events) == 8 and [e['params']['payload']['sequence'] for e in p.events] == list(range(1, 9))
+    assert [e['params']['payload']['baseline'] for e in p.events[-3:]] == [
+        {'kind': 'created', 'item_type': 'hint'}, {'kind': 'created', 'item_type': 'hint'}, {'kind': 'updated'}]
     assert 'private-' not in json.dumps(p.events), 'private values in notifications'
     call('docket_update', dict(route, id=ident, description='private-update-sentinel'))
-    assert len(p.events) == 5, 'successful no-op still has baseline'
+    assert len(p.events) == 9, 'successful no-op still has baseline'
     call('docket_transition', dict(route, id=ident, to='not-a-state'), False)
     call('docket_get', dict(route, id=ident))
     call('docket_comment', dict(route, item_id=ident, action='list'))
-    assert len(p.events) == 5, 'refused mutation or reads emitted event'
+    assert len(p.events) == 9, 'refused mutation or reads emitted event'
     # A no-id mutation still publishes its event, but not a request reply.
     send(p, {'jsonrpc': '2.0', 'method': 'tools/call', 'params': {
         'name': 'docket_update', 'arguments': dict(route, id=ident, title='no-id mutation')}})
-    assert receive(p)['params']['payload']['sequence'] == 6, 'no-id mutation notification'
+    assert receive(p)['params']['payload']['sequence'] == 10, 'no-id mutation notification'
     assert request(p, 'ping', 99)['result'] == {}, 'no-id mutation emitted reply'
     finish(p)
     q = launch('events-restarted', ['--host-authority'])

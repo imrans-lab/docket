@@ -179,10 +179,10 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, gui_open_fn)
 	else:
 		var db := _resolve_db(arguments)
-		result = _tools[name].execute(arguments, _schema, db)
+		result = _tools[name].execute(arguments, _schema, db, baseline) if name == "docket_transition" else _tools[name].execute(arguments, _schema, db)
 	if result.has("error"):
 		_log_error(name, arguments, result)
-	elif not baseline.is_empty():
+	elif hosted_item_changed.has_connections() and baseline.has("kind"):
 		_publish_hosted_change(arguments, result, baseline)
 	return result
 
@@ -191,13 +191,11 @@ func _hosted_baseline(name: String, arguments: Dictionary) -> Dictionary:
 	# Only the hosted stdio transport subscribes. Ordinary HTTP/GUI stays silent.
 	if not hosted_item_changed.has_connections(): return {}
 	match name:
-		"docket_create": return {"kind": "created"}
-		"docket_update": return {"kind": "updated"}
+		"docket_create", "docket_hint_set": return {"kind": "created"}
+		"docket_update", "docket_quality": return {"kind": "updated"}
 		"docket_comment":
-			return {"kind": "comment_added"} if arguments.get("action") == "add" else {}
-		"docket_transition":
-			var db := _resolve_db(arguments)
-			return {"kind": "transitioned", "from_status": str(db.get_item(str(arguments.get("id", ""))).get("status", ""))}
+			return {"kind": "comment_added"} if arguments.get("action") in ["add", "reply"] else {}
+		"docket_transition": return {"kind": "transitioned"}
 	return {}
 
 
@@ -206,7 +204,6 @@ func _publish_hosted_change(arguments: Dictionary, result: Dictionary, baseline:
 	var id := str(result.get("item_id", "")) if baseline.kind == "comment_added" else str(result.get("id", ""))
 	var item := db.get_item(id)
 	if baseline.kind == "created": baseline["item_type"] = str(item.get("type", ""))
-	if baseline.kind == "transitioned": baseline["to_status"] = str(item.get("status", ""))
 	# Use the live selector, including case-folded/default routing, not caller text.
 	var selector := str(_project_dbs.find_key(db))
 	var opening := ProjectOpenings.descriptor(selector, db, _db)
