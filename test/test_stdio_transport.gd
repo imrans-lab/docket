@@ -108,6 +108,9 @@ def launch(name, extra=()):
         raise
     children.append((p, err))
     p.launch_extra = extra
+    return attach_io(p)
+
+def attach_io(p):
     # Bounded chunks prevent unsolicited stdout from growing memory forever.
     p.output_queue = queue.Queue(maxsize=64)
     p.write_queue = queue.Queue(maxsize=1)

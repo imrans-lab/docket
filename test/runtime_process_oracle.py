@@ -24,7 +24,7 @@ def spawn(name, profile, files=(), restore=False, headless=False, http_port=None
     if headless:
         cmd.append('--headless')
     else:
-        cmd += ['--display-driver', 'x11', '--rendering-method', 'gl_compatibility']
+        cmd += ['--display-driver', 'x11']
     cmd += ['--', '--state-dir', str(profile), '--port', str(port)]
     if http_port is None:
         cmd.append('--stdio')
@@ -35,9 +35,8 @@ def spawn(name, profile, files=(), restore=False, headless=False, http_port=None
     for file in files:
         cmd += ['--file', str(file)]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, bufsize=0)
-    os.set_blocking(p.stdin.fileno(), False)
     children.append((p, err))
-    return p
+    return attach_io(p)
 
 
 def http(method='ping', params=None):
@@ -240,7 +239,7 @@ try:
     # print renderer leak diagnostics to stdout, which scripts cannot mute. Parents ignore
     # stdout after EOF, so only a protocol frame there would be a defect.
     assert p.wait(timeout=15) == 0
-    assert b'"jsonrpc"' not in p.stdout.read(), 'protocol frame after EOF'
+    assert b'"jsonrpc"' not in remaining_stdout(p), 'protocol frame after EOF'
     assert 'GUI EOF write' in opened_file.read_text()
     assert not pathlib.Path(str(session_path) + '.owner').exists()
     assert not pathlib.Path('/proc/%d' % old_pid).exists(), 'child not reaped'
