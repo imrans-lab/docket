@@ -31,13 +31,21 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB, project_dbs: D
 		return {"error": "Project not found: %s" % target}
 
 	var flushed: Array = []
+	var failed: Array = []
 	for proj_name in project_dbs:
 		if not target.is_empty() and proj_name != target:
 			continue
 		var pdb: DocketDB = project_dbs[proj_name]
 		if not pdb is DocketDBJsonl:
 			continue  # SQLite-backed project: nothing to serialize
-		(pdb as DocketDBJsonl).flush()
+		var error := (pdb as DocketDBJsonl).flush_checked()
+		if not error.is_empty():
+			failed.append({"project": proj_name, "path": pdb.get_path(), "error": error})
+			continue
 		flushed.append({"project": proj_name, "path": pdb.get_path()})
 
-	return {"flushed": flushed, "count": flushed.size()}
+	var result := {"flushed": flushed, "count": flushed.size()}
+	if not failed.is_empty():
+		result["error"] = "Could not flush %d project(s)" % failed.size()
+		result["failed"] = failed
+	return result

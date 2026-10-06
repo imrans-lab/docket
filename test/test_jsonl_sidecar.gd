@@ -463,3 +463,58 @@ func test_posix_replacement_keeps_existing_rename_path() -> Variant:
 	var error := DocketDBJsonl._rename_over(path + ".temp", path)
 	JSONLReplace.stage_hook = Callable()
 	return A.eq([error, FileAccess.get_file_as_string(path), FileAccess.get_file_as_string(path + ".docket-replace-backup"), stages], ["", "new bytes", "unrelated reserved bytes", []], "POSIX retains rename without backup protocol")
+
+
+## Tool success means canonical settlement, including a retry whose cache
+## already contains every change. One blocked project must not hide or stop
+## another project's successful settlement.
+func test_flush_tool_reports_blocked_settlement_and_retries() -> Variant:
+	var fixture := FileAccess.get_file_as_string(FIXTURE)
+	var projects := {}
+	for name in ["blocked", "later"]:
+		var path := DIR + "/flush_%s.dct" % name
+		var out := FileAccess.open(path, FileAccess.WRITE)
+		out.store_string(fixture)
+		out.close()
+		var db := DocketDBJsonl.open_jsonl(path)
+		if db == null:
+			for opened in projects.values(): opened.close()
+			return "flush fixture did not open"
+		projects[name] = db
+		var error := db.update_item_fields_checked("ORD-0001", {"title": "flush retry %s" % name})
+		if not error.is_empty():
+			for opened in projects.values(): opened.close()
+			return "flush fixture mutation failed: " + error
+	var blocked: DocketDBJsonl = projects.blocked
+	var later: DocketDBJsonl = projects.later
+	var canonical_before := FileAccess.get_file_as_bytes(blocked.get_path())
+	var sidecar_before := FileAccess.get_file_as_bytes(blocked.get_path() + ".log")
+	var temp := ProjectSettings.globalize_path(blocked.get_path() + ".tmp.%d" % OS.get_process_id())
+	if DirAccess.make_dir_absolute(temp) != OK:
+		for opened in projects.values(): opened.close()
+		return "could not occupy the atomic temp namespace"
+	var registry := ToolRegistry.new()
+	registry.init(JSON.parse_string(FileAccess.get_file_as_string("res://data/schema.json")), blocked, projects)
+	var unknown := registry.call_tool("docket_flush", {"project": "missing"})
+	var mixed := registry.call_tool("docket_flush", {})
+	var repeated := registry.call_tool("docket_flush", {"project": "blocked"})
+	var canonical_held := FileAccess.get_file_as_bytes(blocked.get_path()) == canonical_before
+	var sidecar_held := FileAccess.get_file_as_bytes(blocked.get_path() + ".log") == sidecar_before
+	var later_saved := "flush retry later" in FileAccess.get_file_as_string(later.get_path()) and _sidecar_lines(later.get_path()) == 0
+	var removed := DirAccess.remove_absolute(temp)
+	var retry := registry.call_tool("docket_flush", {"project": "blocked"})
+	var blocked_saved := "flush retry blocked" in FileAccess.get_file_as_string(blocked.get_path()) and _sidecar_lines(blocked.get_path()) == 0
+	for opened in projects.values(): opened.close()
+	var r = A.is_true(unknown.has("error"), "unknown-project refusal is unchanged")
+	if r is String: return r
+	r = A.is_true(mixed.has("error") and mixed.get("count") == 1 and mixed.get("flushed") == [{"project": "later", "path": later.get_path()}]
+		and mixed.get("failed", []).size() == 1 and mixed.failed[0].project == "blocked"
+		and mixed.failed[0].path == blocked.get_path() and not str(mixed.failed[0].error).is_empty() and later_saved,
+		"one failure is reported with its reason, not counted, and does not stop the later project")
+	if r is String: return r
+	r = A.is_true(repeated.has("error") and repeated.get("count") == 0 and repeated.get("flushed") == []
+		and canonical_held and sidecar_held and not sidecar_before.is_empty(),
+		"repeated blocked flushes fail without changing canonical or journal bytes")
+	if r is String: return r
+	return A.is_true(removed == OK and retry == {"flushed": [{"project": "blocked", "path": blocked.get_path()}], "count": 1}
+		and blocked_saved, "unblocked retry preserves success shape and settles the actual canonical file")
