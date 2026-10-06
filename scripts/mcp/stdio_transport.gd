@@ -12,6 +12,15 @@ var _mutex := Mutex.new()
 var _slots := Semaphore.new()
 var _frames: Array = []
 var _closed := false
+var _event_stream := DocketDB.generate_uuid7()
+var _event_sequence := 0
+
+
+func publish_item_changed(payload: Dictionary) -> void:
+	_event_sequence += 1
+	payload.merge({"stream": _event_stream, "sequence": _event_sequence}, true)
+	printraw(JSON.stringify({"jsonrpc": "2.0", "method": "minerva/plugin_event",
+		"params": {"event": "item_changed", "payload": payload}}) + "\n")
 
 
 func start() -> Error:

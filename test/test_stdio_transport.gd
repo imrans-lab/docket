@@ -77,10 +77,12 @@ def launch(name, extra=()):
         err.close()
         raise
     children.append((p, err))
+    p.launch_extra = extra
     # Bounded chunks prevent unsolicited stdout from growing memory forever.
     p.output_queue = queue.Queue(maxsize=64)
     p.write_queue = queue.Queue(maxsize=1)
     p.pending = bytearray()
+    p.events = []
     p.output_eof = False
     p.stop_io = threading.Event()
     def reader():
@@ -180,6 +182,10 @@ def request(p, method, ident, params=None, receive_timeout=DEFAULT_RECEIVE_TIMEO
         obj['params'] = params
     send(p, obj)
     value = receive(p, receive_timeout)
+    while value.get('method') == 'minerva/plugin_event' and 'id' not in value:
+        assert '--host-authority' in getattr(p, 'launch_extra', ()), 'ordinary stdio published plugin event'
+        p.events.append(value)
+        value = receive(p, receive_timeout)
     assert value['id'] == ident, value
     return value
 
@@ -318,6 +324,93 @@ finally:
     root.cleanup()
     completed.set()
 """
+
+
+const HOSTED_DRIVER := """
+try:
+    env['DOCKET_PANEL_SECRET'] = 'a' * 64
+    p = launch('events', ['--host-authority'])
+    schema = {'types': {'chore': {'label': 'Chore', 'states': ['open', 'done'],
+        'initial_state': 'open', 'terminal_states': ['done'],
+        'transitions': {'open': ['done'], 'done': []},
+        'required_fields': ['title'], 'optional_fields': ['description']}}}
+    declared = request(p, 'docket/panel/declare_schema', 1,
+        {'panel_secret': 'a' * 64, 'schema': schema, 'version': 'event-fixture'})
+    assert 'result' in declared, 'schema declaration'
+    def call(name, arguments, success=True):
+        reply = request(p, 'tools/call', name, {'name': name, 'arguments': arguments})
+        assert bool(reply['result'].get('isError')) != success, 'tool outcome'
+        return json.loads(reply['result']['content'][0]['text']) if success else {}
+    call('docket_project_add', {'path': str(base / 'events.dct'), 'create': True})
+    opening = call('docket_project_list', {})['projects'][0]
+    assert not p.events, 'nonmutation notification'
+    route = {'project': opening['name'].upper()}
+    created = call('docket_create', dict(route, type='chore', title='event fixture',
+        description='private-description-sentinel'))
+    ident = created['id']
+    call('docket_transition', dict(route, id=ident, to='done'))
+    call('docket_update', dict(route, id=ident, description='private-update-sentinel'))
+    call('docket_comment', dict(route, item_id=ident, action='add', text='private-comment-sentinel'))
+    assert len(p.events) == 4, 'exactly one event per mutation'
+    stream = p.events[0]['params']['payload']['stream']
+    assert isinstance(stream, str) and stream, 'stream identity'
+    kinds = ('created', 'transitioned', 'updated', 'comment_added')
+    for sequence, (frame, kind) in enumerate(zip(p.events, kinds), 1):
+        assert set(frame) == {'jsonrpc', 'method', 'params'}, 'notification envelope'
+        assert frame['params']['event'] == 'item_changed', 'event route'
+        event = frame['params']['payload']
+        assert event['id'] == ident and event['baseline']['kind'] == kind, 'baseline identity'
+        assert event['stream'] == stream and event['sequence'] == sequence, 'continuous stream'
+        assert event['project'] == opening['name'], 'live project selector'
+        assert event['project_path'] == opening['path'], 'project path'
+        assert event['open_generation'] == opening['open_generation'], 'opening identity'
+        assert set(event) == {'project', 'project_path', 'open_generation', 'id',
+            'event', 'title', 'baseline', 'stream', 'sequence'}, 'metadata allowlist'
+    assert p.events[0]['params']['payload']['baseline'] == {'kind': 'created', 'item_type': 'chore'}
+    assert p.events[1]['params']['payload']['baseline'] == {
+        'kind': 'transitioned', 'from_status': 'open', 'to_status': 'done'}
+    assert 'private-' not in json.dumps(p.events), 'private values in notifications'
+    call('docket_update', dict(route, id=ident, description='private-update-sentinel'))
+    assert len(p.events) == 5, 'successful no-op still has baseline'
+    call('docket_transition', dict(route, id=ident, to='not-a-state'), False)
+    call('docket_get', dict(route, id=ident))
+    call('docket_comment', dict(route, item_id=ident, action='list'))
+    assert len(p.events) == 5, 'refused mutation or reads emitted event'
+    # A no-id mutation still publishes its event, but not a request reply.
+    send(p, {'jsonrpc': '2.0', 'method': 'tools/call', 'params': {
+        'name': 'docket_update', 'arguments': dict(route, id=ident, title='no-id mutation')}})
+    assert receive(p)['params']['payload']['sequence'] == 6, 'no-id mutation notification'
+    assert request(p, 'ping', 99)['result'] == {}, 'no-id mutation emitted reply'
+    finish(p)
+    q = launch('events-restarted', ['--host-authority'])
+    assert 'result' in request(q, 'docket/panel/declare_schema', 1,
+        {'panel_secret': 'a' * 64, 'schema': schema, 'version': 'event-fixture'})
+    reply = request(q, 'tools/call', 2, {'name': 'docket_project_add',
+        'arguments': {'path': str(base / 'events.dct')}})
+    assert not reply['result'].get('isError'), 'reopen project'
+    reply = request(q, 'tools/call', 3, {'name': 'docket_update',
+        'arguments': {'id': ident, 'title': 'restarted'}})
+    assert not reply['result'].get('isError'), 'restarted mutation'
+    fresh = q.events[0]['params']['payload']
+    assert fresh['stream'] != stream and fresh['sequence'] == 1, 'fresh process stream'
+    finish(q)
+    print('HOSTED MUTATION EVENTS PASS')
+"""
+
+
+func test_hosted_mutation_events() -> Variant:
+	var driver := DRIVER.replace("\r\n", "\n")
+	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
+	# Hosted children declare their schema before opening any project.
+	helpers = helpers.replace("['--state-dir', str(base / (name + '-state')), '--file', str(base / (name + '.dct'))]", "['--state-dir', str(base / (name + '-state'))]")
+	var cleanup := driver.substr(driver.find("\nexcept BaseException:\n    diagnose()"))
+	var python := "python" if OS.get_name() == "Windows" else "python3"
+	var output: Array = []
+	var code := OS.execute(python, PackedStringArray(["-c", helpers + HOSTED_DRIVER + cleanup,
+		OS.get_executable_path(), ProjectSettings.globalize_path("res://")]), output, true)
+	var report := "\n".join(PackedStringArray(output))
+	print(report)
+	return true if code == 0 and report.contains("HOSTED MUTATION EVENTS PASS") else "Hosted mutation oracle failed (exit %d)" % code
 
 
 func test_real_child_stdio() -> Variant:

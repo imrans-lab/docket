@@ -109,6 +109,8 @@ func _ready() -> void:
 
 	if stdio:
 		_stdio = DocketStdioTransport.new()
+		if host_authority != null:
+			_registry.hosted_item_changed.connect(_stdio.publish_item_changed)
 		Engine.print_to_stdout = true
 		if _stdio.start() != OK:
 			printerr("Docket: could not start stdin reader")

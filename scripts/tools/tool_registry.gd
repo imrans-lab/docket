@@ -11,6 +11,7 @@ var _tools: Dictionary = {}
 var add_project_fn: Callable  # func(path: String) -> Dictionary
 var remove_project_fn: Callable  # func(name: String) -> Dictionary
 var gui_open_fn: Callable  # func(request: Dictionary) -> Dictionary
+signal hosted_item_changed(payload: Dictionary)
 
 
 func _build_tools() -> Dictionary:
@@ -162,6 +163,7 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		_log_error(name, arguments, ierr)
 		return ierr
 	# These tools need access to all project DBs for cross-project operations
+	var baseline := _hosted_baseline(name, arguments)
 	var result: Dictionary
 	if name in ["docket_move", "docket_mirror", "docket_link", "docket_promote", "docket_subscribe", "docket_changes_since", "docket_unsubscribe", "docket_ack", "docket_subscription_status", "docket_receive", "docket_respond"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs)
@@ -180,7 +182,38 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		result = _tools[name].execute(arguments, _schema, db)
 	if result.has("error"):
 		_log_error(name, arguments, result)
+	elif not baseline.is_empty():
+		_publish_hosted_change(arguments, result, baseline)
 	return result
+
+
+func _hosted_baseline(name: String, arguments: Dictionary) -> Dictionary:
+	# Only the hosted stdio transport subscribes. Ordinary HTTP/GUI stays silent.
+	if not hosted_item_changed.has_connections(): return {}
+	match name:
+		"docket_create": return {"kind": "created"}
+		"docket_update": return {"kind": "updated"}
+		"docket_comment":
+			return {"kind": "comment_added"} if arguments.get("action") == "add" else {}
+		"docket_transition":
+			var db := _resolve_db(arguments)
+			return {"kind": "transitioned", "from_status": str(db.get_item(str(arguments.get("id", ""))).get("status", ""))}
+	return {}
+
+
+func _publish_hosted_change(arguments: Dictionary, result: Dictionary, baseline: Dictionary) -> void:
+	var db := _resolve_db(arguments)
+	var id := str(result.get("item_id", "")) if baseline.kind == "comment_added" else str(result.get("id", ""))
+	var item := db.get_item(id)
+	if baseline.kind == "created": baseline["item_type"] = str(item.get("type", ""))
+	if baseline.kind == "transitioned": baseline["to_status"] = str(item.get("status", ""))
+	# Use the live selector, including case-folded/default routing, not caller text.
+	var selector := str(_project_dbs.find_key(db))
+	var opening := ProjectOpenings.descriptor(selector, db, _db)
+	# Explicit metadata allowlist: no request arguments, values, or comment text.
+	hosted_item_changed.emit({"project": selector, "project_path": opening.path,
+		"open_generation": opening.open_generation, "id": id, "event": baseline.kind,
+		"title": str(item.get("title", "")), "baseline": baseline})
 
 
 func enforce_memory_lease() -> Array[Dictionary]:
