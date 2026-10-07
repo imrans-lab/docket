@@ -393,11 +393,11 @@ static func _insert_meta(db: DocketDB, meta: Dictionary) -> void:
 
 	# vault_salt and vault_verify are stored directly as base64 strings
 	var vault_salt: String = str(meta.get("vault_salt", ""))
-	if not vault_salt.is_empty():
+	if meta.has("vault_salt"):
 		db.set_meta_value("vault_salt", vault_salt)
 
 	var vault_verify: String = str(meta.get("vault_verify", ""))
-	if not vault_verify.is_empty():
+	if meta.has("vault_verify"):
 		db.set_meta_value("vault_verify", vault_verify)
 
 	# Preserve any extra fields that the parser may have forwarded. JSON numbers

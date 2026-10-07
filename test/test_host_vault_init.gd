@@ -8,6 +8,8 @@ try:
     p = open_host('created')
     path = base/'created.dct'
     call(p, 'docket_project_add', dict(path=str(path), create=True))
+    # The public project API deliberately refuses closing the last opening.
+    call(p, 'docket_project_add', dict(path=str(base/'keeper.dct'), create=True))
     call(p, 'docket_flush', {})
     before = path.read_bytes()
     absent = bind(p, path)
@@ -55,8 +57,8 @@ try:
     assert unlock(p, fresh, passwords[0], 'vault_unlock')['result']['unlocked'], 'rebuilt vault unlock'
     assert call(p, 'docket_secret_get', dict(project='created', handle='entry'))['value'] == values[0], 'rebuilt ciphertext'
     # Partial metadata and future read-only formats must not be overwritten.
-    for index, extra in enumerate(({'vault_salt':''}, {'vault_verify':'broken'}, {'vault_hint':'orphan'},
-                                    {'vault_kdf_iterations':600000}, {'version':'3.0.0'})):
+    for index, extra in enumerate(({'vault_salt':''}, {'vault_verify':''}, {'vault_verify':'broken'}, {'vault_hint':'orphan'},
+                                    {'vault_kdf_iterations':600000}, {'vault_kdf_iterations':''}, {'version':'3.0.0'})):
         malformed = base/('refused-%d.dct'%index)
         malformed.write_text(json.dumps(dict(dict(_type='meta', version='2.0.0', counter=0, id_prefix='R', project='refused-%d'%index), **extra)) + chr(10))
         original = malformed.read_bytes()
@@ -64,6 +66,12 @@ try:
         assert 'error' in private(p, 'vault_challenge', dict(path=str(malformed))), 'incomplete or read-only challenge'
         assert 'error' in create(dict(good, path=str(malformed))), 'incomplete or read-only init'
         assert malformed.read_bytes() == original, 'incomplete vault changed'
+        if 'version' not in extra:
+            call(p, 'docket_project_meta', dict(project='refused-%d'%index, action='set', stage='experiment'))
+            call(p, 'docket_flush', {})
+            persisted = json.loads(malformed.read_text().splitlines()[0])
+            assert all(persisted[k] == v for k,v in extra.items()), 'partial metadata lost during ordinary write'
+            assert 'error' in private(p, 'vault_challenge', dict(path=str(malformed))), 'ordinary write made partial vault absent'
     if sys.platform.startswith('linux'):
         proc = pathlib.Path('/proc')/str(p.pid)
         seen.extend((proc/'cmdline').read_bytes() + (proc/'environ').read_bytes())

@@ -264,8 +264,9 @@ static func _parse_meta(d: Dictionary) -> Dictionary:
 	out["id_prefix"] = _str_field(d, "id_prefix", "")
 	# Optional fields
 	_copy_str_opt(d, out, "project")
-	_copy_str_opt(d, out, "vault_salt")
-	_copy_str_opt(d, out, "vault_verify")
+	# Presence matters: empty/invalid vault metadata must never become absent.
+	for key in ["vault_salt", "vault_verify"]:
+		if d.has(key): out[key] = str(d[key])
 	# Preserve any extra fields for extensibility (ignore _type itself)
 	for key in d:
 		if key == "_type":

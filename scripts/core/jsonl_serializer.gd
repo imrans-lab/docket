@@ -146,12 +146,13 @@ static func serialize_meta(db: DocketDB) -> String:
 	if not project.is_empty():
 		d["project"] = project
 
+	var metadata := db.get_all_meta()
 	var vault_salt := db.get_meta_value("vault_salt", "")
-	if not vault_salt.is_empty():
+	if metadata.has("vault_salt"):
 		d["vault_salt"] = vault_salt
 
 	var vault_verify := db.get_meta_value("vault_verify", "")
-	if not vault_verify.is_empty():
+	if metadata.has("vault_verify"):
 		d["vault_verify"] = vault_verify
 
 	# MUST be serialized. This records the PBKDF2 cost the vault's keys were
@@ -170,14 +171,14 @@ static func serialize_meta(db: DocketDB) -> String:
 	# fields (stage, hypothesis, success_criteria, promoted_to) on every rebuild.
 	# Sorted for deterministic output, after the named keys above.
 	var extras: Array = []
-	for key in db.get_all_meta():
+	for key in metadata:
 		if key in _EPHEMERAL_META_KEYS or d.has(key):
 			continue
 		extras.append(key)
 	extras.sort()
 	for key in extras:
 		var val: String = db.get_meta_value(key, "")
-		if val.is_empty():
+		if val.is_empty() and not str(key).begins_with("vault_"):
 			continue
 		# Integer-valued keys round-trip as numbers rather than quoted strings.
 		if val.is_valid_int():
