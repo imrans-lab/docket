@@ -80,7 +80,7 @@ try:
     old_token = token
     token = secrets.token_hex(32)
     paths = [path]
-    q = open_host('created')
+    q = open_host('created', token)
     assert private(q, 'vault_init', good, old_token)['error']['code'] == -32001, 'restart accepted old token'
     locked(q, 'created')
     restart = bind(q, path)
