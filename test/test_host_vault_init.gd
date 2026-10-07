@@ -117,9 +117,10 @@ finally:
 
 func test_real_child_creation_reopen_restart_privacy() -> Variant:
 	var anchor := "\ntry:\n    # Producer and consumer"
-	if Fixture.DRIVER.count(anchor) != 1: return "Vault helper slice marker missing"
+	var helpers := Fixture.DRIVER.replace("\r\n", "\n")
+	if helpers.count(anchor) != 1: return "Vault helper slice marker missing"
 	var fixture := Fixture.new()
-	var result: Variant = fixture.run_actual_child(Fixture.DRIVER.get_slice(anchor, 0) + DRIVER)
+	var result: Variant = fixture.run_actual_child(helpers.get_slice(anchor, 0) + DRIVER.replace("\r\n", "\n"))
 	fixture.free()
 	return result
 
