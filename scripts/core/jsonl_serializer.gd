@@ -161,6 +161,9 @@ static func serialize_meta(db: DocketDB) -> String:
 	var vault_iters := db.get_meta_value("vault_kdf_iterations", "")
 	if not vault_iters.is_empty():
 		d["vault_kdf_iterations"] = int(vault_iters)
+	# A plain hint is text, including numeric-looking hints such as "00123".
+	var vault_hint := db.get_meta_value("vault_hint", "")
+	if not vault_hint.is_empty(): d["vault_hint"] = vault_hint
 
 	# Everything else in docket_meta, so nothing is silently confined to the
 	# cache. Serializing only a hardcoded list is what lost the project lifecycle

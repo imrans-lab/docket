@@ -1440,6 +1440,39 @@ func init_vault(key: PackedByteArray, salt: PackedByteArray, iterations: int = V
 	set_meta_value("vault_kdf_iterations", str(iterations))
 
 
+func vault_creation_refusal() -> String:
+	## Partial metadata and orphan ciphertext are not a new vault.
+	for name in get_all_meta():
+		if str(name).begins_with("vault_"): return "Vault already exists or is incomplete"
+	if not _exec_select("SELECT 1 FROM docket_secrets LIMIT 1;").is_empty() or not _exec_select("SELECT 1 FROM docket_secret_versions LIMIT 1;").is_empty():
+		return "Vault already exists or is incomplete"
+	return _last_sql_error
+
+
+func init_vault_if_absent_checked(key: PackedByteArray, salt: PackedByteArray, hint: String = "") -> String:
+	if not is_open() or not get_write_block_reason().is_empty(): return "Vault creation refused"
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN IMMEDIATE TRANSACTION;")
+	if not error.is_empty(): return error
+	error = vault_creation_refusal()
+	if error.is_empty(): error = _store_new_vault(key, salt, hint)
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty(): _rollback()
+	return error
+
+
+func _store_new_vault(key: PackedByteArray, salt: PackedByteArray, hint: String) -> String:
+	if key.size() != 32 or salt.size() != 16: return "Invalid vault material"
+	var metadata := {"vault_salt":Marshalls.raw_to_base64(salt),
+		"vault_verify":Marshalls.raw_to_base64(VaultCrypto.compute_verify_hash(key)),
+		"vault_kdf_iterations":str(VaultCrypto.PBKDF2_ITERATIONS)}
+	if not hint.is_empty(): metadata["vault_hint"] = hint
+	for name in metadata:
+		var error := _exec_checked("INSERT INTO docket_meta (key, value) VALUES (?, ?);", [name, metadata[name]])
+		if not error.is_empty(): return error
+	return ""
+
+
 func get_vault_iterations() -> int:
 	## PBKDF2 iteration count for this vault.
 	##

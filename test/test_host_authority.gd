@@ -144,6 +144,7 @@ try:
         assert request(p, 'ping', 0)['result'] == {}
         refused(private(p, a), -32601)
         refused(private(p, a, 3, 'docket/panel/bootstrap_project', dict(path=str(base / 'private.dct'), content='YQ==')), -32601)
+        refused(private(p, a, 4, 'docket/panel/vault_init', dict(path=str(base / 'private.dct'), password='synthetic')), -32601)
         assert request(p, 'tools/list', 2)['result']['tools'], 'ordinary stdio registry missing'
         finish(p)
         import socket, urllib.request, urllib.error
@@ -170,6 +171,7 @@ try:
         assert http('tools/list')['result']['tools'], 'ordinary HTTP registry missing'
         refused(http('docket/panel/status', {'panel_secret': a}), -32601)
         refused(http('docket/panel/bootstrap_project', {'panel_secret': a, 'path': str(base / 'private.dct'), 'content': 'YQ=='}), -32601)
+        refused(http('docket/panel/vault_init', {'panel_secret': a, 'path': str(base / 'private.dct'), 'password': 'synthetic'}), -32601)
         refused(http('tools/call', {'name': 'docket/panel/status', 'arguments': {}}), -32602)
         q.terminate()
         q.wait(timeout=10)

@@ -29,7 +29,7 @@ def receive(p, receive_timeout=5):
 
 # Only explicit derivation call sites get the longer receive deadline. All
 # ordinary calls, parameter/descriptor refusals and global bounds stay strict.
-KDF_STAGES = ('producer_primary_write', 'producer_secondary_write', 'vault_unlock',
+KDF_STAGES = ('producer_primary_write', 'producer_secondary_write', 'vault_unlock', 'vault_init',
               'consumer_secondary_write', 'consumer_secondary_current', 'consumer_secondary_archive')
 def kdf_request(p, method, ident, params, stage):
     assert stage in KDF_STAGES, 'KDF timing stage'
@@ -242,7 +242,7 @@ try:
         port = reservation.getsockname()[1]
     args.remove('--stdio')
     q = launch('http', ['--port',str(port)])
-    for method in ('vault_challenge','vault_unlock','vault_lock'):
+    for method in ('vault_challenge','vault_unlock','vault_lock','vault_init'):
         body = json.dumps(dict(jsonrpc='2.0', id=1, method='docket/panel/'+method, params=dict(panel_secret=token))).encode()
         req = urllib.request.Request('http://127.0.0.1:%d/mcp'%port, data=body, headers={'Content-Type':'application/json'})
         deadline = time.monotonic()+HTTP_STARTUP_TIMEOUT_S
@@ -344,7 +344,7 @@ def diagnose():
 	var json_path := "\"(?:[^\"\\\\\\x00-\\x1f]|\\\\(?:[\"\\\\]|u[0-9a-fA-F]{4}))*\""
 	var paths_pattern := RegEx.create_from_string("^HOST_VAULT_PATHS supplied=" + json_path + " served=\\[(?:" + json_path + "(?:, " + json_path + "){0,2})?\\]$")
 	# Forward only fixed stages, numeric durations and verified fixture paths.
-	var timing_pattern := RegEx.create_from_string("^HOST_VAULT_KDF_TIMING stage=(producer_primary_write|producer_secondary_write|vault_unlock|consumer_secondary_write|consumer_secondary_current|consumer_secondary_archive) seconds=[0-9]+\\.[0-9]{3}$")
+	var timing_pattern := RegEx.create_from_string("^HOST_VAULT_KDF_TIMING stage=(producer_primary_write|producer_secondary_write|vault_unlock|vault_init|consumer_secondary_write|consumer_secondary_current|consumer_secondary_archive) seconds=[0-9]+\\.[0-9]{3}$")
 	for line in report.split("\n"):
 		var timing_line := line.trim_suffix("\r")
 		if timing_pattern.search(timing_line): print(timing_line)

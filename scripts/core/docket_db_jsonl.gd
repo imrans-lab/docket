@@ -1238,6 +1238,16 @@ func init_vault_checked(key: PackedByteArray, salt: PackedByteArray, iterations:
 	return _complete_canonical_mutation()
 
 
+func init_vault_if_absent_checked(key: PackedByteArray, salt: PackedByteArray, hint: String = "") -> String:
+	# Recheck absence after freshness and the cache write lock, before staging
+	# any metadata. The existing journal acknowledges all fields together.
+	var error := _begin_canonical_mutation(true)
+	if not error.is_empty(): return error
+	error = vault_creation_refusal()
+	if not error.is_empty(): return _refuse_canonical_mutation(error)
+	return _complete_canonical_mutation(_store_new_vault(key, salt, hint))
+
+
 func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
 	set_secret_checked(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
 

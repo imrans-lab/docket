@@ -58,7 +58,7 @@ func handle(method: String, params: Variant) -> Dictionary:
 			return _error(-32602, "Bootstrap content must be UTF-8")
 		if not bootstrap_project.is_valid(): return _error(-32603, "Bootstrap unavailable")
 		return bootstrap_project.call(ProjectOpenings.normalized_path(path), shipment)
-	if method in [PREFIX + "vault_challenge", PREFIX + "vault_unlock", PREFIX + "vault_lock"]:
+	if method in [PREFIX + "vault_challenge", PREFIX + "vault_unlock", PREFIX + "vault_lock", PREFIX + "vault_init"]:
 		var db: DocketDB = resolve_vault.call(params.get("path")) if resolve_vault.is_valid() else null
 		if db == null: return _error(-32602, "Vault request refused")
 		return VaultKeySession.handle(method.trim_prefix(PREFIX), params, db)
