@@ -1119,7 +1119,7 @@ func _set_field_pair_visible(label: Label, edit: Control, vis: bool) -> void:
 	edit.visible = vis
 
 
-func _update_field_visibility(type_name: String) -> void:
+func _update_field_visibility(type_name: String, definition: Dictionary = {}) -> void:
 	_hide_all_optional_fields()
 	if type_name == "encrypted_note":
 		_encrypted_notes_label.text = "Encrypted Body"
@@ -1129,6 +1129,16 @@ func _update_field_visibility(type_name: String) -> void:
 		return
 	if type_name != "secret":
 		_encrypted_notes_label.text = "Encrypted Notes"
+		if definition.is_empty():
+			var registry := _state.get_type_registry(_current_project)
+			if registry != null:
+				definition = registry.get_type(type_name).get("definition", {})
+		# Builtins use the legacy controls; custom definitions own their dynamic editors.
+		if bool(definition.get("protected", false)):
+			for descriptor: Dictionary in definition.get("fields", []):
+				for entry in _field_map:
+					if str(descriptor.key) == str(entry[0]):
+						_set_field_pair_visible(entry[1], entry[2], true)
 		return
 	if not _state.schema.types.has(type_name):
 		return
@@ -1268,7 +1278,7 @@ func load_item(id: String, project: String = "") -> void:
 	_tags_edit.text = ",".join(tag_strings)
 
 	# Type-adaptive fields
-	_update_field_visibility(type_name)
+	_update_field_visibility(type_name, resolved.definition)
 	_type_option.disabled = true
 	_dynamic_fields.load_definition(resolved.definition, item, true)
 	for entry in _field_map:

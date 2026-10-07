@@ -160,6 +160,9 @@ func test_record_form_values_and_unknown_fields_survive_canonical_reopen() -> Va
 	form.init(state)
 	form.load_draft("review", {"type":"review", "status":"requested", "title":"", "fields":{}}, "form")
 	form._title_edit.text = "Durable values"
+	var visibility = A.is_false(form._resolution_edit.visible, "custom collision uses only the dynamic editor, not the builtin control")
+	if visibility is String:
+		return visibility
 	_set_dynamic_text(form, "revision", "abc")
 	_set_dynamic_text(form, "source", "immutable-origin")
 	_set_dynamic_text(form, "attempts", "3")
@@ -771,6 +774,60 @@ func test_creation_chooser_opens_ordinary_builtin_and_custom_drafts() -> Variant
 	var custom: Dictionary = shell._new_item_list.get_item_metadata(0)
 	shell._create_and_edit_item(str(custom.slug), str(custom.project), false, str(custom.type_id))
 	return A.is_true(shell._record_form._is_draft and shell._record_form._get_type_name(shell._record_form._type_option.selected) == "review", "chooser opens an active custom type through its stable registry identity")
+
+func test_builtin_bodies_remain_visible_and_editable_across_canonical_reopen() -> Variant:
+	var state := _state("bodies")
+	var form := RecordForm.new()
+	add_child(form)
+	form.init(state)
+	var ids: Array[String] = []
+	var cases := [["prompt", "prompt_text", form._prompt_text_edit], ["skill", "steps", form._steps_edit], ["kb", "article", form._article_edit]]
+	for entry in cases:
+		var slug: String = entry[0]
+		var key: String = entry[1]
+		var editor: TextEdit = entry[2]
+		form.load_draft(slug, {"type":slug, "status":"draft", "title":"", "fields":{}}, "bodies")
+		var r = A.is_true(editor.visible, "%s draft exposes its body editor" % slug)
+		if r is String:
+			return r
+		form._title_edit.text = "Body fixture %s" % slug
+		editor.text = "# %s\nOriginal instructions" % slug
+		var save_error = await form._save_changes()
+		if save_error is String and not str(save_error).is_empty():
+			return save_error
+		ids.append(form._current_id)
+		form.load_item(form._current_id, "bodies")
+		r = A.is_true(editor.visible and editor.text == "# %s\nOriginal instructions" % slug, "%s reload displays the saved body" % slug)
+		if r is String:
+			return r
+		editor.text = "# %s\nEdited instructions" % slug
+		save_error = await form._save_changes()
+		if save_error is String and not str(save_error).is_empty():
+			return save_error
+		var stored := state.db.get_item(form._current_id)
+		r = A.eq(stored.get(key), editor.text, "%s edit saves the builtin body" % slug)
+		if r is String:
+			return r
+	var path := state.dct_path
+	state.db.close()
+	JSONLCache.delete_cache_family(path)
+	var reopened := DocketDBJsonl.open_jsonl(path)
+	if reopened == null:
+		return "failed to reopen builtin body fixture"
+	_dbs.append(reopened)
+	remove_child(form)
+	form.free()
+	form = RecordForm.new()
+	add_child(form)
+	form.init(_state_over({"bodies":reopened}))
+	cases = [["prompt", "prompt_text", form._prompt_text_edit], ["skill", "steps", form._steps_edit], ["kb", "article", form._article_edit]]
+	for index in cases.size():
+		form.load_item(ids[index], "bodies")
+		var editor: TextEdit = cases[index][2]
+		var r = A.is_true(editor.visible and editor.text == "# %s\nEdited instructions" % cases[index][0], "canonical reopen preserves the visible %s body" % cases[index][0])
+		if r is String:
+			return r
+	return true
 
 func test_ordinary_builtin_draft_saves_without_creating_or_unlocking_a_vault() -> Variant:
 	var state := _state("fields")
