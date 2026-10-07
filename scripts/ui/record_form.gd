@@ -1133,9 +1133,11 @@ func _update_field_visibility(type_name: String, definition: Dictionary = {}) ->
 			var registry := _state.get_type_registry(_current_project)
 			if registry != null:
 				definition = registry.get_type(type_name).get("definition", {})
-		# Builtins use the legacy controls; custom definitions own their dynamic editors.
+		# Builtin instruction fields use legacy controls; custom types own dynamic editors.
 		if bool(definition.get("protected", false)):
 			for descriptor: Dictionary in definition.get("fields", []):
+				if str(descriptor.key) not in ["prompt_text", "steps", "article", "preconditions", "outcome", "summary", "parameters"]:
+					continue
 				for entry in _field_map:
 					if str(descriptor.key) == str(entry[0]):
 						_set_field_pair_visible(entry[1], entry[2], true)
