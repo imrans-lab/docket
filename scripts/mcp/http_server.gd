@@ -184,7 +184,12 @@ func _gui_remove_project(proj_name: String) -> Dictionary:
 
 func _gui_open(request: Dictionary) -> Dictionary:
 	if request.get("focus", false):
-		get_window().grab_focus()
+		var window := get_window()
+		if window.mode == Window.MODE_MINIMIZED:
+			window.mode = window.get_meta("docket_pre_close_mode", Window.MODE_WINDOWED)
+		if window.has_meta("docket_pre_close_mode"):
+			window.remove_meta("docket_pre_close_mode")
+		window.grab_focus()
 		if request.size() == 1:
 			return {"opened": "window", "pid": OS.get_process_id(), "focused": get_window().has_focus()}
 	if request.has("id"):

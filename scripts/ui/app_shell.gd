@@ -122,7 +122,14 @@ func _save_projects() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		_request_quit()
+		# The host owns the MCP child's lifetime; X minimizes its root window.
+		if DocketRuntimeState.hosted:
+			var window := get_window()
+			if window.mode != Window.MODE_MINIMIZED:
+				window.set_meta("docket_pre_close_mode", window.mode)
+			window.mode = Window.MODE_MINIMIZED
+		else:
+			_request_quit()
 
 
 func _request_quit() -> void:

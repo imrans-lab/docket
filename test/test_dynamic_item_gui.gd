@@ -1026,3 +1026,58 @@ func test_comment_composer_keeps_failed_top_level_and_reply_text_and_clears_succ
 		if not form._comment_input.text.is_empty(): return "successful composer did not clear text"
 	var comments: Array = state.db.list_comments(str(created.id))
 	return A.is_true(comments.size() == 3 and comments.back().parent_id == first.id, "successful top-level and threaded comments retain existing behavior")
+
+
+func test_hosted_close_and_focus_keep_the_window_and_database_alive() -> Variant:
+	var headless := DisplayServer.get_name() == "headless"
+	var state := _state("HostedWindow")
+	var shell := AppShell.new()
+	shell.init(state)
+	add_child(shell)
+	var server := DocketHttpServer.new()
+	server.port = 0
+	server.external_state = state
+	add_child(server)
+	var window := shell.get_window()
+	var original_mode := window.mode
+	var was_hosted := DocketRuntimeState.hosted
+	DocketRuntimeState.hosted = true
+	var failure := ""
+	if headless:
+		shell.notification(NOTIFICATION_WM_CLOSE_REQUEST)
+		if not state.db.is_open() or (original_mode != Window.MODE_MINIMIZED \
+				and window.get_meta("docket_pre_close_mode", -1) != original_mode):
+			failure = "headless hosted close must retain its database and remember the requested mode"
+		var reply: Dictionary = server._gui_open({"focus": true})
+		if reply.get("pid") != OS.get_process_id() or window.has_meta("docket_pre_close_mode"):
+			failure = "headless focus must retain the process and clear remembered mode"
+		print("Hosted close state checked headlessly; native minimize/restore requires graphical WM.")
+	var modes: Array = [] if headless else [Window.MODE_WINDOWED, Window.MODE_MAXIMIZED]
+	for mode: Window.Mode in modes:
+		window.mode = mode
+		await get_tree().create_timer(0.2).timeout
+		shell.notification(NOTIFICATION_WM_CLOSE_REQUEST)
+		await get_tree().create_timer(0.2).timeout
+		if window.mode != Window.MODE_MINIMIZED or not state.db.is_open():
+			failure = "hosted close must minimize the root window and retain its open database"
+			break
+		var reply: Dictionary = server._gui_open({"focus": true})
+		await get_tree().create_timer(0.2).timeout
+		if window.mode != mode or reply.get("pid") != OS.get_process_id():
+			failure = "focus must restore the same live root window's pre-close mode"
+			break
+	if failure.is_empty() and not headless:
+		window.mode = Window.MODE_MINIMIZED
+		await get_tree().create_timer(0.2).timeout
+		if window.mode != Window.MODE_MINIMIZED:
+			failure = "native minimize oracle requires a window manager"
+		else:
+			server._gui_open({"focus": true})
+			await get_tree().create_timer(0.2).timeout
+			if window.mode == Window.MODE_MINIMIZED or not window.visible:
+				failure = "focus must restore a minimized hosted window"
+	DocketRuntimeState.hosted = was_hosted
+	if window.has_meta("docket_pre_close_mode"):
+		window.remove_meta("docket_pre_close_mode")
+	window.mode = original_mode
+	return true if failure.is_empty() else failure
