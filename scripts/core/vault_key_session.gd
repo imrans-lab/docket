@@ -55,7 +55,7 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 	## Public project-scoped controls reuse the private crypto contract, but a
 	## refused public request preserves an existing, still-valid session.
 	var requested: Variant = args.get("action")
-	if not requested is String or requested not in ["status", "init", "unlock", "lock", "change_password", "set_hint"]:
+	if not requested is String or requested not in ["status", "init", "unlock", "lock", "forget", "change_password", "set_hint"]:
 		return {"error":"Vault action refused"}
 	var action: String = requested
 	var allowed: Array[String] = ["action", "project"]
@@ -103,7 +103,8 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 	if action in ["init", "unlock"]: fields["password"] = args.get("password")
 	if action == "init" and args.has("hint"): fields["hint"] = args.hint
 	var previous: Dictionary = _entries.get(db.get_instance_id(), {}).duplicate(true)
-	var reply := handle("vault_" + action, fields, db)
+	# Forget retains all vault data; its authority effect is the existing lock.
+	var reply := handle("vault_lock" if action == "forget" else "vault_" + action, fields, db)
 	if reply.has("error"):
 		if not previous.is_empty() and previous.get("descriptor") == descriptor(db):
 			_entries[db.get_instance_id()] = previous

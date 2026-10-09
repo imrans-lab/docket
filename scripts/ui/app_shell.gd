@@ -580,6 +580,11 @@ func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 	## changed_on_disk is the grid's file/sidecar handoff: it bypasses the token
 	## gate so stale cache rows are reloaded before the grid queries again.
 	_state.settle_projects()
+	_record_form.refresh_vault_authority()
+	if _prefs_dialog.visible:
+		var vault_db := _state.get_db_for_project(_selected_vault_project())
+		if vault_db != null:
+			_set_project_vault_status(vault_db, VaultKeySession.control({"action":"status"}, vault_db))
 	# A debounce settle this tick started reads its slices on every frame.
 	for pdb in _state.get_project_dbs().values():
 		if pdb is DocketDBJsonl and (pdb as DocketDBJsonl).is_settling(): set_process(true)
@@ -1256,6 +1261,7 @@ func _build_project_vault_controls(parent: VBoxContainer) -> void:
 	_project_vault_button(session_row, "init", "Initialize", "ProjectVaultInitialize")
 	_project_vault_button(session_row, "unlock", "Unlock", "ProjectVaultUnlock")
 	_project_vault_button(session_row, "lock", "Lock", "ProjectVaultLock")
+	_project_vault_button(session_row, "forget", "Forget key", "ProjectVaultForget")
 	var edit_row := HBoxContainer.new()
 	parent.add_child(edit_row)
 	_project_vault_button(edit_row, "change_password", "Change password", "ProjectVaultChangePassword")
@@ -1299,6 +1305,13 @@ func _refresh_project_vault() -> void:
 		return
 	_project_vault_binding = {"open_generation":status.open_generation, "fingerprint":status.fingerprint}
 	_project_vault_hint.text = status.hint
+	_set_project_vault_status(db, status)
+
+
+func _set_project_vault_status(db: DocketDB, status: Dictionary) -> void:
+	if status.has("error"):
+		_project_vault_status.text = "Vault opening unavailable."
+		return
 	if not status.initialized: _project_vault_status.text = "Not initialized"
 	elif not VaultKeySession.uses_session(db, DocketRuntimeState.hosted): _project_vault_status.text = "Uses saved password settings"
 	else: _project_vault_status.text = "Unlocked" if status.unlocked else "Locked"
@@ -1318,7 +1331,9 @@ func _on_project_vault_action(action: String) -> void:
 	var result := VaultKeySession.control(args, db)
 	_refresh_project_vault()
 	if result.has("error"): _project_vault_status.text = str(result.error)
-	else: _state.data_changed.emit()
+	else:
+		_record_form.refresh_vault_authority()
+		_state.data_changed.emit()
 
 
 func _on_prefs_confirmed() -> void:

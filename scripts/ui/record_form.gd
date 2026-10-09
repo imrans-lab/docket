@@ -1203,6 +1203,31 @@ func get_current_id() -> String:
 func get_current_project() -> String:
 	return _current_project
 
+func refresh_vault_authority() -> void:
+	## Revoke displayed plaintext independently of canonical file changes.
+	if _current_id.is_empty(): return
+	var db := _state.get_db_for_project(_current_project)
+	if db != null and db.is_open() and (not VaultKeySession.uses_session(db, DocketRuntimeState.hosted) or not VaultKeySession.key_for(db).is_empty()): return
+	_form_generation += 1
+	_secret_value_decrypted = ""
+	_encrypted_notes_decrypted = ""
+	_secret_value_edit.clear()
+	_encrypted_notes_edit.clear()
+	_secret_show_btn.button_pressed = false
+	_secret_show_btn.text = "Show"
+	_secret_value_edit.secret = true
+	_encrypted_notes_show_btn.button_pressed = false
+	_encrypted_notes_show_btn.text = "Show"
+	for row: Node in _secret_history_container.get_children():
+		for widget: Node in row.get_children():
+			if widget is Button and widget.name == "SecretHistoryShow": widget.text = "Show"
+	_secret_2fa_input.clear()
+	if _secret_2fa_dialog.visible:
+		_secret_2fa_dialog.hide()
+		_secret_2fa_dialog.canceled.emit()
+	if _secret_value_container.visible or _encrypted_notes_edit.visible:
+		_show_vault_error("Vault is locked or unavailable. Unlock this opening through its vault controls.")
+
 func attach_to_current(filename: String, data: PackedByteArray, mime: String = "application/octet-stream", description: String = "") -> Dictionary:
 	if _current_id.is_empty() or _current_project.is_empty():
 		return {"error":"no project-scoped item is open"}
@@ -2186,6 +2211,7 @@ func _populate_secret_history(item_db: DocketDB) -> void:
 			row.add_child(by_label)
 
 		var show_btn := Button.new()
+		show_btn.name = "SecretHistoryShow"
 		show_btn.text = "Show"
 		show_btn.add_theme_font_size_override("font_size", 11)
 		show_btn.pressed.connect(_on_history_show.bind(ver, show_btn))
@@ -2460,6 +2486,7 @@ func _wait_for_2fa_dialog() -> Array:
 
 
 func _on_secret_show_toggle() -> void:
+	refresh_vault_authority()
 	if _secret_show_btn.button_pressed:
 		if not _secret_value_decrypted.is_empty():
 			_secret_value_edit.text = _secret_value_decrypted
@@ -2473,6 +2500,7 @@ func _on_secret_show_toggle() -> void:
 
 
 func _on_secret_copy() -> void:
+	refresh_vault_authority()
 	if not _secret_value_decrypted.is_empty():
 		DisplayServer.clipboard_set(_secret_value_decrypted)
 	elif not _secret_value_edit.text.is_empty() and _secret_value_edit.text != "********":
@@ -2495,6 +2523,7 @@ func _on_secret_generate() -> void:
 
 
 func _on_encrypted_notes_show_toggle() -> void:
+	refresh_vault_authority()
 	if _encrypted_notes_show_btn.button_pressed:
 		if not _encrypted_notes_decrypted.is_empty():
 			_encrypted_notes_edit.text = _encrypted_notes_decrypted
@@ -2506,6 +2535,7 @@ func _on_encrypted_notes_show_toggle() -> void:
 
 
 func _on_encrypted_notes_copy() -> void:
+	refresh_vault_authority()
 	if not _encrypted_notes_decrypted.is_empty():
 		DisplayServer.clipboard_set(_encrypted_notes_decrypted)
 

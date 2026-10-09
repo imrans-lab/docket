@@ -451,6 +451,8 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 	_public_tool(mcp, "docket_secret_set", {"project":"fixture", "handle":"history", "value":"current ordinary value"})
 	var promoted := _public_tool(mcp, "docket_secret_promote", {"project":"fixture", "handle":"history", "title":"Protected history fixture"})
 	if not promoted.has("id"): return "GUI historical fixture promotion failed"
+	var notes := VaultCrypto.encrypt(value, key)
+	_db.set_secret(promoted.id + ":notes", notes.ciphertext, notes.iv, notes.mac, false, promoted.id)
 	_db.flush()
 	var state := AppState.new()
 	state.schema = TypeRegistryBootstrap.effective_schema()
@@ -497,6 +499,50 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 				break
 		if not clipboard_available: print("C1A_GUI_CLIPBOARD_UNAVAILABLE")
 		DisplayServer.clipboard_set("")
+	if failure.is_empty():
+		form._secret_show_btn.button_pressed = true
+		form._secret_show_btn.pressed.emit()
+		form._encrypted_notes_show_btn.button_pressed = true
+		form._encrypted_notes_show_btn.pressed.emit()
+		var before := FileAccess.get_file_as_bytes(_path)
+		var forget := shell.find_child("ProjectVaultForget", true, false) as Button
+		if forget == null:
+			failure = "GUI Forget control missing"
+		else:
+			forget.pressed.emit()
+			if not _form_vault_is_cleared(form) or show.text != "Show" or not db.has_item(promoted.id) or FileAccess.get_file_as_bytes(_path) != before:
+				failure = "GUI Forget did not clear presentation and preserve encrypted data"
+			(shell.find_child("ProjectVaultCurrentPassword", true, false) as LineEdit).text = next_password
+			(shell.find_child("ProjectVaultUnlock", true, false) as Button).pressed.emit()
+			form.load_item(promoted.id, db.get_project_name())
+			if form._secret_value_decrypted != "current ordinary value" or form._encrypted_notes_decrypted != value:
+				failure = "GUI unlock did not restore forgotten ciphertext"
+			await get_tree().process_frame
+			var latest_row := form._secret_history_container.get_child(form._secret_history_container.get_child_count() - 1)
+			for widget: Node in latest_row.get_children():
+				if widget is Button and widget.text == "Show": show = widget
+			var observed := {}
+			_answer_history_prompt(form, secondary, true, observed)
+			show.pressed.emit()
+			for _frame in 10: await get_tree().process_frame
+			if show.text != value: failure = "MCP Forget fixture did not display protected history"
+			registry = ToolRegistry.new()
+			registry.init(state.schema, db, {db.get_project_name():db})
+			mcp.init_with_registry(registry)
+			status = _public_tool(mcp, "docket_vault_control", {"action":"status", "project":db.get_project_name()})
+			var args := {"project":db.get_project_name(), "open_generation":status.open_generation, "fingerprint":status.fingerprint, "action":"forget"}
+			var forgotten := _public_tool(mcp, "docket_vault_control", args)
+			shell._poll_timer.timeout.emit()
+			if forgotten.has("error") or forgotten.get("unlocked", true) or not _form_vault_is_cleared(form) or show.text != "Show" or FileAccess.get_file_as_bytes(_path) != before:
+				failure = "MCP Forget did not clear presentation and retain canonical data"
+			args.merge({"action":"unlock", "password":next_password}, true)
+			_public_tool(mcp, "docket_vault_control", args)
+			var restored := _public_tool(mcp, "docket_secret_get", {"project":db.get_project_name(), "handle":promoted.id, "version":1, "secondary_password":secondary})
+			if restored.get("value", "") != value: failure = "MCP unlock did not restore forgotten history"
 	shell.free()
 	db.close()
 	return true if failure.is_empty() else failure
+
+
+func _form_vault_is_cleared(form: RecordForm) -> bool:
+	return form._secret_value_decrypted.is_empty() and form._encrypted_notes_decrypted.is_empty() and form._secret_value_edit.text.is_empty() and form._encrypted_notes_edit.text.is_empty()

@@ -222,6 +222,16 @@ try:
         assert not control('status')['unlocked'], 'wrong password unlocked public session'
         unlocked = control('unlock', locked_state, password=passwords[0])
         assert unlocked['unlocked'], 'public unlock refused correct password'
+        control('forget', dict(unlocked, fingerprint='stale'), failure=True)
+        assert control('status')['unlocked'], 'stale forget changed valid session'
+        forgotten = control('forget', unlocked)
+        assert forgotten['managed'] and forgotten['initialized'] and not forgotten['unlocked'], 'forget did not retain locked vault'
+        locked(p, name)
+        control('forget', forgotten)
+        assert path.read_bytes() == stored, 'forget changed retained canonical data'
+        unlocked = control('unlock', forgotten, password=passwords[0])
+        assert unlocked['unlocked'], 'same password could not restore forgotten vault'
+
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[0], 'public unlock lost secret'
         call(p, 'docket_flush', {})
         assert path.read_bytes() == stored, 'public session control changed ciphertext'
