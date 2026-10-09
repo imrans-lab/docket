@@ -1,16 +1,15 @@
-#!/usr/bin/env python3
 """Real sibling-process discovery oracle, run only in an isolated container/VM."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import BinaryIO
 
 
