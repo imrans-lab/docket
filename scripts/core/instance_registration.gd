@@ -35,7 +35,7 @@ func publish(version: String, protocol_version: String, port: int) -> String:
 			refusal = "record_changed"
 	elif exists:
 		var existing_pid := _read_pid(existing)
-		if existing_pid <= 0 or FileLock.is_pid_running(existing_pid):
+		if existing_pid <= 0 or (existing_pid != _pid and FileLock.is_pid_running(existing_pid)):
 			refusal = "profile_occupied"
 	if refusal.is_empty():
 		var payload := JSON.stringify({"pid":_pid, "version":version, "protocol_version":protocol_version,
@@ -49,7 +49,8 @@ func publish(version: String, protocol_version: String, port: int) -> String:
 		else:
 			refusal = "write_failed"
 			_remove_matching(temporary, payload)
-	_release_lock()
+	if not _release_lock():
+		refusal = "commit_failed"
 	status = "registered" if refusal.is_empty() else refusal
 	return status
 
@@ -62,9 +63,9 @@ func close() -> void:
 		push_warning("Docket instance registration: " + status)
 		return
 	_remove_matching(_path, _published)
-	_release_lock()
+	var committed := _release_lock()
 	_published = ""
-	status = "closed"
+	status = "closed" if committed else "cleanup_commit_failed"
 
 
 func _take_lock() -> bool:
@@ -78,11 +79,13 @@ func _take_lock() -> bool:
 	return false
 
 
-func _release_lock() -> void:
-	if not _lock_db.query("COMMIT;"):
+func _release_lock() -> bool:
+	var committed := _lock_db.query("COMMIT;")
+	if not committed:
 		push_warning("Docket instance registration: lock commit failed")
 	_lock_db.close_db()
 	_lock_db = null
+	return committed
 
 
 static func _read_pid(raw: String) -> int:

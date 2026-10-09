@@ -375,7 +375,7 @@ func _build_ui() -> void:
 	_state.file_changed.connect(_on_file_changed)
 	_state.open_item_requested.connect(func(id: String, project: String): _open_item_entry.call_deferred(id, project))
 	_state.open_query_requested.connect(_on_open_query_from_mcp)
-	_state.new_docket_requested.connect(_on_new_docket_from_mcp)
+	_state.new_docket_fn = _open_new_docket_dialog
 
 	# Preferences dialog
 	_prefs_dialog = ConfirmationDialog.new()
@@ -1061,15 +1061,16 @@ func _unhandled_input(event: InputEvent) -> void:
 
 # -- Add Project / Query file callbacks ------------------------------------
 
-func _on_new_docket_from_mcp() -> void:
-	_open_new_docket_dialog.call_deferred()
-
-
-func _open_new_docket_dialog() -> void:
+func _open_new_docket_dialog(focus_window: Callable) -> Dictionary:
 	if _new_dialog.visible:
 		_new_dialog.grab_focus()
 	else:
+		for child: Node in get_children():
+			if child is Window and child.visible and child.exclusive:
+				return {"error":"Close the current dialog before creating a new Docket"}
+		focus_window.call()
 		_new_dialog.popup_centered(Vector2i(600, 400))
+	return {"opened":"new_docket", "pid":OS.get_process_id()}
 
 
 func _on_open_query_from_mcp(filter: String, label: String) -> void:

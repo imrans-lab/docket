@@ -1087,6 +1087,8 @@ func test_comment_composer_keeps_failed_top_level_and_reply_text_and_clears_succ
 
 func test_hosted_close_and_focus_keep_the_window_and_database_alive() -> Variant:
 	var headless := DisplayServer.get_name() == "headless"
+	var previous_directory := DocketRuntimeState.directory
+	DocketRuntimeState.directory = ProjectSettings.globalize_path(DIR)
 	var state := _state("HostedWindow")
 	var shell := AppShell.new()
 	shell.init(state)
@@ -1137,6 +1139,7 @@ func test_hosted_close_and_focus_keep_the_window_and_database_alive() -> Variant
 	if window.has_meta("docket_pre_close_mode"):
 		window.remove_meta("docket_pre_close_mode")
 	window.mode = original_mode
+	DocketRuntimeState.directory = previous_directory
 	return true if failure.is_empty() else failure
 
 
@@ -1168,3 +1171,28 @@ func test_gui_new_docket_reuses_dialog_and_cancel_creates_nothing() -> Variant:
 	var canceled_cleanly := not original_dialog.visible and DirAccess.get_files_at(DIR) == paths_before and state.get_project_dbs().keys() == projects_before
 	DocketRuntimeState.directory = prior_directory
 	return A.is_true(first.get("opened") == "new_docket" and second.get("opened") == "new_docket" and visible_after_first and single_visible and canceled_cleanly, "one existing New Docket dialog handles repeat requests; cancel creates nothing")
+
+
+func test_gui_new_docket_refuses_while_preferences_open() -> Variant:
+	var previous_directory := DocketRuntimeState.directory
+	DocketRuntimeState.directory = ProjectSettings.globalize_path(DIR)
+	var state := _state("ModalNewDialog")
+	var shell := AppShell.new()
+	shell.init(state)
+	add_child(shell)
+	var server := DocketHttpServer.new()
+	server.port = 0
+	server.external_state = state
+	add_child(server)
+	shell._prefs_dialog.popup_centered()
+	await get_tree().process_frame
+	var reply: Dictionary = server._registry.call_tool("docket_gui_open", {"new_docket":true})
+	var refused: bool = reply.get("error") == "Close the current dialog before creating a new Docket" and shell._prefs_dialog.visible and not shell._new_dialog.visible
+	shell._prefs_dialog.get_cancel_button().pressed.emit()
+	await get_tree().process_frame
+	var retried: Dictionary = server._registry.call_tool("docket_gui_open", {"new_docket":true})
+	var opened: bool = retried.get("opened") == "new_docket" and shell._new_dialog.visible
+	shell._new_dialog.get_cancel_button().pressed.emit()
+	await get_tree().process_frame
+	DocketRuntimeState.directory = previous_directory
+	return A.is_true(refused and opened, "new docket returns a visible refusal during Preferences and opens on retry")
