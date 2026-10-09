@@ -554,6 +554,9 @@ static func _parse_secret_version(d: Dictionary) -> Dictionary:
 	if not _has_required(d, ["handle", "version", "ciphertext", "iv", "mac", "created_at"]):
 		return {}
 	var out := {"_type": "secret_version"}
+	# Older files omitted this flag; retain their existing false default rather
+	# than guessing whether a decrypted value resembles an inner cipher blob.
+	out["requires_2fa"] = bool(d.get("requires_2fa", false))
 	out["handle"] = _str_field(d, "handle", "")
 	out["version"] = _int_field(d, "version", 0)
 	out["created_at"] = _str_field(d, "created_at", "")

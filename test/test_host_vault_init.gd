@@ -181,6 +181,23 @@ try:
         assert path.read_bytes() == before, 'public invalid init changed storage'
         created = control('init', absent, password=passwords[0], hint='portable fixture hint')
         assert created['initialized'] and created['unlocked'], 'public init did not unlock'
+        assert created.get('managed') is True, 'public init did not mark managed'
+        keeper = name+'-keeper'
+        other = call(p, 'docket_vault_control', dict(action='status', project=keeper))
+        other = call(p, 'docket_vault_control', dict(action='init', project=keeper, open_generation=other['open_generation'], fingerprint=other['fingerprint'], password=passwords[0]))
+        call(p, 'docket_secret_set', dict(project=keeper, handle='entry', value=values[0]))
+        call(p, 'docket_vault_control', dict(action='lock', project=keeper, open_generation=created['open_generation'], fingerprint=created['fingerprint']), failure=True)
+        assert call(p, 'docket_secret_get', dict(project=keeper, handle='entry'))['value'] == values[0], 'cross-project binding changed target session'
+        prefs = None
+        if not hosted:
+            # Caller-owned synthetic preference, never the owner's profile.
+            prefs = base/(name+'-state')/'docket_prefs.json'
+            prefs.write_text(json.dumps(dict(vault_password=passwords[0])))
+            legacy = name+'-legacy'
+            call(p, 'docket_project_add', dict(path=str(base/(legacy+'.dct')), create=True))
+            call(p, 'docket_secret_set', dict(project=legacy, handle='entry', value=values[0]))
+            assert not call(p, 'docket_vault_control', dict(action='status', project=legacy))['managed'], 'untouched opening became managed'
+            assert call(p, 'docket_secret_get', dict(project=legacy, handle='entry'))['value'] == values[0], 'legacy saved-password route lost access'
         call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]))
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[0], 'public secret roundtrip'
         call(p, 'docket_flush', {})
@@ -195,6 +212,12 @@ try:
         locked_state = control('lock', created)
         assert not locked_state['unlocked'], 'public lock did not lock'
         locked(p, name)
+        call(p, 'docket_reload', {})
+        reloaded = control('status')
+        assert reloaded['managed'] and not reloaded['unlocked'], 'reload dropped the controlled latch'
+        locked(p, name)
+        if not hosted:
+            assert call(p, 'docket_secret_get', dict(project=legacy, handle='entry'))['value'] == values[0], 'managed lock changed legacy opening'
         control('unlock', locked_state, failure=True, password=passwords[1])
         assert not control('status')['unlocked'], 'wrong password unlocked public session'
         unlocked = control('unlock', locked_state, password=passwords[0])
@@ -203,6 +226,7 @@ try:
         call(p, 'docket_flush', {})
         assert path.read_bytes() == stored, 'public session control changed ciphertext'
         finish(p)
+        if prefs is not None: prefs.unlink()
     assert_private_files()
     print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
 except BaseException as error:

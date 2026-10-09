@@ -33,6 +33,12 @@ var _prefs_first: LineEdit
 var _prefs_last: LineEdit
 var _prefs_vault_pw: LineEdit
 var _prefs_vault_hint: LineEdit
+var _project_vault_project: OptionButton
+var _project_vault_status: Label
+var _project_vault_current: LineEdit
+var _project_vault_new: LineEdit
+var _project_vault_hint: LineEdit
+var _project_vault_binding: Dictionary = {}
 var _new_item_dialog: ConfirmationDialog
 var _new_item_project: OptionButton
 var _new_item_search: LineEdit
@@ -427,6 +433,7 @@ func _build_ui() -> void:
 	hint_note.text = "This hint is NOT encrypted. Keep it vague."
 	hint_note.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 	prefs_vbox.add_child(hint_note)
+	_build_project_vault_controls(prefs_vbox)
 
 	_prefs_dialog.add_child(prefs_vbox)
 	add_child(_prefs_dialog)
@@ -1217,7 +1224,101 @@ func _show_preferences() -> void:
 	_prefs_last.text = _state.prefs.last_name
 	_prefs_vault_pw.text = UserPrefs.load_vault_password()
 	_prefs_vault_hint.text = UserPrefs.load_vault_password_hint()
-	_prefs_dialog.popup_centered(Vector2i(300, 380))
+	_project_vault_project.clear()
+	var projects: Array = _state.get_project_dbs().keys()
+	projects.sort()
+	for project: String in projects:
+		_project_vault_project.add_item(project)
+		var index := _project_vault_project.item_count - 1
+		_project_vault_project.set_item_metadata(index, project)
+		if _state.get_db_for_project(project) == _state.db: _project_vault_project.select(index)
+	_refresh_project_vault()
+	_prefs_dialog.popup_centered(Vector2i(480, 680))
+
+
+func _build_project_vault_controls(parent: VBoxContainer) -> void:
+	parent.add_child(HSeparator.new())
+	var label := Label.new()
+	label.text = "Project vault"
+	parent.add_child(label)
+	_project_vault_project = OptionButton.new()
+	_project_vault_project.name = "ProjectVaultProject"
+	_project_vault_project.item_selected.connect(func(_index: int) -> void: _refresh_project_vault())
+	parent.add_child(_project_vault_project)
+	_project_vault_status = Label.new()
+	_project_vault_status.name = "ProjectVaultStatus"
+	parent.add_child(_project_vault_status)
+	_project_vault_current = _project_vault_editor(parent, "ProjectVaultCurrentPassword", "Current password (or password to initialize)", true)
+	_project_vault_new = _project_vault_editor(parent, "ProjectVaultNewPassword", "New password", true)
+	_project_vault_hint = _project_vault_editor(parent, "ProjectVaultHint", "Portable hint (not encrypted)", false)
+	var session_row := HBoxContainer.new()
+	parent.add_child(session_row)
+	_project_vault_button(session_row, "init", "Initialize", "ProjectVaultInitialize")
+	_project_vault_button(session_row, "unlock", "Unlock", "ProjectVaultUnlock")
+	_project_vault_button(session_row, "lock", "Lock", "ProjectVaultLock")
+	var edit_row := HBoxContainer.new()
+	parent.add_child(edit_row)
+	_project_vault_button(edit_row, "change_password", "Change password", "ProjectVaultChangePassword")
+	_project_vault_button(edit_row, "set_hint", "Save hint", "ProjectVaultSetHint")
+
+
+func _project_vault_editor(parent: VBoxContainer, node_name: String, placeholder: String, secret: bool) -> LineEdit:
+	var editor := LineEdit.new()
+	editor.name = node_name
+	editor.placeholder_text = placeholder
+	editor.secret = secret
+	parent.add_child(editor)
+	return editor
+
+
+func _project_vault_button(parent: HBoxContainer, action: String, label: String, node_name: String) -> void:
+	var button := Button.new()
+	button.name = node_name
+	button.text = label
+	button.pressed.connect(_on_project_vault_action.bind(action))
+	parent.add_child(button)
+
+
+func _selected_vault_project() -> String:
+	var index := _project_vault_project.selected
+	return str(_project_vault_project.get_item_metadata(index)) if index >= 0 else ""
+
+
+func _refresh_project_vault() -> void:
+	_project_vault_binding.clear()
+	_project_vault_current.clear()
+	_project_vault_new.clear()
+	var project := _selected_vault_project()
+	var db := _state.get_db_for_project(project)
+	if db == null:
+		_project_vault_status.text = "Open a project to manage its vault."
+		return
+	var status := VaultKeySession.control({"action":"status", "project":project}, db)
+	if status.has("error"):
+		_project_vault_status.text = "Vault opening unavailable."
+		return
+	_project_vault_binding = {"open_generation":status.open_generation, "fingerprint":status.fingerprint}
+	_project_vault_hint.text = status.hint
+	if not status.initialized: _project_vault_status.text = "Not initialized"
+	elif not VaultKeySession.uses_session(db, DocketRuntimeState.hosted): _project_vault_status.text = "Uses saved password settings"
+	else: _project_vault_status.text = "Unlocked" if status.unlocked else "Locked"
+
+
+func _on_project_vault_action(action: String) -> void:
+	var project := _selected_vault_project()
+	var db := _state.get_db_for_project(project)
+	if db == null or _project_vault_binding.is_empty():
+		_project_vault_status.text = "Vault opening unavailable."
+		return
+	var args := _project_vault_binding.duplicate()
+	args.merge({"action":action, "project":project})
+	if action in ["init", "unlock"]: args["password"] = _project_vault_current.text
+	if action == "change_password": args.merge({"old":_project_vault_current.text, "new":_project_vault_new.text})
+	if action in ["init", "change_password", "set_hint"]: args["hint"] = _project_vault_hint.text
+	var result := VaultKeySession.control(args, db)
+	_refresh_project_vault()
+	if result.has("error"): _project_vault_status.text = str(result.error)
+	else: _state.data_changed.emit()
 
 
 func _on_prefs_confirmed() -> void:
@@ -1249,6 +1350,7 @@ func _reencrypt_vault_secrets(old_password: String, new_password: String) -> voi
 		return
 	for proj_name in _state.get_project_dbs():
 		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
+		if VaultKeySession.uses_session(pdb, DocketRuntimeState.hosted): continue
 		if not pdb.has_vault():
 			continue
 		var old_salt := pdb.get_vault_salt()

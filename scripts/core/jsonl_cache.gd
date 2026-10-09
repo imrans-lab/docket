@@ -624,8 +624,8 @@ static func _insert_secret_versions(db: DocketDB, secret_versions: Array) -> voi
 		var mac: PackedByteArray = sv.get("mac", PackedByteArray())
 		var rotated_by: String = str(sv.get("rotated_by", ""))
 		db._exec_checked(
-			"INSERT INTO docket_secret_versions (handle, version, ciphertext, iv, mac, created_at, rotated_by) VALUES (?, ?, ?, ?, ?, ?, ?);",
-			[handle, version, ciphertext, iv, mac, created_at, rotated_by]
+			"INSERT INTO docket_secret_versions (handle, version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+			[handle, version, ciphertext, iv, mac, created_at, rotated_by, 1 if bool(sv.get("requires_2fa", false)) else 0]
 		)
 
 

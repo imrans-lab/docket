@@ -60,7 +60,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 
 	var salt: PackedByteArray
 	var key: PackedByteArray
-	if DocketRuntimeState.hosted or VaultKeySession.is_managed(db):
+	if VaultKeySession.uses_session(db, DocketRuntimeState.hosted):
 		key = VaultKeySession.key_for(db)
 		if key.is_empty():
 			return {"error":"Vault is locked or unavailable. Unlock this opening through its vault controls."}

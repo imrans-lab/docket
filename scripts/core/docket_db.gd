@@ -1432,6 +1432,12 @@ func has_vault() -> bool:
 	return rows.size() > 0 and not str(rows[0].value).is_empty()
 
 
+func set_meta_value_checked(meta_key: String, val: String) -> String:
+	_last_sql_error = ""
+	set_meta_value(meta_key, val)
+	return _last_sql_error
+
+
 func init_vault(key: PackedByteArray, salt: PackedByteArray, iterations: int = VaultCrypto.PBKDF2_ITERATIONS) -> void:
 	## Store vault salt, verification hash, and the KDF cost this vault uses.
 	## Call once when creating the first secret.
@@ -1458,6 +1464,41 @@ func init_vault_if_absent_checked(key: PackedByteArray, salt: PackedByteArray, h
 	if error.is_empty(): error = _store_new_vault(key, salt, hint)
 	if error.is_empty(): error = _exec_checked("COMMIT;")
 	if not error.is_empty(): _rollback()
+	return error
+
+
+func change_vault_key_checked(old_key: PackedByteArray, new_key: PackedByteArray, expected: Dictionary, hint: Variant = null) -> String:
+	if not is_open() or not get_write_block_reason().is_empty(): return "Vault change refused"
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN IMMEDIATE TRANSACTION;")
+	if not error.is_empty(): return error
+	error = _rewrite_vault_key(old_key, new_key, expected, hint)
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty(): _rollback()
+	return error
+
+
+func _rewrite_vault_key(old_key: PackedByteArray, new_key: PackedByteArray, expected: Dictionary, hint: Variant) -> String:
+	if old_key.size() != 32 or new_key.size() != 32 or VaultKeySession.descriptor(self) != expected or not verify_vault(old_key):
+		return "Vault change refused"
+	# History can outlive its current handle. Read both tables independently;
+	# update only ciphertext, leaving ownership, 2FA and version metadata intact.
+	for table: String in ["docket_secrets", "docket_secret_versions"]:
+		var rows := _exec_select("SELECT * FROM " + table + ";")
+		if not _last_sql_error.is_empty(): return _last_sql_error
+		var rewritten := VaultMutations.reencrypt(rows, old_key, new_key)
+		if rewritten.has("error"): return str(rewritten.error)
+		for row: Dictionary in rewritten.rows:
+			var params: Array = [row.ciphertext, row.iv, row.mac, row.handle]
+			var predicate := "handle=?"
+			if table == "docket_secret_versions":
+				predicate += " AND version=?"
+				params.append(int(row.version))
+			var error := _exec_checked("UPDATE " + table + " SET ciphertext=?,iv=?,mac=? WHERE " + predicate + ";", params)
+			if not error.is_empty(): return error
+	var error := _exec_checked("UPDATE docket_meta SET value=? WHERE key='vault_verify';", [Marshalls.raw_to_base64(VaultCrypto.compute_verify_hash(new_key))])
+	if error.is_empty() and hint != null:
+		error = _exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('vault_hint',?);", [hint])
 	return error
 
 

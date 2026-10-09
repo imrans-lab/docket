@@ -1251,6 +1251,15 @@ func init_vault_if_absent_checked(key: PackedByteArray, salt: PackedByteArray, h
 	return _complete_canonical_mutation(_store_new_vault(key, salt, hint))
 
 
+func change_vault_key_checked(old_key: PackedByteArray, new_key: PackedByteArray, expected: Dictionary, hint: Variant = null) -> String:
+	# One cache transaction and one canonical replacement acknowledge the full
+	# current/history re-encryption together with its verification metadata.
+	var error := _begin_canonical_mutation(true)
+	if not error.is_empty(): return error
+	error = _rewrite_vault_key(old_key, new_key, expected, hint)
+	return _complete_canonical_mutation(error)
+
+
 func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
 	set_secret_checked(handle, ciphertext, iv, mac, requires_2fa, owner_item_id)
 

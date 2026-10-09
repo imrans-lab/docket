@@ -82,7 +82,7 @@ static func row_sets() -> Array:
 		["links", _LINKS_SQL % ""],
 		["attachments", _ATTACHMENTS_SQL % ""],
 		["secrets", "SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"],
-		["secret_versions", "SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;"],
+		["secret_versions", "SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa FROM docket_secret_versions ORDER BY handle ASC, version ASC;"],
 		["saved_queries", "SELECT name, query_json FROM saved_queries ORDER BY name ASC;"],
 	]
 
@@ -411,7 +411,7 @@ static func serialize_secrets(db: DocketDB) -> String:
 	## secret lines sorted by handle ASC, then secret_version lines sorted by (handle, version).
 	return _format_secrets(
 		db._exec_select("SELECT handle, ciphertext, iv, mac, created_at, updated_at, requires_2fa, owner_item_id, extra_json FROM docket_secrets ORDER BY handle ASC;"),
-		db._exec_select("SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by FROM docket_secret_versions ORDER BY handle ASC, version ASC;")
+		db._exec_select("SELECT handle, version, ciphertext, iv, mac, created_at, rotated_by, requires_2fa FROM docket_secret_versions ORDER BY handle ASC, version ASC;")
 	)
 
 
@@ -463,6 +463,8 @@ static func _format_secrets(secret_rows: Array, version_rows: Array) -> String:
 		d["_type"] = "secret_version"
 		d["handle"] = str(row.get("handle", ""))
 		d["version"] = int(row.get("version", 0))
+		if int(row.get("requires_2fa", 0)) == 1:
+			d["requires_2fa"] = true
 
 		d["ciphertext"] = _bytes_to_b64(row.get("ciphertext"))
 		d["iv"] = _bytes_to_b64(row.get("iv"))

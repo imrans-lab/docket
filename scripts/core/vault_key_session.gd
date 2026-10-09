@@ -8,6 +8,9 @@ static var _managed: Dictionary[int, bool] = {}
 static func is_managed(db: DocketDB) -> bool:
 	return _managed.has(db.get_instance_id())
 
+static func uses_session(db: DocketDB, hosted: bool) -> bool:
+	return hosted or is_managed(db)
+
 static func mark_managed(db: DocketDB) -> void:
 	_managed[db.get_instance_id()] = true
 
@@ -52,13 +55,14 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 	## Public project-scoped controls reuse the private crypto contract, but a
 	## refused public request preserves an existing, still-valid session.
 	var requested: Variant = args.get("action")
-	if not requested is String or requested not in ["status", "init", "unlock", "lock"]:
+	if not requested is String or requested not in ["status", "init", "unlock", "lock", "change_password", "set_hint"]:
 		return {"error":"Vault action refused"}
 	var action: String = requested
 	var allowed: Array[String] = ["action", "project"]
 	if action != "status": allowed.append_array(["open_generation", "fingerprint"])
 	if action in ["init", "unlock"]: allowed.append("password")
-	if action == "init": allowed.append("hint")
+	if action in ["init", "change_password", "set_hint"]: allowed.append("hint")
+	if action == "change_password": allowed.append_array(["old", "new"])
 	for field: String in args:
 		if field not in allowed or not args[field] is String:
 			return {"error":"Vault request refused"}
@@ -66,9 +70,34 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 	if current.is_empty(): return {"error":"Vault opening unavailable"}
 	if action == "status":
 		current["unlocked"] = not key_for(db).is_empty()
+		current["managed"] = is_managed(db)
 		return current
 	if args.get("open_generation") != current.open_generation or args.get("fingerprint") != current.fingerprint:
 		return {"error":"Vault binding is stale; read status again"}
+	if action in ["change_password", "set_hint"]:
+		if not current.initialized: return {"error":"Vault is not initialized"}
+		var previous: Dictionary = _entries.get(db.get_instance_id(), {}).duplicate(true)
+		var changed: Dictionary
+		if action == "change_password":
+			if not args.has("old") or not args.has("new"): return {"error":"Both passwords are required"}
+			changed = VaultMutations.change_password(db, args.old, args.get("new"), current, args.get("hint"))
+		else:
+			if not args.has("hint") or args.hint.to_utf8_buffer().size() > 1024: return {"error":"Vault hint refused"}
+			var error := db.set_meta_value_checked("vault_hint", args.hint)
+			changed = {"error":"Vault hint refused"} if not error.is_empty() else {}
+		var updated := descriptor(db)
+		if changed.has("error") or updated.is_empty():
+			if not previous.is_empty() and previous.get("descriptor") == updated: _entries[db.get_instance_id()] = previous
+			return {"error":"Vault %s refused" % action}
+		if action == "change_password":
+			_entries[db.get_instance_id()] = {"descriptor":updated.duplicate(), "key":changed.key}
+			mark_managed(db)
+		elif not previous.is_empty() and previous.get("descriptor") == current:
+			previous["descriptor"] = updated.duplicate()
+			_entries[db.get_instance_id()] = previous
+		updated["unlocked"] = not key_for(db).is_empty()
+		updated["managed"] = is_managed(db)
+		return updated
 	var fields := {"panel_secret":"", "path":current.path,
 		"open_generation":current.open_generation, "fingerprint":current.fingerprint}
 	if action in ["init", "unlock"]: fields["password"] = args.get("password")
@@ -80,6 +109,7 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 			_entries[db.get_instance_id()] = previous
 		return {"error":"Vault %s refused" % action}
 	mark_managed(db)
+	reply.result["managed"] = true
 	return reply.result
 
 static func handle(method: String, params: Dictionary, db: DocketDB) -> Dictionary:
