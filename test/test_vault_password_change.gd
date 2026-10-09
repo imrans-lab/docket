@@ -14,6 +14,7 @@ var A := AssertHelpers
 var _test_dir := "user://test_vault_pw_change"
 var _path: String
 var _db: DocketDBJsonl
+var _previous_directory: String
 
 const OLD_PW := "old-vault-password"
 const NEW_PW := "new-vault-password"
@@ -26,6 +27,8 @@ func setup() -> void:
 
 
 func before_each() -> void:
+	_previous_directory = DocketRuntimeState.directory
+	DocketRuntimeState.directory = ProjectSettings.globalize_path(_test_dir)
 	_path = _test_dir + "/pw.dct"
 	_cleanup()
 	_db = DocketDBJsonl.create_new_jsonl(_path)
@@ -35,6 +38,7 @@ func after_each() -> void:
 	if _db:
 		_db.close()
 		_db = null
+	DocketRuntimeState.directory = _previous_directory
 
 
 func _cleanup() -> void:
@@ -235,11 +239,16 @@ try:
             if archived:
                 call(p, 'docket_secret_get', dict(project=name, handle=handle, version=1), failure=True)
         call(p, 'docket_secret_get', dict(project=name, handle='dual'), failure=True)
-        hinted = control(p, 'set_hint', changed, hint='edited portable hint')
+        rotation_bytes = path.read_bytes()
+        control(p, 'set_hint', changed, failure=True, hint='refused hint')
+        control(p, 'set_hint', changed, failure=True, password=passwords[0], hint='refused hint')
+        control(p, 'set_hint', changed, failure=True, password=passwords[1], hint=passwords[1])
+        assert path.read_bytes() == rotation_bytes and control(p, 'status')['unlocked'], 'refused hint changed data or authority'
+        hinted = control(p, 'set_hint', changed, password=passwords[1], hint='edited portable hint')
         assert hinted['unlocked'] and hinted['hint'] == 'edited portable hint', 'hint edit lost session'
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[1], 'hint edit lost access'
         locked_state = control(p, 'lock', hinted)
-        locked_hint = control(p, 'set_hint', locked_state, hint='fresh profile hint')
+        locked_hint = control(p, 'set_hint', locked_state, password=passwords[1], hint='fresh profile hint')
         assert not locked_hint['unlocked'], 'hint edit unlocked a locked opening'
         call(p, 'docket_flush', {})
         meta = json.loads(path.read_text().splitlines()[0])
@@ -336,6 +345,13 @@ func test_public_rotation_write_failure_preserves_all_rows() -> Variant:
 	var rows := _ciphertext_by_handle(_db.get_all_secrets_raw())
 	var entry_versions := _db.get_secret_versions("entry")
 	var dual_versions := _db.get_secret_versions("dual")
+	var stale := VaultKeySession.descriptor(_db)
+	stale["fingerprint"] = "stale"
+	var previous_error := _db.last_write_error
+	if _db.change_vault_key_checked(key, next_key, stale).is_empty() or _db.last_write_error != previous_error or not _public_tool(mcp, "docket_vault_control", {"action":"status", "project":"fixture"}).get("unlocked", false):
+		return "Pre-write rotation refusal rebuilt cache or changed write state"
+	if _db.set_vault_hint_checked(key, stale, "refused hint").is_empty() or _db.last_write_error != previous_error or FileAccess.get_file_as_bytes(_path) != before or not _public_tool(mcp, "docket_vault_control", {"action":"status", "project":"fixture"}).get("unlocked", false):
+		return "Stale hint proof changed data or authority"
 	var failure := ""
 	for after_temp_write: bool in [false, true]:
 		var reached := {"fault":false}
@@ -381,6 +397,7 @@ func _ciphertext_by_handle(rows: Array) -> Dictionary:
 
 
 func test_preferences_project_rotation_and_hint_controls() -> Variant:
+	if DocketRuntimeState.directory != ProjectSettings.globalize_path(_test_dir): return "Preferences fixture directory is not isolated"
 	var password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var next_password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var salt := VaultCrypto.generate_salt()
@@ -413,6 +430,7 @@ func test_preferences_project_rotation_and_hint_controls() -> Variant:
 			failure = "Preferences project password change did not persist"
 		else:
 			hint.text = "GUI edited hint"
+			current.text = next_password
 			edit_hint.pressed.emit()
 			if selected_db.get_meta_value("vault_hint") != "GUI edited hint": failure = "Preferences project hint edit did not persist"
 		if not current.text.is_empty() or not replacement.text.is_empty(): failure = "Preferences retained project password input"
@@ -435,6 +453,7 @@ func _answer_history_prompt(form: RecordForm, password: String, confirm: bool, o
 
 
 func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
+	if DocketRuntimeState.directory != ProjectSettings.globalize_path(_test_dir): return "Preferences history fixture directory is not isolated"
 	var password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var secondary := Crypto.new().generate_random_bytes(24).hex_encode()
 	var value := Crypto.new().generate_random_bytes(24).hex_encode()
@@ -509,12 +528,15 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 		if forget == null:
 			failure = "GUI Forget control missing"
 		else:
+			form._title_edit.text = "unsaved title fixture"
+			form._desc_edit.text = "unsaved description fixture"
 			forget.pressed.emit()
 			if not _form_vault_is_cleared(form) or show.text != "Show" or not db.has_item(promoted.id) or FileAccess.get_file_as_bytes(_path) != before:
 				failure = "GUI Forget did not clear presentation and preserve encrypted data"
 			(shell.find_child("ProjectVaultCurrentPassword", true, false) as LineEdit).text = next_password
 			(shell.find_child("ProjectVaultUnlock", true, false) as Button).pressed.emit()
-			form.load_item(promoted.id, db.get_project_name())
+			if form._secret_vault_error_label.visible or form._title_edit.text != "unsaved title fixture" or form._desc_edit.text != "unsaved description fixture":
+				failure = "GUI Unlock did not preserve edits and clear locked status"
 			if form._secret_value_decrypted != "current ordinary value" or form._encrypted_notes_decrypted != value:
 				failure = "GUI unlock did not restore forgotten ciphertext"
 			await get_tree().process_frame
@@ -537,6 +559,9 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 				failure = "MCP Forget did not clear presentation and retain canonical data"
 			args.merge({"action":"unlock", "password":next_password}, true)
 			_public_tool(mcp, "docket_vault_control", args)
+			shell._poll_timer.timeout.emit()
+			if form._secret_value_decrypted != "current ordinary value" or form._encrypted_notes_decrypted != value or form._secret_vault_error_label.visible:
+				failure = "MCP Unlock did not restore existing-form presentation"
 			var restored := _public_tool(mcp, "docket_secret_get", {"project":db.get_project_name(), "handle":promoted.id, "version":1, "secondary_password":secondary})
 			if restored.get("value", "") != value: failure = "MCP unlock did not restore forgotten history"
 	shell.free()

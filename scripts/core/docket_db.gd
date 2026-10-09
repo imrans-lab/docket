@@ -1479,7 +1479,7 @@ func change_vault_key_checked(old_key: PackedByteArray, new_key: PackedByteArray
 
 
 func _rewrite_vault_key(old_key: PackedByteArray, new_key: PackedByteArray, expected: Dictionary, hint: Variant) -> String:
-	if old_key.size() != 32 or new_key.size() != 32 or VaultKeySession.descriptor(self) != expected or not verify_vault(old_key):
+	if new_key.size() != 32 or not _vault_key_matches(old_key, expected):
 		return "Vault change refused"
 	# History can outlive its current handle. Read both tables independently;
 	# update only ciphertext, leaving ownership, 2FA and version metadata intact.
@@ -1500,6 +1500,28 @@ func _rewrite_vault_key(old_key: PackedByteArray, new_key: PackedByteArray, expe
 	if error.is_empty() and hint != null:
 		error = _exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('vault_hint',?);", [hint])
 	return error
+
+
+func set_vault_hint_checked(key: PackedByteArray, expected: Dictionary, hint: String) -> String:
+	if not is_open() or not get_write_block_reason().is_empty(): return "Vault hint refused"
+	_last_sql_error = ""
+	var error := _exec_checked("BEGIN IMMEDIATE TRANSACTION;")
+	if not error.is_empty(): return error
+	error = _rewrite_vault_hint(key, expected, hint)
+	if error.is_empty(): error = _exec_checked("COMMIT;")
+	if not error.is_empty(): _rollback()
+	return error
+
+
+func _vault_key_matches(key: PackedByteArray, expected: Dictionary) -> bool:
+	return key.size() == 32 and VaultKeySession.descriptor(self) == expected and verify_vault(key)
+
+
+func _rewrite_vault_hint(key: PackedByteArray, expected: Dictionary, hint: String) -> String:
+	# Bind the password proof after freshness and the cache write lock, just as
+	# rotation does; another opening cannot replace the vault between them.
+	if not _vault_key_matches(key, expected): return "Vault hint refused"
+	return _exec_checked("INSERT OR REPLACE INTO docket_meta(key,value) VALUES('vault_hint',?);", [hint])
 
 
 func _store_new_vault(key: PackedByteArray, salt: PackedByteArray, hint: String) -> String:

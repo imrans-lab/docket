@@ -1325,7 +1325,7 @@ func _on_project_vault_action(action: String) -> void:
 		return
 	var args := _project_vault_binding.duplicate()
 	args.merge({"action":action, "project":project})
-	if action in ["init", "unlock"]: args["password"] = _project_vault_current.text
+	if action in ["init", "unlock", "set_hint"]: args["password"] = _project_vault_current.text
 	if action == "change_password": args.merge({"old":_project_vault_current.text, "new":_project_vault_new.text})
 	if action in ["init", "change_password", "set_hint"]: args["hint"] = _project_vault_hint.text
 	var result := VaultKeySession.control(args, db)
@@ -1334,6 +1334,8 @@ func _on_project_vault_action(action: String) -> void:
 	else:
 		_record_form.refresh_vault_authority()
 		_state.data_changed.emit()
+		if action == "change_password":
+			_project_vault_status.text += ". Update the saved password in Preferences for legacy access after reopening this project."
 
 
 func _on_prefs_confirmed() -> void:

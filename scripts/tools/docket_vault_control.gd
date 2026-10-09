@@ -14,7 +14,7 @@ func get_definition() -> Dictionary:
 				"project":{"type":"string", "description":"Open project selector; defaults to primary."},
 				"open_generation":{"type":"string", "description":"Required for mutations; returned by status."},
 				"fingerprint":{"type":"string", "description":"Required for mutations; returned by status."},
-				"password":{"type":"string", "description":"Required for init and unlock; used only in memory."},
+				"password":{"type":"string", "description":"Required for init, unlock and set_hint; used only in memory."},
 				"old":{"type":"string", "description":"Current password, required for change_password."},
 				"new":{"type":"string", "description":"Replacement password, required for change_password."},
 				"hint":{"type":"string", "description":"Portable hint: optional for init/change_password, required for set_hint."},

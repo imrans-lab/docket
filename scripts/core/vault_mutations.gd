@@ -7,7 +7,7 @@ static func change_password(db: DocketDB, old_password: String, new_password: St
 	for password: String in [old_password, new_password]:
 		if password.is_empty() or password.to_utf8_buffer().size() > 1024:
 			return {"error":"Vault password change refused"}
-	if hint != null and (not hint is String or hint.to_utf8_buffer().size() > 1024 or hint.contains(old_password) or hint.contains(new_password)):
+	if not _valid_hint(hint, [old_password, new_password]):
 		return {"error":"Vault hint refused"}
 	var salt := db.get_vault_salt()
 	var iterations := db.get_vault_iterations()
@@ -16,6 +16,22 @@ static func change_password(db: DocketDB, old_password: String, new_password: St
 	var new_key := VaultCrypto.derive_key(new_password, salt, iterations)
 	var error := db.change_vault_key_checked(old_key, new_key, expected, hint)
 	return {"key":new_key} if error.is_empty() else {"error":"Vault password change refused"}
+
+
+static func set_hint(db: DocketDB, password: String, hint: String, expected: Dictionary) -> Dictionary:
+	if password.is_empty() or password.to_utf8_buffer().size() > 1024 or not _valid_hint(hint, [password]):
+		return {"error":"Vault hint refused"}
+	var key := VaultCrypto.derive_key(password, db.get_vault_salt(), db.get_vault_iterations())
+	if not db.verify_vault(key): return {"error":"Vault hint refused"}
+	return {} if db.set_vault_hint_checked(key, expected, hint).is_empty() else {"error":"Vault hint refused"}
+
+
+static func _valid_hint(hint: Variant, passwords: Array[String]) -> bool:
+	if hint == null: return true
+	if not hint is String or hint.to_utf8_buffer().size() > 1024: return false
+	for password: String in passwords:
+		if hint.contains(password): return false
+	return true
 
 
 static func reencrypt(rows: Array, old_key: PackedByteArray, new_key: PackedByteArray) -> Dictionary:

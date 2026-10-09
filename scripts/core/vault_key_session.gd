@@ -60,7 +60,7 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 	var action: String = requested
 	var allowed: Array[String] = ["action", "project"]
 	if action != "status": allowed.append_array(["open_generation", "fingerprint"])
-	if action in ["init", "unlock"]: allowed.append("password")
+	if action in ["init", "unlock", "set_hint"]: allowed.append("password")
 	if action in ["init", "change_password", "set_hint"]: allowed.append("hint")
 	if action == "change_password": allowed.append_array(["old", "new"])
 	for field: String in args:
@@ -82,9 +82,8 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 			if not args.has("old") or not args.has("new"): return {"error":"Both passwords are required"}
 			changed = VaultMutations.change_password(db, args.old, args.get("new"), current, args.get("hint"))
 		else:
-			if not args.has("hint") or args.hint.to_utf8_buffer().size() > 1024: return {"error":"Vault hint refused"}
-			var error := db.set_meta_value_checked("vault_hint", args.hint)
-			changed = {"error":"Vault hint refused"} if not error.is_empty() else {}
+			if not args.has("hint") or not args.has("password"): return {"error":"Vault hint refused"}
+			changed = VaultMutations.set_hint(db, args.password, args.hint, current)
 		var updated := descriptor(db)
 		if changed.has("error") or updated.is_empty():
 			if not previous.is_empty() and previous.get("descriptor") == updated: _entries[db.get_instance_id()] = previous

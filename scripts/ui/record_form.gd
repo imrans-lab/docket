@@ -10,6 +10,7 @@ signal child_opened(id: String, project: String)
 var _state: AppState
 var _current_id: String = ""
 var _form_generation: int = 0
+var _vault_presentation_locked: bool = false
 var _fields_grid: GridContainer
 var _title_edit: LineEdit
 var _type_option: OptionButton
@@ -189,6 +190,7 @@ func _on_file_changed() -> void:
 
 func _clear_fields() -> void:
 	_form_generation += 1
+	_vault_presentation_locked = false
 	_loading = true
 	_title_edit.text = ""
 	_type_option.selected = 0
@@ -1207,7 +1209,19 @@ func refresh_vault_authority() -> void:
 	## Revoke displayed plaintext independently of canonical file changes.
 	if _current_id.is_empty(): return
 	var db := _state.get_db_for_project(_current_project)
-	if db != null and db.is_open() and (not VaultKeySession.uses_session(db, DocketRuntimeState.hosted) or not VaultKeySession.key_for(db).is_empty()): return
+	if db != null and db.is_open():
+		if not VaultKeySession.uses_session(db, DocketRuntimeState.hosted): return
+		if not VaultKeySession.key_for(db).is_empty():
+			if _vault_presentation_locked:
+				_vault_presentation_locked = false
+				_secret_vault_error_label.visible = false
+				if _secret_value_container.visible:
+					_load_encrypted_notes(db, _current_id + ":notes")
+					await _load_secret_value(db)
+				elif _encrypted_notes_edit.visible:
+					_load_encrypted_notes(db, _current_id)
+			return
+	_vault_presentation_locked = true
 	_form_generation += 1
 	_secret_value_decrypted = ""
 	_encrypted_notes_decrypted = ""
@@ -1239,6 +1253,7 @@ func attach_to_current(filename: String, data: PackedByteArray, mime: String = "
 
 func load_item(id: String, project: String = "") -> void:
 	_form_generation += 1
+	_vault_presentation_locked = false
 	_loading = true
 	_current_id = id
 	_is_draft = false
@@ -2033,16 +2048,20 @@ func _derive_vault_key(db: DocketDB) -> PackedByteArray:
 	if VaultKeySession.uses_session(db, DocketRuntimeState.hosted):
 		var key := VaultKeySession.key_for(db)
 		if key.is_empty():
+			_vault_presentation_locked = true
 			_show_vault_error("Vault is locked or unavailable. Unlock this opening through its vault controls.")
 		return key
 	var password := UserPrefs.load_vault_password()
 	if password.is_empty():
+		_vault_presentation_locked = true
 		return PackedByteArray()
 	if not db.has_vault():
+		_vault_presentation_locked = true
 		return PackedByteArray()
 	var salt := db.get_vault_salt()
 	var key := VaultCrypto.derive_key(password, salt, db.get_vault_iterations())
 	if not db.verify_vault(key):
+		_vault_presentation_locked = true
 		return PackedByteArray()
 	return key
 

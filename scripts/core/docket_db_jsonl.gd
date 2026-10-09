@@ -1257,7 +1257,16 @@ func change_vault_key_checked(old_key: PackedByteArray, new_key: PackedByteArray
 	var error := _begin_canonical_mutation(true)
 	if not error.is_empty(): return error
 	error = _rewrite_vault_key(old_key, new_key, expected, hint)
-	return _complete_canonical_mutation(error)
+	if not error.is_empty(): return _refuse_canonical_mutation(error)
+	return _complete_canonical_mutation()
+
+
+func set_vault_hint_checked(key: PackedByteArray, expected: Dictionary, hint: String) -> String:
+	var error := _begin_canonical_mutation(true)
+	if not error.is_empty(): return error
+	error = _rewrite_vault_hint(key, expected, hint)
+	if not error.is_empty(): return _refuse_canonical_mutation(error)
+	return _complete_canonical_mutation()
 
 
 func set_secret(handle: String, ciphertext: PackedByteArray, iv: PackedByteArray, mac: PackedByteArray, requires_2fa: bool = false, owner_item_id: String = "") -> void:
