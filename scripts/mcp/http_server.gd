@@ -14,6 +14,8 @@ var external_db: DocketDB = null
 var external_schema: Dictionary = {}
 var external_state: AppState = null  # If set, tracks file changes
 
+var _registration: InstanceRegistration
+var _registered_port: int = -1
 var _server: TCPServer
 var _handler: McpHandler
 var _registry: ToolRegistry
@@ -34,7 +36,13 @@ func _ready() -> void:
 		if err != OK:
 			push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
 			return
+		port = _server.get_local_port()
 		SessionProject.set_endpoint(port)
+		var profile := DocketRuntimeState.directory
+		if profile.is_empty():
+			profile = ProjectSettings.globalize_path("user://")
+		_registration = InstanceRegistration.new(profile, OS.get_process_id(), Time.get_datetime_string_from_system(true) + "Z")
+		_publish_registration()
 
 	if external_state != null:
 		# GUI mode — track AppState, stay in sync on file changes
@@ -125,6 +133,8 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if _registration != null:
+		_registration.close()
 	DocketRuntimeState.prepare_shutdown()
 	DocketDBJsonl.settle_projects(_project_dbs, false)
 	MemoryProject.spill_on_exit(_project_dbs)
@@ -176,6 +186,13 @@ func _open_or_create_db(path: String) -> DocketDB:
 func _gui_add_project(path: String) -> Dictionary:
 	# file_changed fires synchronously → _on_file_changed syncs registry
 	return external_state.add_project_result(path)
+
+
+func _publish_registration() -> void:
+	_registered_port = _server.get_local_port()
+	var registration_status := _registration.publish(BuildInfo.identity(), McpHandler.PROTOCOL_VERSION, _registered_port)
+	if registration_status != "registered":
+		printerr("Docket instance registration: " + registration_status + "; HTTP serving continues")
 
 
 func _gui_remove_project(proj_name: String) -> Dictionary:
@@ -284,6 +301,8 @@ func _process(_delta: float) -> void:
 		return
 	if _server == null or not _server.is_listening():
 		return
+	if _registration != null and _server.get_local_port() != _registered_port:
+		_publish_registration()
 
 	# Accept new connections
 	while _server.is_connection_available():
@@ -435,6 +454,8 @@ func _handle_post(req: Dictionary) -> String:
 
 	MemoryProject.renew_from_headers(req.get("headers", {}))
 	var result = _handler.handle(parsed)
+	if parsed.get("method") == "initialize" and _registration != null and result is Dictionary and result.has("result"):
+		result.result["_meta"] = {"registration_status":_registration.status}
 
 	_post_request()
 

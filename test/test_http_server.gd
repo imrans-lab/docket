@@ -47,3 +47,27 @@ func test_extract_content_length() -> Variant:
 	var raw := "POST /mcp HTTP/1.1\r\nContent-Length: 42\r\n\r\n"
 	var req = HttpParser.parse_request(raw)
 	return A.eq(req.headers.get("content-length", ""), "42")
+
+
+func test_instance_registration_preserves_first_owner_and_changed_record() -> Variant:
+	var Registration = load("res://scripts/core/instance_registration.gd")
+	var profile := ProjectSettings.globalize_path("user://fixtures/registration/%d" % Time.get_ticks_usec())
+	DirAccess.make_dir_recursive_absolute(profile)
+	var registration = Registration.new(profile, OS.get_process_id(), "2026-10-09T00:00:00Z")
+	var first_status: String = registration.publish("dev", McpHandler.PROTOCOL_VERSION, 11111)
+	var path := profile.path_join("instance.json")
+	var first: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
+	var updated_status: String = registration.publish("dev", McpHandler.PROTOCOL_VERSION, 22222)
+	var updated: String = FileAccess.get_file_as_string(path)
+	var parsed: Dictionary = JSON.parse_string(updated)
+	var loser = Registration.new(profile, OS.get_process_id(), "2026-10-09T01:00:00Z")
+	var loser_status: String = loser.publish("dev", McpHandler.PROTOCOL_VERSION, 33333)
+	loser.close()
+	var kept_winner := FileAccess.get_file_as_string(path) == updated
+	var replacement := JSON.stringify({"pid":OS.get_process_id(), "replacement":true})
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(replacement)
+	file.close()
+	var changed_status: String = registration.publish("dev", McpHandler.PROTOCOL_VERSION, 44444)
+	registration.close()
+	return A.is_true(first_status == "registered" and first.pid == OS.get_process_id() and first.endpoint.port == 11111 and updated_status == "registered" and parsed.endpoint.port == 22222 and first.started_at == parsed.started_at and loser_status == "profile_occupied" and kept_winner and changed_status == "record_changed" and FileAccess.get_file_as_string(path) == replacement, "registration retains first owner, updates actual port, and never overwrites or removes changed contents")
