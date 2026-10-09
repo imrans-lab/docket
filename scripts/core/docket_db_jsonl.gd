@@ -267,7 +267,10 @@ func _reload(adopt_identity: bool) -> bool:
 	# NOTE: super.close() (not close()) — the override would flush our stale
 	# state over the very file we are trying to read.
 	if _is_open:
+		var managed := VaultKeySession.is_managed(self)
 		super.close()
+		# Reload retires the cache connection, not this controlled opening.
+		if managed: VaultKeySession.mark_managed(self)
 
 	var opening := ProjectOpenings.inspect(_jsonl_path)
 	var fresh := JSONLCache.rebuild_cache(_jsonl_path, cache_path)

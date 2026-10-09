@@ -50,6 +50,7 @@ func _build_tools() -> Dictionary:
 		"docket_transition_report": DocketTransitionReport.new(),
 		"docket_error_report": DocketErrorReport.new(),
 		"docket_secret_get": DocketSecretGet.new(),
+		"docket_vault_control": DocketVaultControl.new(),
 		"docket_secret_set": DocketSecretSet.new(),
 		"docket_secret_list": DocketSecretList.new(),
 		"docket_secret_delete": DocketSecretDelete.new(),

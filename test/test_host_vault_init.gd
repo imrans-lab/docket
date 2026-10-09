@@ -156,3 +156,78 @@ func test_failed_creation_leaves_no_metadata_or_memory_key() -> Variant:
 	for file in dir.get_files(): dir.remove(file)
 	DirAccess.remove_absolute(directory)
 	return true if failure.is_empty() else failure
+
+
+const PUBLIC_DRIVER := """
+try:
+    paths = []
+    for hosted in (False, True):
+        name = 'public-hosted' if hosted else 'public-ordinary'
+        p = open_host(name) if hosted else launch(name, [])
+        path = base/(name+'.dct')
+        call(p, 'docket_project_add', dict(path=str(path), create=True))
+        call(p, 'docket_project_add', dict(path=str(base/(name+'-keeper.dct')), create=True))
+        definitions = request(p, 'tools/list', 90)['result']['tools']
+        assert any(tool['name'] == 'docket_vault_control' for tool in definitions), 'public vault control missing'
+        def control(action, descriptor=None, failure=False, **extra):
+            arguments = dict(action=action, project=name, **extra)
+            if descriptor is not None:
+                arguments.update({field:descriptor[field] for field in ('open_generation','fingerprint')})
+            return call(p, 'docket_vault_control', arguments, failure=failure)
+        absent = control('status')
+        assert not absent['initialized'] and not absent['unlocked'], 'public absent state'
+        before = path.read_bytes()
+        control('init', absent, failure=True, password='')
+        assert path.read_bytes() == before, 'public invalid init changed storage'
+        created = control('init', absent, password=passwords[0], hint='portable fixture hint')
+        assert created['initialized'] and created['unlocked'], 'public init did not unlock'
+        call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]))
+        assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[0], 'public secret roundtrip'
+        call(p, 'docket_flush', {})
+        stored = path.read_bytes()
+        control('unlock', created, failure=True, password=passwords[1])
+        assert control('status')['unlocked'], 'wrong password changed valid public session'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[0], 'wrong password lost public access'
+        control('lock', dict(created, fingerprint='stale'), failure=True)
+        assert control('status')['unlocked'], 'stale binding changed valid public session'
+        call(p, 'docket_vault_control', dict(action='lock', project='unknown-opening', open_generation=created['open_generation'], fingerprint=created['fingerprint']), failure=True)
+        assert control('status')['unlocked'], 'wrong project changed valid public session'
+        locked_state = control('lock', created)
+        assert not locked_state['unlocked'], 'public lock did not lock'
+        locked(p, name)
+        control('unlock', locked_state, failure=True, password=passwords[1])
+        assert not control('status')['unlocked'], 'wrong password unlocked public session'
+        unlocked = control('unlock', locked_state, password=passwords[0])
+        assert unlocked['unlocked'], 'public unlock refused correct password'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[0], 'public unlock lost secret'
+        call(p, 'docket_flush', {})
+        assert path.read_bytes() == stored, 'public session control changed ciphertext'
+        finish(p)
+    assert_private_files()
+    print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
+except BaseException as error:
+    safe_diagnostic(type(error), error, error.__traceback__)
+    sys.exit(1)
+finally:
+    for p, err in children:
+        if p.poll() is None:
+            p.kill()
+            p.wait(timeout=10)
+        p.stop_io.set()
+        for worker in p.io_threads: worker.join(timeout=1)
+        if not p.stdin.closed: p.stdin.close()
+        p.stdout.close()
+        err.close()
+    root.cleanup()
+    completed.set()
+"""
+
+
+func test_public_vault_control_ordinary_and_hosted() -> Variant:
+	var anchor := "\ntry:\n    # Producer and consumer"
+	var helpers := Fixture.DRIVER.replace("\r\n", "\n")
+	if helpers.count(anchor) != 1: return "Vault helper slice marker missing"
+	var fixture := Fixture.new()
+	var result: Variant = fixture.run_actual_child(helpers.get_slice(anchor, 0) + PUBLIC_DRIVER.replace("\r\n", "\n"))
+	fixture.free()
+	return result

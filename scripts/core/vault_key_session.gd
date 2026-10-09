@@ -2,6 +2,18 @@ extends RefCounted
 class_name VaultKeySession
 ## Process memory only. Entries hold no DB references; close/reload erases them.
 static var _entries: Dictionary = {}
+## Managed openings never fall back to a saved credential, even while locked.
+static var _managed: Dictionary[int, bool] = {}
+
+static func is_managed(db: DocketDB) -> bool:
+	return _managed.has(db.get_instance_id())
+
+static func mark_managed(db: DocketDB) -> void:
+	_managed[db.get_instance_id()] = true
+
+static func release(db: DocketDB) -> void:
+	forget(db)
+	_managed.erase(db.get_instance_id())
 
 static func forget(db: DocketDB) -> void:
 	_entries.erase(db.get_instance_id())
@@ -35,6 +47,40 @@ static func key_for(db: DocketDB) -> PackedByteArray:
 		forget(db)
 		return PackedByteArray()
 	return entry.get("key", PackedByteArray()).duplicate()
+
+static func control(args: Dictionary, db: DocketDB) -> Dictionary:
+	## Public project-scoped controls reuse the private crypto contract, but a
+	## refused public request preserves an existing, still-valid session.
+	var requested: Variant = args.get("action")
+	if not requested is String or requested not in ["status", "init", "unlock", "lock"]:
+		return {"error":"Vault action refused"}
+	var action: String = requested
+	var allowed: Array[String] = ["action", "project"]
+	if action != "status": allowed.append_array(["open_generation", "fingerprint"])
+	if action in ["init", "unlock"]: allowed.append("password")
+	if action == "init": allowed.append("hint")
+	for field: String in args:
+		if field not in allowed or not args[field] is String:
+			return {"error":"Vault request refused"}
+	var current := descriptor(db)
+	if current.is_empty(): return {"error":"Vault opening unavailable"}
+	if action == "status":
+		current["unlocked"] = not key_for(db).is_empty()
+		return current
+	if args.get("open_generation") != current.open_generation or args.get("fingerprint") != current.fingerprint:
+		return {"error":"Vault binding is stale; read status again"}
+	var fields := {"panel_secret":"", "path":current.path,
+		"open_generation":current.open_generation, "fingerprint":current.fingerprint}
+	if action in ["init", "unlock"]: fields["password"] = args.get("password")
+	if action == "init" and args.has("hint"): fields["hint"] = args.hint
+	var previous: Dictionary = _entries.get(db.get_instance_id(), {}).duplicate(true)
+	var reply := handle("vault_" + action, fields, db)
+	if reply.has("error"):
+		if not previous.is_empty() and previous.get("descriptor") == descriptor(db):
+			_entries[db.get_instance_id()] = previous
+		return {"error":"Vault %s refused" % action}
+	mark_managed(db)
+	return reply.result
 
 static func handle(method: String, params: Dictionary, db: DocketDB) -> Dictionary:
 	var current := descriptor(db)

@@ -27,9 +27,9 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 		return {"error": "'handle' is required"}
 
 	var key := PackedByteArray()
-	if DocketRuntimeState.hosted:
+	if DocketRuntimeState.hosted or VaultKeySession.is_managed(db):
 		key = VaultKeySession.key_for(db)
-		if key.is_empty(): return {"error":"Hosted vault is locked. Unlock through the host."}
+		if key.is_empty(): return {"error":"Vault is locked. Unlock this opening through its vault controls."}
 	else:
 		var password := UserPrefs.load_vault_password()
 		if password.is_empty():
