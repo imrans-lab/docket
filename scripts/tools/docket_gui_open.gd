@@ -5,10 +5,11 @@ class_name DocketGuiOpen
 func get_definition() -> Dictionary:
 	return {
 		"name": "docket_gui_open",
-		"description": "Open an item or query in the GUI, or focus its process-owned window. Only works when the MCP server is embedded in the GUI app.",
+		"description": "Open an item or query in the GUI, focus its process-owned window, or open the New Docket dialog. Only works when the MCP server is embedded in the GUI app.",
 		"inputSchema": {
 			"type": "object",
 			"properties": {
+				"new_docket": {"type":"boolean", "description":"Open the existing New Docket file dialog; may be used alone or with focus"},
 				"focus": {"type": "boolean", "description": "Bring the GUI window to the foreground; may be used alone"},
 				"id": {"type": "string", "description": "Item ID to open in detail view"},
 				"filter": {"type": "string", "description": "JSON filter string to open as a new query tab"},
@@ -23,11 +24,20 @@ func execute(args: Dictionary, _schema: Dictionary, _db: DocketDB, project_dbs: 
 	var item_id: String = str(args.get("id", ""))
 	var filter_str: String = str(args.get("filter", ""))
 
-	if item_id.is_empty() and filter_str.is_empty() and not args.get("focus", false):
-		return {"error": "Provide either 'id' (to open an item) or 'filter' (to open a query)"}
+	if args.has("new_docket") and not args.new_docket is bool:
+		return {"error":"new_docket must be a boolean"}
+	var new_docket: bool = args.get("new_docket", false)
+	if new_docket and (not item_id.is_empty() or not filter_str.is_empty()):
+		return {"error":"new_docket cannot be combined with id or filter"}
+
+	if item_id.is_empty() and filter_str.is_empty() and not args.get("focus", false) and not new_docket:
+		return {"error": "Provide id, filter, focus:true, or new_docket:true"}
 
 	if not gui_open_fn.is_valid():
 		return {"error": "GUI not available (headless mode)"}
+
+	if new_docket:
+		return gui_open_fn.call({"new_docket":true, "focus":true})
 
 	if item_id.is_empty() and filter_str.is_empty():
 		return gui_open_fn.call({"focus": true})

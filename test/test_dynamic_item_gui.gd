@@ -1138,3 +1138,33 @@ func test_hosted_close_and_focus_keep_the_window_and_database_alive() -> Variant
 		window.remove_meta("docket_pre_close_mode")
 	window.mode = original_mode
 	return true if failure.is_empty() else failure
+
+
+func test_gui_new_docket_reuses_dialog_and_cancel_creates_nothing() -> Variant:
+	var prior_directory := DocketRuntimeState.directory
+	DocketRuntimeState.directory = ProjectSettings.globalize_path(DIR)
+	var state := _state("NewDialog")
+	var shell := AppShell.new()
+	shell.init(state)
+	add_child(shell)
+	var server := DocketHttpServer.new()
+	server.port = 0
+	server.external_state = state
+	add_child(server)
+	var original_dialog := shell._new_dialog
+	var paths_before := DirAccess.get_files_at(DIR)
+	var projects_before := state.get_project_dbs().keys()
+	var first: Dictionary = server._registry.call_tool("docket_gui_open", {"new_docket":true})
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var visible_after_first := original_dialog.visible
+	var second: Dictionary = server._registry.call_tool("docket_gui_open", {"new_docket":true, "focus":true})
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var single_visible := shell._new_dialog == original_dialog and original_dialog.visible
+	original_dialog.get_cancel_button().pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var canceled_cleanly := not original_dialog.visible and DirAccess.get_files_at(DIR) == paths_before and state.get_project_dbs().keys() == projects_before
+	DocketRuntimeState.directory = prior_directory
+	return A.is_true(first.get("opened") == "new_docket" and second.get("opened") == "new_docket" and visible_after_first and single_visible and canceled_cleanly, "one existing New Docket dialog handles repeat requests; cancel creates nothing")

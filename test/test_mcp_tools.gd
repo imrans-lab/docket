@@ -873,6 +873,19 @@ func test_project_remove_not_found() -> Variant:
 
 # -- GUI open tool tests ---------------------------------------------------
 
+func test_gui_open_new_docket_payload() -> Variant:
+	_setup_multi_project()
+	var capture: Dictionary = {}
+	_registry.gui_open_fn = func(request: Dictionary) -> Dictionary:
+		capture.assign(request)
+		return {"opened":"new_docket"}
+	for args: Dictionary in [{"new_docket":true}, {"new_docket":true, "focus":true}]:
+		var result: Dictionary = _registry.call_tool("docket_gui_open", JSON.parse_string(JSON.stringify(args)))
+		var r: Variant = A.is_true(result.get("opened") == "new_docket" and capture.get("new_docket") == true, "new docket request reaches GUI callback")
+		if r is String: return r
+	return true
+
+
 func test_gui_open_item() -> Variant:
 	_setup_multi_project()
 	var c1 = _registry.call_tool("docket_create", {"type": "bug", "title": "Open me", "project": "alpha"})

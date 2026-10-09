@@ -14,6 +14,8 @@ signal load_failed(path: String, reason: String)
 signal open_item_requested(id: String, project: String)
 @warning_ignore("unused_signal")
 signal open_query_requested(filter: String, label: String)
+@warning_ignore("unused_signal")
+signal new_docket_requested
 
 var schema: Dictionary
 var db: DocketDB  # Primary DB (first loaded)

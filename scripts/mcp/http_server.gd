@@ -192,6 +192,9 @@ func _gui_open(request: Dictionary) -> Dictionary:
 		window.grab_focus()
 		if request.size() == 1:
 			return {"opened": "window", "pid": OS.get_process_id(), "focused": get_window().has_focus()}
+	if request.get("new_docket", false):
+		external_state.new_docket_requested.emit()
+		return {"opened":"new_docket", "pid":OS.get_process_id()}
 	if request.has("id"):
 		var project := str(request.get("project", ""))
 		external_state.open_item_requested.emit(str(request.id), project)
