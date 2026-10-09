@@ -490,6 +490,7 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 	(shell.find_child("ProjectVaultCurrentPassword", true, false) as LineEdit).text = password
 	(shell.find_child("ProjectVaultNewPassword", true, false) as LineEdit).text = next_password
 	(shell.find_child("ProjectVaultChangePassword", true, false) as Button).pressed.emit()
+	await _close_project_preferences(shell)
 	var show: Button
 	var copy: Button
 	for widget: Node in form._secret_history_container.get_child(0).get_children():
@@ -524,6 +525,7 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 		form._encrypted_notes_show_btn.button_pressed = true
 		form._encrypted_notes_show_btn.pressed.emit()
 		var before := FileAccess.get_file_as_bytes(_path)
+		shell.menu_builder().action_triggered.emit("preferences")
 		var forget := shell.find_child("ProjectVaultForget", true, false) as Button
 		if forget == null:
 			failure = "GUI Forget control missing"
@@ -535,6 +537,7 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 				failure = "GUI Forget did not clear presentation and preserve encrypted data"
 			(shell.find_child("ProjectVaultCurrentPassword", true, false) as LineEdit).text = next_password
 			(shell.find_child("ProjectVaultUnlock", true, false) as Button).pressed.emit()
+			await _close_project_preferences(shell)
 			if form._secret_vault_error_label.visible or form._title_edit.text != "unsaved title fixture" or form._desc_edit.text != "unsaved description fixture":
 				failure = "GUI Unlock did not preserve edits and clear locked status"
 			if form._secret_value_decrypted != "current ordinary value" or form._encrypted_notes_decrypted != value:
@@ -564,6 +567,30 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 				failure = "MCP Unlock did not restore existing-form presentation"
 			var restored := _public_tool(mcp, "docket_secret_get", {"project":db.get_project_name(), "handle":promoted.id, "version":1, "secondary_password":secondary})
 			if restored.get("value", "") != value: failure = "MCP unlock did not restore forgotten history"
+			# Seed a real protected current row, then exercise existing-form Unlock.
+			var current_key := VaultCrypto.derive_key(next_password, salt, VaultCrypto.LEGACY_PBKDF2_ITERATIONS)
+			var second_key := VaultCrypto.derive_key(secondary, salt, VaultCrypto.LEGACY_PBKDF2_ITERATIONS)
+			var encrypted := VaultCrypto.encrypt_2fa(value, current_key, second_key)
+			db.rotate_secret(promoted.id, encrypted.ciphertext, encrypted.iv, encrypted.mac, "fixture", true)
+			db.flush()
+			status = _public_tool(mcp, "docket_vault_control", {"action":"status", "project":db.get_project_name()})
+			var lock_args := {"action":"forget", "project":db.get_project_name(), "open_generation":status.open_generation, "fingerprint":status.fingerprint}
+			_public_tool(mcp, "docket_vault_control", lock_args)
+			shell._poll_timer.timeout.emit()
+			shell.menu_builder().action_triggered.emit("preferences")
+			(shell.find_child("ProjectVaultCurrentPassword", true, false) as LineEdit).text = next_password
+			(shell.find_child("ProjectVaultUnlock", true, false) as Button).pressed.emit()
+			if form._secret_2fa_dialog.visible:
+				failure = "Current 2FA recovery competed with modal Preferences"
+			observed = {}
+			_answer_history_prompt(form, secondary, true, observed)
+			await _close_project_preferences(shell)
+			for _frame in 10: await get_tree().process_frame
+			if not observed.get("prompt", false) or form._secret_value_decrypted != value or form._encrypted_notes_decrypted != value:
+				failure = "Current 2FA recovery did not resume after Preferences closed"
+			if form._title_edit.text != "unsaved title fixture" or form._desc_edit.text != "unsaved description fixture":
+				failure = "Current 2FA recovery discarded unrelated edits"
+
 	shell.free()
 	db.close()
 	return true if failure.is_empty() else failure
@@ -571,3 +598,8 @@ func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
 
 func _form_vault_is_cleared(form: RecordForm) -> bool:
 	return form._secret_value_decrypted.is_empty() and form._encrypted_notes_decrypted.is_empty() and form._secret_value_edit.text.is_empty() and form._encrypted_notes_edit.text.is_empty()
+
+
+func _close_project_preferences(shell: AppShell) -> void:
+	shell._prefs_dialog.get_cancel_button().pressed.emit()
+	for _frame in 2: await get_tree().process_frame

@@ -437,6 +437,13 @@ func _build_ui() -> void:
 
 	_prefs_dialog.add_child(prefs_vbox)
 	add_child(_prefs_dialog)
+	_prefs_dialog.visibility_changed.connect(_on_preferences_visibility_changed)
+
+
+func _on_preferences_visibility_changed() -> void:
+	# Wait until the exclusive parent is gone before restoring a 2FA field.
+	if not _prefs_dialog.visible and _record_form != null:
+		_record_form.refresh_vault_authority.call_deferred()
 
 
 # -- Work entries ----------------------------------------------------------
@@ -580,7 +587,7 @@ func _on_poll_external_changes(changed_on_disk: bool = false) -> void:
 	## changed_on_disk is the grid's file/sidecar handoff: it bypasses the token
 	## gate so stale cache rows are reloaded before the grid queries again.
 	_state.settle_projects()
-	_record_form.refresh_vault_authority()
+	_record_form.refresh_vault_authority(not _prefs_dialog.visible)
 	if _prefs_dialog.visible:
 		var vault_db := _state.get_db_for_project(_selected_vault_project())
 		if vault_db != null:
@@ -1332,7 +1339,7 @@ func _on_project_vault_action(action: String) -> void:
 	_refresh_project_vault()
 	if result.has("error"): _project_vault_status.text = str(result.error)
 	else:
-		_record_form.refresh_vault_authority()
+		_record_form.refresh_vault_authority(not _prefs_dialog.visible)
 		_state.data_changed.emit()
 		if action == "change_password":
 			_project_vault_status.text += ". Update the saved password in Preferences for legacy access after reopening this project."

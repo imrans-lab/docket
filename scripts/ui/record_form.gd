@@ -1205,7 +1205,7 @@ func get_current_id() -> String:
 func get_current_project() -> String:
 	return _current_project
 
-func refresh_vault_authority() -> void:
+func refresh_vault_authority(allow_restore: bool = true) -> void:
 	## Revoke displayed plaintext independently of canonical file changes.
 	if _current_id.is_empty(): return
 	var db := _state.get_db_for_project(_current_project)
@@ -1213,6 +1213,7 @@ func refresh_vault_authority() -> void:
 		if not VaultKeySession.uses_session(db, DocketRuntimeState.hosted): return
 		if not VaultKeySession.key_for(db).is_empty():
 			if _vault_presentation_locked:
+				if not allow_restore: return
 				_vault_presentation_locked = false
 				_secret_vault_error_label.visible = false
 				if _secret_value_container.visible:
