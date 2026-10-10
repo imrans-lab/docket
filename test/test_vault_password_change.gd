@@ -315,6 +315,49 @@ func _public_tool(mcp: McpHandler, tool: String, args: Dictionary) -> Dictionary
 	return result if result is Dictionary else {"error":"Public vault tool result invalid"}
 
 
+func test_locked_public_mutations_preserve_secret_until_password_reentry() -> Variant:
+	var salt := VaultCrypto.generate_salt()
+	var key := VaultCrypto.derive_key(OLD_PW, salt, VaultCrypto.LEGACY_PBKDF2_ITERATIONS)
+	_db.init_vault(key, salt, VaultCrypto.LEGACY_PBKDF2_ITERATIONS)
+	var encrypted := VaultCrypto.encrypt("preserved standalone value", key)
+	_db.set_secret("standalone", encrypted.ciphertext, encrypted.iv, encrypted.mac)
+	_db.flush()
+	var registry := ToolRegistry.new()
+	registry.init(TypeRegistryBootstrap.effective_schema(), _db, {"fixture":_db})
+	var mcp := McpHandler.new()
+	mcp.init_with_registry(registry)
+	var status := _public_tool(mcp, "docket_vault_control", {"action":"status", "project":"fixture"})
+	var binding := {"project":"fixture", "open_generation":status.open_generation, "fingerprint":status.fingerprint}
+	var unlock := binding.duplicate()
+	unlock.merge({"action":"unlock", "password":OLD_PW})
+	if not _public_tool(mcp, "docket_vault_control", unlock).get("unlocked", false): return "Fixture unlock failed"
+	var forget := binding.duplicate()
+	forget["action"] = "forget"
+	for _repeat in 2:
+		status = _public_tool(mcp, "docket_vault_control", forget)
+		if not status.get("managed", false) or status.get("unlocked", true): return "Forget did not retain a locked managed opening"
+	var before := FileAccess.get_file_as_bytes(_path)
+	var mutations := {
+		"docket_secret_delete":{"project":"fixture", "handle":"standalone"},
+		"docket_secret_set":{"project":"fixture", "handle":"standalone", "value":"replacement"},
+		"docket_secret_promote":{"project":"fixture", "handle":"standalone", "title":"Refused promotion"},
+	}
+	for tool: String in mutations:
+		var request := {"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":tool, "arguments":mutations[tool]}}
+		var response: Dictionary = mcp.handle(JSON.parse_string(JSON.stringify(request)))
+		if not response.get("result", {}).get("isError", false): return "Locked mutation was accepted: " + tool
+		if response.result.content[0].text != "Vault is locked. Unlock this opening through its vault controls.": return "Locked mutation did not give the read refusal: " + tool
+		_db.flush()
+		if FileAccess.get_file_as_bytes(_path) != before: return "Locked mutation changed canonical data: " + tool
+	if not _public_tool(mcp, "docket_vault_control", unlock).get("unlocked", false): return "Password re-entry failed"
+	if _public_tool(mcp, "docket_secret_get", {"project":"fixture", "handle":"standalone"}).get("value") != "preserved standalone value": return "Password re-entry did not recover the original secret"
+	_public_tool(mcp, "docket_vault_control", forget)
+	var change := binding.duplicate()
+	change.merge({"action":"change_password", "old":OLD_PW, "new":NEW_PW})
+	if not _public_tool(mcp, "docket_vault_control", change).get("unlocked", false): return "Password change stopped being an unlock path"
+	return A.is_true(_public_tool(mcp, "docket_secret_get", {"project":"fixture", "handle":"standalone"}).get("value") == "preserved standalone value", "password change preserves the locked secret")
+
+
 func test_public_rotation_write_failure_preserves_all_rows() -> Variant:
 	var password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var next_password := Crypto.new().generate_random_bytes(24).hex_encode()

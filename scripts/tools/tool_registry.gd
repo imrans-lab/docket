@@ -180,7 +180,14 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs, gui_open_fn)
 	else:
 		var db := _resolve_db(arguments)
-		result = _tools[name].execute(arguments, _schema, db, baseline) if name == "docket_transition" else _tools[name].execute(arguments, _schema, db)
+		# Managed ciphertext mutations need the same opening authority as reads.
+		# Vault controls stay reachable so password re-entry can restore authority.
+		if name in ["docket_secret_set", "docket_secret_delete", "docket_secret_promote"] \
+				and VaultKeySession.uses_session(db, DocketRuntimeState.hosted) \
+				and VaultKeySession.key_for(db).is_empty():
+			result = {"error":"Vault is locked. Unlock this opening through its vault controls."}
+		else:
+			result = _tools[name].execute(arguments, _schema, db, baseline) if name == "docket_transition" else _tools[name].execute(arguments, _schema, db)
 	if result.has("error"):
 		_log_error(name, arguments, result)
 	elif hosted_item_changed.has_connections() and baseline.has("kind"):

@@ -8,7 +8,7 @@ func get_definition() -> Dictionary:
 		"description": (
 			"Wrap an existing standalone vault entry in a tracked Secret work item, "
 			+ "so it gains a title, status, comments, links and a GUI record. The "
-			+ "value is never decrypted or re-entered, so no vault password is needed."
+			+ "value is never decrypted or re-entered. A managed vault opening must be unlocked."
 		),
 		"inputSchema": {
 			"type": "object",
