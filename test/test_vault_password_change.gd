@@ -358,6 +358,61 @@ func test_locked_public_mutations_preserve_secret_until_password_reentry() -> Va
 	return A.is_true(_public_tool(mcp, "docket_secret_get", {"project":"fixture", "handle":"standalone"}).get("value") == "preserved standalone value", "password change preserves the locked secret")
 
 
+func test_locked_public_item_delete_preserves_owned_notes_and_history() -> Variant:
+	var salt := VaultCrypto.generate_salt()
+	var key := VaultCrypto.derive_key(OLD_PW, salt, VaultCrypto.LEGACY_PBKDF2_ITERATIONS)
+	_db.init_vault(key, salt, VaultCrypto.LEGACY_PBKDF2_ITERATIONS)
+	var registry := ToolRegistry.new()
+	registry.init(TypeRegistryBootstrap.effective_schema(), _db, {"fixture":_db})
+	var mcp := McpHandler.new()
+	mcp.init_with_registry(registry)
+	var status := _public_tool(mcp, "docket_vault_control", {"action":"status", "project":"fixture"})
+	var unlock := {"project":"fixture", "open_generation":status.open_generation, "fingerprint":status.fingerprint, "action":"unlock", "password":OLD_PW}
+	if not _public_tool(mcp, "docket_vault_control", unlock).get("unlocked", false): return "Fixture unlock failed"
+	if _public_tool(mcp, "docket_secret_set", {"project":"fixture", "handle":"delete-fixture", "value":"preserved item value"}).has("error"): return "Fixture secret creation failed"
+	var promoted := _public_tool(mcp, "docket_secret_promote", {"project":"fixture", "handle":"delete-fixture", "title":"Protected Secret"})
+	if promoted.has("error"): return "Fixture promotion failed"
+	var protected: Array[Dictionary] = [{"id":promoted.id, "handle":promoted.id, "value":"preserved item value"}]
+	# Real legacy storage shapes: an arbitrary owned handle, conventional notes,
+	# and history whose current value was removed. Item type alone is not enough.
+	for shape: String in ["owned", "notes", "history"]:
+		var item := _public_tool(mcp, "docket_create", {"project":"fixture", "type":"chore", "title":shape})
+		if item.has("error"): return "Fixture item creation failed: " + shape
+		var handle: String = "arbitrary-owned" if shape == "owned" else str(item.id) + (":notes" if shape == "notes" else "")
+		var value := "preserved " + shape
+		var encrypted := VaultCrypto.encrypt(value, key)
+		_db.set_secret(handle, encrypted.ciphertext, encrypted.iv, encrypted.mac, false, str(item.id) if shape == "owned" else "")
+		if shape == "history":
+			_db.rotate_secret(handle, encrypted.ciphertext, encrypted.iv, encrypted.mac, "fixture")
+			_db.delete_secret(handle)
+		protected.append({"id":item.id, "handle":handle, "value":value, "version":1 if shape == "history" else 0})
+	var ordinary := _public_tool(mcp, "docket_create", {"project":"fixture", "type":"chore", "title":"No vault content"})
+	if ordinary.has("error"): return "Ordinary fixture creation failed"
+	_db.flush()
+	var forget := unlock.duplicate()
+	forget.erase("password")
+	forget["action"] = "forget"
+	status = _public_tool(mcp, "docket_vault_control", forget)
+	if not status.get("managed", false) or status.get("unlocked", true): return "Fixture did not lock"
+	if not _public_tool(mcp, "docket_delete", {"project":"fixture", "id":ordinary.id}).get("deleted", false): return "Locked ordinary deletion was refused"
+	_db.flush()
+	var before := FileAccess.get_file_as_bytes(_path)
+	for item: Dictionary in protected:
+		var request := {"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"docket_delete", "arguments":{"project":"fixture", "id":item.id}}}
+		var response: Dictionary = mcp.handle(JSON.parse_string(JSON.stringify(request)))
+		if not response.get("result", {}).get("isError", false): return "Locked item deletion was accepted: " + str(item.handle)
+		if response.result.content[0].text != "Vault is locked. Unlock this opening through its vault controls.": return "Locked item deletion did not give the read refusal"
+		_db.flush()
+		if FileAccess.get_file_as_bytes(_path) != before: return "Locked item deletion changed canonical data"
+	if not _public_tool(mcp, "docket_vault_control", unlock).get("unlocked", false): return "Password re-entry failed"
+	for item: Dictionary in protected:
+		if _public_tool(mcp, "docket_get", {"project":"fixture", "id":item.id, "include":[]}).get("id") != item.id: return "Password re-entry did not recover item"
+		var args := {"project":"fixture", "handle":item.handle}
+		if int(item.get("version", 0)) > 0: args["version"] = item.version
+		if _public_tool(mcp, "docket_secret_get", args).get("value") != item.value: return "Password re-entry did not recover vault content"
+	return A.is_true(_public_tool(mcp, "docket_delete", {"project":"fixture", "id":promoted.id}).get("deleted", false) and not _db.has_item(str(promoted.id)), "unlocked Secret deletion remains available")
+
+
 func test_public_rotation_write_failure_preserves_all_rows() -> Variant:
 	var password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var next_password := Crypto.new().generate_random_bytes(24).hex_encode()

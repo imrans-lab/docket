@@ -28,6 +28,18 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 	if not db.has_item(id):
 		return {"error": "Item not found: %s" % id}
 
+	# Item deletion also destroys owned vault entries and conventional history.
+	# Inspect content, not item type; legacy notes/history can outlive a value.
+	if VaultKeySession.uses_session(db, DocketRuntimeState.hosted) and VaultKeySession.key_for(db).is_empty():
+		var refusal := {"error":"Vault is locked. Unlock this opening through its vault controls."}
+		var owned: Array = db.list_secrets_owned_by(id)
+		if not owned.is_empty() or not db._last_sql_error.is_empty(): return refusal
+		for handle: String in [id, id + ":notes"]:
+			var current := db.get_secret_raw(handle)
+			if not current.is_empty() or not db._last_sql_error.is_empty(): return refusal
+			var history: Array = db._exec_select("SELECT 1 FROM docket_secret_versions WHERE handle=? LIMIT 1;", [handle])
+			if not history.is_empty() or not db._last_sql_error.is_empty(): return refusal
+
 	# Capture title before deletion for confirmation
 	var item: Dictionary = db.get_item(id)
 	var title: String = str(item.get("title", ""))
