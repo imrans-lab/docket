@@ -1065,7 +1065,7 @@ func _open_new_docket_dialog(focus_window: Callable) -> Dictionary:
 	if _new_dialog.visible:
 		_new_dialog.grab_focus()
 	else:
-		for child: Node in get_children():
+		for child: Node in get_window().find_children("*", "Window", true, false):
 			if child is Window and child.visible and child.exclusive:
 				return {"error":"Close the current dialog before creating a new Docket"}
 		focus_window.call()

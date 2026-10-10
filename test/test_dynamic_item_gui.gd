@@ -1190,9 +1190,18 @@ func test_gui_new_docket_refuses_while_preferences_open() -> Variant:
 	var refused: bool = reply.get("error") == "Close the current dialog before creating a new Docket" and shell._prefs_dialog.visible and not shell._new_dialog.visible
 	shell._prefs_dialog.get_cancel_button().pressed.emit()
 	await get_tree().process_frame
+	var nested_dialog := shell._record_form._secret_2fa_dialog
+	nested_dialog.popup_centered()
+	await get_tree().process_frame
+	var nested_reply: Dictionary = server._registry.call_tool("docket_gui_open", {"new_docket":true})
+	var nested_refused: bool = nested_reply.get("error") == "Close the current dialog before creating a new Docket" and nested_dialog.visible and not shell._new_dialog.visible
+	if shell._new_dialog.visible:
+		shell._new_dialog.get_cancel_button().pressed.emit()
+	nested_dialog.get_cancel_button().pressed.emit()
+	await get_tree().process_frame
 	var retried: Dictionary = server._registry.call_tool("docket_gui_open", {"new_docket":true})
 	var opened: bool = retried.get("opened") == "new_docket" and shell._new_dialog.visible
 	shell._new_dialog.get_cancel_button().pressed.emit()
 	await get_tree().process_frame
 	DocketRuntimeState.directory = previous_directory
-	return A.is_true(refused and opened, "new docket returns a visible refusal during Preferences and opens on retry")
+	return A.is_true(refused and nested_refused and opened, "new docket returns a visible refusal during Preferences or a nested modal and opens on retry")
