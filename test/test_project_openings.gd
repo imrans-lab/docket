@@ -445,7 +445,9 @@ def private(p, name, fields):
         arguments = dict(fields)
         path = arguments.pop('path')
         projects = call(p, 'docket_project_list', {})['projects']
-        arguments.update(project=next(row['name'] for row in projects if row['path'] == pathlib.Path(path).as_posix()), action='status' if name == 'vault_challenge' else name.removeprefix('vault_'))
+        matches = [row['name'] for row in projects if os.path.normcase(os.path.abspath(row['path'])) == os.path.normcase(os.path.abspath(path))]
+        assert len(matches) == 1, 'vault project path must match exactly one opening'
+        arguments.update(project=matches[0], action='status' if name == 'vault_challenge' else name.removeprefix('vault_'))
     reply = request(p, 'tools/call', 93, dict(name=tool, arguments=arguments), receive_timeout=30)['result']
     return {'error':reply['content'][0]['text']} if reply.get('isError') else {'result':json.loads(reply['content'][0]['text'])}
 
