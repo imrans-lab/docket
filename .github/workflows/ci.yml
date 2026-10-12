@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   secrets:
+    timeout-minutes: 5
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
@@ -43,12 +44,116 @@ jobs:
           gitleaks version
 
       - name: Scan git history
-        run: gitleaks git . -c .gitleaks.toml --no-banner --redact --verbose
+        run: SECRET_SCAN_TARGET=main scripts/ci/scan-secrets.sh
 
       - name: Scan working tree
         run: gitleaks dir . -c .gitleaks.toml --no-banner --redact --verbose
 
   test:
+    timeout-minutes: 10
+    name: Build extension and import (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+          - os: macos-latest
+            platform: macos
+            arch: universal
+          - os: windows-latest
+            platform: windows
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install SCons
+        run: pipx install scons
+
+      # godot-cpp dominates build time and only changes when the pinned
+      # submodule commit changes, so key the cache on that SHA.
+      - name: Cache godot-cpp objects
+        uses: actions/cache@v6
+        with:
+          path: |
+            third_party/godot-sqlite/godot-cpp/bin
+            third_party/godot-sqlite/godot-cpp/gen
+            third_party/godot-sqlite/.sconsign.dblite
+          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
+
+      # Builds both template_release and template_debug. The debug variant is
+      # what the Godot tool binary loads when running the test suite; without it
+      # the extension silently fails to load and ~50 tests fail confusingly.
+      - name: Build GDExtension from source
+        run: ./scripts/build/build_gdextension.sh ${{ matrix.platform }} ${{ matrix.arch }} all
+
+      # Secret scan, machine-path leakage, FCIB, version skew, dead links.
+      # Cheap, so it runs on every push rather than only before a release.
+      - name: Preflight checks
+        run: ./scripts/build/preflight.sh
+
+      - name: Cache Godot binary
+        id: godot-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-${{ matrix.os }}
+
+      - name: Install Godot ${{ env.GODOT_VERSION }}
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/godot-bin && cd ~/godot-bin
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_win64.exe.zip"
+          else
+            curl -fSL -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          fi
+          unzip -q godot.zip && rm godot.zip
+
+      - name: Resolve Godot path
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            GODOT_BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*.exe' -type f | head -1)"
+          else
+            GODOT_BIN="$(find "$HOME/godot-bin" -maxdepth 1 -name 'Godot_v*' -type f | head -1)"
+          fi
+          chmod +x "$GODOT_BIN"
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+
+      - name: Generate build identity and platform versions
+        run: python scripts/build/prepare_build_info.py
+
+      # First headless run imports assets and registers class_name globals.
+      # Without this, scripts using class_name fail to resolve and the run hangs.
+      - name: Import project
+        run: |
+          set -euo pipefail
+          "$GODOT_BIN" --headless --path . --import 2>&1 | tee import-output.txt
+          ! grep -E "SCRIPT ERROR|Parse Error" import-output.txt
+
+  functional-tests:
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 60
     name: Build extension + run tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     defaults:
@@ -145,7 +250,9 @@ jobs:
       # Without this, scripts using class_name fail to resolve and the run hangs.
       - name: Import project
         run: |
-          "$GODOT_BIN" --headless --path . --import 2>&1 | tail -20 || true
+          set -euo pipefail
+          "$GODOT_BIN" --headless --path . --import 2>&1 | tee import-output.txt
+          ! grep -E "SCRIPT ERROR|Parse Error" import-output.txt
 
       - name: Native identity and temporary namespace oracles
         shell: bash

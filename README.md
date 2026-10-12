@@ -136,3 +136,27 @@ concurrent access, and building from source.
 
 [MPL-2.0](LICENSE) — embed it freely; publish changes to Docket's own files.
 Copyright (c) 2026 Imran Peerbhai.
+
+## CI lanes
+
+Branch pushes run build/import/link checks and a redacted outgoing-range secret
+scan. Each concrete push job has a deadline of at most ten minutes.
+`scripts/ci/check_push_lanes.py` checks every push workflow and local reusable
+callee; functional suites and packaged-product probes are dispatch-only.
+
+Before integrating a candidate, dispatch the existing workflows on a branch
+pinned to its exact SHA and wait for every required suite. Plain dispatches do
+not publish: release inputs default to false. For example:
+
+```sh
+gh workflow run WORKFLOW.yml --ref CANDIDATE_BRANCH
+```
+
+Manual scans use a commit range (default `HEAD^..HEAD`, with explicit
+`SECRET_SCAN_BASE`/`SECRET_SCAN_HEAD` available to the CI scan wrapper); they
+never scan all history. Push scans use the event's before/after commits. New
+branch scans start at the merge base with the target branch.
+
+Dispatch `ci.yml` for the full three-OS suite and isolated watcher test. The
+`release.yml` tag lane keeps its existing suites and is exempt from the branch
+push deadline; signing/publication still requires its existing explicit input.
