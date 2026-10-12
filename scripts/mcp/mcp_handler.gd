@@ -60,7 +60,7 @@ func _handle_tool_call(id: Variant, params: Dictionary) -> Dictionary:
 
 	if result.has("error"):
 		return _make_result(id, {
-			"content": [{"type": "text", "text": result.error}],
+			"content": [{"type": "text", "text": result.error if result.error is String else JSON.stringify(result.error)}],
 			"isError": true,
 		})
 

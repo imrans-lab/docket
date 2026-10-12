@@ -40,35 +40,19 @@ func handle(method: String, params: Variant) -> Dictionary:
 	if difference != 0:
 		return _error(-32001, "Private authentication refused")
 	if method == PREFIX + "bootstrap_project":
-		if params.size() != 3 or not params.get("path") is String or not params.get("content") is String:
-			return _error(-32602, "Invalid private parameters")
-		var path: String = params.path
-		if path.is_empty() or not path.is_absolute_path() or path.contains("://") or path.get_file().is_empty():
-			return _error(-32602, "Bootstrap requires an absolute file path")
-		var refusal := TypeRegistryBootstrap.opening_refusal()
-		if not refusal.is_empty(): return _error(-32602, refusal)
-		var encoded: String = params.content
-		if encoded.is_empty() or encoded.length() % 4 != 0:
-			return _error(-32602, "Invalid bootstrap encoding")
-		var bytes := Marshalls.base64_to_raw(encoded)
-		if bytes.is_empty() or Marshalls.raw_to_base64(bytes) != encoded:
-			return _error(-32602, "Invalid bootstrap encoding")
-		var shipment := bytes.get_string_from_utf8()
-		if shipment.to_utf8_buffer() != bytes:
-			return _error(-32602, "Bootstrap content must be UTF-8")
-		if not bootstrap_project.is_valid(): return _error(-32603, "Bootstrap unavailable")
-		return bootstrap_project.call(ProjectOpenings.normalized_path(path), shipment)
+		var arguments: Dictionary = params.duplicate()
+		arguments.erase("panel_secret")
+		var reply := DocketProjectBootstrap.new().execute(arguments, bootstrap_project)
+		return reply if reply.has("error") else {"result":reply}
 	if method in [PREFIX + "vault_challenge", PREFIX + "vault_unlock", PREFIX + "vault_lock", PREFIX + "vault_init"]:
 		var db: DocketDB = resolve_vault.call(params.get("path")) if resolve_vault.is_valid() else null
 		if db == null: return _error(-32602, "Vault request refused")
 		return VaultKeySession.handle(method.trim_prefix(PREFIX), params, db)
 	if method == PREFIX + "declare_schema":
-		if params.size() != 3 or not params.has("schema") or not params.has("version"):
-			return _error(-32602, "Invalid private parameters")
-		var declaration := TypeRegistryBootstrap.declare_schema(params.schema, params.version)
-		if declaration.has("error"): return _error(-32602, declaration.error)
-		if not declaration.idempotent and schema_adopted.is_valid(): schema_adopted.call()
-		return {"result":declaration}
+		var arguments: Dictionary = params.duplicate()
+		arguments.erase("panel_secret")
+		var reply := DocketSchemaDeclare.new().execute(arguments, schema_adopted)
+		return reply if reply.has("error") else {"result":reply}
 	if method != PREFIX + "status":
 		return _error(-32601, "Private method not found")
 	# status accepts exactly {panel_secret}; no grants, sessions, tool arguments

@@ -96,6 +96,9 @@ func _ready() -> void:
 	_registry = ToolRegistry.new()
 	_registry.init(_schema, _db, _project_dbs)
 
+	_registry.schema_adopted_fn = _adopt_schema
+	_registry.bootstrap_project_fn = _bootstrap_project
+
 	# Project management callables
 	if external_state != null:
 		_registry.add_project_fn = _gui_add_project

@@ -62,3 +62,32 @@ func test_ping() -> Variant:
 	var r = A.has_key(resp, "result")
 	if r is String: return r
 	return A.eq(resp.result, {}, "ping returns empty result")
+
+
+func test_public_schema_and_bootstrap_contracts() -> Variant:
+	var saved_schema := TypeRegistryBootstrap._declared_schema.duplicate(true)
+	var saved_version := TypeRegistryBootstrap._declared_version
+	var saved_opened := TypeRegistryBootstrap.projects_opened
+	TypeRegistryBootstrap._declared_schema = {}
+	TypeRegistryBootstrap._declared_version = ""
+	TypeRegistryBootstrap.projects_opened = false
+	var registry := ToolRegistry.new()
+	registry.init(TypeRegistryBootstrap.load_shipped_schema(), null)
+	var handler := McpHandler.new()
+	handler.init_with_registry(registry)
+	var schema := TypeRegistryBootstrap.load_shipped_schema()
+	var arguments: Dictionary = JSON.parse_string(JSON.stringify({"schema":schema, "version":"public-test"}))
+	var first := registry.call_tool("docket_schema_declare", arguments)
+	TypeRegistryBootstrap.projects_opened = true
+	var retry := registry.call_tool("docket_schema_declare", arguments)
+	arguments.version = "changed"
+	var refused: Dictionary = handler.handle({"id":1, "method":"tools/call", "params":{"name":"docket_schema_declare", "arguments":arguments}})
+	var bootstrap: Dictionary = handler.handle({"id":2, "method":"tools/call", "params":{"name":"docket_project_bootstrap", "arguments":{"path":"relative.dct", "content":"YQ=="}}})
+	TypeRegistryBootstrap._declared_schema = saved_schema
+	TypeRegistryBootstrap._declared_version = saved_version
+	TypeRegistryBootstrap.projects_opened = saved_opened
+	if first != {"version":"public-test", "idempotent":false} or retry != {"version":"public-test", "idempotent":true}: return "Public declaration contract changed"
+	if not refused.result.get("isError", false) or not refused.result.content[0].text is String: return "Declaration refusal is not MCP text"
+	if not bootstrap.result.get("isError", false) or not bootstrap.result.content[0].text is String: return "Bootstrap refusal is not MCP text"
+	if JSON.parse_string(bootstrap.result.content[0].text).code != -32602: return "Bootstrap error detail lost"
+	return true

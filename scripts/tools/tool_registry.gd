@@ -10,6 +10,8 @@ var _type_registry_diagnostics: Dictionary = {}
 var _tools: Dictionary = {}
 var add_project_fn: Callable  # func(path: String) -> Dictionary
 var remove_project_fn: Callable  # func(name: String) -> Dictionary
+var schema_adopted_fn: Callable
+var bootstrap_project_fn: Callable
 var gui_open_fn: Callable  # func(request: Dictionary) -> Dictionary
 signal hosted_item_changed(payload: Dictionary)
 
@@ -57,6 +59,8 @@ func _build_tools() -> Dictionary:
 		"docket_secret_promote": DocketSecretPromote.new(),
 		"docket_project_list": DocketProjectList.new(),
 		"docket_project_add": DocketProjectAdd.new(),
+		"docket_schema_declare": DocketSchemaDeclare.new(),
+		"docket_project_bootstrap": DocketProjectBootstrap.new(),
 		"docket_project_remove": DocketProjectRemove.new(),
 		"docket_project_close": DocketProjectClose.new(),
 		"docket_project_archive": DocketProjectArchive.new(),
@@ -166,7 +170,11 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	# These tools need access to all project DBs for cross-project operations
 	var baseline := _hosted_baseline(name, arguments)
 	var result: Dictionary
-	if name in ["docket_move", "docket_mirror", "docket_link", "docket_promote", "docket_subscribe", "docket_changes_since", "docket_unsubscribe", "docket_ack", "docket_subscription_status", "docket_receive", "docket_respond"]:
+	if name == "docket_schema_declare":
+		result = _tools[name].execute(arguments, schema_adopted_fn)
+	elif name == "docket_project_bootstrap":
+		result = _tools[name].execute(arguments, bootstrap_project_fn)
+	elif name in ["docket_move", "docket_mirror", "docket_link", "docket_promote", "docket_subscribe", "docket_changes_since", "docket_unsubscribe", "docket_ack", "docket_subscription_status", "docket_receive", "docket_respond"]:
 		result = _tools[name].execute(arguments, _schema, _db, _project_dbs)
 	elif name.begins_with("docket_type_") or name == "docket_saved_query":
 		var typed_db: DocketDB = _resolve_db(arguments)
