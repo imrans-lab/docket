@@ -7,7 +7,7 @@ root = tempfile.TemporaryDirectory(prefix='docket-http-')
 base = pathlib.Path(root.name).resolve()
 project = str(shutil.copytree(project, base / 'project', ignore=shutil.ignore_patterns('.git')))
 env = os.environ.copy()
-env.pop('HOME', None)
+if sys.platform != 'darwin': env.pop('HOME', None)
 env.pop('DOCKET_SESSION_DIR', None)
 args = [engine, '--headless', '--quiet', '--path', project, '--']
 children = []
@@ -28,7 +28,17 @@ def profile_env(name: str) -> tuple[dict[str, str], pathlib.Path]:
     child_env = env.copy()
     domain = base / (name + '-state')
     domain.mkdir(exist_ok=True)
-    for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'APPDATA', 'LOCALAPPDATA'):
+    if sys.platform == 'darwin':
+        keys = ('HOME',)
+        expected = domain / 'HOME' / 'Library' / 'Application Support' / 'Godot' / 'app_userdata' / 'Docket'
+    elif sys.platform == 'win32':
+        keys = ('APPDATA', 'LOCALAPPDATA')
+        expected = domain / 'APPDATA' / 'Godot' / 'app_userdata' / 'Docket'
+    else:
+        assert sys.platform == 'linux', 'unsupported fixture platform'
+        keys = ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME')
+        expected = domain / 'XDG_DATA_HOME' / 'godot' / 'app_userdata' / 'Docket'
+    for key in keys:
         child_env[key] = str(domain / key)
         pathlib.Path(child_env[key]).mkdir(exist_ok=True)
     # Probe the actual engine mapping on each OS before traffic or credentials.
@@ -38,6 +48,7 @@ def profile_env(name: str) -> tuple[dict[str, str], pathlib.Path]:
     assert result.returncode == 0, 'private userdir probe failed'
     profile = pathlib.Path(json.loads((base/'userdir-report.json').read_text()))
     assert base in profile.parents, 'engine profile outside scratch'
+    assert profile == expected, 'engine profile differs from launcher mapping'
     return child_env, profile
 
 def launch(name: str, extra: tuple[str, ...] | list[str] = ()) -> subprocess.Popen[bytes]:
@@ -58,6 +69,8 @@ def launch(name: str, extra: tuple[str, ...] | list[str] = ()) -> subprocess.Pop
         try:
             if request(p, 'ping', 0)['result'] == {}: break
         except (OSError, urllib.error.URLError): time.sleep(.05)
+    registration = json.loads((profile / 'instance.json').read_text())
+    assert registration['pid'] == p.pid and registration['endpoint']['port'] == port, 'child registration differs from launch'
     return p
 
 def request(p: subprocess.Popen[bytes], method: str, ident: str | int, params: dict[str, object] | None = None, receive_timeout: int = 30) -> dict[str, object]:
