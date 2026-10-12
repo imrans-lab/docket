@@ -53,11 +53,11 @@ func _parse_args() -> Dictionary:
 	# Exported binaries may not distinguish arguments after a `--` separator.
 	if args.is_empty():
 		args = Array(OS.get_cmdline_args())
-	return _parse_arg_values(args)
+	return _parse_arg_values(args, UserPrefs.load_mcp_port())
 
 
-func _parse_arg_values(args: Array) -> Dictionary:
-	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": ""}
+func _parse_arg_values(args: Array, default_port: int = UserPrefs.DEFAULT_MCP_PORT) -> Dictionary:
+	var opts := {"mode": "gui", "file": "", "files": [], "port": default_port, "query": ""}
 
 	var i := 0
 	while i < args.size():
@@ -198,7 +198,8 @@ func _start_server(opts: Dictionary) -> void:
 	_http_server.dct_paths = opts.get("files", [opts.file])
 	add_child(_http_server)
 	var file_list := ", ".join(PackedStringArray(opts.get("files", [opts.file])))
-	print("Docket MCP server listening on 127.0.0.1:%d — files: %s" % [opts.port, file_list])
+	if _http_server.is_serving():
+		print("Docket MCP server listening on 127.0.0.1:%d — files: %s" % [_http_server.port, file_list])
 
 
 func _start_gui(opts: Dictionary) -> void:
@@ -261,7 +262,8 @@ func _start_gui(opts: Dictionary) -> void:
 	server.port = opts.port
 	server.external_state = state
 	add_child(server)
-	print("Embedded MCP server on 127.0.0.1:%d" % opts.port)
+	if server.is_serving():
+		print("Embedded MCP server on 127.0.0.1:%d" % server.port)
 
 
 func _run_validate(opts: Dictionary) -> void:

@@ -198,3 +198,19 @@ func test_type_shortcut_persistence_normalizes_limits_and_order() -> Variant:
 	r = A.eq(loaded.pinned.slice(0, 2), ["pin-00", "pin-01"], "duplicate removed without changing order")
 	if r != true: return r
 	return A.eq(loaded.recent[0], "recent-00", "most recent ordering preserved")
+
+
+func test_mcp_port_roundtrip_and_cli_precedence() -> Variant:
+	_clear_prefs()
+	if UserPrefs.load_mcp_port() != 3010: return "Default MCP port changed"
+	UserPrefs.save_mcp_port(43123)
+	# Preference is parsed back through JSON, whose numbers are floats.
+	if UserPrefs.load_mcp_port() != 43123: return "MCP port did not persist"
+	UserPrefs.save_vault_password_hint("retained hint")
+	if UserPrefs.load_mcp_port() != 43123: return "Other preferences lost the port"
+	var main_script: GDScript = load("res://scripts/main.gd")
+	var main: Node = main_script.new()
+	var preferred: Dictionary = main._parse_arg_values([], UserPrefs.load_mcp_port())
+	var overridden: Dictionary = main._parse_arg_values(["--port", "43124"], UserPrefs.load_mcp_port())
+	main.free()
+	return true if preferred.port == 43123 and overridden.port == 43124 and UserPrefs.load_mcp_port() == 43123 else "CLI precedence changed saved preference"

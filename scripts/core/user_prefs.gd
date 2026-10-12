@@ -4,6 +4,7 @@ class_name UserPrefs
 ## Provides display name and initials for comments/authorship.
 
 const _PREFS_PATH := "user://docket_prefs.json"
+const DEFAULT_MCP_PORT := 3010
 const MAX_QUERY_TYPE_PINS := 50
 const MAX_QUERY_TYPE_RECENTS := 12
 
@@ -171,3 +172,16 @@ static func _normalized_shortcuts(value: Variant, limit: int) -> Array:
 	if result.size() > limit:
 		result.resize(limit)
 	return result
+
+
+static func load_mcp_port() -> int:
+	var value: Variant = _load_data().get("mcp_port", DEFAULT_MCP_PORT)
+	if not (value is int or value is float) or value != int(value) or value < 1 or value > 65535:
+		return DEFAULT_MCP_PORT
+	return int(value)
+
+
+static func save_mcp_port(port: int) -> void:
+	var data := _load_data()
+	data["mcp_port"] = port
+	_save_data(data)

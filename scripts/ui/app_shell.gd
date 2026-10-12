@@ -31,6 +31,7 @@ var _save_query_dialog: FileDialog
 var _prefs_dialog: ConfirmationDialog
 var _prefs_first: LineEdit
 var _prefs_last: LineEdit
+var _prefs_mcp_port: SpinBox
 var _prefs_vault_pw: LineEdit
 var _prefs_vault_hint: LineEdit
 var _project_vault_project: OptionButton
@@ -396,6 +397,15 @@ func _build_ui() -> void:
 	initials_note.text = "Initials are derived from your name (e.g. IP)."
 	initials_note.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 	prefs_vbox.add_child(initials_note)
+
+	var port_label := Label.new()
+	port_label.text = "MCP port (restart Docket to apply)"
+	prefs_vbox.add_child(port_label)
+	_prefs_mcp_port = SpinBox.new()
+	_prefs_mcp_port.min_value = 1
+	_prefs_mcp_port.max_value = 65535
+	_prefs_mcp_port.step = 1
+	prefs_vbox.add_child(_prefs_mcp_port)
 
 	# Vault password section
 	var vault_sep := HSeparator.new()
@@ -1238,6 +1248,7 @@ func _show_about() -> void:
 
 
 func _show_preferences() -> void:
+	_prefs_mcp_port.value = UserPrefs.load_mcp_port()
 	_prefs_first.text = _state.prefs.first_name
 	_prefs_last.text = _state.prefs.last_name
 	_prefs_vault_pw.text = UserPrefs.load_vault_password()
@@ -1352,6 +1363,7 @@ func _on_project_vault_action(action: String) -> void:
 
 
 func _on_prefs_confirmed() -> void:
+	UserPrefs.save_mcp_port(int(_prefs_mcp_port.value))
 	_state.prefs.first_name = _prefs_first.text.strip_edges()
 	_state.prefs.last_name = _prefs_last.text.strip_edges()
 	_state.prefs.save()

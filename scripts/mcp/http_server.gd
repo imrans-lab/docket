@@ -4,7 +4,7 @@ class_name DocketHttpServer
 ## Supports multiple .dct files loaded simultaneously.
 
 
-var port: int = 3010
+var port: int = UserPrefs.DEFAULT_MCP_PORT
 var dct_path: String = "docket.dct"
 var dct_paths: Array = []  # Multiple --file paths
 var external_db: DocketDB = null
@@ -30,13 +30,13 @@ func _ready() -> void:
 	_server = TCPServer.new()
 	var err := _server.listen(port, "127.0.0.1")
 	if err != OK:
-		push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
+		_startup_failed("Failed to listen on port %d: %s" % [port, error_string(err)])
 		return
 	port = _server.get_local_port()
 	SessionProject.set_endpoint(port)
 	var profile := ProjectSettings.globalize_path("user://")
 	_registration = InstanceRegistration.new(profile, OS.get_process_id(), Time.get_datetime_string_from_system(true) + "Z")
-	_publish_registration()
+	if not _publish_registration(): return
 
 	if external_state != null:
 		# GUI mode — track AppState, stay in sync on file changes
@@ -166,11 +166,36 @@ func _gui_add_project(path: String) -> Dictionary:
 	return external_state.add_project_result(path)
 
 
-func _publish_registration() -> void:
+func _publish_registration() -> bool:
 	_registered_port = _server.get_local_port()
 	var registration_status := _registration.publish(BuildInfo.identity(), McpHandler.PROTOCOL_VERSION, _registered_port)
 	if registration_status != "registered":
-		printerr("Docket instance registration: " + registration_status + "; HTTP serving continues")
+		_startup_failed("Instance registration failed: " + registration_status)
+		return false
+	return true
+
+
+func is_serving() -> bool:
+	return _server != null and _server.is_listening() and _registration != null and _registration.status == "registered"
+
+
+func _startup_failed(message: String) -> void:
+	printerr("Docket: " + message)
+	if _server != null: _server.stop()
+	set_process(false)
+	if DisplayServer.get_name() == "headless":
+		get_tree().quit(2)
+		return
+	var dialog := AcceptDialog.new()
+	dialog.title = "Docket could not start"
+	dialog.dialog_text = message + "\nDocket will close."
+	dialog.ok_button_text = "Close Docket"
+	dialog.exclusive = true
+	dialog.confirmed.connect(func() -> void: get_tree().quit(2))
+	dialog.close_requested.connect(func() -> void: get_tree().quit(2))
+	get_tree().root.close_requested.connect(func() -> void: get_tree().quit(2))
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(520, 160))
 
 
 func _gui_remove_project(proj_name: String) -> Dictionary:
@@ -280,7 +305,7 @@ func _process(_delta: float) -> void:
 	if _server == null or not _server.is_listening():
 		return
 	if _registration != null and _server.get_local_port() != _registered_port:
-		_publish_registration()
+		if not _publish_registration(): return
 
 	# Accept new connections
 	while _server.is_connection_available():

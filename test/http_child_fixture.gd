@@ -70,8 +70,12 @@ def request(p: subprocess.Popen[bytes], method: str, ident: str | int, params: d
 
 def finish(p: subprocess.Popen[bytes]) -> None:
     # HTTP clients do not own server lifetime. Settle before stopping our PID.
-    reply = request(p, 'tools/call', 'settle', dict(name='docket_flush', arguments={}))
-    assert not reply['result'].get('isError'), 'fixture flush failed'
+    listed = request(p, 'tools/call', 'openings', dict(name='docket_project_list', arguments={}))['result']
+    for opening in json.loads(listed['content'][0]['text'])['projects']:
+        # Corrupt/future-format scenarios deliberately retain read-only projects.
+        if opening['read_only_reason']: continue
+        reply = request(p, 'tools/call', 'settle', dict(name='docket_flush', arguments={'project':opening['name']}))
+        assert not reply['result'].get('isError'), 'fixture flush failed'
     p.terminate()
     p.wait(timeout=30)
     p.stdin.close()
