@@ -77,6 +77,9 @@ try:
     changed = copy.deepcopy(schema); changed['types']['kb']['description'] = 'conflict'
     conflicting = declare(p, value=changed)['result']
     assert any(row['conflicts'] for row in conflicting['projects']), 'existing meaning conflict not reported'
+    legacy_report = next(row for row in conflicting['projects'] if row['name'] == 'legacy')
+    assert legacy_report['conflicts'] == [dict(slug='kb', reason='legacy project: declared meaning now in effect')], legacy_report
+    assert call(p, 'docket_type_get', dict(project='legacy', type='kb'))['description'] == 'conflict'
     assert declare(p, label='different')['result']['version'] == 'different'
     assert request(p, 'tools/list', 0) == unchanged and old.read_bytes() == before
     assert fields(p, 'fresh', 'hint') == fields(p, 'legacy', 'hint')
