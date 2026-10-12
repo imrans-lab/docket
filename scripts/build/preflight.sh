@@ -92,7 +92,7 @@ if command -v gitleaks >/dev/null 2>&1; then
 		&& gitleaks dir . -c .gitleaks.toml --no-banner --redact >/dev/null 2>&1; then
 		pass "gitleaks: no leaks in history or working tree"
 	else
-		fail "gitleaks found a leak — inspect the redacted range report"
+		fail "gitleaks found a leak — inspect its redacted report"
 	fi
 else
 	warn "gitleaks not installed locally (CI runs it) — brew install gitleaks"
