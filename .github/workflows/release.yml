@@ -24,6 +24,7 @@ permissions:
 
 jobs:
   build:
+    timeout-minutes: 60
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -283,6 +284,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    timeout-minutes: 60
     name: Sign checksums and publish release
     needs: build
     if: github.event_name == 'push' || inputs.publish

@@ -88,7 +88,7 @@ fi
 # ruleset for hundreds of providers and scans history, not just the tip. CI runs
 # it unconditionally; locally it is used when installed.
 if command -v gitleaks >/dev/null 2>&1; then
-	if gitleaks git . -c .gitleaks.toml --log-opts="${SECRET_SCAN_RANGE:-HEAD^..HEAD}" --no-banner --redact=100 >/dev/null 2>&1 \
+	if gitleaks git . -c .gitleaks.toml --no-banner --redact=100 >/dev/null 2>&1 \
 		&& gitleaks dir . -c .gitleaks.toml --no-banner --redact >/dev/null 2>&1; then
 		pass "gitleaks: no leaks in history or working tree"
 	else

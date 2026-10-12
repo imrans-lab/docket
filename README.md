@@ -160,3 +160,9 @@ branch scans start at the merge base with the target branch.
 Dispatch `ci.yml` for the full three-OS suite and isolated watcher test. The
 `release.yml` tag lane keeps its existing suites and is exempt from the branch
 push deadline; signing/publication still requires its existing explicit input.
+
+Tag-only release wrappers are exempt from the branch deadline and call the
+same reusable build/package lane. Existing tag publication remains available;
+branch pushes never execute those functional or publishing jobs. The lint also
+checks local composite actions and rejects dependency chains whose declared
+branch-job deadlines sum to more than ten minutes.
