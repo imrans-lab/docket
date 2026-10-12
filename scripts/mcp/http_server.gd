@@ -74,7 +74,6 @@ func _ready() -> void:
 				if proj_name.is_empty():
 					proj_name = str(path).get_file().get_basename()
 					loaded_db.set_project_name(proj_name)
-				TypeRegistryBootstrap.projects_opened = true
 				_project_dbs[proj_name] = loaded_db
 				if _db == null:
 					_db = loaded_db  # First DB is primary
@@ -257,7 +256,6 @@ func _headless_add_project(path: String) -> Dictionary:
 		loaded_db.close()
 		return {"error": refusal}
 	if _db == null or (replaces_memory and _db == existing): _db = loaded_db
-	TypeRegistryBootstrap.projects_opened = true
 	_project_dbs[proj_name] = loaded_db
 	_registry.update_db(_schema, _db, _project_dbs)
 	_persist_headless_session()

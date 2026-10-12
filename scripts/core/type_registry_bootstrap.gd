@@ -45,7 +45,6 @@ static func load_shipped_schema() -> Dictionary:
 
 static var _declared_schema: Dictionary = {}
 static var _declared_version: String = ""
-static var projects_opened: bool = false
 
 static func effective_schema() -> Dictionary:
 	return load_shipped_schema() if _declared_schema.is_empty() else _declared_schema.duplicate(true)
@@ -54,7 +53,6 @@ static func declare_schema(schema: Variant, version: Variant) -> Dictionary:
 	if not version is String or version.strip_edges().is_empty(): return {"error":"Schema version must be a nonempty string"}
 	if not schema is Dictionary: return {"error":"Schema must be an object"}
 	if version == _declared_version and schema == _declared_schema: return {"version":version,"idempotent":true}
-	if projects_opened: return {"error":"Cannot change schema after projects have opened"}
 	var error := validate_schema(schema)
 	if not error.is_empty(): return {"error":error}
 	_declared_schema = schema.duplicate(true)
@@ -181,3 +179,47 @@ static func seed_cache(db: DocketDB, schema: Dictionary = {}) -> String:
 		db._rollback()
 		return error
 	return ""
+
+
+static func apply_to_open_projects(project_dbs: Dictionary) -> Array[Dictionary]:
+	## Existing v2 snapshots and item pins never change. Only absent starter
+	## types are installed; public custom-type guards retain their own contract.
+	var reports: Array[Dictionary] = []
+	var starter := records(effective_schema())
+	var revisions := {}
+	for revision: Dictionary in starter.type_def_versions:
+		revisions[revision.id] = revision
+	var names: Array = project_dbs.keys()
+	names.sort()
+	for name: String in names:
+		var db: DocketDB = project_dbs[name]
+		var registry := TypeRegistry.for_db(db, name)
+		var report := {"name":name, "activated":[], "conflicts":[]}
+		var error := registry.refresh_if_changed()
+		if error.is_empty(): error = registry.get_diagnostic()
+		var missing: Array[Dictionary] = []
+		for record: Dictionary in starter.type_defs:
+			if not error.is_empty():
+				report.conflicts.append({"slug":record.slug, "reason":error})
+				continue
+			var current := registry.get_type(record.slug)
+			if current.has("error"):
+				missing.append(record)
+			elif not registry.is_legacy() and registry._semantic_definition_hash(current.definition) != registry._semantic_definition_hash(revisions[record.current_revision].definition):
+				report.conflicts.append({"slug":record.slug, "reason":"Existing type has different immutable meaning; left unchanged"})
+		if error.is_empty() and registry.is_legacy():
+			# Legacy projects have derived views, not persisted type snapshots.
+			error = registry.reload()
+			for record: Dictionary in missing:
+				if error.is_empty(): report.activated.append(record.slug)
+				else: report.conflicts.append({"slug":record.slug, "reason":error})
+		elif error.is_empty():
+			for record: Dictionary in missing:
+				# Use the bootstrap's protected active record, through the existing
+				# checked canonical transaction. Never repin or replace a type.
+				error = (db as DocketDBJsonl).apply_registry_change(record, revisions[record.current_revision], [], [], "")
+				if error.is_empty(): error = registry.reload()
+				if error.is_empty(): report.activated.append(record.slug)
+				else: report.conflicts.append({"slug":record.slug, "reason":error})
+		reports.append(report)
+	return reports

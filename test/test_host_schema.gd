@@ -75,7 +75,9 @@ try:
     unchanged = request(p, 'tools/list', 0)
     assert declare(p)['result']['idempotent']
     changed = copy.deepcopy(schema); changed['types']['kb']['description'] = 'conflict'
-    assert declare(p, value=changed).get('error') and declare(p, label='different').get('error')
+    conflicting = declare(p, value=changed)['result']
+    assert any(row['conflicts'] for row in conflicting['projects']), 'existing meaning conflict not reported'
+    assert declare(p, label='different')['result']['version'] == 'different'
     assert request(p, 'tools/list', 0) == unchanged and old.read_bytes() == before
     assert fields(p, 'fresh', 'hint') == fields(p, 'legacy', 'hint')
     finish(p)
@@ -99,7 +101,6 @@ func test_real_child_declaration_and_stored_semantics() -> Variant:
 
 var _saved_schema: Dictionary
 var _saved_version: String
-var _saved_opened: bool
 const DIR := "user://test_host_schema"
 
 func setup() -> void:
@@ -108,15 +109,12 @@ func setup() -> void:
 func before_each() -> void:
 	_saved_schema = TypeRegistryBootstrap._declared_schema.duplicate(true)
 	_saved_version = TypeRegistryBootstrap._declared_version
-	_saved_opened = TypeRegistryBootstrap.projects_opened
 	TypeRegistryBootstrap._declared_schema = {}
 	TypeRegistryBootstrap._declared_version = ""
-	TypeRegistryBootstrap.projects_opened = false
 
 func after_each() -> void:
 	TypeRegistryBootstrap._declared_schema = _saved_schema
 	TypeRegistryBootstrap._declared_version = _saved_version
-	TypeRegistryBootstrap.projects_opened = _saved_opened
 
 func teardown() -> void:
 	var directory := DirAccess.open(DIR)
@@ -167,8 +165,42 @@ func test_declaration_copy_replacement_and_gui_guards() -> Variant:
 	var adopted := TypeRegistryBootstrap.effective_schema()
 	adopted.types.kb.description = "escaped"
 	if TypeRegistryBootstrap.effective_schema().types.kb.description != "next": return "Effective schema leaked mutable state"
-	TypeRegistryBootstrap.projects_opened = true
 	if not TypeRegistryBootstrap.declare_schema(schema, "next").get("idempotent", false): return "Exact after-open retry refused"
 	schema.types.kb.description = "conflict"
-	if not TypeRegistryBootstrap.declare_schema(schema, "next").has("error"): return "Same-version changed body accepted"
+	if TypeRegistryBootstrap.declare_schema(schema, "next").has("error"): return "Valid changed starter declaration refused"
 	return true
+
+
+func test_after_open_installs_missing_and_preserves_stored_meanings() -> Variant:
+	var path := DIR + "/after-open.dct"
+	var db := DocketDBJsonl.create_new_jsonl(path)
+	if db == null: return "Cannot create synthetic v2"
+	var registry := TypeRegistry.for_db(db)
+	var made := registry.create_item({"type":"kb", "title":"pinned", "article":"original"})
+	if made.has("error"): db.close(); return made.error
+	var item: Dictionary = db.get_item(made.id)
+	var kb := registry.get_type("kb")
+	var chore := registry.get_type("chore")
+	var schema := TypeRegistryBootstrap.load_shipped_schema()
+	schema.types.kb.description = "different immutable meaning"
+	schema.types["widget"] = schema.types.chore.duplicate(true)
+	var tools := ToolRegistry.new()
+	tools.init(TypeRegistryBootstrap.effective_schema(), db, {"stored":db})
+	var args := {"schema":schema, "version":"after-open"}
+	var declared := tools.call_tool("docket_schema_declare", args)
+	var expected := [{"name":"stored", "activated":["widget"], "conflicts":[{"slug":"kb", "reason":"Existing type has different immutable meaning; left unchanged"}]}]
+	var valid: bool = declared.get("projects") == expected and declared.get("idempotent") == false
+	registry.reload()
+	valid = valid and registry.get_type("kb") == kb and registry.get_type("chore") == chore and db.get_item(made.id) == item
+	var widget := registry.get_type("widget")
+	valid = valid and not widget.has("error") and widget.get("id") == "builtin:widget" and widget.get("lifecycle") == "active" and widget.get("definition", {}).get("protected") == true
+	if not widget.has("error"):
+		valid = valid and not registry.activate_type("widget", widget.current_revision, "tester", "guard").is_empty()
+		valid = valid and not registry.deprecate_type("widget", widget.current_revision, "tester", "guard").is_empty()
+	var before_retry := FileAccess.get_file_as_string(path)
+	var retry := tools.call_tool("docket_schema_declare", args)
+	valid = valid and retry.get("idempotent") == true and retry.get("projects", [{}])[0].get("activated") == [] and FileAccess.get_file_as_string(path) == before_retry
+	valid = valid and tools.call_tool("docket_schema_declare", {"schema":{}, "version":"invalid"}).has("error") and TypeRegistryBootstrap.effective_schema() == schema
+	valid = valid and not registry.create_item({"type":"widget", "title":"usable"}).has("error")
+	db.close()
+	return true if valid else "After-open report, protected starter, stored meanings, pins, retry or validation changed"

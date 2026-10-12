@@ -166,7 +166,9 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 	# These tools need access to all project DBs for cross-project operations
 	var result: Dictionary
 	if name == "docket_schema_declare":
-		result = _tools[name].execute(arguments, schema_adopted_fn)
+		var projects := _project_dbs.duplicate()
+		if _db != null and not _db in projects.values(): projects[_db.get_project_name()] = _db
+		result = _tools[name].execute(arguments, schema_adopted_fn, projects)
 	elif name == "docket_project_bootstrap":
 		result = _tools[name].execute(arguments, bootstrap_project_fn)
 	elif name in ["docket_move", "docket_mirror", "docket_link", "docket_promote", "docket_subscribe", "docket_changes_since", "docket_unsubscribe", "docket_ack", "docket_subscription_status", "docket_receive", "docket_respond"]:
