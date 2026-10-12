@@ -19,9 +19,10 @@ func get_definition() -> Dictionary:
 func execute(args: Dictionary, schema_adopted: Callable, project_dbs: Dictionary = {}) -> Dictionary:
 	if args.size() != 2 or not args.has("schema") or not args.has("version"):
 		return _error(-32602, "Invalid schema parameters")
+	var previous_schema := TypeRegistryBootstrap.effective_schema()
 	var declaration := TypeRegistryBootstrap.declare_schema(args.schema, args.version)
 	if declaration.has("error"): return _error(-32602, declaration.error)
-	declaration["projects"] = TypeRegistryBootstrap.apply_to_open_projects(project_dbs)
+	declaration["projects"] = TypeRegistryBootstrap.apply_to_open_projects(project_dbs, previous_schema)
 	if schema_adopted.is_valid(): schema_adopted.call()
 	return declaration
 

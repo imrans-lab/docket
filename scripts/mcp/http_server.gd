@@ -190,6 +190,7 @@ func _startup_failed(message: String) -> void:
 	dialog.dialog_text = message + "\nDocket will close."
 	dialog.ok_button_text = "Close Docket"
 	dialog.exclusive = true
+	dialog.canceled.connect(func() -> void: get_tree().quit(2))
 	dialog.confirmed.connect(func() -> void: get_tree().quit(2))
 	dialog.close_requested.connect(func() -> void: get_tree().quit(2))
 	get_tree().root.close_requested.connect(func() -> void: get_tree().quit(2))

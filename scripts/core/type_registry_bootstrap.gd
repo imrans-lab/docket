@@ -181,11 +181,14 @@ static func seed_cache(db: DocketDB, schema: Dictionary = {}) -> String:
 	return ""
 
 
-static func apply_to_open_projects(project_dbs: Dictionary) -> Array[Dictionary]:
+static func apply_to_open_projects(project_dbs: Dictionary, previous_schema: Dictionary) -> Array[Dictionary]:
 	## Existing v2 snapshots and item pins never change. Only absent starter
 	## types are installed; public custom-type guards retain their own contract.
 	var reports: Array[Dictionary] = []
 	var starter := records(effective_schema())
+	var previous_definitions := {}
+	for revision: Dictionary in records(previous_schema).type_def_versions:
+		previous_definitions[revision.definition.slug] = revision.definition
 	var revisions := {}
 	for revision: Dictionary in starter.type_def_versions:
 		revisions[revision.id] = revision
@@ -203,10 +206,14 @@ static func apply_to_open_projects(project_dbs: Dictionary) -> Array[Dictionary]
 				report.conflicts.append({"slug":record.slug, "reason":error})
 				continue
 			var current := registry.get_type(record.slug)
+			if registry.is_legacy():
+				# Refresh may already derive the new view; compare the pre-declaration
+				# starter rather than losing the legacy meaning-change notice.
+				current = {"definition":previous_definitions[record.slug]} if previous_definitions.has(record.slug) else {"error":"missing"}
 			if current.has("error"):
 				missing.append(record)
-			elif not registry.is_legacy() and registry._semantic_definition_hash(current.definition) != registry._semantic_definition_hash(revisions[record.current_revision].definition):
-				report.conflicts.append({"slug":record.slug, "reason":"Existing type has different immutable meaning; left unchanged"})
+			elif registry._semantic_definition_hash(current.definition) != registry._semantic_definition_hash(revisions[record.current_revision].definition):
+				report.conflicts.append({"slug":record.slug, "reason":"legacy project: declared meaning now in effect" if registry.is_legacy() else "Existing type has different immutable meaning; left unchanged"})
 		if error.is_empty() and registry.is_legacy():
 			# Legacy projects have derived views, not persisted type snapshots.
 			error = registry.reload()

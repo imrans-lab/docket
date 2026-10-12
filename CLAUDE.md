@@ -11,5 +11,5 @@ Before writing or reviewing code, read Docket `Master:01a11a91820a` (policy) and
 
 ## Non-obvious hazards
 
-- STDIO must use `--quiet`; keep diagnostics off stdout and never enable `--log-file` (authorized vault replies may contain secrets). Close stdin, drain output and wait for clean settlement before replacing the process.
-- `--state-dir` does not isolate Godot's engine profile or redirect project/cache paths. Isolate child XDG/APPDATA paths. Opening a `.dct` can write sibling caches or recovery data; it is not a read-only binding.
+- Authorized vault replies may contain secrets; do not capture HTTP response bodies or enable diagnostic logging that exposes them.
+- Isolate child XDG/APPDATA paths. Opening a `.dct` can write sibling caches or recovery data; it is not a read-only binding.
