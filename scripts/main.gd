@@ -15,36 +15,13 @@ const FrameProbe := preload("res://scripts/ui/frame_probe.gd")
 
 var _test_runner: Node
 var _http_server: Node
-var _host_authority: DocketHostAuthority
 
 
 func _ready() -> void:
 	var opts := _parse_args()
-	DocketRuntimeState.stdio = opts.stdio
-	var authority := DocketHostAuthority.new()
-	var auth_error := authority.configure_from_environment(opts.host_authority, opts.stdio)
-	if not auth_error.is_empty():
-		printerr("Docket: %s" % auth_error)
-		DocketRuntimeState.quit(get_tree(), 2)
-		return
-	if opts.host_authority:
-		_host_authority = authority
-		DocketRuntimeState.hosted = true
-		if not opts.files.is_empty() or opts.restore_session:
-			printerr("Docket: hosted startup cannot open files or restore a session before schema declaration")
-			DocketRuntimeState.quit(get_tree(), 2)
-			return
-
-	# Godot consumes --quiet before exposing cmdline args; inspect its effect.
-	if opts.stdio and (opts.mode not in ["serve", "gui"] or Engine.print_to_stdout or opts.state_dir.is_empty()):
-		printerr("Docket: --stdio requires --quiet and a private absolute --state-dir (add --serve for headless)")
-		DocketRuntimeState.quit(get_tree(), 2)
-		return
-
-	var state_error := DocketRuntimeState.configure(opts.state_dir, opts.restore_session)
-	if not state_error.is_empty():
-		printerr("Docket: %s" % state_error)
-		DocketRuntimeState.quit(get_tree(), 2)
+	if opts.has("error"):
+		printerr("Docket: %s" % opts.error)
+		get_tree().quit(2)
 		return
 
 	match opts.mode:
@@ -80,7 +57,7 @@ func _parse_args() -> Dictionary:
 
 
 func _parse_arg_values(args: Array) -> Dictionary:
-	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": "", "stdio": false, "host_authority": false, "state_dir": "", "restore_session": false}
+	var opts := {"mode": "gui", "file": "", "files": [], "port": 3010, "query": ""}
 
 	var i := 0
 	while i < args.size():
@@ -89,16 +66,8 @@ func _parse_arg_values(args: Array) -> Dictionary:
 				opts.mode = "help"
 			"--serve", "serve":
 				opts.mode = "serve"
-			"--host-authority":
-				opts.host_authority = true
-			"--stdio":
-				opts.stdio = true
-			"--state-dir":
-				if i + 1 < args.size():
-					i += 1
-					opts.state_dir = str(args[i])
-			"--restore-session":
-				opts.restore_session = true
+			"--stdio", "--host-authority", "--state-dir", "--restore-session":
+				return {"error":"Unknown option: %s. Docket serves HTTP using its standalone profile." % args[i]}
 			"--build-info":
 				opts.mode = "build_info"
 			"--test", "test":
@@ -134,7 +103,7 @@ func _parse_arg_values(args: Array) -> Dictionary:
 		i += 1
 
 	# If no file specified, find one in cwd (only for non-GUI modes)
-	if opts.file.is_empty() and opts.mode != "gui" and not opts.stdio:
+	if opts.file.is_empty() and opts.mode != "gui":
 		opts.file = _find_dct_in_cwd()
 	if not opts.file.is_empty() and opts.files.is_empty():
 		opts.files.append(opts.file)
@@ -185,10 +154,6 @@ func _print_help() -> void:
 	print("  --file <path.dct>   Data file to open (repeatable for multi-project)")
 	print("  --query <path.dcq>  Load a .dcq query file on startup")
 	print("  --serve             Run as headless MCP server (no GUI)")
-	print("  --stdio             Use newline JSON-RPC (requires --quiet --state-dir)")
-	print("  --host-authority    Enable private host authentication (stdio only)")
-	print("  --state-dir <dir>   Private absolute state directory (required for stdio)")
-	print("  --restore-session  Deliberately restore the private profile session")
 	print("  --port <number>     MCP server port (default: 3010)")
 	print("  --build-info        Print embedded build identity and exit")
 	print("  --test              Run tests and exit")
@@ -228,23 +193,12 @@ func _run_tests() -> void:
 func _start_server(opts: Dictionary) -> void:
 	var ServerScript = load("res://scripts/mcp/http_server.gd")
 	_http_server = ServerScript.new()
-	_http_server.stdio = opts.stdio
-	_http_server.host_authority = _host_authority
 	_http_server.port = opts.port
 	_http_server.dct_path = opts.file
 	_http_server.dct_paths = opts.get("files", [opts.file])
 	add_child(_http_server)
 	var file_list := ", ".join(PackedStringArray(opts.get("files", [opts.file])))
-	if opts.stdio:
-		return
 	print("Docket MCP server listening on 127.0.0.1:%d — files: %s" % [opts.port, file_list])
-
-
-func _print_gui_startup(message: String, stdio: bool) -> void:
-	if stdio:
-		printerr(message)
-	else:
-		print(message)
 
 
 func _start_gui(opts: Dictionary) -> void:
@@ -268,20 +222,20 @@ func _start_gui(opts: Dictionary) -> void:
 
 	if files.size() > 0:
 		# Explicit --file args: load those
-		_print_gui_startup("Docket GUI — file: %s" % opts.file, opts.stdio)
+		print("Docket GUI — file: %s" % opts.file)
 		state.load_projects(files)
 	else:
 		# No --file args: try session restore
-		var session_paths := UserPrefs.load_session() if DocketRuntimeState.may_restore_session() else PackedStringArray()
+		var session_paths := UserPrefs.load_session()
 		var valid_paths := PackedStringArray()
 		for p in session_paths:
 			if FileAccess.file_exists(p):
 				valid_paths.append(p)
 		if valid_paths.size() > 0:
-			_print_gui_startup("Docket GUI — restoring %d project(s) from session" % valid_paths.size(), opts.stdio)
+			print("Docket GUI — restoring %d project(s) from session" % valid_paths.size())
 			state.load_projects(Array(valid_paths))
 		else:
-			_print_gui_startup("Docket GUI — empty workspace", opts.stdio)
+			print("Docket GUI — empty workspace")
 
 	state.project_opened.connect(shell._add_to_recent)
 
@@ -305,12 +259,9 @@ func _start_gui(opts: Dictionary) -> void:
 	var ServerScript = load("res://scripts/mcp/http_server.gd")
 	var server = ServerScript.new()
 	server.port = opts.port
-	server.stdio = opts.stdio
-	server.host_authority = _host_authority
 	server.external_state = state
 	add_child(server)
-	if not opts.stdio:
-		print("Embedded MCP server on 127.0.0.1:%d" % opts.port)
+	print("Embedded MCP server on 127.0.0.1:%d" % opts.port)
 
 
 func _run_validate(opts: Dictionary) -> void:

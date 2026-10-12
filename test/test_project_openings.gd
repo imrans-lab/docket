@@ -1,9 +1,8 @@
 extends Node
 ## Literal descriptor contract and lifecycle through actual hosted children.
-const StdioFixture := preload("res://test/test_stdio_transport.gd")
+const HttpFixture := preload("res://test/http_child_fixture.gd")
 const DRIVER := """
 import re
-env['DOCKET_PANEL_SECRET'] = 'a' * 64
 schema = {'types': {'chore': {'label': 'Chore', 'states': ['open', 'done'], 'initial_state': 'open', 'terminal_states': ['done'], 'transitions': {'open': ['done'], 'done': []}, 'required_fields': ['title'], 'optional_fields': []}}}
 
 def call(p, name, arguments, failure=False):
@@ -16,10 +15,9 @@ def listed(p):
     return call(p, 'docket_project_list', {})['projects']
 
 def hosted(name):
-    p = launch(name, ['--host-authority'])
+    p = launch(name)
     assert listed(p) == []
-    reply = request(p, 'docket/panel/declare_schema', 91, dict(panel_secret='a' * 64, schema=schema, version='opening-fixture'))
-    assert 'result' in reply, reply
+    call(p, 'docket_schema_declare', dict(schema=schema, version='opening-fixture'))
     return p
 
 def descriptor(value, path, primary=True):
@@ -34,7 +32,6 @@ try:
     for path in (first, other):
         path.write_text(json.dumps(dict(_type='meta', version='1.0.0', counter=0, id_prefix='SHR', project='shared', name='spoof', path='spoof', open_generation='spoof', primary=False)) + '\\n')
     for gui in (False, True):
-        if gui: args.remove('--serve')
         p = hosted('hosted-%s' % gui)
         opened = call(p, 'docket_project_add', dict(path=str(first)))
         descriptor(opened, first)
@@ -111,10 +108,7 @@ finally:
 """
 
 func test_real_hosted_children_and_startup() -> Variant:
-	var driver := StdioFixture.DRIVER.replace("\r\n", "\n")
-	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
-	if helpers == driver: return "stdio driver slice marker not found"
-	helpers = helpers.replace(", '--file', str(base / (name + '.dct'))", "")
+	var helpers := HttpFixture.DRIVER
 	var source := "import sys\nscenario = sys.argv.pop()\n" + helpers + DRIVER
 	var output: Array = []
 	var python := "python" if OS.get_name() == "Windows" else "python3"
@@ -266,7 +260,7 @@ func test_session_ownership_and_memory_descriptors_survive_refusals() -> Variant
 		return "Memory descriptor lost usage or storage semantics"
 	return true
 
-# Drive the same private callback as stdio without starting a second listener.
+# Exercise bootstrap orchestration without starting a second listener.
 func _bootstrap_server() -> DocketHttpServer:
 	var server := DocketHttpServer.new()
 	server.external_state = _state
@@ -406,7 +400,7 @@ func test_bootstrap_vault_metadata_movement_invalidates_real_key_session() -> Va
 	fixture.free()
 	return result
 
-func test_bootstrap_privacy_logging_on_negative_control() -> Variant:
+func test_bootstrap_privacy_scan_negative_control() -> Variant:
 	var fixture := preload("res://test/test_host_vault.gd").new()
 	var result: Variant = fixture.run_actual_child(BOOTSTRAP_DRIVER.replace("negative = False", "negative = True"))
 	fixture.free()
@@ -440,12 +434,20 @@ password = secrets.token_hex(24)
 value = secrets.token_hex(24)
 salt = secrets.token_bytes(16)
 key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 10000)
-auth = secrets.token_hex(32)
-env['DOCKET_PANEL_SECRET'] = auth
 schema = json.loads((pathlib.Path(project) / 'data/schema.json').read_text())
 
 def private(p, name, fields):
-    return request(p, 'docket/panel/' + name, 93, dict(panel_secret=auth, **fields), receive_timeout=30)
+    if name in ('declare_schema', 'bootstrap_project'):
+        tool = 'docket_schema_declare' if name == 'declare_schema' else 'docket_project_bootstrap'
+        arguments = fields
+    else:
+        tool = 'docket_vault_control'
+        arguments = dict(fields)
+        path = arguments.pop('path')
+        projects = call(p, 'docket_project_list', {})['projects']
+        arguments.update(project=next(row['name'] for row in projects if row['path'] == pathlib.Path(path).as_posix()), action='status' if name == 'vault_challenge' else name.removeprefix('vault_'))
+    reply = request(p, 'tools/call', 93, dict(name=tool, arguments=arguments), receive_timeout=30)['result']
+    return {'error':reply['content'][0]['text']} if reply.get('isError') else {'result':json.loads(reply['content'][0]['text'])}
 
 def call(p, name, fields, failure=False):
     reply = request(p, 'tools/call', 94, dict(name=name, arguments=fields))
@@ -454,7 +456,7 @@ def call(p, name, fields, failure=False):
     return text if failure else json.loads(text)
 
 def opened(name, path):
-    p = launch(name, ['--host-authority'])
+    p = launch(name)
     assert 'result' in private(p, 'declare_schema', dict(schema=schema, version='bootstrap-privacy')), 'declare stage'
     call(p, 'docket_project_add', dict(path=str(path)))
     descriptor = private(p, 'vault_challenge', dict(path=str(path)))['result']
@@ -474,11 +476,6 @@ def scan():
             if path.suffix == '.stderr': assert b'SCRIPT ERROR' not in data, 'child script error'
 
 try:
-    if negative:
-        settings = pathlib.Path(project) / 'project.godot'
-        text = settings.read_text()
-        assert 'file_logging/enable_file_logging=false' in text and 'file_logging/enable_file_logging.pc=false' in text, 'logging mutation stage'
-        settings.write_text(text.replace('file_logging/enable_file_logging=false', 'file_logging/enable_file_logging=true').replace('file_logging/enable_file_logging.pc=false', 'file_logging/enable_file_logging.pc=true'))
     path = base / 'vault.dct'
     metadata = dict(_type='meta', version='1.0.0', counter=0, id_prefix='VLT', project='vault', vault_kdf_iterations=10000, vault_salt=base64.b64encode(salt).decode(), vault_verify=base64.b64encode(hmac.new(key, b'docket-vault-verify', hashlib.sha256).digest()).decode())
     path.write_text(json.dumps(metadata) + '\\n')
@@ -504,14 +501,15 @@ try:
         assert disk['vault_salt'] == moved_salt, 'bootstrap moved salt stage'
         assert disk['version'] == '1.0.0', 'bootstrap seeded format preservation stage'
     finish(p)
-    scan()  # after actual graceful EOF and before cleanup/reopen
-    assert not negative, 'logging control failed to detect leak'
+    if negative: (base/'injected-log.txt').write_text(value)
+    scan()  # after termination and before cleanup/reopen
+    assert not negative, 'privacy scan control failed to detect leak'
     interrupted = base / 'interrupted.dct'
     interrupted.write_bytes(original)
     p, fields = opened('bootstrap-interrupted', interrupted)
     assert call(p, 'docket_secret_get', dict(handle='entry'))['value'] == value, 'interrupt read stage'
     p.terminate(); p.wait(timeout=10)
-    remaining_stdout(p)
+    p.stdout.read()
     scan()  # after bounded termination, before artifact cleanup
     print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
 except BaseException as error:

@@ -50,9 +50,6 @@ static var projects_opened: bool = false
 static func effective_schema() -> Dictionary:
 	return load_shipped_schema() if _declared_schema.is_empty() else _declared_schema.duplicate(true)
 
-static func opening_refusal() -> String:
-	return "Host schema must be declared before opening projects" if DocketRuntimeState.hosted and _declared_schema.is_empty() else ""
-
 static func declare_schema(schema: Variant, version: Variant) -> Dictionary:
 	if not version is String or version.strip_edges().is_empty(): return {"error":"Schema version must be a nonempty string"}
 	if not schema is Dictionary: return {"error":"Schema must be an object"}

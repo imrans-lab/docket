@@ -13,7 +13,6 @@ var remove_project_fn: Callable  # func(name: String) -> Dictionary
 var schema_adopted_fn: Callable
 var bootstrap_project_fn: Callable
 var gui_open_fn: Callable  # func(request: Dictionary) -> Dictionary
-signal hosted_item_changed(payload: Dictionary)
 
 
 func _build_tools() -> Dictionary:
@@ -140,9 +139,6 @@ const _ID_FIELDS := ["id", "item_id", "from", "to", "source_id", "target_id"]
 
 
 func call_tool(name: String, arguments: Dictionary) -> Dictionary:
-	if name == "docket_project_add":
-		var schema_refusal := TypeRegistryBootstrap.opening_refusal()
-		if not schema_refusal.is_empty(): return {"error":schema_refusal}
 	if not _tools.has(name):
 		var err := {"error": "Unknown tool: %s" % name}
 		_log_error(name, arguments, err)
@@ -168,7 +164,6 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		_log_error(name, arguments, ierr)
 		return ierr
 	# These tools need access to all project DBs for cross-project operations
-	var baseline := _hosted_baseline(name, arguments)
 	var result: Dictionary
 	if name == "docket_schema_declare":
 		result = _tools[name].execute(arguments, schema_adopted_fn)
@@ -191,42 +186,14 @@ func call_tool(name: String, arguments: Dictionary) -> Dictionary:
 		# Managed ciphertext mutations need the same opening authority as reads.
 		# Vault controls stay reachable so password re-entry can restore authority.
 		if name in ["docket_secret_set", "docket_secret_delete", "docket_secret_promote"] \
-				and VaultKeySession.uses_session(db, DocketRuntimeState.hosted) \
+				and VaultKeySession.uses_session(db) \
 				and VaultKeySession.key_for(db).is_empty():
 			result = {"error":"Vault is locked. Unlock this opening through its vault controls."}
 		else:
-			result = _tools[name].execute(arguments, _schema, db, baseline) if name == "docket_transition" else _tools[name].execute(arguments, _schema, db)
+			result = _tools[name].execute(arguments, _schema, db)
 	if result.has("error"):
 		_log_error(name, arguments, result)
-	elif hosted_item_changed.has_connections() and baseline.has("kind"):
-		_publish_hosted_change(arguments, result, baseline)
 	return result
-
-
-func _hosted_baseline(name: String, arguments: Dictionary) -> Dictionary:
-	# Only the hosted stdio transport subscribes. Ordinary HTTP/GUI stays silent.
-	if not hosted_item_changed.has_connections(): return {}
-	match name:
-		"docket_create", "docket_hint_set": return {"kind": "created"}
-		"docket_update", "docket_quality": return {"kind": "updated"}
-		"docket_comment":
-			return {"kind": "comment_added"} if arguments.get("action") in ["add", "reply"] else {}
-		"docket_transition": return {"kind": "transitioned"}
-	return {}
-
-
-func _publish_hosted_change(arguments: Dictionary, result: Dictionary, baseline: Dictionary) -> void:
-	var db := _resolve_db(arguments)
-	var id := str(result.get("item_id", "")) if baseline.kind == "comment_added" else str(result.get("id", ""))
-	var item := db.get_item(id)
-	if baseline.kind == "created": baseline["item_type"] = str(item.get("type", ""))
-	# Use the live selector, including case-folded/default routing, not caller text.
-	var selector := str(_project_dbs.find_key(db))
-	var opening := ProjectOpenings.descriptor(selector, db, _db)
-	# Explicit metadata allowlist: no request arguments, values, or comment text.
-	hosted_item_changed.emit({"project": selector, "project_path": opening.path,
-		"open_generation": opening.open_generation, "id": id, "event": baseline.kind,
-		"title": str(item.get("title", "")), "baseline": baseline})
 
 
 func enforce_memory_lease() -> Array[Dictionary]:

@@ -116,3 +116,15 @@ func teardown() -> void:
 		if DirAccess.remove_absolute(profile) != OK:
 			push_error("Registration fixture directory cleanup failed")
 	_registration_fixture_dirs.clear()
+
+
+func test_retired_cli_flags_are_rejected() -> Variant:
+	var main_script: GDScript = load("res://scripts/main.gd")
+	var main: Node = main_script.new()
+	var failure := ""
+	for flag: String in ["--stdio", "--host-authority", "--state-dir", "--restore-session"]:
+		var result: Dictionary = main._parse_arg_values([flag])
+		if not str(result.get("error", "")).contains("Unknown option: " + flag):
+			failure = "Retired flag was silently accepted: " + flag
+	main.free()
+	return true if failure.is_empty() else failure

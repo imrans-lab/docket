@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Linux actual GUI/HTTP + GUI/stdio oracle; run with xvfb-run, never author gate."""
-import ctypes, json, os, pathlib, re, signal, socket, sqlite3, sys, time, urllib.request
+"""Linux actual GUI/HTTP oracle; run with xvfb-run, never author gate."""
+import ctypes, json, os, pathlib, signal, socket, sys, time, urllib.request
 
 engine, project = sys.argv[1:]
 assert sys.platform == 'linux' and os.environ.get('DISPLAY'), 'Linux Xvfb DISPLAY required; no skipped pass'
 # Reuse the broad child oracle's framing/deadlines/cleanup rather than a second client.
-source = (pathlib.Path(project) / 'test/test_stdio_transport.gd').read_text()
+source = (pathlib.Path(project) / 'test/http_child_fixture.gd').read_text()
 driver = source.split('const DRIVER := """', 1)[1].split('"""', 1)[0].replace('\\\\', '\\')
-exec(compile(driver.split('\ntry:\n', 1)[0], 'shared-stdio-client', 'exec'))
+exec(compile(driver, 'shared-http-client', 'exec'))
+profile_environment = globals()['profile_env']
 signal.alarm(180)
 owner = None
 
@@ -18,25 +19,34 @@ def call(p, name, arguments=None):
     return json.loads(value['result']['content'][0]['text'])
 
 
-def spawn(name, profile, files=(), restore=False, headless=False, http_port=None):
+def spawn(name: str, profile: pathlib.Path, files: tuple[pathlib.Path, ...] | list[pathlib.Path] = (),
+          headless: bool = False, http_port: int | None = None) -> subprocess.Popen[bytes]:
+    child_env = environments[str(profile)]
+    actual_profile = profile
+    assert actual_profile == profile, 'profile probe mapping changed'
+    with socket.socket() as reservation:
+        reservation.bind(('127.0.0.1', 0))
+        child_port = http_port if http_port is not None else reservation.getsockname()[1]
     err = open(base / (name + '.stderr'), 'wb')
     cmd = [engine, '--quiet', '--path', project]
-    if headless:
-        cmd.append('--headless')
-    else:
-        cmd += ['--display-driver', 'x11']
-    cmd += ['--', '--state-dir', str(profile), '--port', str(port)]
-    if http_port is None:
-        cmd.append('--stdio')
+    cmd += ['--headless'] if headless else ['--display-driver', 'x11']
+    cmd += ['--', '--port', str(child_port)]
     if headless:
         cmd.append('--serve')
-    if restore:
-        cmd.append('--restore-session')
     for file in files:
         cmd += ['--file', str(file)]
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env, bufsize=0)
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=child_env, cwd=base)
     children.append((p, err))
-    return attach_io(p)
+    p.port, p.profile = child_port, profile
+    deadline = time.monotonic() + 30
+    while True:
+        assert p.poll() is None and time.monotonic() < deadline, 'HTTP startup failed'
+        try:
+            if request(p, 'ping', 0)['result'] == {}:
+                break
+        except OSError:
+            time.sleep(.05)
+    return p
 
 
 def http(method='ping', params=None):
@@ -151,15 +161,12 @@ try:
         probe.bind(('127.0.0.1', 0))
         port = probe.getsockname()[1]
     assert port != 3010
-    owner_profile, private = base / 'owner-profile', base / 'plugin-profile'
-    default_profile = pathlib.Path(env['XDG_DATA_HOME']) / 'godot/app_userdata/Docket'
-    default_profile.mkdir(parents=True)
-    default_prefs = default_profile / 'docket_prefs.json'
-    default_prefs.write_text(json.dumps({'first_name': 'default sentinel', 'session_paths': [str(base / 'forbidden.dct')]}))
-    default_snapshot = default_prefs.read_bytes()
-    env['DOCKET_SESSION_DIR'] = str(base / 'forbidden-session-dir')
-    owner_profile.mkdir()
-    private.mkdir()
+    environments = {}
+    def allocated_profile(name: str) -> pathlib.Path:
+        child_env, profile = profile_environment(name)
+        environments[str(profile)] = child_env
+        return profile
+    owner_profile, private = allocated_profile('owner'), allocated_profile('second')
     owner_file, opened_file = base / 'owner.dct', base / 'opened.dct'
     # Disposable sentinels, not credentials or live owner state.
     owner_prefs = owner_profile / 'docket_prefs.json'
@@ -179,10 +186,10 @@ try:
     p = spawn('plugin', private)
     assert request(p, 'initialize', 1)['result']['serverInfo']['name'] == 'docket'
     assert call(p, 'docket_project_list')['projects'] == [], 'private child restored owner/CWD files'
-    assert not listeners(p.pid), 'stdio child opened a TCP listener'
+    assert listeners(p.pid), 'HTTP child lacks a TCP listener'
     assert http()['result'] == {}, 'owner HTTP collided with child'
     # Seed a real existing project with a disposable headless child.
-    seed = spawn('seed', base / 'seed-profile', [opened_file], headless=True)
+    seed = spawn('seed', allocated_profile('seed'), [opened_file], headless=True)
     item = call(seed, 'docket_create', {'type': 'chore', 'title': 'existing GUI item'})
     finish(seed)
     added = call(p, 'docket_project_add', {'path': str(opened_file)})
@@ -204,7 +211,7 @@ try:
     durable_recents = (private / 'recent_dockets.json').read_bytes()
     session = call(p, 'docket_project_add', {'mode': 'session_file', 'name': 'private-session', 'create': True})
     session_path = pathlib.Path(session['path'])
-    assert session_path.parent == private / 'sessions'
+    assert session_path.parent == pathlib.Path(environments[str(private)]['XDG_DATA_HOME']) / 'docket/sessions'
     assert (private / 'recent_dockets.json').read_bytes() == durable_recents, 'session create changed recents'
     assert json.loads(pathlib.Path(str(session_path) + '.owner').read_text())['pid'] == p.pid
     assert 'opened.dct' in external_focus(p.pid)[1], 'additional open replaced primary'
@@ -221,97 +228,41 @@ try:
     assert refused['result']['content'][0]['text'] == 'Cannot close the last project', refused
     assert session_path.name in external_focus(p.pid)[1], 'refused close changed primary title'
     call(p, 'docket_project_add', {'path': str(opened_file)})
-    call(p, 'docket_project_add', {'mode': 'memory', 'name': 'private-spill'})
-    assert call(p, 'docket_project_list')['memory_lease']['in_process_owner']
-    call(p, 'docket_create', {'project': 'private-spill', 'type': 'chore', 'title': 'spill on EOF'})
-    prefs = json.loads((private / 'docket_prefs.json').read_text())
-    assert str(opened_file) in prefs['session_paths'] and 'owner sentinel' not in json.dumps(prefs)
-    assert str(opened_file) in json.loads((private / 'recent_dockets.json').read_text())
-    assert (private / 'docket_subscriptions.json').exists()
-    spill_recents = (private / 'recent_dockets.json').read_bytes()
     old_pid = p.pid
-    # Immediate EOF with a queued mutation: reply drained, canonical settled, owner released.
-    send(p, {'jsonrpc': '2.0', 'method': 'tools/call', 'id': 'eof', 'params': {
-        'name': 'docket_create', 'arguments': {'project': added['name'], 'type': 'chore', 'title': 'GUI EOF write'}}})
-    p.stdin.close()
-    assert receive(p)['id'] == 'eof'
-    # After the parent closes stdin the protocol is over; Godot's C++ teardown can still
-    # print renderer leak diagnostics to stdout, which scripts cannot mute. Parents ignore
-    # stdout after EOF, so only a protocol frame there would be a defect.
-    assert p.wait(timeout=15) == 0
-    assert b'"jsonrpc"' not in remaining_stdout(p), 'protocol frame after EOF'
-    assert 'GUI EOF write' in opened_file.read_text()
-    assert not pathlib.Path(str(session_path) + '.owner').exists()
-    assert not pathlib.Path('/proc/%d' % old_pid).exists(), 'child not reaped'
-    spilled = private / 'sessions/private-spill.dct'
-    assert spilled.exists() and 'spill on EOF' in spilled.read_text()
-    assert (private / 'recent_dockets.json').read_bytes() == spill_recents, 'actual memory spill changed recents'
-    assert str(spilled) in json.loads((private / 'docket_prefs.json').read_text())['session_paths']
-    assert owner_snapshot == {f.name: f.read_bytes() for f in owner_profile.iterdir() if f.is_file()}, 'child altered owner profile'
-    assert http()['result'] == {}
-    assert default_prefs.read_bytes() == default_snapshot and not (base / 'forbidden.dct').exists()
-    assert not (base / 'forbidden-session-dir').exists()
-    # Re-enable empty unless restoration is explicitly requested; no automatic restart loop.
-    p = spawn('reenabled', private)
-    assert p.pid != old_pid and call(p, 'docket_project_list')['projects'] == []
-    reenabled_pid = p.pid
+    call(p, 'docket_create', {'project': added['name'], 'type': 'chore', 'title': 'GUI HTTP write'})
+    call(p, 'docket_flush')
+    assert 'GUI HTTP write' in opened_file.read_text()
     finish(p)
-    p = spawn('restored', private, restore=True)
-    assert p.pid not in (old_pid, reenabled_pid)
+    assert not pathlib.Path('/proc/%d' % old_pid).exists(), 'child not reaped'
+    assert owner_snapshot == {f.name: f.read_bytes() for f in owner_profile.iterdir() if f.is_file()}, 'child altered separate profile'
+    assert http()['result'] == {}
+    # A standalone relaunch restores its saved workspace without an opt-in flag.
+    p = spawn('restored', private)
+    assert p.pid != old_pid
     restored = call(p, 'docket_project_list')['projects']
     assert str(opened_file) in {row['path'] for row in restored}
-    assert str(spilled) in {row['path'] for row in restored}
-    assert json.loads(pathlib.Path(str(session_path) + '.owner').read_text())['pid'] == p.pid
     finish(p)
     # Six restored files exceed MAX_RECENTS and expose startup eviction/reordering.
     startup_files = [base / ('startup-%d.dct' % i) for i in range(6)]
-    seed = spawn('startup-seed', base / 'startup-seed-profile', startup_files, headless=True)
+    seed = spawn('startup-seed', allocated_profile('startup-seed'), startup_files, headless=True)
     assert len(call(seed, 'docket_project_list')['projects']) == 6
     finish(seed)
     for restore in (False, True):
-        profile = base / ('startup-profile-%s' % restore)
-        profile.mkdir()
+        profile = allocated_profile('startup-%s' % restore)
         (profile / 'docket_prefs.json').write_text(json.dumps({'session_paths': list(map(str, startup_files))}))
         recent = profile / 'recent_dockets.json'
         recent.write_text(json.dumps(list(map(str, reversed(startup_files[:5]))), indent=2) + '\n')
         snapshot = recent.read_bytes()
-        p = spawn('startup-%s' % restore, profile, () if restore else startup_files, restore=restore)
+        p = spawn('startup-%s' % restore, profile, () if restore else startup_files)
         assert len(call(p, 'docket_project_list')['projects']) == 6
         assert recent.read_bytes() == snapshot, 'startup reordered/evicted saved recents'
         finish(p)
         assert recent.read_bytes() == snapshot, 'startup shutdown changed saved recents'
-    print('PASS GUI/private-state/open-mapped/focus-request/owner-health/EOF-restart')
-
-    rejected = subprocess.run([engine, '--headless', '--quiet', '--path', project, '--',
-        '--serve', '--stdio', '--state-dir', 'relative-profile'], input=b'', capture_output=True, env=env, timeout=10)
-    assert rejected.returncode == 2 and rejected.stdout == b'' and b'absolute' in rejected.stderr
-
-    # Real legacy SQLite fixture uses the authoritative schema DDL. Immutable
-    # external reads intentionally ignore WAL, exposing missing checkpoints.
-    legacy = base / 'legacy.dct'
-    ddl = (pathlib.Path(project) / 'scripts/core/docket_db_schema.gd').read_text().split('\n\nstatic func ', 2)[1]
-    with sqlite3.connect(legacy) as db:
-        for multiline, single in re.findall(r'db\._exec\((?:"""(.*?)"""|"([^"\n]*)")\)', ddl, re.S):
-            db.executescript(multiline or single)
-    p = spawn('checkpoint', base / 'legacy-profile', [legacy], headless=True)
-    call(p, 'docket_create', {'type': 'chore', 'title': 'checkpoint reply'})
-    def visible(title):
-        with sqlite3.connect(legacy.as_uri() + '?immutable=1', uri=True) as db:
-            return db.execute('SELECT COUNT(*) FROM items WHERE title=?', (title,)).fetchone()[0] == 1
-    assert visible('checkpoint reply'), 'stdio WAL not checkpointed before reply'
-    send(p, {'jsonrpc': '2.0', 'method': 'tools/call', 'params': {'name': 'docket_create',
-        'arguments': {'type': 'chore', 'title': 'checkpoint notification'}}})
-    deadline = time.monotonic() + 5
-    while not visible('checkpoint notification'):
-        assert time.monotonic() < deadline, 'notification WAL not checkpointed without another request'
-        time.sleep(.05)
-    request(p, 'ping', 'barrier')
-    finish(p)
-    print('PASS legacy-SQLite/checkpoint-reply-and-notification')
+    print('PASS GUI/HTTP/open-mapped/focus-request/isolated-profiles/automatic-restore')
     for child, err in children:
         err.flush()
         assert b'SCRIPT ERROR' not in pathlib.Path(err.name).read_bytes(), pathlib.Path(err.name).read_text()[-8192:]
-    print('PRIVATE RUNTIME REAL PROCESS: 2 scenarios passed, 0 skipped')
+    print('HTTP RUNTIME REAL PROCESS: GUI scenario passed, 0 skipped')
 except BaseException:
     for child, err in children:
         if child.poll() is None:

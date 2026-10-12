@@ -22,8 +22,6 @@ func execute(args: Dictionary, bootstrap_project: Callable) -> Dictionary:
 	var path: String = args.path
 	if path.is_empty() or not path.is_absolute_path() or path.contains("://") or path.get_file().is_empty():
 		return _error(-32602, "Bootstrap requires an absolute file path")
-	var refusal := TypeRegistryBootstrap.opening_refusal()
-	if not refusal.is_empty(): return _error(-32602, refusal)
 	var encoded: String = args.content
 	if encoded.is_empty() or encoded.length() % 4 != 0:
 		return _error(-32602, "Invalid bootstrap encoding")

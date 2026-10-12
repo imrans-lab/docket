@@ -1210,7 +1210,7 @@ func refresh_vault_authority(allow_restore: bool = true) -> void:
 	if _current_id.is_empty(): return
 	var db := _state.get_db_for_project(_current_project)
 	if db != null and db.is_open():
-		if not VaultKeySession.uses_session(db, DocketRuntimeState.hosted): return
+		if not VaultKeySession.uses_session(db): return
 		if not VaultKeySession.key_for(db).is_empty():
 			if _vault_presentation_locked:
 				if not allow_restore: return
@@ -2046,7 +2046,7 @@ func _show_transition_error(msg: String) -> void:
 
 func _derive_vault_key(db: DocketDB) -> PackedByteArray:
 	## Controlled consumers share the exact live opening's verified memory key.
-	if VaultKeySession.uses_session(db, DocketRuntimeState.hosted):
+	if VaultKeySession.uses_session(db):
 		var key := VaultKeySession.key_for(db)
 		if key.is_empty():
 			_vault_presentation_locked = true
@@ -2069,7 +2069,7 @@ func _derive_vault_key(db: DocketDB) -> PackedByteArray:
 
 func _ensure_vault(db: DocketDB) -> PackedByteArray:
 	## Legacy standalone mode may initialize; controlled openings never do so.
-	if VaultKeySession.uses_session(db, DocketRuntimeState.hosted):
+	if VaultKeySession.uses_session(db):
 		return _derive_vault_key(db)
 	var password := UserPrefs.load_vault_password()
 	if password.is_empty():
@@ -2097,7 +2097,7 @@ func _show_vault_error(msg: String) -> void:
 # A user-paced prompt must not retain primary-key authority or form identity.
 func _capture_secret_prompt(db: DocketDB) -> Dictionary:
 	return {"id":_current_id, "project":_current_project, "generation":_form_generation,
-		"descriptor":VaultKeySession.descriptor(db) if VaultKeySession.uses_session(db, DocketRuntimeState.hosted) else {}}
+		"descriptor":VaultKeySession.descriptor(db) if VaultKeySession.uses_session(db) else {}}
 
 
 func _secret_prompt_matches_form(origin: Dictionary) -> bool:
@@ -2110,8 +2110,8 @@ func _key_after_secret_prompt(db: DocketDB, origin: Dictionary) -> PackedByteArr
 		return PackedByteArray()
 	if _state.get_db_for_project(origin.project) != db or not db.is_open():
 		_show_vault_error("Secret operation refused: the item or project opening changed during the secondary password prompt.")
-	elif VaultKeySession.uses_session(db, DocketRuntimeState.hosted) and VaultKeySession.descriptor(db) != origin.descriptor:
-		_show_vault_error("Hosted vault is locked or unavailable. The opening changed during the secondary password prompt.")
+	elif VaultKeySession.uses_session(db) and VaultKeySession.descriptor(db) != origin.descriptor:
+		_show_vault_error("Vault is locked or unavailable. The opening changed during the secondary password prompt.")
 	else:
 		var key := _derive_vault_key(db)
 		if not key.is_empty():
@@ -2130,7 +2130,7 @@ func _load_secret_value(item_db: DocketDB) -> void:
 	if key.is_empty():
 		_secret_value_edit.text = ""
 		_secret_value_decrypted = ""
-		if not VaultKeySession.uses_session(item_db, DocketRuntimeState.hosted) and not UserPrefs.load_vault_password().is_empty():
+		if not VaultKeySession.uses_session(item_db) and not UserPrefs.load_vault_password().is_empty():
 			_show_vault_error("Vault password mismatch or no vault.")
 		return
 

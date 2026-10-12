@@ -1,6 +1,6 @@
 extends Node
 ## Synthetic projects and independent literal Minerva schema, through fresh children.
-const StdioFixture := preload("res://test/test_stdio_transport.gd")
+const Fixture := preload("res://test/test_host_vault.gd")
 const DRIVER := """
 import base64, copy, hashlib
 stage = 'schema_setup'
@@ -8,13 +8,12 @@ payload = base64.b64decode('ewoJInZlcnNpb24iOiAiMS4wLjAiLAoJImlkX3ByZWZpeCI6ICJE
 assert hashlib.sha256(payload).hexdigest() == '1bf95da11825d2d0cb7e968f463c494b2348e0c7febf67e2fa7deea042219c48'
 schema = json.loads(payload)
 version = 'minerva-' + hashlib.sha256(payload).hexdigest()
-a = 'a' * 64
-env['DOCKET_PANEL_SECRET'] = a
 
-def declare(p, value=schema, label=version, token=a, **extra):
-    params = dict(panel_secret=token, schema=value, version=label)
+def declare(p, value=schema, label=version, **extra):
+    params = dict(schema=value, version=label)
     params.update(extra)
-    return request(p, 'docket/panel/declare_schema', 91, params)
+    reply = request(p, 'tools/call', 91, dict(name='docket_schema_declare', arguments=params))['result']
+    return {'error':json.loads(reply['content'][0]['text'])} if reply.get('isError') else {'result':json.loads(reply['content'][0]['text'])}
 
 def call(p, name, arguments, failure=False):
     reply = request(p, 'tools/call', 92, dict(name=name, arguments=arguments))
@@ -26,136 +25,81 @@ def fields(p, project_name, slug):
     return call(p, 'docket_type_get', dict(project=project_name, type=slug))['definition']['fields']
 
 try:
-    if scenario == 'startup':
-        for gui in (False, True):
-            stage = 'startup_gui' if gui else 'startup_headless'
-            if gui: args.remove('--serve')
-            untouched = base / ('gui.dct' if gui else 'headless.dct')
-            untouched.write_bytes(b'untouched')
-            for extra in (['--file', str(untouched)], ['--restore-session']):
-                p = launch('startup-%s-%s' % (gui, len(extra)), ['--host-authority'] + extra)
-                assert p.wait(timeout=10) == 2 and remaining_stdout(p) == b''
-                assert untouched.read_bytes() == b'untouched'
-            p = launch('empty-%s' % gui, ['--host-authority'])
-            assert call(p, 'docket_project_list', {})['projects'] == []
-            for mode in ('durable', 'session_file'):
-                path = base / ('blocked-%s-%s.dct' % (gui, mode))
-                refused = call(p, 'docket_project_add', dict(path=str(path), create=True, mode=mode), True)
-                assert 'schema' in refused['error'].lower() and not list(base.glob(path.name + '*'))
-            assert 'result' in declare(p)
-            stage = 'startup_gui_adopted_add' if gui else 'startup_headless_adopted_add'
-            call(p, 'docket_project_add', dict(path=str(base / ('adopted-%s.dct' % gui)), create=True))
-            stage = 'startup_gui_adopted_fields' if gui else 'startup_headless_adopted_fields'
-            for slug in ('hint', 'kb'):
-                found = {f['key']: f['type'] for f in fields(p, 'adopted-%s' % gui, slug)}
-                for key, kind in [('source','string'), ('pristine_hash','string'), ('pristine_content','object'), ('deprecated','boolean')]:
-                    assert found[key] == kind, (slug, key, found)
-            stage = 'startup_gui_finish' if gui else 'startup_headless_finish'
-            finish(p)
-    elif scenario == 'schema':
-        stage = 'schema_semantics'
-        # An ordinary child provides an independently shipped v2 project and pinned item.
-        old = base / 'existing.dct'
-        p = launch('ordinary-seed', ['--file', str(old)])
-        item = call(p, 'docket_create', dict(type='kb', title='stored', article='original'))
-        original_type = call(p, 'docket_type_get', dict(type='kb'))
-        original_item = call(p, 'docket_get', dict(id=item['id']))
-        finish(p)
-        before = old.read_bytes()
-        legacy = base / 'legacy.dct'
-        legacy.write_text(json.dumps(dict(_type='meta', version='1.0.0', counter=0, id_prefix='L', project='legacy')) + '\\n')
-        p = launch('declared', ['--host-authority'])
-        baseline = request(p, 'tools/list', 0)
-        assert declare(p, token='b' * 64)['error']['code'] == -32001
-        assert declare(p, panel_grant={})['error']['code'] == -32602
-        invalid = [None, {}, dict(types=[]), dict(types={}), {'types': {'bad': 3}}]
-        for key, value in [('states',[{}]), ('states',['draft','draft']), ('initial_state','absent'), ('transitions',{'draft':3}), ('transition_rules',{'draft':{'actor':'host'}}), ('field_definitions',{'title':3}), ('field_definitions',{'title':{'type':{}}}), ('field_definitions',{'title':{'type':'banana'}}), ('optional_fields',[3]), ('label',3)]:
-            candidate = copy.deepcopy(schema)
-            candidate['types']['kb'][key] = value
-            invalid.append(candidate)
-        for candidate in invalid:
-            assert declare(p, value=candidate).get('error'), 'invalid schema adopted'
-            assert request(p, 'tools/list', 0) == baseline, 'partial tool adoption'
-        for label in ('', '   ', 3, None):
-            assert declare(p, label=label).get('error')
-        assert 'result' in declare(p)
-        assert declare(p, value={'types': {'bad': 3}}).get('error')
-        assert declare(p)['result']['idempotent'], 'invalid input replaced adopted schema'
-        call(p, 'docket_project_add', dict(path=str(old)))
-        assert old.read_bytes() == before, 'open rewrote persisted v2'
-        assert call(p, 'docket_type_get', dict(project='existing', type='kb'))['current_revision'] == original_type['current_revision']
-        assert call(p, 'docket_get', dict(project='existing', id=item['id'])) == original_item
-        call(p, 'docket_project_add', dict(path=str(legacy)))
-        new = base / 'fresh.dct'
-        call(p, 'docket_project_add', dict(path=str(new), create=True))
-        for project_name in ('legacy','fresh'):
-            for slug in ('hint','kb'):
-                found = {f['key']: f['type'] for f in fields(p, project_name, slug)}
-                assert {key:found[key] for key in ('source','pristine_hash','pristine_content','deprecated')} == dict(source='string', pristine_hash='string', pristine_content='object', deprecated='boolean')
-            for slug in ('policy','skill','prompt'):
-                made = call(p, 'docket_create', dict(project=project_name, type=slug, title='owner '+slug, component='owner'))
-                call(p, 'docket_update', dict(project=project_name, id=made['id'], component='updated'))
-                got = call(p, 'docket_get', dict(project=project_name, id=made['id']))
-                assert got['component'] == 'updated'
-                queried = call(p, 'docket_query', dict(project=project_name, filter={'type':slug}))
-                assert made['id'] in json.dumps(queried)
-            for slug in ('secret','encrypted_note'):
-                call(p, 'docket_create', dict(project=project_name, type=slug, title='forbidden'), True)
-        unchanged = request(p, 'tools/list', 0)
-        assert declare(p)['result']['idempotent']
-        changed = copy.deepcopy(schema); changed['types']['kb']['description'] = 'conflict'
-        assert declare(p, value=changed).get('error') and declare(p, label='different').get('error')
-        assert request(p, 'tools/list', 0) == unchanged and old.read_bytes() == before
-        assert fields(p, 'fresh', 'hint') == fields(p, 'legacy', 'hint')
-        finish(p)
-    else:
-        raise AssertionError('unknown scenario')
+    stage = 'schema_semantics'
+    # An ordinary child provides an independently shipped v2 project and pinned item.
+    old = base / 'existing.dct'
+    p = launch('ordinary-seed', ['--file', str(old)])
+    item = call(p, 'docket_create', dict(type='kb', title='stored', article='original'))
+    original_type = call(p, 'docket_type_get', dict(type='kb'))
+    original_item = call(p, 'docket_get', dict(id=item['id']))
+    finish(p)
+    before = old.read_bytes()
+    legacy = base / 'legacy.dct'
+    legacy.write_text(json.dumps(dict(_type='meta', version='1.0.0', counter=0, id_prefix='L', project='legacy')) + '\\n')
+    p = launch('declared')
+    baseline = request(p, 'tools/list', 0)
+    assert declare(p, panel_grant={})['error']['code'] == -32602
+    invalid = [None, {}, dict(types=[]), dict(types={}), {'types': {'bad': 3}}]
+    for key, value in [('states',[{}]), ('states',['draft','draft']), ('initial_state','absent'), ('transitions',{'draft':3}), ('transition_rules',{'draft':{'actor':'host'}}), ('field_definitions',{'title':3}), ('field_definitions',{'title':{'type':{}}}), ('field_definitions',{'title':{'type':'banana'}}), ('optional_fields',[3]), ('label',3)]:
+        candidate = copy.deepcopy(schema)
+        candidate['types']['kb'][key] = value
+        invalid.append(candidate)
+    for candidate in invalid:
+        assert declare(p, value=candidate).get('error'), 'invalid schema adopted'
+        assert request(p, 'tools/list', 0) == baseline, 'partial tool adoption'
+    for label in ('', '   ', 3, None):
+        assert declare(p, label=label).get('error')
+    assert 'result' in declare(p)
+    assert declare(p, value={'types': {'bad': 3}}).get('error')
+    assert declare(p)['result']['idempotent'], 'invalid input replaced adopted schema'
+    call(p, 'docket_project_add', dict(path=str(old)))
+    assert old.read_bytes() == before, 'open rewrote persisted v2'
+    assert call(p, 'docket_type_get', dict(project='existing', type='kb'))['current_revision'] == original_type['current_revision']
+    assert call(p, 'docket_get', dict(project='existing', id=item['id'])) == original_item
+    call(p, 'docket_project_add', dict(path=str(legacy)))
+    new = base / 'fresh.dct'
+    call(p, 'docket_project_add', dict(path=str(new), create=True))
+    for project_name in ('legacy','fresh'):
+        for slug in ('hint','kb'):
+            found = {f['key']: f['type'] for f in fields(p, project_name, slug)}
+            assert {key:found[key] for key in ('source','pristine_hash','pristine_content','deprecated')} == dict(source='string', pristine_hash='string', pristine_content='object', deprecated='boolean')
+        for slug in ('policy','skill','prompt'):
+            made = call(p, 'docket_create', dict(project=project_name, type=slug, title='owner '+slug, component='owner'))
+            call(p, 'docket_update', dict(project=project_name, id=made['id'], component='updated'))
+            got = call(p, 'docket_get', dict(project=project_name, id=made['id']))
+            assert got['component'] == 'updated'
+            queried = call(p, 'docket_query', dict(project=project_name, filter={'type':slug}))
+            assert made['id'] in json.dumps(queried)
+        for slug in ('secret','encrypted_note'):
+            call(p, 'docket_create', dict(project=project_name, type=slug, title='forbidden'), True)
+    unchanged = request(p, 'tools/list', 0)
+    assert declare(p)['result']['idempotent']
+    changed = copy.deepcopy(schema); changed['types']['kb']['description'] = 'conflict'
+    assert declare(p, value=changed).get('error') and declare(p, label='different').get('error')
+    assert request(p, 'tools/list', 0) == unchanged and old.read_bytes() == before
+    assert fields(p, 'fresh', 'hint') == fields(p, 'legacy', 'hint')
+    finish(p)
     for log in base.glob('*.stderr'):
         assert b'SCRIPT ERROR' not in log.read_bytes(), 'child script error'
-        assert a.encode() not in log.read_bytes(), 'authentication logged'
-    print('HOST SCHEMA %s PASS' % scenario)
+    print('HOST VAULT receiver-consumer-lifetime-privacy PASS')
 except BaseException as error:
     trace = error.__traceback__
     while trace.tb_next is not None: trace = trace.tb_next
-    print('HOST_SCHEMA_DIAGNOSTIC %s line=%d stage=%s' % (type(error).__name__, trace.tb_lineno, stage), file=sys.stderr, flush=True)
+    safe_diagnostic(type(error), error, error.__traceback__)
     sys.exit(1)
 finally:
-    for p, err in children:
-        if p.poll() is None:
-            p.kill(); p.wait(timeout=10)
-        p.stop_io.set()
-        for worker in p.io_threads: worker.join(timeout=1)
-        p.stdin.close(); p.stdout.close(); err.close()
-    root.cleanup()
-    completed.set()
+    cleanup()
 """
 
-func _run_scenario(scenario: String) -> Variant:
-	# A Windows checkout may give CRLF sources; the slice marker is LF-only.
-	var driver := StdioFixture.DRIVER.replace("\r\n", "\n")
-	var helpers := driver.get_slice("\ntry:\n    p = launch('scratch')", 0)
-	if helpers == driver:
-		return "stdio driver slice marker not found"
-	# Hosted children intentionally start without the ordinary fixture's --file.
-	helpers = helpers.replace(", '--file', str(base / (name + '.dct'))", "")
-	# Watchdog failures use the same fixed stage channel, without stderr tails.
-	var unsafe_reporter := helpers.get_slice("def diagnose():", 1).get_slice("def watchdog():", 0)
-	helpers = helpers.replace("def diagnose():" + unsafe_reporter, "def diagnose():\n    print('HOST_SCHEMA_DIAGNOSTIC TimeoutError line=0 stage=watchdog_deadline', file=sys.stderr, flush=True)\n\n")
-	var source := "import sys\nscenario = sys.argv.pop()\n" + helpers + DRIVER
-	var output: Array = []
-	var python := "python" if OS.get_name() == "Windows" else "python3"
-	var code := OS.execute(python, PackedStringArray(["-c", source, OS.get_executable_path(), ProjectSettings.globalize_path("res://"), scenario]), output, true)
-	var report := "\n".join(PackedStringArray(output)).replace("a".repeat(64), "[redacted]").replace("b".repeat(64), "[redacted]")
-	print(report)
-	return true if code == 0 and report.contains("HOST SCHEMA %s PASS" % scenario) else "Host schema %s failed (exit %d)" % [scenario,code]
-
-func test_hosted_gui_and_headless_startup() -> Variant: return _run_scenario("startup")
-func test_real_child_declaration_and_stored_semantics() -> Variant: return _run_scenario("schema")
+func test_real_child_declaration_and_stored_semantics() -> Variant:
+	var fixture := Fixture.new()
+	var result: Variant = fixture.run_actual_child(DRIVER)
+	fixture.free()
+	return result
 
 var _saved_schema: Dictionary
 var _saved_version: String
 var _saved_opened: bool
-var _saved_hosted: bool
 const DIR := "user://test_host_schema"
 
 func setup() -> void:
@@ -165,17 +109,14 @@ func before_each() -> void:
 	_saved_schema = TypeRegistryBootstrap._declared_schema.duplicate(true)
 	_saved_version = TypeRegistryBootstrap._declared_version
 	_saved_opened = TypeRegistryBootstrap.projects_opened
-	_saved_hosted = DocketRuntimeState.hosted
 	TypeRegistryBootstrap._declared_schema = {}
 	TypeRegistryBootstrap._declared_version = ""
 	TypeRegistryBootstrap.projects_opened = false
-	DocketRuntimeState.hosted = false
 
 func after_each() -> void:
 	TypeRegistryBootstrap._declared_schema = _saved_schema
 	TypeRegistryBootstrap._declared_version = _saved_version
 	TypeRegistryBootstrap.projects_opened = _saved_opened
-	DocketRuntimeState.hosted = _saved_hosted
 
 func teardown() -> void:
 	var directory := DirAccess.open(DIR)
@@ -218,15 +159,6 @@ func test_capability_gaps_preserve_pins_and_protected_trust() -> Variant:
 	return true if preserved and failed else "Gap report, pins, protected trust or visible read failure changed"
 
 func test_declaration_copy_replacement_and_gui_guards() -> Variant:
-	DocketRuntimeState.hosted = true
-	var state := AppState.new()
-	state.load_schema()
-	var path := DIR + "/refused.dct"
-	# Check each refusal before reusing the path; a leaked declaration must
-	# fail here rather than attempt to seed an already-created cache again.
-	for opening in [state.load_dct, state.add_project, state.create_dct, state.create_and_add_project]:
-		opening.call(path)
-		if FileAccess.file_exists(path) or FileAccess.file_exists(JSONLCache.cache_path_for_version(path, "2.0.0")) or state.db != null: return "GUI touched a pre-schema project"
 	var schema := TypeRegistryBootstrap.load_shipped_schema()
 	if TypeRegistryBootstrap.declare_schema(schema, "first").has("error"): return "Valid first declaration refused"
 	schema.types.kb.description = "next"

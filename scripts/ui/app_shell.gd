@@ -128,14 +128,7 @@ func _save_projects() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		# The host owns the MCP child's lifetime; X minimizes its root window.
-		if DocketRuntimeState.hosted:
-			var window := get_window()
-			if window.mode != Window.MODE_MINIMIZED:
-				window.set_meta("docket_pre_close_mode", window.mode)
-			window.mode = Window.MODE_MINIMIZED
-		else:
-			_request_quit()
+		_request_quit()
 
 
 func _request_quit() -> void:
@@ -1333,7 +1326,7 @@ func _set_project_vault_status(db: DocketDB, status: Dictionary) -> void:
 		_project_vault_status.text = "Vault opening unavailable."
 		return
 	if not status.initialized: _project_vault_status.text = "Not initialized"
-	elif not VaultKeySession.uses_session(db, DocketRuntimeState.hosted): _project_vault_status.text = "Uses saved password settings"
+	elif not VaultKeySession.uses_session(db): _project_vault_status.text = "Uses saved password settings"
 	else: _project_vault_status.text = "Unlocked" if status.unlocked else "Locked"
 
 
@@ -1370,10 +1363,6 @@ func _on_prefs_confirmed() -> void:
 	var new_password := _prefs_vault_pw.text
 	var old_password := UserPrefs.load_vault_password()
 	if new_password != old_password:
-		if DocketRuntimeState.hosted:
-			_info_dialog.dialog_text = "Password changes are unavailable in hosted mode."
-			_info_dialog.popup_centered()
-			return
 		_reencrypt_vault_secrets(old_password, new_password)
 		if new_password.is_empty():
 			UserPrefs.clear_vault_password()
@@ -1387,7 +1376,7 @@ func _reencrypt_vault_secrets(old_password: String, new_password: String) -> voi
 		return
 	for proj_name in _state.get_project_dbs():
 		var pdb: DocketDB = _state.get_project_dbs()[proj_name]
-		if VaultKeySession.uses_session(pdb, DocketRuntimeState.hosted): continue
+		if VaultKeySession.uses_session(pdb): continue
 		if not pdb.has_vault():
 			continue
 		var old_salt := pdb.get_vault_salt()
@@ -1449,9 +1438,9 @@ func _on_viewport_resized() -> void:
 
 func _load_recent_files() -> void:
 	_recent_files = PackedStringArray()
-	if not FileAccess.file_exists(DocketRuntimeState.path_for(_RECENTS_PATH)):
+	if not FileAccess.file_exists(_RECENTS_PATH):
 		return
-	var f := FileAccess.open(DocketRuntimeState.path_for(_RECENTS_PATH), FileAccess.READ)
+	var f := FileAccess.open(_RECENTS_PATH, FileAccess.READ)
 	if not f:
 		return
 	var parsed = JSON.parse_string(f.get_as_text())
@@ -1464,7 +1453,7 @@ func _save_recent_files() -> void:
 	var arr: Array = []
 	for p in _recent_files:
 		arr.append(p)
-	var f := FileAccess.open(DocketRuntimeState.path_for(_RECENTS_PATH), FileAccess.WRITE)
+	var f := FileAccess.open(_RECENTS_PATH, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(arr))
 
@@ -1475,8 +1464,6 @@ func _add_to_recent(path: String) -> void:
 	var abs_path := ProjectSettings.globalize_path(path) if path.begins_with("res://") else path
 	# Sessions and memory spills are workspace state, not durable recent files.
 	var session_dirs := [SessionProject.default_dir()]
-	if not DocketRuntimeState.directory.is_empty():
-		session_dirs.append(DocketRuntimeState.directory.path_join("sessions"))
 	for session_dir: String in session_dirs:
 		var root := ProjectSettings.globalize_path(session_dir).simplify_path().trim_suffix("/")
 		if abs_path.simplify_path() == root or abs_path.simplify_path().begins_with(root + "/"):

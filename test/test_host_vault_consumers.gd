@@ -1,62 +1,21 @@
 extends Node
 ## Real encrypted child MCP and AppShell/RecordForm consumers, never key-state-only.
 const Fixture := preload("res://test/test_host_vault.gd")
-const MCP_WRITES := """
-        metadata_before = {k: json.loads(path.read_text().splitlines()[0]).get(k) for k in ('vault_salt','vault_verify','vault_kdf_iterations')}
-        call(p, 'docket_secret_set', dict(project=name, handle='written', value=values[0]))
-        call(p, 'docket_secret_set', dict(project=name, handle='written', value=values[1]))
-        assert call(p, 'docket_secret_get', dict(project=name, handle='written'))['value'] == values[1], 'hosted write current'
-        assert call(p, 'docket_secret_get', dict(project=name, handle='written', version=1))['value'] == values[0], 'hosted write archive'
-        secondary = secrets.token_hex(16)
-        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[0], requires_2fa=True, secondary_password=secondary), kdf_stage='consumer_secondary_write')
-        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[1], requires_2fa=True, secondary_password=secondary), kdf_stage='consumer_secondary_write')
-        assert 'secondary password' in call(p, 'docket_secret_get', dict(project=name, handle='written-dual'), True)['error'], 'hosted written 2FA refusal'
-        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary), kdf_stage='consumer_secondary_current')['value'] == values[1], 'hosted written 2FA current'
-        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary, version=1), kdf_stage='consumer_secondary_archive')['value'] == values[0], 'hosted written 2FA archive'
-        promoted = call(p, 'docket_secret_promote', dict(project=name, handle='written', title='owned encrypted value'))
-        assert 'collides' in call(p, 'docket_secret_set', dict(project=name, handle=promoted['id'], value=values[0]), True)['error'], 'hosted ownership refusal'
-        call(p, 'docket_flush', dict(project=name))
-        before[i] = path.read_bytes()
-        assert {k: json.loads(path.read_text().splitlines()[0]).get(k) for k in metadata_before} == metadata_before, 'hosted write metadata changed'
-        fields = {k:d[k] for k in ('path','open_generation','fingerprint')}
-        private(p, 'vault_lock', fields)
-        assert 'locked' in call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]), True)['error'], 'hosted locked write refusal'
-        assert path.read_bytes() == before[i], 'hosted locked write mutated bytes'
-        assert 'error' in unlock(p, d, passwords[1-i], kdf_stage='vault_unlock'), 'hosted wrong opening password accepted'
-        assert 'locked' in call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]), True)['error'], 'hosted wrong key write refusal'
-        assert path.read_bytes() == before[i], 'hosted wrong key write mutated bytes'
-        assert unlock(p, d, passwords[i], kdf_stage='vault_unlock')['result']['unlocked'], 'hosted write re-unlock'
-"""
-
-func test_actual_child_encrypted_writes() -> Variant:
-	var anchor := "        # Authorized response plaintext"
-	if Fixture.DRIVER.count(anchor) != 1: return "Host vault consumer insertion anchor missing or duplicated"
-	var scenario := Fixture.DRIVER.replace(anchor, MCP_WRITES + anchor)
-	if scenario == Fixture.DRIVER: return "Host vault consumer insertion did not change source"
-	scenario = scenario.replace("    empty_before = empty_path.read_bytes()", "    call(p, 'docket_flush', dict(project='empty'))\n    empty_before = empty_path.read_bytes()\n    assert 'locked' in call(p, 'docket_secret_set', dict(project='empty', handle='new', value=values[0]), True)['error'], 'vault-less write refusal'\n    assert 'locked' in call(p, 'docket_secret_get', dict(project='empty', handle='new'), True)['error'], 'vault-less read refusal'")
-	var fixture := Fixture.new()
-	var result: Variant = fixture.run_actual_child(scenario)
-	fixture.free()
-	return result
-
 var _dbs: Array[DocketDB] = []
 var _shell: AppShell
 var _server: DocketHttpServer
-var _authority: DocketHostAuthority
 var _state: AppState
-var _old_directory: String
-var _old_hosted: bool
+var _old_prefs: Dictionary
 var _directory: String
-var _token := "a".repeat(64)
 
 func _private(method: String, db: DocketDB, password: String = "") -> Dictionary:
-	var params := {"panel_secret":_token, "path":ProjectOpenings.normalized_path(db.get_path())}
-	if method != "vault_challenge":
-		var challenge := _authority.handle("docket/panel/vault_challenge", params)
-		if challenge.has("error"): return challenge
-		params.merge({"open_generation":challenge.result.open_generation, "fingerprint":challenge.result.fingerprint})
+	var status := VaultKeySession.control({"action":"status"}, db)
+	if method == "vault_challenge": return {"result":status}
+	if status.has("error"): return status
+	var params := {"action":method.trim_prefix("vault_"), "open_generation":status.open_generation, "fingerprint":status.fingerprint}
 	if method == "vault_unlock": params.password = password
-	return _authority.handle("docket/panel/" + method, params)
+	var reply := VaultKeySession.control(params, db)
+	return reply if reply.has("error") else {"result":reply}
 
 func _decrypt(raw: Dictionary, key: PackedByteArray, secondary: PackedByteArray = PackedByteArray()) -> String:
 	if raw.is_empty(): return ""
@@ -126,12 +85,9 @@ func _invalidate_pending_prompt(form: RecordForm, db: DocketDB, action: String, 
 	form._secret_2fa_dialog.confirmed.emit()
 
 func test_real_gui_current_edit_history_and_refusals() -> Variant:
-	_old_directory = DocketRuntimeState.directory
-	_old_hosted = DocketRuntimeState.hosted
+	_old_prefs = UserPrefs._load_data()
 	_directory = ProjectSettings.globalize_path("user://host-vault-consumers")
 	DirAccess.make_dir_recursive_absolute(_directory)
-	DocketRuntimeState.directory = _directory
-	DocketRuntimeState.hosted = false
 	_state = AppState.new()
 	_state.schema = TypeRegistryBootstrap.load_shipped_schema()
 	_state.prefs = UserPrefs.new()
@@ -153,11 +109,6 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 	add_child(_shell)
 	_server = DocketHttpServer.new()
 	_server.external_state = _state
-	_authority = DocketHostAuthority.new()
-	OS.set_environment(DocketHostAuthority.SECRET_ENV, _token)
-	if not _authority.configure_from_environment(true, true).is_empty(): return "private authority configuration"
-	_authority.resolve_vault = _server._resolve_vault
-	DocketRuntimeState.hosted = true
 	var form := _shell._record_form
 	if form._secret_2fa_dialog.get_parent() != form: return "secondary dialog ownership"
 	for i in 2:
@@ -167,7 +118,6 @@ func test_real_gui_current_edit_history_and_refusals() -> Variant:
 		var note_id := db.get_meta_value("fixture_note", "")
 		var metadata := VaultKeySession.descriptor(db)
 		var key := VaultCrypto.derive_key(passwords[i], db.get_vault_salt(), db.get_vault_iterations())
-		if _server._resolve_vault(ProjectOpenings.normalized_path(db.get_path())) != _state.get_db_for_project(name): return "GUI/private resolver opening mismatch"
 		_private("vault_lock", db)
 		form.load_item(id, name)
 		if not form._secret_vault_error_label.visible or not form._secret_vault_error_label.text.contains("locked"): return "locked GUI secret read invisible"
@@ -314,5 +264,4 @@ func teardown() -> void:
 	if not _directory.is_empty():
 		for filename in DirAccess.get_files_at(_directory): DirAccess.remove_absolute(_directory.path_join(filename))
 		DirAccess.remove_absolute(_directory)
-		DocketRuntimeState.directory = _old_directory
-		DocketRuntimeState.hosted = _old_hosted
+	UserPrefs._save_data(_old_prefs)

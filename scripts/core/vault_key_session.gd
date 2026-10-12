@@ -8,8 +8,8 @@ static var _managed: Dictionary[int, bool] = {}
 static func is_managed(db: DocketDB) -> bool:
 	return _managed.has(db.get_instance_id())
 
-static func uses_session(db: DocketDB, hosted: bool) -> bool:
-	return hosted or is_managed(db)
+static func uses_session(db: DocketDB) -> bool:
+	return is_managed(db)
 
 static func mark_managed(db: DocketDB) -> void:
 	_managed[db.get_instance_id()] = true
@@ -52,7 +52,7 @@ static func key_for(db: DocketDB) -> PackedByteArray:
 	return entry.get("key", PackedByteArray()).duplicate()
 
 static func control(args: Dictionary, db: DocketDB) -> Dictionary:
-	## Public project-scoped controls reuse the private crypto contract, but a
+	## Public project-scoped controls reuse the internal crypto contract; a
 	## refused public request preserves an existing, still-valid session.
 	var requested: Variant = args.get("action")
 	if not requested is String or requested not in ["status", "init", "unlock", "lock", "forget", "change_password", "set_hint"]:
@@ -97,7 +97,7 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 		updated["unlocked"] = not key_for(db).is_empty()
 		updated["managed"] = is_managed(db)
 		return updated
-	var fields := {"panel_secret":"", "path":current.path,
+	var fields := {"path":current.path,
 		"open_generation":current.open_generation, "fingerprint":current.fingerprint}
 	if action in ["init", "unlock"]: fields["password"] = args.get("password")
 	if action == "init" and args.has("hint"): fields["hint"] = args.hint
@@ -115,9 +115,9 @@ static func control(args: Dictionary, db: DocketDB) -> Dictionary:
 static func handle(method: String, params: Dictionary, db: DocketDB) -> Dictionary:
 	var current := descriptor(db)
 	var with_password := method in ["vault_unlock", "vault_init"]
-	var expected := 5 if with_password else (2 if method == "vault_challenge" else 4)
+	var expected := 4 if with_password else (1 if method == "vault_challenge" else 3)
 	if method == "vault_init" and params.has("hint"): expected += 1
-	var fields := ["panel_secret", "path"]
+	var fields := ["path"]
 	if method != "vault_challenge": fields.append_array(["open_generation", "fingerprint"])
 	if with_password: fields.append("password")
 	if method == "vault_init": fields.append("hint")

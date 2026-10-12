@@ -30,7 +30,7 @@ func execute(args: Dictionary, _schema: Dictionary, db: DocketDB) -> Dictionary:
 
 	# Item deletion also destroys owned vault entries and conventional history.
 	# Inspect content, not item type; legacy notes/history can outlive a value.
-	if VaultKeySession.uses_session(db, DocketRuntimeState.hosted) and VaultKeySession.key_for(db).is_empty():
+	if VaultKeySession.uses_session(db) and VaultKeySession.key_for(db).is_empty():
 		var refusal := {"error":"Vault is locked. Unlock this opening through its vault controls."}
 		var owned: Array = db.list_secrets_owned_by(id)
 		if not owned.is_empty() or not db._last_sql_error.is_empty(): return refusal

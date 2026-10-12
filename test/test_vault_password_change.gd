@@ -14,7 +14,7 @@ var A := AssertHelpers
 var _test_dir := "user://test_vault_pw_change"
 var _path: String
 var _db: DocketDBJsonl
-var _previous_directory: String
+var _previous_prefs: Dictionary
 
 const OLD_PW := "old-vault-password"
 const NEW_PW := "new-vault-password"
@@ -27,8 +27,8 @@ func setup() -> void:
 
 
 func before_each() -> void:
-	_previous_directory = DocketRuntimeState.directory
-	DocketRuntimeState.directory = ProjectSettings.globalize_path(_test_dir)
+	_previous_prefs = UserPrefs._load_data()
+	UserPrefs._save_data({})
 	_path = _test_dir + "/pw.dct"
 	_cleanup()
 	_db = DocketDBJsonl.create_new_jsonl(_path)
@@ -38,7 +38,7 @@ func after_each() -> void:
 	if _db:
 		_db.close()
 		_db = null
-	DocketRuntimeState.directory = _previous_directory
+	UserPrefs._save_data(_previous_prefs)
 
 
 func _cleanup() -> void:
@@ -205,9 +205,9 @@ try:
     secondary = secrets.token_hex(24)
     cases = [('entry', False, False), ('dual', True, True), ('was_dual', True, False), ('now_dual', False, True)]
     passwords.append(secondary)
-    for hosted in (False, True):
-        name = 'rotate-hosted' if hosted else 'rotate-ordinary'
-        p = open_host(name) if hosted else launch(name, [])
+    for restart_case in ('first', 'second'):
+        name = 'rotate-' + restart_case
+        p = launch(name, [])
         path = base/(name+'.dct')
         call(p, 'docket_project_add', dict(path=str(path), create=True))
         def control(child, action, descriptor=None, failure=False, **extra):
@@ -262,7 +262,7 @@ try:
         for key in ('XDG_DATA_HOME','XDG_CONFIG_HOME','XDG_CACHE_HOME','APPDATA','LOCALAPPDATA'):
             env[key] = str(base/('fresh-'+name+'-'+key))
             pathlib.Path(env[key]).mkdir()
-        q = open_host('fresh-'+name) if hosted else launch('fresh-'+name, [])
+        q = launch('fresh-'+name, [])
         call(q, 'docket_project_add', dict(path=str(path)))
         fresh = control(q, 'status')
         assert fresh['hint'] == 'fresh profile hint' and not fresh['unlocked'], 'fresh profile descriptor'
@@ -296,11 +296,9 @@ finally:
 
 
 func test_public_rotation_history_2fa_and_fresh_profile_hint() -> Variant:
-	var anchor := "\ntry:\n    # Producer and consumer"
 	var helpers := HostFixture.DRIVER.replace("\r\n", "\n")
-	if helpers.count(anchor) != 1: return "Vault helper slice marker missing"
 	var fixture := HostFixture.new()
-	var result: Variant = fixture.run_actual_child(helpers.get_slice(anchor, 0) + PUBLIC_ROTATION_DRIVER.replace("\r\n", "\n"))
+	var result: Variant = fixture.run_actual_child(helpers + PUBLIC_ROTATION_DRIVER.replace("\r\n", "\n"))
 	fixture.free()
 	return result
 
@@ -495,7 +493,6 @@ func _ciphertext_by_handle(rows: Array) -> Dictionary:
 
 
 func test_preferences_project_rotation_and_hint_controls() -> Variant:
-	if DocketRuntimeState.directory != ProjectSettings.globalize_path(_test_dir): return "Preferences fixture directory is not isolated"
 	var password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var next_password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var salt := VaultCrypto.generate_salt()
@@ -551,7 +548,6 @@ func _answer_history_prompt(form: RecordForm, password: String, confirm: bool, o
 
 
 func test_preferences_rotated_2fa_history_show_and_copy() -> Variant:
-	if DocketRuntimeState.directory != ProjectSettings.globalize_path(_test_dir): return "Preferences history fixture directory is not isolated"
 	var password := Crypto.new().generate_random_bytes(24).hex_encode()
 	var secondary := Crypto.new().generate_random_bytes(24).hex_encode()
 	var value := Crypto.new().generate_random_bytes(24).hex_encode()

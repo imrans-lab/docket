@@ -3,9 +3,6 @@ class_name DocketHttpServer
 ## TCPServer-based HTTP server for MCP Streamable HTTP.
 ## Supports multiple .dct files loaded simultaneously.
 
-var stdio: bool = false
-var host_authority: DocketHostAuthority
-var _stdio: DocketStdioTransport
 
 var port: int = 3010
 var dct_path: String = "docket.dct"
@@ -30,19 +27,16 @@ const LEASE_CHECK_INTERVAL_MS := 5000
 
 
 func _ready() -> void:
-	if not stdio:
-		_server = TCPServer.new()
-		var err := _server.listen(port, "127.0.0.1")
-		if err != OK:
-			push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
-			return
-		port = _server.get_local_port()
-		SessionProject.set_endpoint(port)
-		var profile := DocketRuntimeState.directory
-		if profile.is_empty():
-			profile = ProjectSettings.globalize_path("user://")
-		_registration = InstanceRegistration.new(profile, OS.get_process_id(), Time.get_datetime_string_from_system(true) + "Z")
-		_publish_registration()
+	_server = TCPServer.new()
+	var err := _server.listen(port, "127.0.0.1")
+	if err != OK:
+		push_error("Failed to listen on port %d: %s" % [port, error_string(err)])
+		return
+	port = _server.get_local_port()
+	SessionProject.set_endpoint(port)
+	var profile := ProjectSettings.globalize_path("user://")
+	_registration = InstanceRegistration.new(profile, OS.get_process_id(), Time.get_datetime_string_from_system(true) + "Z")
+	_publish_registration()
 
 	if external_state != null:
 		# GUI mode — track AppState, stay in sync on file changes
@@ -59,12 +53,11 @@ func _ready() -> void:
 		_schema = TypeRegistryBootstrap.effective_schema()
 
 		# Merge CLI --file args with any previously persisted session paths
-		var paths_to_load: Array = dct_paths.duplicate() if dct_paths.size() > 0 else ([] if stdio and dct_path.is_empty() else [dct_path])
-		var saved_paths := UserPrefs.load_session() if DocketRuntimeState.may_restore_session() else PackedStringArray()
+		var paths_to_load: Array = dct_paths.duplicate() if dct_paths.size() > 0 else ([] if dct_path.is_empty() else [dct_path])
+		var saved_paths := UserPrefs.load_session()
 		for sp in saved_paths:
 			if sp not in paths_to_load:
 				paths_to_load.append(sp)
-		if not TypeRegistryBootstrap.opening_refusal().is_empty(): paths_to_load.clear()
 		for path in paths_to_load:
 			var duplicate := ProjectOpenings.path_refusal(str(path), _project_dbs)
 			if not duplicate.is_empty():
@@ -111,25 +104,8 @@ func _ready() -> void:
 
 	_handler = McpHandler.new()
 	_handler.init_with_registry(_registry)
-	if stdio:
-		_handler.host_authority = host_authority
-		if host_authority != null:
-			host_authority.schema_adopted = _adopt_schema
-			host_authority.resolve_vault = _resolve_vault
-			host_authority.bootstrap_project = _bootstrap_project
-
-	if stdio:
-		_stdio = DocketStdioTransport.new()
-		if host_authority != null:
-			_registry.hosted_item_changed.connect(_stdio.publish_item_changed)
-		Engine.print_to_stdout = true
-		if _stdio.start() != OK:
-			printerr("Docket: could not start stdin reader")
-			DocketRuntimeState.quit(get_tree(), 2)
-			set_process(false)
-
 	# Cap frame rate to avoid busy-spinning the main loop
-	if DisplayServer.get_name() == "headless" and not stdio:
+	if DisplayServer.get_name() == "headless":
 		Engine.max_fps = 1
 	else:
 		Engine.max_fps = 30
@@ -138,7 +114,6 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if _registration != null:
 		_registration.close()
-	DocketRuntimeState.prepare_shutdown()
 	DocketDBJsonl.settle_projects(_project_dbs, false)
 	MemoryProject.spill_on_exit(_project_dbs)
 	SessionProject.release_all()
@@ -234,8 +209,6 @@ func _gui_open(request: Dictionary) -> Dictionary:
 
 
 func _headless_add_project(path: String) -> Dictionary:
-	var refusal_before_open := TypeRegistryBootstrap.opening_refusal()
-	if not refusal_before_open.is_empty(): return {"error":refusal_before_open}
 	var duplicate := ProjectOpenings.path_refusal(path, _project_dbs)
 	if not duplicate.is_empty(): return {"error":duplicate}
 	DocketDBJsonl.last_open_error = ""
@@ -304,10 +277,6 @@ func _process(_delta: float) -> void:
 		_next_lease_check_msec = Time.get_ticks_msec() + LEASE_CHECK_INTERVAL_MS
 		_registry.enforce_memory_lease()
 
-	if stdio:
-		if _stdio.poll(_handler, _post_request):
-			DocketRuntimeState.quit(get_tree())
-		return
 	if _server == null or not _server.is_listening():
 		return
 	if _registration != null and _server.get_local_port() != _registered_port:
@@ -484,24 +453,13 @@ func _post_request() -> void:
 		db.checkpoint()
 
 
-func _resolve_vault(path: Variant) -> DocketDB:
-	if not path is String or not path.is_absolute_path(): return null
-	# Consult the live authoritative map, never a caller name or stored descriptor.
-	var normalized := ProjectOpenings.normalized_path(path)
-	var projects := external_state.get_project_dbs() if external_state != null else _project_dbs
-	for db: DocketDB in projects.values():
-		if ProjectOpenings.normalized_path(db.get_path()) == normalized:
-			return db
-	return null
-
-
 func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 	# Preflight uses disk metadata without opening a cache or registering a project.
 	# Existing metadata wins in the disk core; shipment metadata only seeds installs.
 	var parsed := JSONLParser.parse_bytes(shipment.to_utf8_buffer(), "bootstrap shipment")
 	var shipment_error := MasterBootstrapPlan._validate(parsed)
 	if not shipment_error.is_empty():
-		return DocketHostAuthority._error(-32602, "Bootstrap shipment refused: " + shipment_error)
+		return DocketProjectBootstrap._error(-32602, "Bootstrap shipment refused: " + shipment_error)
 	var projects := external_state.get_project_dbs() if external_state != null else _project_dbs
 	var live: DocketDBJsonl
 	var name := ""
@@ -509,39 +467,39 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 		var db: DocketDB = projects[key]
 		if ProjectOpenings.normalized_path(db.get_path()) != path: continue
 		if not db is DocketDBJsonl or not db.is_open() or not db.get_write_block_reason().is_empty() or not FileAccess.file_exists(path):
-			return DocketHostAuthority._error(-32602, "Bootstrap live project unavailable or read-only: %s (%s)" % [path, db.get_write_block_reason() if not db.get_write_block_reason().is_empty() else "not open or canonical missing"])
+			return DocketProjectBootstrap._error(-32602, "Bootstrap live project unavailable or read-only: %s (%s)" % [path, db.get_write_block_reason() if not db.get_write_block_reason().is_empty() else "not open or canonical missing"])
 		live = db as DocketDBJsonl
 		name = str(key)
 		# Finish a worker before acquisition; sliced readers leave their WAL intact.
 		var settle_error := live.finish_settle()
 		if not settle_error.is_empty():
-			return DocketHostAuthority._error(-32602, "Bootstrap pending settle refused: %s (%s)" % [path, settle_error])
+			return DocketProjectBootstrap._error(-32602, "Bootstrap pending settle refused: %s (%s)" % [path, settle_error])
 		break
 	if live == null:
 		var physical_refusal := ProjectOpenings.path_refusal(path, projects)
-		if not physical_refusal.is_empty(): return DocketHostAuthority._error(-32602, physical_refusal)
+		if not physical_refusal.is_empty(): return DocketProjectBootstrap._error(-32602, physical_refusal)
 		var metadata: Dictionary = parsed.meta
 		if FileAccess.file_exists(path):
 			var source := JSONLCache.read_source(path)
 			var source_error := JSONLCache.last_error if source.is_empty() else MasterBootstrapPlan._validate(source.parsed)
 			if not source_error.is_empty():
-				return DocketHostAuthority._error(-32602, "Bootstrap current project refused: %s (%s)" % [path, source_error])
+				return DocketProjectBootstrap._error(-32602, "Bootstrap current project refused: %s (%s)" % [path, source_error])
 			metadata = source.parsed.meta
 		name = str(metadata.get("project", ""))
 		if name.is_empty(): name = path.get_file().get_basename()
 		if not ProjectOpenings.name_refusal(name, projects).is_empty():
-			return DocketHostAuthority._error(-32602, "Bootstrap project name already loaded: %s (%s)" % [name, path])
+			return DocketProjectBootstrap._error(-32602, "Bootstrap project name already loaded: %s (%s)" % [name, path])
 		if metadata.get(SessionProject.META_KEY) == SessionProject.MODE_SESSION_FILE:
 			var owner := SessionProject.read_owner(path)
 			var pid := int(owner.get("pid", 0))
 			if not SessionProject.path_error(path).is_empty() or (pid > 0 and pid != OS.get_process_id() and FileLock.is_pid_running(pid)):
-				return DocketHostAuthority._error(-32602, "Bootstrap session admission refused: %s (%s)" % [path, SessionProject.path_error(path) if not SessionProject.path_error(path).is_empty() else "owned by another live process"])
+				return DocketProjectBootstrap._error(-32602, "Bootstrap session admission refused: %s (%s)" % [path, SessionProject.path_error(path) if not SessionProject.path_error(path).is_empty() else "owned by another live process"])
 	var opening_error := ProjectOpenings.opening_refusal(live) if live != null else ""
 	if not opening_error.is_empty():
-		return DocketHostAuthority._error(-32602, opening_error)
+		return DocketProjectBootstrap._error(-32602, opening_error)
 	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema(), live.get_meta("physical_opening", {}) if live != null else {})
 	if report.status == "refused":
-		return DocketHostAuthority._error(-32602, "Bootstrap disk apply refused: " + str(report.error))
+		return DocketProjectBootstrap._error(-32602, "Bootstrap disk apply refused: " + str(report.error))
 	if live != null:
 		if not live.reload(): return _bootstrap_committed_failure(report, "reload", name, live)
 		if not ProjectOpenings.accept_replacement(live, report.get("identity", {})).is_empty():

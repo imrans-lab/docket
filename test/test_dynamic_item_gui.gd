@@ -1085,11 +1085,8 @@ func test_comment_composer_keeps_failed_top_level_and_reply_text_and_clears_succ
 	return A.is_true(comments.size() == 3 and comments.back().parent_id == first.id, "successful top-level and threaded comments retain existing behavior")
 
 
-func test_hosted_close_and_focus_keep_the_window_and_database_alive() -> Variant:
-	var headless := DisplayServer.get_name() == "headless"
-	var previous_directory := DocketRuntimeState.directory
-	DocketRuntimeState.directory = ProjectSettings.globalize_path(DIR)
-	var state := _state("HostedWindow")
+func test_focus_keeps_the_window_and_database_alive() -> Variant:
+	var state := _state("Window")
 	var shell := AppShell.new()
 	shell.init(state)
 	add_child(shell)
@@ -1097,55 +1094,11 @@ func test_hosted_close_and_focus_keep_the_window_and_database_alive() -> Variant
 	server.port = 0
 	server.external_state = state
 	add_child(server)
-	var window := shell.get_window()
-	var original_mode := window.mode
-	var was_hosted := DocketRuntimeState.hosted
-	DocketRuntimeState.hosted = true
-	var failure := ""
-	if headless:
-		shell.notification(NOTIFICATION_WM_CLOSE_REQUEST)
-		if not state.db.is_open() or (original_mode != Window.MODE_MINIMIZED \
-				and window.get_meta("docket_pre_close_mode", -1) != original_mode):
-			failure = "headless hosted close must retain its database and remember the requested mode"
-		var reply: Dictionary = server._gui_open({"focus": true})
-		if reply.get("pid") != OS.get_process_id() or window.has_meta("docket_pre_close_mode"):
-			failure = "headless focus must retain the process and clear remembered mode"
-		print("Hosted close state checked headlessly; native minimize/restore requires graphical WM.")
-	var modes: Array = [] if headless else [Window.MODE_WINDOWED, Window.MODE_MAXIMIZED]
-	for mode: Window.Mode in modes:
-		window.mode = mode
-		await get_tree().create_timer(0.2).timeout
-		shell.notification(NOTIFICATION_WM_CLOSE_REQUEST)
-		await get_tree().create_timer(0.2).timeout
-		if window.mode != Window.MODE_MINIMIZED or not state.db.is_open():
-			failure = "hosted close must minimize the root window and retain its open database"
-			break
-		var reply: Dictionary = server._gui_open({"focus": true})
-		await get_tree().create_timer(0.2).timeout
-		if window.mode != mode or reply.get("pid") != OS.get_process_id():
-			failure = "focus must restore the same live root window's pre-close mode"
-			break
-	if failure.is_empty() and not headless:
-		window.mode = Window.MODE_MINIMIZED
-		await get_tree().create_timer(0.2).timeout
-		if window.mode != Window.MODE_MINIMIZED:
-			failure = "native minimize oracle requires a window manager"
-		else:
-			server._gui_open({"focus": true})
-			await get_tree().create_timer(0.2).timeout
-			if window.mode == Window.MODE_MINIMIZED or not window.visible:
-				failure = "focus must restore a minimized hosted window"
-	DocketRuntimeState.hosted = was_hosted
-	if window.has_meta("docket_pre_close_mode"):
-		window.remove_meta("docket_pre_close_mode")
-	window.mode = original_mode
-	DocketRuntimeState.directory = previous_directory
-	return true if failure.is_empty() else failure
+	var reply: Dictionary = server._gui_open({"focus":true})
+	return true if reply.get("pid") == OS.get_process_id() and state.db.is_open() else "Focus lost its live window or database"
 
 
 func test_gui_new_docket_reuses_dialog_and_cancel_creates_nothing() -> Variant:
-	var prior_directory := DocketRuntimeState.directory
-	DocketRuntimeState.directory = ProjectSettings.globalize_path(DIR)
 	var state := _state("NewDialog")
 	var shell := AppShell.new()
 	shell.init(state)
@@ -1169,13 +1122,10 @@ func test_gui_new_docket_reuses_dialog_and_cancel_creates_nothing() -> Variant:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var canceled_cleanly := not original_dialog.visible and DirAccess.get_files_at(DIR) == paths_before and state.get_project_dbs().keys() == projects_before
-	DocketRuntimeState.directory = prior_directory
 	return A.is_true(first.get("opened") == "new_docket" and second.get("opened") == "new_docket" and visible_after_first and single_visible and canceled_cleanly, "one existing New Docket dialog handles repeat requests; cancel creates nothing")
 
 
 func test_gui_new_docket_refuses_while_preferences_open() -> Variant:
-	var previous_directory := DocketRuntimeState.directory
-	DocketRuntimeState.directory = ProjectSettings.globalize_path(DIR)
 	var state := _state("ModalNewDialog")
 	var shell := AppShell.new()
 	shell.init(state)
@@ -1203,5 +1153,4 @@ func test_gui_new_docket_refuses_while_preferences_open() -> Variant:
 	var opened: bool = retried.get("opened") == "new_docket" and shell._new_dialog.visible
 	shell._new_dialog.get_cancel_button().pressed.emit()
 	await get_tree().process_frame
-	DocketRuntimeState.directory = previous_directory
 	return A.is_true(refused and nested_refused and opened, "new docket returns a visible refusal during Preferences or a nested modal and opens on retry")

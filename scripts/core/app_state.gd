@@ -34,10 +34,6 @@ var last_cross_project_query_error: String = ""
 
 
 func load_dct(path: String) -> void:
-	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
-	if not schema_refusal.is_empty():
-		load_failed.emit(path, schema_refusal)
-		return
 	dct_path = path
 	if db:
 		db.close()
@@ -127,10 +123,6 @@ func add_project_result(path: String) -> Dictionary:
 
 
 func add_project(path: String) -> String:
-	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
-	if not schema_refusal.is_empty():
-		load_failed.emit(path, schema_refusal)
-		return schema_refusal
 	## Load an additional .dct project without closing the primary.
 	## Returns "" on success, else the reason it was refused (also emitted).
 	var duplicate := ProjectOpenings.path_refusal(path, _project_dbs)
@@ -438,10 +430,6 @@ func move_item(item_id: String, target_project: String, source_project: String =
 
 
 func create_dct(path: String) -> void:
-	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
-	if not schema_refusal.is_empty():
-		load_failed.emit(path, schema_refusal)
-		return
 	dct_path = path
 	if db:
 		db.close()
@@ -462,10 +450,6 @@ func create_dct(path: String) -> void:
 
 
 func create_and_add_project(path: String) -> void:
-	var schema_refusal := TypeRegistryBootstrap.opening_refusal()
-	if not schema_refusal.is_empty():
-		load_failed.emit(path, schema_refusal)
-		return
 	## Create a new .dct and add it alongside existing projects (does NOT replace).
 	var refusal := ProjectOpenings.path_refusal(path, _project_dbs)
 	if refusal.is_empty(): refusal = ProjectOpenings.name_refusal(path.get_file().get_basename(), _project_dbs)

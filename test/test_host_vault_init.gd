@@ -1,6 +1,6 @@
 extends Node
-## New vaults are created only through the actual private child channel. The
-## existing fixture supplies bounded pipes, safe diagnostics and leak scans.
+## New vaults are created through the public HTTP tool. The
+## existing fixture supplies bounded HTTP requests, safe diagnostics and leak scans.
 const Fixture := preload("res://test/test_host_vault.gd")
 const DRIVER := """
 try:
@@ -25,7 +25,6 @@ try:
                 dict(good, salt='caller'), dict(good, key='caller'), dict(good, iterations=10000),
                 dict(good, hint=passwords[0]), dict(good, hint=42), dict(good, hint='x'*1025)):
         assert 'error' in create(bad), 'invalid creation accepted'
-    assert create(good, 'f'*64)['error']['code'] == -32001, 'creation authentication bypass'
     assert path.read_bytes() == before and not pathlib.Path(str(path)+'.log').exists(), 'refusal changed storage'
     created = create(good, derive=True)['result']
     assert created['initialized'] and created['unlocked'] and created['hint'] == '00123', 'creation state'
@@ -50,6 +49,8 @@ try:
     for cache in base.glob('created.dct.*cache*'):
         if cache.is_file(): cache.unlink()
     call(p, 'docket_project_add', dict(path=str(path)))
+    fresh_status = bind(p, path)
+    private(p, 'vault_lock', {k:fresh_status[k] for k in ('path','open_generation','fingerprint')})
     locked(p, 'created')
     fresh = bind(p, path)
     assert fresh['hint'] == '00123' and fresh['open_generation'] != created['open_generation'], 'canonical rebuild descriptor'
@@ -77,11 +78,10 @@ try:
         seen.extend((proc/'cmdline').read_bytes() + (proc/'environ').read_bytes())
     finish(p)
     assert_private_files()
-    old_token = token
-    token = secrets.token_hex(32)
     paths = [path]
-    q = open_host('created', token)
-    assert private(q, 'vault_init', good, old_token)['error']['code'] == -32001, 'restart accepted old token'
+    q = open_host('created')
+    restart_status = bind(q, path)
+    private(q, 'vault_lock', {k:restart_status[k] for k in ('path','open_generation','fingerprint')})
     locked(q, 'created')
     restart = bind(q, path)
     assert restart['initialized'] and restart['hint'] == '00123' and not restart['unlocked'], 'restart vault state'
@@ -89,10 +89,6 @@ try:
     assert call(q, 'docket_secret_get', dict(project='created', handle='entry'))['value'] == values[0], 'restart created value'
     finish(q)
     assert_private_files()
-    # Ordinary stdio cannot reach creation, even with a token in its params.
-    q = launch('ordinary-created', ['--file',str(path)])
-    assert private(q, 'vault_init', good)['error']['code'] == -32601, 'ordinary stdio creation bypass'
-    finish(q)
     needles = [pw.encode() for pw in passwords]
     for key in keys: needles.extend((key, key.hex().encode(), base64.b64encode(key)))
     assert all(needle not in seen for needle in needles), 'creation material in output/proc'
@@ -116,11 +112,9 @@ finally:
 """
 
 func test_real_child_creation_reopen_restart_privacy() -> Variant:
-	var anchor := "\ntry:\n    # Producer and consumer"
 	var helpers := Fixture.DRIVER.replace("\r\n", "\n")
-	if helpers.count(anchor) != 1: return "Vault helper slice marker missing"
 	var fixture := Fixture.new()
-	var result: Variant = fixture.run_actual_child(helpers.get_slice(anchor, 0) + DRIVER.replace("\r\n", "\n"))
+	var result: Variant = fixture.run_actual_child(helpers + DRIVER.replace("\r\n", "\n"))
 	fixture.free()
 	return result
 
@@ -140,9 +134,9 @@ func test_failed_creation_leaves_no_metadata_or_memory_key() -> Variant:
 			if append_first: JSONLSidecar.append(target, text)
 			return "injected creation write failure"
 		var descriptor := VaultKeySession.descriptor(db)
-		var fields := {"panel_secret":"a".repeat(64), "path":descriptor.path,
+		var fields := {"action":"init",
 			"open_generation":descriptor.open_generation, "fingerprint":descriptor.fingerprint, "password":password, "hint":"00123"}
-		var reply := VaultKeySession.handle("vault_init", fields, db)
+		var reply := VaultKeySession.control(fields, db)
 		db._atomic_write_hook = Callable()
 		if not reply.has("error") or db.has_vault() or not VaultKeySession.key_for(db).is_empty() or not db.vault_creation_refusal().is_empty() or FileAccess.get_file_as_bytes(path) != before or JSONLSidecar.has_content(path + ".log"):
 			failure = "Failed creation retained metadata, key or changed source"
@@ -161,9 +155,9 @@ func test_failed_creation_leaves_no_metadata_or_memory_key() -> Variant:
 const PUBLIC_DRIVER := """
 try:
     paths = []
-    for hosted in (False, True):
-        name = 'public-hosted' if hosted else 'public-ordinary'
-        p = open_host(name) if hosted else launch(name, [])
+    for saved_password in (False, True):
+        name = 'public-saved' if saved_password else 'public-session'
+        p = launch(name, [])
         path = base/(name+'.dct')
         call(p, 'docket_project_add', dict(path=str(path), create=True))
         call(p, 'docket_project_add', dict(path=str(base/(name+'-keeper.dct')), create=True))
@@ -189,9 +183,9 @@ try:
         call(p, 'docket_vault_control', dict(action='lock', project=keeper, open_generation=created['open_generation'], fingerprint=created['fingerprint']), failure=True)
         assert call(p, 'docket_secret_get', dict(project=keeper, handle='entry'))['value'] == values[0], 'cross-project binding changed target session'
         prefs = None
-        if not hosted:
+        if saved_password:
             # Caller-owned synthetic preference, never the owner's profile.
-            prefs = base/(name+'-state')/'docket_prefs.json'
+            prefs = p.profile/'docket_prefs.json'
             prefs.write_text(json.dumps(dict(vault_password=passwords[0])))
             legacy = name+'-legacy'
             call(p, 'docket_project_add', dict(path=str(base/(legacy+'.dct')), create=True))
@@ -200,6 +194,32 @@ try:
             assert call(p, 'docket_secret_get', dict(project=legacy, handle='entry'))['value'] == values[0], 'legacy saved-password route lost access'
         call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]))
         assert call(p, 'docket_secret_get', dict(project=name, handle='entry'))['value'] == values[0], 'public secret roundtrip'
+        d = control('status')
+        metadata_before = {k: json.loads(path.read_text().splitlines()[0]).get(k) for k in ('vault_salt','vault_verify','vault_kdf_iterations')}
+        call(p, 'docket_secret_set', dict(project=name, handle='written', value=values[0]))
+        call(p, 'docket_secret_set', dict(project=name, handle='written', value=values[1]))
+        assert call(p, 'docket_secret_get', dict(project=name, handle='written'))['value'] == values[1], 'hosted write current'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='written', version=1))['value'] == values[0], 'hosted write archive'
+        secondary = secrets.token_hex(16)
+        passwords.append(secondary)
+        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[0], requires_2fa=True, secondary_password=secondary), kdf_stage='consumer_secondary_write')
+        call(p, 'docket_secret_set', dict(project=name, handle='written-dual', value=values[1], requires_2fa=True, secondary_password=secondary), kdf_stage='consumer_secondary_write')
+        assert 'secondary password' in call(p, 'docket_secret_get', dict(project=name, handle='written-dual'), True)['error'], 'hosted written 2FA refusal'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary), kdf_stage='consumer_secondary_current')['value'] == values[1], 'hosted written 2FA current'
+        assert call(p, 'docket_secret_get', dict(project=name, handle='written-dual', secondary_password=secondary, version=1), kdf_stage='consumer_secondary_archive')['value'] == values[0], 'hosted written 2FA archive'
+        promoted = call(p, 'docket_secret_promote', dict(project=name, handle='written', title='owned encrypted value'))
+        assert 'collides' in call(p, 'docket_secret_set', dict(project=name, handle=promoted['id'], value=values[0]), True)['error'], 'hosted ownership refusal'
+        call(p, 'docket_flush', dict(project=name))
+        snapshot = path.read_bytes()
+        assert {k: json.loads(path.read_text().splitlines()[0]).get(k) for k in metadata_before} == metadata_before, 'hosted write metadata changed'
+        fields = {k:d[k] for k in ('path','open_generation','fingerprint')}
+        private(p, 'vault_lock', fields)
+        assert 'locked' in call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]), True)['error'], 'hosted locked write refusal'
+        assert path.read_bytes() == snapshot, 'hosted locked write mutated bytes'
+        assert 'error' in unlock(p, d, passwords[1], kdf_stage='vault_unlock'), 'hosted wrong opening password accepted'
+        assert 'locked' in call(p, 'docket_secret_set', dict(project=name, handle='entry', value=values[0]), True)['error'], 'hosted wrong key write refusal'
+        assert path.read_bytes() == snapshot, 'hosted wrong key write mutated bytes'
+        assert unlock(p, d, passwords[0], kdf_stage='vault_unlock')['result']['unlocked'], 'hosted write re-unlock'
         call(p, 'docket_flush', {})
         stored = path.read_bytes()
         control('unlock', created, failure=True, password=passwords[1])
@@ -216,7 +236,7 @@ try:
         reloaded = control('status')
         assert reloaded['managed'] and not reloaded['unlocked'], 'reload dropped the controlled latch'
         locked(p, name)
-        if not hosted:
+        if saved_password:
             assert call(p, 'docket_secret_get', dict(project=legacy, handle='entry'))['value'] == values[0], 'managed lock changed legacy opening'
         control('unlock', locked_state, failure=True, password=passwords[1])
         assert not control('status')['unlocked'], 'wrong password unlocked public session'
@@ -257,11 +277,9 @@ finally:
 """
 
 
-func test_public_vault_control_ordinary_and_hosted() -> Variant:
-	var anchor := "\ntry:\n    # Producer and consumer"
+func test_public_vault_control_session_and_saved_password() -> Variant:
 	var helpers := Fixture.DRIVER.replace("\r\n", "\n")
-	if helpers.count(anchor) != 1: return "Vault helper slice marker missing"
 	var fixture := Fixture.new()
-	var result: Variant = fixture.run_actual_child(helpers.get_slice(anchor, 0) + PUBLIC_DRIVER.replace("\r\n", "\n"))
+	var result: Variant = fixture.run_actual_child(helpers + PUBLIC_DRIVER.replace("\r\n", "\n"))
 	fixture.free()
 	return result
