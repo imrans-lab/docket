@@ -90,7 +90,22 @@ jobs:
         run: |
           set -euo pipefail
           echo "godot-cpp=$(git -C third_party/godot-sqlite/godot-cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          clang --version | python3 -c 'import hashlib, sys; print("compiler=" + hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' >> "$GITHUB_OUTPUT"
+          python3 - <<'PYTHON'
+          import hashlib
+          import os
+          from pathlib import Path
+          import subprocess
+
+          platform = "${{ matrix.platform }}"
+          if platform == "windows":
+              vswhere = Path(os.environ["ProgramFiles(x86)"]) / "Microsoft Visual Studio/Installer/vswhere.exe"
+              installation = subprocess.check_output([str(vswhere), "-latest", "-property", "installationPath"], text=True).strip()
+              compiler = (Path(installation) / "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt").read_bytes()
+          else:
+              compiler = subprocess.check_output(["clang" if platform == "macos" else "g++", "--version"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("compiler=" + hashlib.sha256(compiler).hexdigest(), file=output)
+          PYTHON
 
       - name: Cache godot-cpp objects
         uses: actions/cache@v6
@@ -199,7 +214,22 @@ jobs:
         run: |
           set -euo pipefail
           echo "godot-cpp=$(git -C third_party/godot-sqlite/godot-cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          clang --version | python3 -c 'import hashlib, sys; print("compiler=" + hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' >> "$GITHUB_OUTPUT"
+          python3 - <<'PYTHON'
+          import hashlib
+          import os
+          from pathlib import Path
+          import subprocess
+
+          platform = "${{ matrix.platform }}"
+          if platform == "windows":
+              vswhere = Path(os.environ["ProgramFiles(x86)"]) / "Microsoft Visual Studio/Installer/vswhere.exe"
+              installation = subprocess.check_output([str(vswhere), "-latest", "-property", "installationPath"], text=True).strip()
+              compiler = (Path(installation) / "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt").read_bytes()
+          else:
+              compiler = subprocess.check_output(["clang" if platform == "macos" else "g++", "--version"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("compiler=" + hashlib.sha256(compiler).hexdigest(), file=output)
+          PYTHON
 
       - name: Cache godot-cpp objects
         uses: actions/cache@v6
