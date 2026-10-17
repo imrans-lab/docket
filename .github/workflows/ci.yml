@@ -83,8 +83,15 @@ jobs:
       - name: Install SCons
         run: pipx install scons
 
-      # godot-cpp dominates build time and only changes when the pinned
-      # submodule commit changes, so key the cache on that SHA.
+      # Compiler updates can invalidate SCons objects without changing sources.
+      - name: Identify native build inputs
+        id: native-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "godot-cpp=$(git -C third_party/godot-sqlite/godot-cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          clang --version | python3 -c 'import hashlib, sys; print("compiler=" + hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' >> "$GITHUB_OUTPUT"
+
       - name: Cache godot-cpp objects
         uses: actions/cache@v6
         with:
@@ -92,13 +99,12 @@ jobs:
             third_party/godot-sqlite/godot-cpp/bin
             third_party/godot-sqlite/godot-cpp/gen
             third_party/godot-sqlite/.sconsign.dblite
-          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
+          key: godot-cpp-v2-${{ matrix.platform }}-${{ matrix.arch }}-${{ steps.native-inputs.outputs.godot-cpp }}-${{ steps.native-inputs.outputs.compiler }}-debug
 
-      # Builds both template_release and template_debug. The debug variant is
-      # what the Godot tool binary loads when running the test suite; without it
-      # the extension silently fails to load and ~50 tests fail confusingly.
+      # The editor/tool binary used by the push import loads template_debug.
+      # Release and dispatch-only functional builds still build both variants.
       - name: Build GDExtension from source
-        run: ./scripts/build/build_gdextension.sh ${{ matrix.platform }} ${{ matrix.arch }} all
+        run: ./scripts/build/build_gdextension.sh ${{ matrix.platform }} ${{ matrix.arch }} template_debug
 
       # Secret scan, machine-path leakage, FCIB, version skew, dead links.
       # Cheap, so it runs on every push rather than only before a release.
@@ -186,8 +192,15 @@ jobs:
       - name: Install SCons
         run: pipx install scons
 
-      # godot-cpp dominates build time and only changes when the pinned
-      # submodule commit changes, so key the cache on that SHA.
+      # Compiler updates can invalidate SCons objects without changing sources.
+      - name: Identify native build inputs
+        id: native-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "godot-cpp=$(git -C third_party/godot-sqlite/godot-cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          clang --version | python3 -c 'import hashlib, sys; print("compiler=" + hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' >> "$GITHUB_OUTPUT"
+
       - name: Cache godot-cpp objects
         uses: actions/cache@v6
         with:
@@ -195,7 +208,7 @@ jobs:
             third_party/godot-sqlite/godot-cpp/bin
             third_party/godot-sqlite/godot-cpp/gen
             third_party/godot-sqlite/.sconsign.dblite
-          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
+          key: godot-cpp-v2-${{ matrix.platform }}-${{ matrix.arch }}-${{ steps.native-inputs.outputs.godot-cpp }}-${{ steps.native-inputs.outputs.compiler }}-all
 
       # Builds both template_release and template_debug. The debug variant is
       # what the Godot tool binary loads when running the test suite; without it

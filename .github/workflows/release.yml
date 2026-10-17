@@ -61,6 +61,15 @@ jobs:
       - name: Install SCons
         run: pipx install scons
 
+      # Compiler updates can invalidate SCons objects without changing sources.
+      - name: Identify native build inputs
+        id: native-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "godot-cpp=$(git -C third_party/godot-sqlite/godot-cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          clang --version | python3 -c 'import hashlib, sys; print("compiler=" + hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' >> "$GITHUB_OUTPUT"
+
       - name: Cache godot-cpp objects
         uses: actions/cache@v6
         with:
@@ -68,7 +77,7 @@ jobs:
             third_party/godot-sqlite/godot-cpp/bin
             third_party/godot-sqlite/godot-cpp/gen
             third_party/godot-sqlite/.sconsign.dblite
-          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('third_party/godot-sqlite/godot-cpp/SConstruct') }}
+          key: godot-cpp-v2-${{ matrix.platform }}-${{ matrix.arch }}-${{ steps.native-inputs.outputs.godot-cpp }}-${{ steps.native-inputs.outputs.compiler }}-all
 
       # Windows runners have bash via Git for Windows, so one script covers all
       # three platforms. MSVC is already on the image and SCons finds it.
