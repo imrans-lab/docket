@@ -5,20 +5,26 @@ class_name DocketProjectBootstrap
 func get_definition() -> Dictionary:
 	return {
 		"name":"docket_project_bootstrap",
-		"description":"Install or update a shipped project at an absolute path, then open or refresh it. content is canonical base64 of UTF-8 .dct content. Preserves customised items and existing project metadata; validates canonical data and opening identity before committing. Returns the bootstrap report and project descriptor. A committed-but-unavailable error includes disk_committed and failure_stage in its data. Uses the same loopback trust as other tools; no token is required.",
+		"description":"Install or update a shipped project at an absolute path, then open or refresh it. content is canonical base64 of UTF-8 .dct content. Preserves customised items by default. Explicit update_mode=replace_shipped makes offered IDs publisher-owned and replaces even deliberate same-ID edits; independent IDs, locally deleted shipped IDs, retired upstream IDs, history and existing project metadata remain preserved; validates canonical data and opening identity before committing. Returns the bootstrap report and project descriptor. A committed-but-unavailable error includes disk_committed and failure_stage in its data. Uses the same loopback trust as other tools; no token is required.",
 		"inputSchema":{
 			"type":"object", "additionalProperties":false,
 			"properties":{
 				"path":{"type":"string", "description":"Absolute canonical .dct file path"},
 				"content":{"type":"string", "description":"Canonical base64 of the UTF-8 shipped .dct content"},
+				"update_mode":{"type":"string", "enum":MasterBootstrapPlan.UPDATE_MODES,
+					"default":MasterBootstrapPlan.PRESERVE_CUSTOMIZATIONS,
+					"description":"preserve_customizations (default) keeps same-ID local edits; replace_shipped explicitly authorizes the publisher to replace every offered existing ID, including deliberate edits. Does not restore deleted IDs or delete retired IDs."},
 			},
 			"required":["path", "content"],
 		},
 	}
 
 func execute(args: Dictionary, bootstrap_project: Callable) -> Dictionary:
-	if args.size() != 2 or not args.get("path") is String or not args.get("content") is String:
+	if args.size() != (3 if args.has("update_mode") else 2) or not args.get("path") is String or not args.get("content") is String:
 		return _error(-32602, "Invalid bootstrap parameters")
+	var update_mode: Variant = args.get("update_mode", MasterBootstrapPlan.PRESERVE_CUSTOMIZATIONS)
+	if not update_mode is String or update_mode not in MasterBootstrapPlan.UPDATE_MODES:
+		return _error(-32602, "Unsupported bootstrap update_mode")
 	var path: String = args.path
 	if path.is_empty() or not path.is_absolute_path() or path.contains("://") or path.get_file().is_empty():
 		return _error(-32602, "Bootstrap requires an absolute file path")
@@ -32,7 +38,8 @@ func execute(args: Dictionary, bootstrap_project: Callable) -> Dictionary:
 	if shipment.to_utf8_buffer() != bytes:
 		return _error(-32602, "Bootstrap content must be UTF-8")
 	if not bootstrap_project.is_valid(): return _error(-32603, "Bootstrap unavailable")
-	var reply: Dictionary = bootstrap_project.call(ProjectOpenings.normalized_path(path), shipment)
+	var reply: Dictionary = bootstrap_project.call(ProjectOpenings.normalized_path(path), shipment, update_mode) \
+		if args.has("update_mode") else bootstrap_project.call(ProjectOpenings.normalized_path(path), shipment)
 	return reply.get("result", reply)
 
 static func _error(code: int, message: String) -> Dictionary:

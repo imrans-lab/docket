@@ -477,7 +477,7 @@ func _post_request() -> void:
 		db.checkpoint()
 
 
-func _bootstrap_project(path: String, shipment: String) -> Dictionary:
+func _bootstrap_project(path: String, shipment: String, update_mode: String = MasterBootstrapPlan.PRESERVE_CUSTOMIZATIONS) -> Dictionary:
 	# Preflight uses disk metadata without opening a cache or registering a project.
 	# Existing metadata wins in the disk core; shipment metadata only seeds installs.
 	var parsed := JSONLParser.parse_bytes(shipment.to_utf8_buffer(), "bootstrap shipment")
@@ -521,7 +521,7 @@ func _bootstrap_project(path: String, shipment: String) -> Dictionary:
 	var opening_error := ProjectOpenings.opening_refusal(live) if live != null else ""
 	if not opening_error.is_empty():
 		return DocketProjectBootstrap._error(-32602, opening_error)
-	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema(), live.get_meta("physical_opening", {}) if live != null else {})
+	var report := MasterBootstrapApply.apply(path, shipment, TypeRegistryBootstrap.effective_schema(), live.get_meta("physical_opening", {}) if live != null else {}, update_mode)
 	if report.status == "refused":
 		return DocketProjectBootstrap._error(-32602, "Bootstrap disk apply refused: " + str(report.error))
 	if live != null:
