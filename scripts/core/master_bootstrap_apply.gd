@@ -10,7 +10,8 @@ static var lock_timeout_ms := 5000
 ## Called after authoritative acquisition, before planning, for real drift tests.
 static var acquired_hook: Callable
 
-static func apply(path: String, shipment_jsonl: String, declared_schema: Dictionary, expected_opening: Dictionary = {}) -> Dictionary:
+static func apply(path: String, shipment_jsonl: String, declared_schema: Dictionary, expected_opening: Dictionary = {}, update_mode: String = MasterBootstrapPlan.PRESERVE_CUSTOMIZATIONS) -> Dictionary:
+	if update_mode not in MasterBootstrapPlan.UPDATE_MODES: return _refuse("Unsupported bootstrap update_mode: " + update_mode)
 	if path.is_empty(): return _refuse("Canonical path is empty")
 	var shipment := JSONLParser.parse_bytes(shipment_jsonl.to_utf8_buffer(), "shipment")
 	var error := MasterBootstrapPlan._validate(shipment)
@@ -18,11 +19,11 @@ static func apply(path: String, shipment_jsonl: String, declared_schema: Diction
 	if shipment.meta.has(STATE_KEY): return _refuse("Shipment may not seed reserved bootstrap state")
 	var lock := FileLock.acquire(path, lock_timeout_ms)
 	if lock == null: return _refuse("Could not acquire advisory lock: " + path + FileLock.SUFFIX)
-	var result := _apply_locked(path, shipment, declared_schema, expected_opening)
+	var result := _apply_locked(path, shipment, declared_schema, expected_opening, update_mode)
 	lock.release()
 	return result
 
-static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary, expected_opening: Dictionary = {}) -> Dictionary:
+static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary, expected_opening: Dictionary = {}, update_mode: String = MasterBootstrapPlan.PRESERVE_CUSTOMIZATIONS) -> Dictionary:
 	var recovery_error := JSONLReplace.recover(path)
 	if not recovery_error.is_empty(): return _refuse(recovery_error)
 	var opening := ProjectOpenings.inspect(path)
@@ -47,7 +48,7 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 		if FileAccess.file_exists(JSONLSidecar.path_for(path)) or DirAccess.dir_exists_absolute(JSONLSidecar.path_for(path)):
 			return _refuse("Missing canonical %s with orphan sidecar %s" % [path, JSONLSidecar.path_for(path)])
 	if acquired_hook.is_valid(): acquired_hook.call(path)
-	var proposal := MasterBootstrapPlan.plan(current, shipment, state.baseline, state.ever_shipped, schema)
+	var proposal := MasterBootstrapPlan.plan(current, shipment, state.baseline, state.ever_shipped, schema, update_mode)
 	if proposal.has("error"): return _refuse(proposal.error)
 	var merged: Dictionary = proposal.merged
 	merged.meta[STATE_KEY] = JSONLSerializer._json_value({"version":STATE_VERSION, "baseline_b64":Marshalls.raw_to_base64(JSONLSerializer.format_parsed(proposal.next_baseline).to_utf8_buffer()), "ever_shipped":proposal.next_ever_shipped})
@@ -68,7 +69,7 @@ static func _apply_locked(path: String, shipment: Dictionary, schema: Dictionary
 		return _verify_source(path, exists, source)
 	var committed := JSONLCheckedCommit.replace(path, text, verify)
 	if not str(committed.error).is_empty(): return _refuse(committed.error)
-	var response := {"status":"installed" if not exists else "applied", "warning":committed.warning, "identity":committed.get("identity", {})}
+	var response := {"update_mode":update_mode, "status":"installed" if not exists else "applied", "warning":committed.warning, "identity":committed.get("identity", {})}
 	for key in ["inserted", "updated", "unchanged", "deleted", "conflicts", "capability_gaps", "limitations"]: response[key] = proposal[key]
 	return response
 

@@ -3,9 +3,16 @@ class_name MasterBootstrapPlan
 ## Pure proposal over authoritative parser snapshots; acquisition/replay/apply
 ## belong to the caller. Null current means absent, not an existing empty file.
 
+## Replacement applies only to IDs in the offered shipment. Locally deleted
+## shipped IDs remain deleted; independent IDs and retired upstream IDs remain.
+const PRESERVE_CUSTOMIZATIONS := "preserve_customizations"
+const REPLACE_SHIPPED := "replace_shipped"
+const UPDATE_MODES := [PRESERVE_CUSTOMIZATIONS, REPLACE_SHIPPED]
+
 const SECTIONS := ["items", "events", "comments", "links", "attachments", "secrets", "secret_versions", "saved_queries", "type_defs", "type_def_versions"]
 
-static func plan(current: Variant, shipment: Dictionary, baseline: Variant, ever_shipped: Array, declared_schema: Dictionary) -> Dictionary:
+static func plan(current: Variant, shipment: Dictionary, baseline: Variant, ever_shipped: Array, declared_schema: Dictionary, update_mode: String = PRESERVE_CUSTOMIZATIONS) -> Dictionary:
+	if update_mode not in UPDATE_MODES: return {"error":"Unsupported bootstrap update_mode: " + update_mode}
 	var error := _validate(shipment)
 	if not error.is_empty(): return {"error":"Shipment: " + error}
 	if current != null:
@@ -61,7 +68,7 @@ static func plan(current: Variant, shipment: Dictionary, baseline: Variant, ever
 			var reason := ""
 			if current.meta.version != shipment.meta.version: reason = "format_mismatch"
 			elif str(current.meta.version) == "2.0.0": reason = _pin_error(item, shipment, current)
-			if reason.is_empty() and existing.has(id):
+			if reason.is_empty() and existing.has(id) and update_mode == PRESERVE_CUSTOMIZATIONS:
 				if not previous.has(id): reason = "baseline_unavailable"
 				elif not _equal(existing[id], previous[id]): reason = "customized"
 			if not reason.is_empty():
@@ -92,7 +99,7 @@ static func plan(current: Variant, shipment: Dictionary, baseline: Variant, ever
 	for id in ids: seen[id] = true
 	var next_ids: Array = seen.keys()
 	next_ids.sort()
-	return {"merged":merged, "inserted":inserted, "updated":updated, "unchanged":unchanged, "deleted":deleted, "conflicts":conflicts, "capability_gaps":capabilities.gaps, "limitations":limitations, "next_baseline":shipment.duplicate(true), "next_ever_shipped":next_ids}
+	return {"update_mode":update_mode, "merged":merged, "inserted":inserted, "updated":updated, "unchanged":unchanged, "deleted":deleted, "conflicts":conflicts, "capability_gaps":capabilities.gaps, "limitations":limitations, "next_baseline":shipment.duplicate(true), "next_ever_shipped":next_ids}
 
 static func _items(snapshot: Dictionary) -> Dictionary:
 	var result := {}
